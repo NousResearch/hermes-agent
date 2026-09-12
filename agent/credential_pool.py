@@ -1243,6 +1243,13 @@ class CredentialPool(CredentialPoolAdminMixin):
             store_access = tokens.get("access_token", "")
             store_refresh = tokens.get("refresh_token", "")
             entry_refresh = entry.refresh_token or ""
+            # xAI singleton pairs carry a refresh instant. A different pair
+            # can still be older than the independently persisted pool row.
+            if self.provider == "xai-oauth":
+                store_at = _parse_absolute_timestamp(state.get("last_refresh"))
+                entry_at = _parse_absolute_timestamp(entry.last_refresh)
+                if store_at is not None and entry_at is not None and store_at < entry_at:
+                    return entry
             # Adopt when either side differs: a fresh refresh_token from
             # another process means our pair is consumed/stale.
             should_adopt = bool(store_access) and (
@@ -1278,36 +1285,123 @@ class CredentialPool(CredentialPoolAdminMixin):
         return entry
 
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Nous device_code entry from auth.json ``providers.nous`` if state differs.
+        """Sync a Nous pool entry from auth.json if tokens differ.
 
-        Another process refreshing via ``resolve_nous_runtime_credentials``
-        writes fresh tokens under ``_auth_store_lock``; adopting them avoids a
-        "refresh token reuse" revocation on the Nous Portal.
+        Nous OAuth refresh tokens are single-use.  When another process
+        (e.g. a concurrent cron) refreshes the token via
+        ``resolve_nous_runtime_credentials``, it writes fresh tokens to
+        auth.json under ``_auth_store_lock``.  The pool entry's tokens
+        become stale.  This method detects that and adopts the newer pair,
+        avoiding a "refresh token reuse" revocation on the Nous Portal.
+
+        Unlike Codex/xAI, the Nous singleton is not one clock: the OAuth
+        pair is stamped with ``obtained_at`` while the inference agent key
+        carries its own ``agent_key_obtained_at``, and routing metadata
+        (inference URL, portal, client id, TLS) carries no clock at all.
+        So freshness is enforced per group rather than over the whole
+        record:
+
+        * OAuth pair (``access_token``/``refresh_token``/``expires_at``,
+          plus ``obtained_at``/``expires_in``) — refused when the store's
+          ``obtained_at`` predates the entry's, so an older, already-consumed
+          pair cannot displace the pool's newer one.
+        * Agent key (``agent_key``/``agent_key_expires_at`` and its extras) —
+          gated independently on ``agent_key_obtained_at``, so a legitimately
+          newer key still lands even while an older OAuth pair is refused.
+          A key that merely mirrors a *refused* access token is refused with
+          it; otherwise the stale pair would ride in through ``agent_key``,
+          which is what ``runtime_api_key`` actually serves.
+        * Routing metadata — no token material, always adopted.
+
+        Missing/unparseable timestamps on either side keep the pre-existing
+        rotation-recovery behavior for that group.
         """
         if self.provider != "nous" or entry.source != "device_code":
             return entry
         try:
             with _auth_store_lock():
-                state = _load_provider_state(_load_auth_store(), "nous")
+                auth_store = _load_auth_store()
+                state = _load_provider_state(auth_store, "nous")
             if not state:
                 return entry
-            comparable = {
-                key: state.get(key)
-                for key in (
-                    "access_token", "refresh_token", "expires_at",
-                    "agent_key", "agent_key_expires_at", "inference_base_url",
-                )
-            }
-            if not any(v not in (None, "") and getattr(entry, k, None) != v for k, v in comparable.items()):
-                return entry
-            logger.debug("Pool entry %s: syncing Nous state from auth.json", entry.id)
-            field_updates: Dict[str, Any] = dict(_CLEAR_STATUS)
-            field_updates.update({k: v for k, v in comparable.items() if v})
-            extra_updates = dict(entry.extra)
-            extra_updates.update(
-                {k: state[k] for k in _NOUS_EXTRA_STATE_KEYS if state.get(k) is not None}
+            store_refresh = state.get("refresh_token", "")
+            store_access = state.get("access_token", "")
+
+            entry_pair_at = _parse_absolute_timestamp(entry.extra.get("obtained_at"))
+            store_pair_at = _parse_absolute_timestamp(state.get("obtained_at"))
+            pair_is_stale = (
+                entry_pair_at is not None
+                and store_pair_at is not None
+                and store_pair_at < entry_pair_at
             )
-            return self._adopt(entry, extra=extra_updates, **field_updates)
+            entry_key_at = _parse_absolute_timestamp(entry.extra.get("agent_key_obtained_at"))
+            store_key_at = _parse_absolute_timestamp(state.get("agent_key_obtained_at"))
+            key_is_stale = (
+                entry_key_at is not None
+                and store_key_at is not None
+                and store_key_at < entry_key_at
+            )
+            store_agent_key = state.get("agent_key")
+            if (
+                pair_is_stale
+                and store_agent_key
+                and store_agent_key == store_access
+            ):
+                # The agent key IS the refused access token (invoke-JWT path).
+                key_is_stale = True
+
+            candidate: Dict[str, Any] = {
+                "inference_base_url": state.get("inference_base_url"),
+            }
+            candidate_extra_keys = ["agent_key_id"] if not key_is_stale else []
+            if not pair_is_stale:
+                candidate.update({
+                    "access_token": store_access,
+                    "refresh_token": store_refresh,
+                    "expires_at": state.get("expires_at"),
+                })
+                candidate_extra_keys += ["obtained_at", "expires_in"]
+            if not key_is_stale:
+                candidate.update({
+                    "agent_key": store_agent_key,
+                    "agent_key_expires_at": state.get("agent_key_expires_at"),
+                })
+                candidate_extra_keys += [
+                    "agent_key_expires_in", "agent_key_reused", "agent_key_obtained_at",
+                ]
+
+            should_sync = any(
+                value not in (None, "") and getattr(entry, key, None) != value
+                for key, value in candidate.items()
+            ) or any(
+                state.get(key) is not None and entry.extra.get(key) != state[key]
+                for key in candidate_extra_keys
+            )
+            if should_sync:
+                logger.debug(
+                    "Pool entry %s: syncing Nous state from auth.json",
+                    entry.id,
+                )
+                field_updates: Dict[str, Any] = {
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
+                }
+                for key, value in candidate.items():
+                    if value not in (None, ""):
+                        field_updates[key] = value
+                extra_updates = dict(entry.extra)
+                for extra_key in candidate_extra_keys:
+                    val = state.get(extra_key)
+                    if val is not None:
+                        extra_updates[extra_key] = val
+                updated = replace(entry, extra=extra_updates, **field_updates)
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
         except Exception as exc:
             logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
         return entry
@@ -1587,7 +1681,10 @@ class CredentialPool(CredentialPoolAdminMixin):
                     if force and entry.runtime_api_key and entry.runtime_api_key != stale_key:
                         logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", entry.id)
                         return entry
-                auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=stale_key or None)
+                auth_mod.resolve_nous_runtime_credentials(
+                    force_refresh=force, stale_access_token=stale_key or None,
+                    pool_state=entry.to_dict() if entry.source == "device_code" else None,
+                )
                 updated = self._sync_nous_entry_from_auth_store(entry)
             else:
                 return entry

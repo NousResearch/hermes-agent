@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from types import SimpleNamespace
 
@@ -17,6 +18,33 @@ class DummyResponse:
 
     def json(self):
         return self._payload
+
+
+def test_data_video_url_is_translated_to_gemini_inline_data():
+    """OpenAI-compatible video parts must reach native Gemini as inlineData."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    video_bytes = b"video-bytes"
+    video_url = "data:video/mp4;base64," + base64.b64encode(video_bytes).decode("ascii")
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Describe this video"},
+            {"type": "video_url", "video_url": {"url": video_url}},
+        ],
+    }]
+
+    contents, _ = _build_gemini_contents(messages)
+
+    assert contents[0]["parts"] == [
+        {"text": "Describe this video"},
+        {
+            "inlineData": {
+                "mimeType": "video/mp4",
+                "data": base64.b64encode(video_bytes).decode("ascii"),
+            }
+        },
+    ]
 
 
 

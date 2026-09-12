@@ -172,24 +172,44 @@ def _coerce_content_to_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def _inline_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """``inlineData`` part for an ``image_url`` item carrying a ``data:`` URL; None otherwise."""
-    url = (item.get("image_url") or {}).get("url") or ""
-    if item.get("type") != "image_url" or not isinstance(url, str) or not url.startswith("data:"):
+def _inline_data_url_part(url: Any, default_mime: str = "") -> Optional[Dict[str, Any]]:
+    """Translate a base64 ``data:`` URL into a Gemini ``inlineData`` part."""
+    if not isinstance(url, str) or not url.startswith("data:"):
         return None
     try:
         header, encoded = url.split(",", 1)
         data = base64.b64encode(base64.b64decode(encoded)).decode("ascii")
-        return {"inlineData": {"mimeType": header.split(":", 1)[1].split(";", 1)[0], "data": data}}
+        mime = header.split(":", 1)[1].split(";", 1)[0] or default_mime
+        return {"inlineData": {"mimeType": mime, "data": data}}
     except Exception:
         return None
+
+
+def _inline_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """``inlineData`` part for an ``image_url`` item carrying a ``data:`` URL; None otherwise."""
+    if item.get("type") != "image_url":
+        return None
+    image = item.get("image_url")
+    url = image.get("url") if isinstance(image, dict) else None
+    return _inline_data_url_part(url)
+
+
+def _inline_video_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """``inlineData`` part for an OpenAI-compatible ``video_url`` data URL."""
+    if item.get("type") != "video_url":
+        return None
+    video = item.get("video_url")
+    url = video.get("url") if isinstance(video, dict) else None
+    return _inline_data_url_part(url, default_mime="video/mp4")
 
 
 def _multimodal_part(item: Any) -> Optional[Dict[str, Any]]:
     text = _text_of(item)
     if text or isinstance(item, str):
         return {"text": text}
-    return _inline_data_part(item) if isinstance(item, dict) else None
+    if not isinstance(item, dict):
+        return None
+    return _inline_data_part(item) or _inline_video_data_part(item)
 
 
 def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:

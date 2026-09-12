@@ -16,10 +16,11 @@ from typing import Any, Callable, Deque, Optional
 
 import acp
 from acp.schema import (
-    AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ForkSessionResponse,
-    Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse, McpServerHttp, McpServerSse,
-    McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
-    SessionCapabilities, SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
+    AgentCapabilities, AgentMessageChunk, AuthenticateResponse, ClientCapabilities, ConfigOptionUpdate,
+    ForkSessionResponse, Implementation, InitializeResponse, ListSessionsResponse, LoadSessionResponse,
+    McpServerHttp, McpServerSse, McpServerStdio, ModelInfo, NewSessionResponse, PromptCapabilities, PromptResponse,
+    ResumeSessionResponse, SessionCapabilities, SessionConfigOptionSelect, SessionConfigSelectOption,
+    SessionForkCapabilities, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
     SessionMode, SessionModeState, SessionModelState, SessionResumeCapabilities, SetSessionConfigOptionResponse,
     SetSessionModeResponse, SetSessionModelResponse, TextContentBlock, Usage, UsageUpdate, UserMessageChunk,
 )
@@ -40,6 +41,10 @@ from agent.interrupt_compat import request_hard_interrupt
 from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
 
 logger = logging.getLogger(__name__)
+
+# Sentinel: distinguishes "caller passed no model state" from "caller passed None
+# because the session has no listable models".
+_UNSET: Any = object()
 
 # Runs the synchronous AIAgent off the event loop.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
@@ -228,6 +233,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
+    _MODE_CONFIG_ID = "mode"
+    _MODEL_CONFIG_ID = "model"
     _MODE_DEFAULT = "default"
     # mode id -> (edit approval policy, display name, description)
     _MODES: dict[str, tuple[str, str, str]] = {
@@ -304,6 +311,68 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return None
         choice = encode_model_choice(provider, model)
         return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
+
+    def _build_config_options(
+        self, state: SessionState, model_state: SessionModelState | None = _UNSET
+    ) -> list[Any]:
+        """Configuration options exposed to ACP clients (like Zed) as bottom-bar dropdowns/selectors.
+
+        Zed builds the whole bottom bar from ``configOptions`` once it is non-empty and stops
+        rendering the standalone ``modes`` control, so the mode picker MUST be mirrored here
+        alongside the model picker.
+
+        ``model_state`` is accepted precomputed because building it can hit provider ``/models``
+        discovery; callers that already have one must pass it rather than pay for it twice."""
+        if model_state is _UNSET:
+            model_state = self._build_model_state(state)
+        options: list[Any] = []
+        modes_state = self._session_modes(state)
+        options.append(
+            SessionConfigOptionSelect(
+                id=self._MODE_CONFIG_ID,
+                name="Mode",
+                description="Session permission mode",
+                category="mode",
+                type="select",
+                current_value=modes_state.current_mode_id,
+                options=[
+                    SessionConfigSelectOption(value=m.id, name=m.name, description=m.description or None)
+                    for m in modes_state.available_modes
+                ],
+            )
+        )
+        if model_state and model_state.available_models:
+            select_options = [
+                SessionConfigSelectOption(
+                    value=m.model_id,
+                    name=m.name or m.model_id,
+                    description=m.description or None,
+                )
+                for m in model_state.available_models
+            ]
+            current = model_state.current_model_id or ""
+            # Zed renders a blank control when `currentValue` is absent from `options`.
+            # The picker id (provider-normalized) can differ from the session's encoded
+            # choice id, so pin the running model as its own row when it isn't listed.
+            if current not in {o.value for o in select_options}:
+                running = str(state.model or getattr(state.agent, "model", "") or "").strip()
+                if not current:
+                    current = encode_model_choice(getattr(state.agent, "provider", None), running) or running
+                select_options.insert(0, SessionConfigSelectOption(
+                    value=current, name=running or current, description="Current model",
+                ))
+            options.append(
+                SessionConfigOptionSelect(
+                    id=self._MODEL_CONFIG_ID,
+                    name="Model",
+                    description="AI model to use",
+                    category="model",
+                    type="select",
+                    current_value=current,
+                    options=select_options,
+                )
+            )
+        return options
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
@@ -572,8 +641,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_soon(lambda: self._send_usage_update(state))
+        model_state = self._build_model_state(state)
         return {
-            "models": self._build_model_state(state),
+            "config_options": self._build_config_options(state, model_state),
+            "models": model_state,
             "modes": self._session_modes(state),
             "field_meta": self._provenance_meta(state.session_id, getattr(state.agent, "session_id", state.session_id)),
         }
@@ -635,8 +706,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, state.session_id)
         self._schedule_available_commands_update(state.session_id)
+        model_state = self._build_model_state(state)
         return ForkSessionResponse(
-            session_id=state.session_id, models=self._build_model_state(state), modes=self._session_modes(state)
+            session_id=state.session_id, config_options=self._build_config_options(state, model_state),
+            models=model_state, modes=self._session_modes(state)
         )
 
     async def list_sessions(
@@ -937,6 +1010,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             logger.info(
                 "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
             )
+            if self._conn:
+                update = ConfigOptionUpdate(
+                    session_update="config_option_update",
+                    config_options=self._build_config_options(state),
+                )
+                await self._send(session_id, update, fail_msg="Failed to send ACP config options update for %s")
             return SetSessionModelResponse()
         logger.warning("Session %s: model switch requested for missing session", session_id)
         return None
@@ -953,19 +1032,36 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         state.mode = normalized_mode
         self.session_manager.save_session(session_id)
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
+        if self._conn:
+            update = ConfigOptionUpdate(
+                session_update="config_option_update",
+                config_options=self._build_config_options(state),
+            )
+            await self._send(session_id, update, fail_msg="Failed to send ACP config options update for %s")
         return SetSessionModeResponse()
 
     async def set_config_option(
-        self, config_id: str, session_id: str, value: str, **kwargs: Any
+        self, config_id: str, session_id: str, value: Any, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
-        """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
+        """Accept ACP config option updates and update mode/model/policy."""
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
-        if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
-            state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
+        val_str = str(value)
+        if str(config_id) in {self._MODE_CONFIG_ID, self._EDIT_APPROVAL_POLICY_CONFIG_ID}:
+            if val_str in self._MODES:
+                state.mode = val_str
+            else:
+                state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(val_str, self._MODE_DEFAULT)
+            logger.info("Session %s: mode switched to %s (config_option)", session_id, state.mode)
+        elif str(config_id) == self._MODEL_CONFIG_ID:
+            _old, requested_provider, resolved_model = self._switch_model(state, val_str, keep_endpoint=True)
+            logger.info(
+                "Session %s: model switched to %s via provider %s (config_option)",
+                session_id, resolved_model, requested_provider
+            )
         else:
             options = getattr(state, "config_options", None)
             if not isinstance(options, dict):
@@ -974,7 +1070,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             state.config_options = options
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
-        return SetSessionConfigOptionResponse(config_options=[])
+        return SetSessionConfigOptionResponse(config_options=self._build_config_options(state))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

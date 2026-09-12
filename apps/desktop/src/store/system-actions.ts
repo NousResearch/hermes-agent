@@ -40,11 +40,14 @@ async function awaitAction(name: string): Promise<void> {
 // `void runGatewayRestart()`, and a failure is the only thing that toasts.
 // Resolves `true` when the restart child completed cleanly (callers that keep
 // a "restart needed" banner clear it on that signal only).
-export async function runGatewayRestart(): Promise<boolean> {
+// `profile` targets a non-active profile (e.g. Messaging's own "Applies to"
+// scope selector) — undefined keeps every other caller's existing ambient
+// (active-profile) behavior, since profileScoped(undefined) falls back to it.
+export async function runGatewayRestart(profile?: null | string): Promise<boolean> {
   $gatewayRestarting.set(true)
 
   try {
-    const started: ActionResponse = await restartGateway()
+    const started: ActionResponse = await restartGateway(profile)
     await awaitAction(started.name)
 
     return true

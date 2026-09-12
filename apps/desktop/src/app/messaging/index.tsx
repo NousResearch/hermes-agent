@@ -158,13 +158,17 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const restartGatewayNow = useCallback(async () => {
     // runGatewayRestart never rejects: it toasts the failure and settles the
     // statusbar indicator; the banner stays if the restart did not complete.
-    const ok = await runGatewayRestart()
+    // Scoped to this page's own profile selector — the same target every other
+    // write action here (updateMessagingPlatform, approvePairing, ...) uses —
+    // so a credential saved to a non-active profile restarts THAT profile's
+    // gateway instead of whichever one happens to be active elsewhere.
+    const ok = await runGatewayRestart(scopeProfile)
 
     if (ok) {
       setRestartNeeded(false)
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
     }
-  }, [])
+  }, [scopeProfile])
 
   const refreshPlatforms = useCallback(
     async (silent = false) => {

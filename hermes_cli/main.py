@@ -700,6 +700,7 @@ from hermes_cli.main_platform_setup import (
     cmd_whatsapp_cloud,
 )
 from hermes_cli.main_dashboard import (
+    _drop_cwd_from_sys_path,
     _finalize_update_output,
     _find_stale_dashboard_pids,
     _install_hangup_protection,
@@ -709,6 +710,7 @@ from hermes_cli.main_dashboard import (
     _report_dashboard_status,
     _resolve_dashboard_web_dist,
     _route_named_profile_dashboard,
+    _web_stack_import_error_report,
 )
 from hermes_cli.main_dashboard import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _respawn_dashboard_processes,
@@ -2463,14 +2465,13 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError as e:
-        print("Web UI dependencies not installed (need fastapi + uvicorn).")
         print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
+            _web_stack_import_error_report(
+                e,
+                project_root=str(PROJECT_ROOT),
+                python_executable=sys.executable,
+            )
         )
-        print(f"Import error: {e}")
         sys.exit(1)
 
     # Seed bundled skills on first dashboard launch so the desktop GUI's
@@ -2544,6 +2545,12 @@ def cmd_dashboard(args):
     _headless_backend = getattr(args, "headless_backend", False)
     _ssh_owner_nonce = _dashboard_validate_serve_args(args, _headless_backend, _token_file)
     _dashboard_sanitize_desktop_env(_headless_backend)
+
+    # The working directory must never be importable here. `python -m` puts it
+    # first on sys.path, and Desktop spawns this backend with cwd set to the
+    # user's home directory, where a stray module shadows an installed package
+    # (a leftover ~/email_validator.py killed the backend before it bound).
+    _drop_cwd_from_sys_path()
 
     _route_named_profile_dashboard(args, _headless_backend, _ssh_owner_nonce, _token_file)
 

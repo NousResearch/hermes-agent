@@ -5,11 +5,13 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
 import contextlib
+import importlib.util
 import os
 import re
 import shlex
 import subprocess
 import sys
+import sysconfig
 
 from pathlib import Path
 from typing import NoReturn
@@ -772,3 +774,96 @@ def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:
         # validated "~/dist" would otherwise pass here and still 404 there.
         os.environ["HERMES_WEB_DIST"] = str(_dist_root)
         print(f"→ Using web dist from HERMES_WEB_DIST: {_dist_root}")
+
+
+# ---------------------------------------------------------------------------
+# Import-path safety for the dashboard/serve backend
+# ---------------------------------------------------------------------------
+
+def _drop_cwd_from_sys_path() -> None:
+    """Remove the working directory from ``sys.path``.
+
+    ``python -m`` puts the *absolute* working directory at ``sys.path[0]``; the
+    bare ``""`` placeholder only appears for ``-c``/interactive runs. Hermes
+    Desktop spawns this backend with ``cwd`` set to the user's home directory,
+    so either form makes the working directory importable and a stray module
+    there wins over the installed package of the same name: a leftover
+    ``~/email_validator.py`` shadowed pydantic's optional email dependency and
+    the backend died on its first ``import fastapi``, before the gateway could
+    bind. Entries that resolve inside the working directory are dropped; other
+    absolute entries (``PYTHONPATH``, the repo root inserted at startup) are
+    deliberate and stay.
+    """
+    cwd = os.path.normcase(os.path.abspath(os.getcwd()))
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if os.path.normcase(os.path.abspath(entry or os.curdir)) != cwd
+    ]
+
+
+def _import_outside_environment(name: str) -> str | None:
+    """Path of ``name`` when it resolves outside the installed environment.
+
+    A module importable from a location no installer manages (the working
+    directory, a stray ``PYTHONPATH`` entry) is a shadowing file: it wins over
+    the real distribution instead of failing the import outright.
+    """
+    candidates = dict.fromkeys((name, name.replace("-", "_"), name.replace("_", "-")))
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            spec = importlib.util.find_spec(candidate)
+        except (AttributeError, ImportError, ValueError):
+            continue
+        origin = getattr(spec, "origin", None)
+        if not origin or origin in {"built-in", "frozen"}:
+            continue
+        origin = os.path.abspath(origin)
+        for root in set(sysconfig.get_paths().values()):
+            try:
+                if os.path.commonpath([origin, os.path.abspath(root)]) == os.path.abspath(root):
+                    break
+            except ValueError:
+                continue
+        else:
+            return origin
+    return None
+
+
+def _web_stack_import_error_report(
+    exc: ImportError, *, project_root: str, python_executable: str
+) -> str:
+    """Report for an ``ImportError`` raised while importing fastapi/uvicorn.
+
+    The guard in ``_dashboard_prepare_runtime`` wraps those two imports, so it
+    catches every ``ImportError`` the chain raises — including a
+    ``PackageNotFoundError``, which subclasses ``ModuleNotFoundError``. Blaming
+    fastapi/uvicorn for a transitive failure sends the user to reinstall what
+    they already have, so name the real failure and point at the shadowing file
+    when there is one. Reinstall instructions are only honest when a web-stack
+    distribution really is the missing one.
+    """
+    missing = str(getattr(exc, "name", "") or "")
+    lines: list[str] = []
+
+    if missing in {"fastapi", "uvicorn"}:
+        lines.append("Web UI dependencies not installed (need fastapi + uvicorn).")
+        lines.append(
+            "Re-install the package into this interpreter so metadata updates apply:\n"
+            f"  cd {project_root}\n"
+            f"  {python_executable} -m pip install -e .\n"
+            "If `pip` is missing in this venv, use:  uv pip install -e ."
+        )
+    else:
+        lines.append("The web UI stack failed to import; fastapi and uvicorn are installed.")
+        shadow = _import_outside_environment(missing) if missing else None
+        if shadow:
+            lines.append(
+                f"`{missing}` resolves to {shadow} — outside the installed environment. "
+                "Move that file away (it shadows the installed package) and retry."
+            )
+
+    lines.append(f"Import error: {type(exc).__name__}: {exc}")
+    return "\n".join(lines)

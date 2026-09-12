@@ -108,7 +108,23 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
         return None
     if not AIOHTTP_AVAILABLE:
         return None
-    return aiohttp.TCPConnector(ssl=ssl.create_default_context(cafile=certifi.where()), keepalive_timeout=2, enable_cleanup_closed=True)
+
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    # WeChat's CDN (novac2c.cdn.weixin.qq.com) rejects the restrictive cipher
+    # list that Python's default SSL context negotiates, causing
+    # SSLV3_ALERT_HANDSHAKE_FAILURE on every media download.  Resetting to
+    # OpenSSL's DEFAULT cipher list (which curl and other tools use) fixes
+    # the handshake without weakening certificate verification. (#84394)
+    try:
+        ssl_ctx.set_ciphers("DEFAULT")
+    except ssl.SSLError:
+        pass
+    return aiohttp.TCPConnector(
+        ssl=ssl_ctx,
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451, #69089).
+        keepalive_timeout=2,
+        enable_cleanup_closed=True,
+    )
 
 
 def _new_session(**kwargs: Any) -> "aiohttp.ClientSession":

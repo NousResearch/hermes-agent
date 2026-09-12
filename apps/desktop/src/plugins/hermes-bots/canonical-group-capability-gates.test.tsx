@@ -65,10 +65,23 @@ const canonicalUnavailable = {
   driver: false, persistent_process: true, features: ['room_identity', 'monotonic_log', 'replayable_disband']
 }
 
+// App-managed hosted capabilities keep their protocol/authority when the driver stops.
+// Their RoomLink catalog deliberately reports persistent_process:false.
+const appManagedUnavailable = {
+  driver: false, persistent_process: false, protocol_version: 2,
+  authority_gateway_id: 'installation:app-managed',
+  features: ['authority_epoch', 'coordinator_fencing', 'room_identity', 'monotonic_log'],
+  methods: ['groups.capabilities', 'groups.create', 'groups.state', 'groups.send']
+}
+
 const legacy = { driver: false, persistent_process: false }
 
 const refused = [
   canonicalUnavailable,
+  appManagedUnavailable,
+  { ...legacy, authority_gateway_id: 'installation:owned' },
+  { ...legacy, protocol_version: 2 },
+  { ...legacy, methods: ['groups.create'] },
   { driver: false },
   { persistent_process: false },
   { driver: 0, persistent_process: false },

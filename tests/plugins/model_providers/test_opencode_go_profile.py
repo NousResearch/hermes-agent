@@ -182,6 +182,40 @@ class TestOpenCodeGoDeepSeekThinking:
             assert extra_body == {}
             assert top_level == {"reasoning_effort": "max"}
 
+    def test_deepseek_flash_does_not_emit_reasoning_effort(self, opencode_go_profile):
+        """#106654: Go relay 400s when reasoning_effort + reasoning_content echo."""
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="deepseek-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_prefixed_deepseek_flash_does_not_emit_reasoning_effort(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="deepseek/deepseek-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_deepseek_flash_disabled_emits_thinking_disabled(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="deepseek-flash",
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
+    def test_deepseek_v4_pro_high_still_works(self, opencode_go_profile):
+        """CONTROL: versioned V4 slugs keep the existing toggle path."""
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="deepseek-v4-pro",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "high"}
+
 
 class TestOpenCodeGoGLM52Reasoning:
     """GLM-5.2 uses its native high/max reasoning_effort knob on OpenCode Go."""
@@ -194,6 +228,58 @@ class TestOpenCodeGoGLM52Reasoning:
             model=model,
         )
         assert top_level == {"reasoning_effort": "max"}
+
+    def test_glm_5_2_max_still_works(self, opencode_go_profile):
+        """CONTROL: 5.2 high/max wire is unchanged by the 5.3 branch."""
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "max"},
+            model="glm-5.2",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "max"}
+
+
+class TestOpenCodeGoGLM53Reasoning:
+    """GLM-5.3 uses the graded low/medium/high/max knob on OpenCode Go."""
+
+    @pytest.mark.parametrize("model", ["glm-5.3", "glm-5.3-flash"])
+    def test_enabled_high_emits_reasoning_effort(self, opencode_go_profile, model):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model=model,
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "high"}
+
+    @pytest.mark.parametrize("model", ["glm-5-3", "glm-5p3"])
+    def test_alias_spellings_recognized(self, opencode_go_profile, model):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model=model,
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": "high"}
+
+    @pytest.mark.parametrize("reasoning_config", [None, {"enabled": False}])
+    def test_unset_or_disabled_preserves_server_default(
+        self, opencode_go_profile, reasoning_config
+    ):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model="glm-5.3",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_low_and_medium_pass_through(self, opencode_go_profile):
+        """Unlike 5.2, 5.3 is graded — do not clamp low/medium up to high."""
+        for effort in ("low", "medium"):
+            extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": effort},
+                model="glm-5.3-flash",
+            )
+            assert extra_body == {}
+            assert top_level == {"reasoning_effort": effort}
 
 
 class TestOpenCodeGoModelGating:

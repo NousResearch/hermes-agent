@@ -77,8 +77,8 @@ Keep schemas forgiving: require only the fields you will actually read. Tasks wi
 
 ## How Subagent Context Works
 
-:::warning Critical: Subagents Know Nothing
-Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task`.
+:::warning Critical: Subagents Know Nothing (unless you fork)
+Subagents start with a **completely fresh conversation**. They have zero knowledge of the parent's conversation history, prior tool calls, or anything discussed before delegation. The subagent's only context comes from the `goal` and `context` fields the parent agent populates when it calls `delegate_task` — unless the call sets `fork: true` (see below).
 :::
 
 One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
@@ -101,6 +101,31 @@ delegate_task(
 ```
 
 The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
+
+## Forked Subagents (`fork: true`)
+
+For work that *builds on the current conversation* — continuing an investigation, acting on findings already established — re-briefing everything into `context` is lossy and token-expensive. Set `fork: true` and the child instead starts from a one-time snapshot of the parent's conversation history:
+
+```python
+delegate_task(
+    goal="Write the full report on option B using everything we established above",
+    fork=True,
+)
+```
+
+How it works:
+
+- The snapshot is read from the parent's persisted session transcript and trimmed to the last *completed* assistant reply — the in-flight `delegate_task` tool call (which can never close inside the child), dangling tool results, and the triggering user prompt are removed so message-role alternation stays valid.
+- The parent's system prompt is never replayed; the child builds its own focused system prompt as usual.
+- The child's kickoff message is prefixed with an inheritance notice framing the seeded messages as *reference material produced by the parent*, not the child's own actions.
+- In a batch, top-level `fork` is the default and each task may override it with its own `fork` field — so one fan-out can mix forked continuations with blank-context workers.
+- The snapshot is capped to the most recent messages (`delegation.fork_max_messages` in `config.yaml`, default 200).
+
+**When to fork (decision rule):** fork **workers** that continue an investigation the parent already did — they skip re-reading files and re-establishing findings. Keep **verifiers and reviewers** isolated — independent judgment must not inherit the parent's framing. (The same rule LangChain's deepagents ships for its fork/isolated subagent modes; both it and kimi-code converged on this mechanism independently.)
+
+**Cost note:** a forked child's first request re-sends the parent transcript. Keep `fork` off (the default) for independent tasks; use it when re-briefing would lose important nuance.
+
+If the parent has no persisted session (rare: in-memory only runs), fork degrades gracefully to a normal blank-context spawn and logs the reason.
 
 ## Practical Examples
 

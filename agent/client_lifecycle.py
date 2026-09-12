@@ -866,6 +866,18 @@ class ClientLifecycleMixin:
             or base_url_host_matches(getattr(self, "_anthropic_base_url", "") or "", "azure.com")
         ):
             return False
+        # Pool-owned credentials must refresh/rotate through the pool. The singleton
+        # resolver may belong to a different Claude account; adopting it here changes
+        # the native client while leaving api_key and the pool entry id on the selected
+        # account, misattributing later 429s/401s. This also covers the 401 retry path
+        # (_refresh_credentials_after_401): pool recovery (_recover_auth_failure →
+        # try_refresh_matching/rotate) already ran before that fallback, and the pool
+        # adopts pairs rotated out-of-band via its singleton stores itself.
+        if (
+            getattr(self, "_credential_pool", None) is not None
+            and getattr(self, "_credential_pool_entry_id", None)
+        ):
+            return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
             new_token = resolve_anthropic_token()

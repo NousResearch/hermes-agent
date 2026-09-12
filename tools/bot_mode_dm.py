@@ -154,12 +154,31 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         return False
 
 
-def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
-    """Map a target handle to a profile name ('hermes' → 'default')."""
-    want = target.strip().lower()
+def _resolve_local_name(
+    target: str, roster: list[str], alias_map: dict[str, str | None] | None = None
+) -> Optional[str]:
+    """Map a target handle to a profile name ('hermes' → 'default').
+
+    Beyond folder ids (case-insensitive), resolves friendly aliases when
+    ``alias_map`` is given: ``display_name``, the Bot Mode title, and their
+    Desktop @-slug forms (``'Dr. Foo'`` → ``dr-foo``/``drfoo``). Ambiguous
+    forms (claimed by two profiles) and reserved tokens never resolve —
+    fail closed. Without ``alias_map`` this is the legacy folder-id-only
+    lookup.
+    """
+    want = target.strip().lstrip("@").strip().lower()
+    if not want:
+        return None
     if want == "hermes":
         return "default" if "default" in roster else None
-    return next((name for name in roster if name.lower() == want), None) if want else None
+    direct = next((name for name in roster if name.lower() == want), None)
+    if direct is not None:
+        return direct
+    if alias_map:
+        hit = alias_map.get(want)
+        if hit is not None and hit in roster:
+            return hit
+    return None
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
@@ -234,11 +253,18 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
                                author=peer_author, **delivery)
 
-    # Local teammate.
-    is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
-    if not is_local_shape and "@" not in raw_target:
-        return _roster_err(f"Invalid target: {raw_target!r}.")
-    resolved = _resolve_local_name(raw_target, roster) if is_local_shape else None
+    # Local teammate. Friendly names carry spaces/punctuation ("Dr. Foo") that
+    # never match the handle grammar — resolve those through the live alias
+    # map (folder id + display_name + Bot Mode title + Desktop @-slugs)
+    # before rejecting the shape. Relay handles any '@'-qualified form.
+    from tools.bot_mode_probe import _local_alias_map
+
+    alias_map = _local_alias_map(list(roster_homes.items()))
+    resolved = _resolve_local_name(raw_target, roster, alias_map)
+    if resolved is None:
+        is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
+        if not is_local_shape and "@" not in raw_target:
+            return _roster_err(f"Invalid target: {raw_target!r}.")
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the

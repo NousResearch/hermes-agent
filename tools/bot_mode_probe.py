@@ -68,6 +68,99 @@ def _handle(name: str) -> str:
     return "hermes" if name == "default" else name
 
 
+# Tokens the mention charset reserves: a rename must never hijack them
+# (mirrors the Desktop ``mentionNameForms`` filter in
+# ``apps/desktop/src/plugins/hermes-bots/data.ts``).
+_RESERVED_MENTION_FORMS = frozenset({"all", "everyone", "user", "default", "hermes"})
+
+
+def _mention_name_forms(value: object) -> list[str]:
+    """Taggable @-forms for a friendly name: slug + collapsed (Desktop parity).
+
+    ``'Research Buddy'`` → ``['research-buddy', 'researchbuddy']``;
+    ``'Dr. Foo'`` → ``['dr-foo', 'drfoo']``. Reserved tokens drop out so a
+    bot renamed ``'Hermes'`` can never hijack the primary profile's alias.
+    """
+    import re as _re
+
+    name = str(value or "").strip().lower()
+    if not name:
+        return []
+    slug = _re.sub(r"[^a-z0-9_-]+", "-", name).strip("-")
+    collapsed = _re.sub(r"[^a-z0-9_-]+", "", name)
+    forms = [
+        f for f in dict.fromkeys((slug, collapsed)) if f and _re.fullmatch(r"[a-z0-9][a-z0-9_-]*", f)
+    ]
+    return [f for f in forms if f not in _RESERVED_MENTION_FORMS]
+
+
+def _profile_friendly_names(profile_dir: Path) -> list[str]:
+    """Renameable names for a local profile: Bot Mode title + display_name."""
+
+    def _names() -> list[str]:
+        data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
+        out: list[str] = []
+        for raw in ((_bots_meta(data) or {}).get("title"), data.get("display_name")):
+            text = str(raw or "").strip()
+            if text and text not in out:
+                out.append(text)
+        return out
+
+    return _swallow(_names, [])
+
+
+def _local_alias_map(roster: list[tuple[str, Path]]) -> dict[str, str | None]:
+    """Lower-cased alias → canonical folder id (None when ambiguous).
+
+    Keys: folder id, ``hermes`` (→ ``default``), each friendly exact form and
+    its slug/collapsed mention forms. A form claimed by two profiles resolves
+    to None (fail closed, like the Desktop ``byForm`` collision rule).
+    """
+    aliases: dict[str, str | None] = {}
+    for name, profile_dir in roster:
+        claims = {name.lower()}
+        for friendly in _profile_friendly_names(profile_dir):
+            claims.add(friendly.lower())
+            claims.update(_mention_name_forms(friendly))
+        for form in claims:
+            if not form:
+                continue
+            if form in aliases and aliases[form] != name:
+                aliases[form] = None
+            else:
+                aliases.setdefault(form, name)
+    if "default" in (name for name, _d in roster):
+        if "hermes" in aliases and aliases["hermes"] != "default":
+            aliases["hermes"] = None
+        else:
+            aliases.setdefault("hermes", "default")
+    return aliases
+
+
+def _profile_alias_label(name: str, profile_dir: Path) -> str:
+    """``' (aka "Scribe", @scribe)'`` for roster lines; ``''`` when unrenamed."""
+    handle = _handle(name).lower()
+    seen: list[str] = []
+    for friendly in _profile_friendly_names(profile_dir):
+        if not friendly or friendly.lower() in (name.lower(), handle):
+            continue
+        forms = _mention_name_forms(friendly)
+        piece = f'"{friendly}"'
+        slug = forms[0] if forms else ""
+        if slug and slug.lower() not in (name.lower(), handle):
+            piece += f", @{slug}"
+        if piece not in seen:
+            seen.append(piece)
+    return f" (aka {', '.join(seen)})" if seen else ""
+
+
+def _roster_line(name: str, profile_dir: Path) -> str:
+    """One teammate row: ``- `@handle` (aka ...) — role`` (same join as _bullet)."""
+    role = _profile_role(profile_dir)
+    line = f"- `@{_handle(name)}`{_profile_alias_label(name, profile_dir)}"
+    return f"{line} — {role}" if role else line
+
+
 def _roster(root: Path) -> list[tuple[str, Path]]:
     """(name, dir) for the default profile + every named profile, sorted."""
     profiles = root / "profiles"
@@ -196,7 +289,9 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster_lines = [
+        _roster_line(name, d) for name, d in _roster(root) if name != me
+    ]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (
@@ -297,7 +392,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["roster"] = sorted(n for n, d in roster if _is_bot_managed(d))
         # Roles are part of the messaging surface: renaming a bot or editing a
         # description must refresh the roster block teammates pick recipients from.
-        surface["roster_roles"] = sorted(f"{n}:{_profile_role(d)}" for n, d in roster)
+        surface["roster_roles"] = sorted(f"{n}:{_profile_role(d)}:{_profile_alias_label(n, d)}" for n, d in roster)
     except Exception:
         surface["roster"] = []
     # Protocol-text version salt: bumping it refreshes every eternal Bot Chat

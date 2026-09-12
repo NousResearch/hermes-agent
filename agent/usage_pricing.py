@@ -180,6 +180,12 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
         "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
     }),
+    # Claude Fable 5: 2x Opus on the first-party API (same rates as the
+    # opus-4.8-fast premium tier above). The docs also publish a 1h cache-write
+    # tier; these rates are the standard 5m bucket usage normalization uses.
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06", {
+        "claude-fable-5": ("10.00", "50.00", "1.00", "12.50"),
+    }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
         "gpt-4.1": ("2.00", "8.00", "0.50"), "gpt-4.1-mini": ("0.40", "1.60", "0.10"),

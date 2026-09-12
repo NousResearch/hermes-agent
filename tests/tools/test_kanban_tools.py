@@ -1230,3 +1230,73 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# #104430 — orchestrator recovery for a card stranded in `triage`
+#
+# A router-only orchestrator has no `terminal` toolset, so the CLI-only exits
+# from `triage` (`hermes kanban specify|decompose|archive`) are unreachable.
+# `kanban_complete` is the only lifecycle verb it can aim at the card, so that
+# verb must not refuse the one state the board itself produces.
+# ---------------------------------------------------------------------------
+
+
+def _drive_to_triage(conn, tid):
+    """Reproduce the dispatcher's block-loop escalation into ``triage``."""
+    from hermes_cli import kanban_db as kb
+    assert kb.block_task(conn, tid, kind="capability", reason="flaky run 1")
+    assert kb.unblock_task(conn, tid)
+    assert kb.block_task(conn, tid, kind="capability", reason="flaky run 2")
+    assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_orchestrator_can_complete_a_triage_stuck_card(monkeypatch, worker_env):
+    """With HERMES_KANBAN_TASK unset the caller is the orchestrator: it must be
+    able to terminally close a triage-stuck card and un-gate its child."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="supervisor card", assignee="research")
+        child = kb.create_task(conn, title="roster", assignee="hrbot", parents=[parent])
+        _drive_to_triage(conn, parent)
+        assert kb.get_task(conn, child).status == "todo"
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({"task_id": parent, "summary": "deliverable was produced"})
+    d = json.loads(out)
+    assert d.get("ok") is True, out
+    assert d["task_id"] == parent
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, parent).status == "done"
+        assert kb.get_task(conn, child).status == "ready"
+    finally:
+        conn.close()
+
+
+def test_complete_refusal_names_the_blocking_status(monkeypatch, worker_env):
+    """A refused completion must name the real cause (the card's status), not
+    the old catch-all 'unknown id, stale run, or already terminal'."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    conn = kbc.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="research")
+        gated = kb.create_task(conn, title="gated", assignee="hrbot", parents=[parent])
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({"task_id": gated, "summary": "premature"})
+    d = json.loads(out)
+    assert d.get("ok") is not True, out
+    assert "status=todo" in d["error"], out

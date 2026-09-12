@@ -1656,3 +1656,62 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# #104430 — a card stranded in ``triage`` must not be a permanent dead end
+#
+# The dispatcher's unblock-loop breaker routes a task to ``triage`` after
+# BLOCK_RECURRENCE_LIMIT same-cause re-blocks. ``triage`` is neither claimable
+# nor terminal, and the only DB exits (``specify_triage_task`` /
+# ``decompose_triage_task`` / ``archive_task``) are CLI-only. A router-only
+# orchestrator (no ``terminal`` toolset) therefore had NO path to clear such a
+# card, and parent-gating (``done``/``archived`` only) stranded every
+# downstream child in ``todo`` forever.
+# ---------------------------------------------------------------------------
+
+
+def _drive_to_triage(conn, tid):
+    """Reproduce the block-loop escalation: ready -> blocked -> (unblock,
+    re-block with the same kind) -> triage."""
+    assert kb.block_task(conn, tid, kind="capability", reason="flaky run 1")
+    assert kb.unblock_task(conn, tid)
+    assert kb.block_task(conn, tid, kind="capability", reason="flaky run 2")
+    assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_complete_task_terminalizes_a_triage_card_and_ungates_its_child(kanban_home):
+    """A triage-stuck parent must be completable so its gated child can run."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="supervisor card", assignee="research")
+        child = kb.create_task(conn, title="downstream", assignee="hrbot", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+        _drive_to_triage(conn, parent)
+
+        assert kb.complete_task(conn, parent, summary="deliverable produced") is True
+        landed = kb.get_task(conn, parent)
+        assert landed.status == "done"
+        assert landed.completed_at is not None
+        # complete_task re-gates children in its own txn: no manual recompute.
+        assert kb.get_task(conn, child).status == "ready"
+
+
+def test_complete_task_still_refuses_a_card_with_an_open_parent(kanban_home):
+    """Guard kept: an unsatisfied parent still blocks completion (no bypass)."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="research")
+        child = kb.create_task(conn, title="child", assignee="hrbot", parents=[parent])
+        assert kb.complete_task(conn, child, summary="premature") is False
+        assert kb.get_task(conn, child).status == "todo"
+
+
+def test_complete_task_still_refuses_phantom_created_cards_from_triage(kanban_home):
+    """Guard kept: the anti-hallucination gate is not weakened by the triage fix,
+    and a refused claim leaves the card untouched."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="research")
+        _drive_to_triage(conn, parent)
+        with pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, parent, summary="x", created_cards=["t_0000dead0000dead"])
+        assert kb.get_task(conn, parent).status == "triage"

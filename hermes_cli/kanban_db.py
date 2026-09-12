@@ -95,6 +95,14 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
+
+# Statuses ``complete_task`` may transition to ``done``. ``triage`` is included
+# so a card the dispatcher stranded there (unblock-loop breaker, or a crash
+# before its run was closed) is not a permanent dead end: it is neither
+# claimable nor terminal, every other lifecycle verb refuses it, and the
+# CLI-only exits (``specify``/``decompose``/``archive``) are unreachable for a
+# router-only orchestrator with no ``terminal`` toolset (#104430).
+COMPLETABLE_STATUSES = frozenset({"running", "ready", "blocked", "review", "triage"})
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
@@ -2532,10 +2540,13 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
-    """``running|ready|blocked|review -> done``; records ``result``.
+    """``COMPLETABLE_STATUSES -> done``; records ``result``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
-    approval; with no active run the handoff fields survive via
+    approval, and ``triage`` so a card the dispatcher stranded there (unblock
+    loop breaker / crashed run) can still be terminally closed by the
+    orchestrator instead of gating its children forever (#104430); with no
+    active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
     ``created_cards`` are verified first — a phantom id raises
@@ -2563,7 +2574,10 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         prior_status = _task_status(conn, task_id)
-        sql = """
+        # Built from COMPLETABLE_STATUSES so the set can never drift from the
+        # docstring / tool-layer refusal message.
+        statuses_in = ", ".join(f"'{s}'" for s in sorted(COMPLETABLE_STATUSES))
+        sql = f"""
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
@@ -2574,7 +2588,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
+                   AND status IN ({statuses_in})
                 """
         params: tuple = (result, now, task_id)
         if expected_run_id is not None:

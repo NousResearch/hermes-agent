@@ -11,7 +11,7 @@
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
 #   bash scripts/desktop-update/posix.sh
 #     --install-root <path>    repo checkout (HERMES_HOME/hermes-agent)
-#     --branch <ref>           branch to update against
+#     [--branch <ref> | --channel stable|canary|main]  default: branch main
 #     --desktop-pid <pid>      the Electron main process to wait out
 #     [--relaunch-target <p>]  mac: running .app to swap+reopen;
 #                              linux: running binary (omit = no relaunch)
@@ -36,7 +36,8 @@
 set -u
 
 ORIGINAL_ARGS=("$@")
-INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
+INSTALL_ROOT="" BRANCH="main" CHANNEL="" DESKTOP_PID=0 RELAUNCH_TARGET=""
+BRANCH_EXPLICIT=0
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0
@@ -44,7 +45,13 @@ HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
-    --branch) BRANCH="$2"; shift 2 ;;
+    --branch) BRANCH="$2"; BRANCH_EXPLICIT=1; shift 2 ;;
+    --channel)
+      case "${2:-}" in
+        stable|canary|main) CHANNEL="$2" ;;
+        *) echo "--channel must be stable, canary, or main" >&2; exit 64 ;;
+      esac
+      shift 2 ;;
     --desktop-pid) DESKTOP_PID="$2"; shift 2 ;;
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
@@ -61,10 +68,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
+[ "$BRANCH_EXPLICIT" -eq 0 ] || [ -z "$CHANNEL" ] || { echo "--branch and --channel are mutually exclusive" >&2; exit 64; }
+TARGET_ARGS=(--branch "$BRANCH")
+[ -z "$CHANNEL" ] || TARGET_ARGS=(--channel "$CHANNEL")
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HERMES_HOME="${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}"
+HERMES_HOME="${HERMES_HOME:-${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}}"
 HERMES_HOME="${HERMES_HOME:-${TMPDIR:-/tmp}}"
+export HERMES_HOME
 MARKER="$HERMES_HOME/.hermes-update-in-progress"
 LOG_DIR="$HERMES_HOME/logs"; mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG="$LOG_DIR/desktop-update-handoff.log"
@@ -422,10 +433,10 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
 MANUAL=0  # 1 = update landed but the user must act (result protocol field)
 
 write_result() {
-  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","finished_at":%s}' \
+  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","finished_at":%s}' \
     "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
     "$([ "$MANUAL" -eq 1 ] && echo true || echo false)" \
-    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(date +%s)" \
+    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(json_escape "$CHANNEL")" "$(date +%s)" \
     > "$RESULT.tmp" 2>/dev/null && mv -f "$RESULT.tmp" "$RESULT" 2>/dev/null || true
 }
 
@@ -681,7 +692,7 @@ fi
 # command has returned; the already-running server keeps the inherited setting
 # until normal cleanup closes it.
 trap '' TERM
-log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH desktopPid=$DESKTOP_PID pid=$$"
+log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH channel=$CHANNEL desktopPid=$DESKTOP_PID pid=$$"
 rm -f "$RESULT" 2>/dev/null || true
 
 # Marker claim: same cross-process lock contract as windows.ps1 /
@@ -761,9 +772,9 @@ if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--keep-stash'; 
 else
   log "installed hermes predates --keep-stash; running without it"
 fi
-log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH --branch $BRANCH"
+log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH ${TARGET_ARGS[*]}"
 publish_stage "Updating code and dependencies"
-OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
@@ -785,7 +796,7 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
-  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi

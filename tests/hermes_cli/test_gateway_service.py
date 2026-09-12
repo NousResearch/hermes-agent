@@ -217,6 +217,40 @@ class TestServiceIdentityForForeignHome:
         monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "alpha"))
         assert gateway_cli.get_service_name() == "hermes-gateway-alpha"
 
+    def test_sudo_user_default_home_keeps_bare_service_name(self, machine_home, tmp_path, monkeypatch):
+        sudo_home = tmp_path / "alice"
+        sudo_default = sudo_home / ".hermes"
+        sudo_default.mkdir(parents=True)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", "alice")
+        monkeypatch.setattr(pwd, "getpwnam", lambda user: SimpleNamespace(pw_dir=str(sudo_home)))
+
+        # Before unit sync, sudo resolves the root process's native home.
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        assert gateway_cli.get_service_name() == "hermes-gateway"
+
+        # After unit sync, HERMES_HOME points at the invoking user's native home.
+        monkeypatch.setenv("HERMES_HOME", str(sudo_default))
+        assert gateway_cli.get_service_name() == "hermes-gateway"
+
+    def test_sudo_user_named_and_custom_homes_remain_distinct(
+        self, machine_home, tmp_path, monkeypatch
+    ):
+        sudo_home = tmp_path / "alice"
+        named_home = sudo_home / ".hermes" / "profiles" / "alpha"
+        custom_home = tmp_path / "custom-hermes"
+        named_home.mkdir(parents=True)
+        custom_home.mkdir()
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", "alice")
+        monkeypatch.setattr(pwd, "getpwnam", lambda user: SimpleNamespace(pw_dir=str(sudo_home)))
+
+        monkeypatch.setenv("HERMES_HOME", str(named_home))
+        assert gateway_cli.get_service_name() == "hermes-gateway-alpha"
+
+        monkeypatch.setenv("HERMES_HOME", str(custom_home))
+        assert gateway_cli.get_service_name() not in {"hermes-gateway", "hermes-gateway-alpha"}
+
 
 class TestUninstallRefusesForeignUnit:
     """systemd_uninstall must not stop/disable/unlink a unit pinned to another HERMES_HOME."""

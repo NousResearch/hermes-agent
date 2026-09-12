@@ -286,6 +286,71 @@ def _utc_now_iso() -> str:
 # a corrupt or hand-edited state file (e.g. an accidental 0 / tiny int).
 _EPOCH_MIN_PLAUSIBLE = 946684800.0  # 2000-01-01T00:00:00Z
 
+# A scoped lock whose owning gateway has stopped ticking its event loop is
+# stale even though the OS process is still alive.  Every liveness oracle in
+# acquire_scoped_lock() (PID exists / start_time matches / cmdline looks like a
+# gateway / SIGTSTP check) answers "healthy" for a gateway whose asyncio loop
+# has died but whose process lingers -- on macOS the SIGTSTP probe is a no-op
+# because it reads /proc, which does not exist.  Such a zombie holds e.g. the
+# Feishu app_id lock forever, and launchd's KeepAlive respawns a replacement
+# every few seconds that immediately exits with a non-retryable lock conflict.
+#
+# gateway/shutdown_watchdog.py already writes <HERMES_HOME>/state/gateway.heartbeat
+# every DEFAULT_HEARTBEAT_INTERVAL_S (30s) from a live loop, so its freshness is
+# a direct read on "is the owner's loop still turning".  Allow a generous
+# multiple of the writer cadence so a briefly-blocked loop, a slow external
+# volume, or a paused laptop is not evicted mid-stride.
+_LOCK_OWNER_HEARTBEAT_STALE_AFTER_S = 900.0  # 30x the 30s writer cadence
+
+
+def _lock_owner_loop_is_dead(existing: dict[str, Any], existing_pid: int) -> bool:
+    """Return True when the lock owner's event-loop heartbeat has gone cold.
+
+    Conservative by construction: every uncertain case returns False (keep the
+    lock).  We only evict when we can positively confirm that a heartbeat file
+    belonging to *this* PID exists and is older than the stale threshold.
+    Missing file, unparseable timestamp, a heartbeat owned by a different PID,
+    or any unexpected error all mean "cannot prove death" -> respect the lock.
+    """
+    home_raw = existing.get("hermes_home")
+    if not isinstance(home_raw, str) or not home_raw:
+        return False
+    try:
+        from gateway.shutdown_watchdog import get_loop_heartbeat_path
+
+        beat = _read_json_file(get_loop_heartbeat_path(Path(home_raw)))
+        if not isinstance(beat, dict):
+            return False
+        # The heartbeat must belong to the process holding the lock; a file
+        # left behind by an unrelated//previous gateway proves nothing.
+        try:
+            beat_pid = int(beat["pid"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if beat_pid != existing_pid:
+            return False
+
+        stamped = normalize_updated_at(beat.get("updated_at"))
+        if stamped is None:
+            return False
+        parsed = datetime.fromisoformat(stamped.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        age_s = (datetime.now(timezone.utc) - parsed).total_seconds()
+        # Future-dated heartbeats (clock skew) are not evidence of death.
+        if age_s <= _LOCK_OWNER_HEARTBEAT_STALE_AFTER_S:
+            return False
+        logger.warning(
+            "Scoped lock owner PID %s has not ticked its event loop for %.0fs "
+            "(heartbeat %s); treating the lock as stale.",
+            existing_pid,
+            age_s,
+            stamped,
+        )
+        return True
+    except Exception:
+        return False
+
 
 def normalize_updated_at(value: Any) -> Optional[str]:
     """Coerce a persisted ``updated_at`` value to an RFC3339 string or ``None``.
@@ -1754,6 +1819,14 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                                     break
                     except (OSError, PermissionError):
                         pass
+                # Final oracle: the owner process is alive and *looks* like a
+                # healthy gateway by every check above, but its asyncio loop
+                # has stopped ticking.  This is the only signal that catches a
+                # wedged-but-running gateway, and the only one that works on
+                # platforms without /proc (macOS), where the SIGTSTP probe
+                # above can never fire.  See _lock_owner_loop_is_dead().
+                if not stale and existing_pid is not None and _lock_owner_loop_is_dead(existing, existing_pid):
+                    stale = True
         if stale:
             # Remove the stale lock ATOMICALLY by renaming it to a tombstone
             # instead of unlinking. With unlink()+O_EXCL, two racing starters

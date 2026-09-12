@@ -529,6 +529,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
 
     if fetch_result.returncode != 0:
         _print_fetch_failure(fetch_result.stderr)
+        _record_update_step("fetch", False, _classify_fetch_failure(fetch_result.stderr or ""))
+        print("✗ Update not applied — code unchanged (fetch failed).")
         sys.exit(1)
 
     if is_shallow:
@@ -1360,6 +1362,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
+            _record_update_step("fetch", False, _classify_fetch_failure(fetch_result.stderr or ""))
+            print("✗ Update not applied — code unchanged (fetch failed).")
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)

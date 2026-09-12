@@ -33,10 +33,19 @@ def _latest_version() -> int:
     return int(DEFAULT_CONFIG["_config_version"])
 
 
-def _setup(monkeypatch, tmp_path, active_home: Path):
+def _setup(monkeypatch, tmp_path, active_home: Path, *, default_home: Path | None = None):
     import hermes_cli.profiles as profiles_mod
 
     monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: tmp_path / "profiles")
+    # Default lives at the install root, not under profiles/. Absent unless a
+    # test passes default_home, so the original named-profile cases stay
+    # focused on profiles/ and cannot pick up the process HERMES_HOME.
+    missing = tmp_path / "no-such-default-home"
+    monkeypatch.setattr(
+        profiles_mod,
+        "_get_default_hermes_home",
+        lambda: default_home if default_home is not None else missing,
+    )
     import hermes_constants
 
     monkeypatch.setattr(
@@ -126,3 +135,50 @@ def test_override_is_reset_after_run(monkeypatch, tmp_path):
     before = get_hermes_home_override()
     update_cmd._migrate_sibling_profile_configs()
     assert get_hermes_home_override() == before
+
+
+def test_named_active_migrates_default_outside_profiles(monkeypatch, tmp_path):
+    """Default lives at the install root, not under profiles/. A named-profile
+    update must still migrate it. Snapshots already treat default as a sibling
+    (#66140). Walking profiles/ only leaves it behind."""
+    default_home = _write_profile(tmp_path, "default-home", 12)
+    active = _write_profile(tmp_path / "profiles", "work", _latest_version())
+    _setup(monkeypatch, tmp_path, active, default_home=default_home)
+
+    migrated = update_cmd._migrate_sibling_profile_configs()
+
+    names = [m[0] for m in migrated]
+    assert "default" in names
+    entry = next(m for m in migrated if m[0] == "default")
+    assert entry[1] == 12 and entry[2] == _latest_version()
+    on_disk = yaml.safe_load((default_home / "config.yaml").read_text())
+    assert on_disk["_config_version"] == _latest_version()
+    assert on_disk["model"]["provider"] == "nous"
+    # named active is the invoking home: its own migrate path handles it
+    assert "work" not in names
+
+
+def test_default_active_still_migrates_named_siblings(monkeypatch, tmp_path):
+    """Invoking from default must still migrate named profiles under profiles/."""
+    default_home = _write_profile(tmp_path, "default-home", _latest_version())
+    sibling = _write_profile(tmp_path / "profiles", "research", 12)
+    _setup(monkeypatch, tmp_path, default_home, default_home=default_home)
+
+    migrated = update_cmd._migrate_sibling_profile_configs()
+
+    names = [m[0] for m in migrated]
+    assert "default" not in names
+    assert "research" in names
+    on_disk = yaml.safe_load((sibling / "config.yaml").read_text())
+    assert on_disk["_config_version"] == _latest_version()
+    assert yaml.safe_load((default_home / "config.yaml").read_text())["_config_version"] == _latest_version()
+
+
+def test_default_without_config_yaml_is_skipped(monkeypatch, tmp_path):
+    default_home = tmp_path / "default-home"
+    default_home.mkdir()
+    active = _write_profile(tmp_path / "profiles", "work", _latest_version())
+    _setup(monkeypatch, tmp_path, active, default_home=default_home)
+
+    assert update_cmd._migrate_sibling_profile_configs() == []
+    assert not (default_home / "config.yaml").exists()

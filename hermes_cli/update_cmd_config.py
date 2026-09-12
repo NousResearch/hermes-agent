@@ -55,28 +55,22 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
     91277 Phase 2 (fleet-wide config migration; #20438/#54926/#79048): the shared checkout serves every
     profile, but ``hermes update`` historically migrated only the active profile's config — siblings drifted
     versions until their gateway hit a config the new code couldn't read.
+
+    Enumeration matches pre-update snapshots (#66140): default lives at
+    ``_get_default_hermes_home()``, not under ``profiles/``, so a named-profile
+    ``hermes update`` still migrates it.
     """
     from hermes_cli.update_cmd import _run_config_check_fresh, _run_migrate_config_fresh
     migrated: list[tuple[str, int, int]] = []
     with _best_effort('Sibling profile enumeration failed: %s'):
         from hermes_constants import (
             get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override)
-        from hermes_cli.profiles import _get_profiles_root, _PROFILE_ID_RE
-        active_home = get_process_hermes_home()
-        root = _get_profiles_root()
-        if not root.is_dir():
-            return migrated
-        for entry in sorted(root.iterdir()):
-            if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
-                continue
-            try:
-                if entry.resolve() == Path(active_home).resolve():
-                    continue
-            except OSError:
-                continue
-            if not (entry / "config.yaml").is_file():
+        from hermes_cli.backup import _sibling_profile_homes
+        active_home = Path(get_process_hermes_home())
+        for name, profile_home in _sibling_profile_homes(active_home):
+            if not (profile_home / "config.yaml").is_file():
                 continue  # profile never configured — nothing to migrate
-            token = set_hermes_home_override(entry)
+            token = set_hermes_home_override(profile_home)
             try:
                 current_ver, latest_ver = _run_config_check_fresh()
                 if current_ver >= latest_ver:
@@ -84,9 +78,9 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
                 _run_migrate_config_fresh(interactive=False, quiet=True)
                 after_ver, _ = _run_config_check_fresh()
                 if after_ver > current_ver:
-                    migrated.append((entry.name, current_ver, after_ver))
+                    migrated.append((name, current_ver, after_ver))
             except Exception as exc:
-                logger.debug("Config migration for profile %s failed: %s", entry.name, exc)
+                logger.debug("Config migration for profile %s failed: %s", name, exc)
             finally:
                 reset_hermes_home_override(token)
     return migrated

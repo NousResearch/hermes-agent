@@ -22,7 +22,7 @@ from gateway.hosted_room_peer import (
     issue_room_grant,
     verify_room_grant,
 )
-from tools import approval
+from tools import approval_context
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from tui_gateway.hosted_room_service import _RouteStatusPeerClient
 
@@ -102,10 +102,10 @@ def test_unlimited_policy_survives_the_catalog_json_round_trip_exactly():
 
 def test_room_policy_overrides_broader_live_approval_config(monkeypatch):
     policy = RoomExecutionPolicy.from_mapping(_policy(approval_mode="manual"))
-    monkeypatch.setattr(approval, "_get_approval_config", lambda: {"mode": "off"})
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "off"})
     token = bind_room_execution_policy(policy)
     try:
-        assert approval._get_approval_mode() == "manual"
+        assert approval_context._get_approval_mode() == "manual"
     finally:
         reset_room_execution_policy(token)
 

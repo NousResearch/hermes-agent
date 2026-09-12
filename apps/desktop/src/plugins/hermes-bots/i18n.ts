@@ -75,6 +75,27 @@ type BotsMessages = {
     rosterUnavailable: (reason: string) => string
     waitingForGateway: string
   }
+  /** User-made roster sections (folders the user files bots into). */
+  sections: {
+    newSection: string
+    newTitle: string
+    renameTitle: string
+    nameLabel: string
+    namePlaceholder: string
+    create: string
+    rename: string
+    moveUp: string
+    moveDown: string
+    unassigned: string
+    options: (name: string) => string
+    headingTip: string
+    emptyHint: string
+    moveTo: string
+    newSectionEllipsis: string
+    removeFromSection: string
+    deleted: (name: string, count: number) => string
+    undo: string
+  }
   /** Creating, editing and removing a bot. */
   bot: {
     newTitle: string
@@ -142,6 +163,7 @@ type BotsMessages = {
     deleteTitle: string
     deleteAction: string
     composerPlaceholder: string
+    slashCommandsUnsupported: string
     attachHint: string
     newThread: string
     reply: string
@@ -284,6 +306,29 @@ const en: BotsMessages = {
     waitingForGateway:
       'Waiting for the gateway connection… (remote gateways can take a few seconds; retries automatically)'
   },
+  sections: {
+    newSection: 'New section',
+    newTitle: 'New section',
+    renameTitle: 'Rename section',
+    nameLabel: 'Section name',
+    namePlaceholder: 'e.g. Clients',
+    create: 'Create',
+    rename: 'Rename…',
+    moveUp: 'Move up',
+    moveDown: 'Move down',
+    unassigned: 'Unassigned',
+    options: name => `${name} section options`,
+    headingTip: 'Drop bots here · double-click to rename',
+    emptyHint: 'Drag bots here',
+    moveTo: 'Move to section',
+    newSectionEllipsis: 'New section…',
+    removeFromSection: 'Remove from section',
+    deleted: (name, count) =>
+      count === 0
+        ? `Deleted “${name}”`
+        : `Deleted “${name}” — ${count} ${count === 1 ? 'bot' : 'bots'} moved to Unassigned`,
+    undo: 'Undo'
+  },
   bot: {
     newTitle: 'New bot',
     editTitle: 'Edit profile',
@@ -343,6 +388,8 @@ const en: BotsMessages = {
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
     composerPlaceholder: 'Say something — every bot in this group hears the room.',
+    slashCommandsUnsupported:
+      'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
     attachHint: 'Attach files — every responding bot sees them',
     newThread: 'New Thread',
     reply: 'Reply',
@@ -478,6 +525,29 @@ const ja: BotsMessages = {
       `名簿を取得できません: ${reason}。ゲートウェイが profiles.list より前の場合は、Hermes を更新してゲートウェイを再起動してください。`,
     waitingForGateway: 'ゲートウェイ接続を待っています…（リモートは数秒かかることがあります。自動で再試行します）'
   },
+  sections: {
+    newSection: '新しいセクション',
+    newTitle: '新しいセクション',
+    renameTitle: 'セクション名を変更',
+    nameLabel: 'セクション名',
+    namePlaceholder: '例: クライアント',
+    create: '作成',
+    rename: '名前を変更…',
+    moveUp: '上へ移動',
+    moveDown: '下へ移動',
+    unassigned: '未分類',
+    options: name => `${name} セクションのオプション`,
+    headingTip: 'ここにボットをドロップ · ダブルクリックで名前を変更',
+    emptyHint: 'ここにボットをドラッグ',
+    moveTo: 'セクションへ移動',
+    newSectionEllipsis: '新しいセクション…',
+    removeFromSection: 'セクションから外す',
+    deleted: (name, count) =>
+      count === 0
+        ? `「${name}」を削除しました`
+        : `「${name}」を削除しました — ${count} 件のボットを未分類に移動しました`,
+    undo: '元に戻す'
+  },
   bot: {
     newTitle: '新しいボット',
     editTitle: 'プロファイルを編集',
@@ -537,6 +607,8 @@ const ja: BotsMessages = {
     deleteTitle: 'グループチャットを削除しますか？',
     deleteAction: '削除',
     composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
+    slashCommandsUnsupported:
+      'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
     newThread: '新しいスレッド',
     reply: '返信',
@@ -671,6 +743,26 @@ const zh: BotsMessages = {
     rosterUnavailable: reason => `无法获取名单：${reason}。如果网关早于 profiles.list，请更新 Hermes 并重启网关。`,
     waitingForGateway: '正在等待网关连接…（远程网关可能需要几秒；会自动重试）'
   },
+  sections: {
+    newSection: '新建分区',
+    newTitle: '新建分区',
+    renameTitle: '重命名分区',
+    nameLabel: '分区名称',
+    namePlaceholder: '例如：客户',
+    create: '创建',
+    rename: '重命名…',
+    moveUp: '上移',
+    moveDown: '下移',
+    unassigned: '未分类',
+    options: name => `${name} 分区选项`,
+    headingTip: '将机器人拖放到此处 · 双击重命名',
+    emptyHint: '将机器人拖到此处',
+    moveTo: '移动到分区',
+    newSectionEllipsis: '新建分区…',
+    removeFromSection: '移出分区',
+    deleted: (name, count) => (count === 0 ? `已删除“${name}”` : `已删除“${name}” — ${count} 个机器人已移至未分类`),
+    undo: '撤销'
+  },
   bot: {
     newTitle: '新建机器人',
     editTitle: '编辑配置档案',
@@ -730,6 +822,7 @@ const zh: BotsMessages = {
     deleteTitle: '删除群聊？',
     deleteAction: '删除',
     composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
+    slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     newThread: '新帖子',
     reply: '回复',
@@ -864,6 +957,26 @@ const zhHant: BotsMessages = {
     rosterUnavailable: reason => `無法取得名單：${reason}。如果閘道早於 profiles.list，請更新 Hermes 並重新啟動閘道。`,
     waitingForGateway: '正在等待閘道連線…（遠端閘道可能需要幾秒；會自動重試）'
   },
+  sections: {
+    newSection: '新增分區',
+    newTitle: '新增分區',
+    renameTitle: '重新命名分區',
+    nameLabel: '分區名稱',
+    namePlaceholder: '例如：客戶',
+    create: '建立',
+    rename: '重新命名…',
+    moveUp: '上移',
+    moveDown: '下移',
+    unassigned: '未分類',
+    options: name => `${name} 分區選項`,
+    headingTip: '將機器人拖放到此處 · 雙擊重新命名',
+    emptyHint: '將機器人拖到此處',
+    moveTo: '移動到分區',
+    newSectionEllipsis: '新增分區…',
+    removeFromSection: '移出分區',
+    deleted: (name, count) => (count === 0 ? `已刪除「${name}」` : `已刪除「${name}」— ${count} 個機器人已移至未分類`),
+    undo: '復原'
+  },
   bot: {
     newTitle: '新增機器人',
     editTitle: '編輯設定檔',
@@ -923,6 +1036,7 @@ const zhHant: BotsMessages = {
     deleteTitle: '刪除群組聊天？',
     deleteAction: '刪除',
     composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
+    slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     newThread: '新討論串',
     reply: '回覆',

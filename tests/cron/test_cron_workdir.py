@@ -142,6 +142,7 @@ class TestTickWorkdirPartition:
 
     def test_workdir_jobs_overlap_on_parallel_pool(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         import threading
 
         workdir_a = tmp_path / "a"
@@ -192,6 +193,7 @@ class TestRunJobTerminalCwd:
         import os
         import sys
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -233,7 +235,7 @@ class TestRunJobTerminalCwd:
 
         # Stub scheduler helpers that would otherwise hit the filesystem / config.
         monkeypatch.setattr(sched, "_build_job_prompt", lambda job, prerun_script=None, **kw: "hi")
-        monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
+        monkeypatch.setattr(sched_delivery, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None)
         # Unlimited inactivity so the poll loop returns immediately.
@@ -256,6 +258,7 @@ class TestRunJobTerminalCwd:
         """
         import os
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
 
         # Pin TERMINAL_CWD to a sentinel via monkeypatch so we control both
         # the before-value and the after-value regardless of cross-test state.
@@ -290,6 +293,7 @@ class TestRunJobTerminalCwd:
     ):
         import os
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         from tools.terminal_tool import get_session_cwd
 
         baseline = str(tmp_path / "baseline")
@@ -316,3 +320,56 @@ class TestRunJobTerminalCwd:
         assert observed["terminal_cwd_during_run"] == baseline
         assert os.environ["TERMINAL_CWD"] == baseline
         assert get_session_cwd(observed["task_id"]) is None
+
+    def test_agent_prerun_script_receives_configured_workdir(
+        self, monkeypatch, tmp_path
+    ):
+        import cron.scheduler as sched
+
+        workdir = tmp_path / "project"
+        workdir.mkdir()
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+
+        def run_script(job, script_path, workdir=None, cancel_event=None):
+            observed["script_workdir"] = workdir
+            return True, '{"wakeAgent": false}'
+
+        monkeypatch.setattr(
+            sched, "_run_job_script_with_claim_heartbeat", run_script
+        )
+        success, *_ = sched.run_job(
+            {
+                "id": "agent-script-workdir",
+                "name": "agent-script-workdir",
+                "prompt": "Review the project.",
+                "script": "collect.py",
+                "workdir": str(workdir),
+                "schedule_display": "manual",
+            }
+        )
+
+        assert success is True
+        assert observed["script_workdir"] == str(workdir)
+
+
+def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch, tmp_path):
+    """Callers that skip the wake-gate (no cached ``prerun_script``) run the script inline from
+    ``_build_job_prompt``; that path must honour the job's workdir too."""
+    from cron import scheduler_prompt, scheduler_script
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    observed: dict = {}
+
+    def run_script(script_path, workdir=None, cancel_event=None):
+        observed["script_workdir"] = workdir
+        return True, "collected data"
+
+    monkeypatch.setattr(scheduler_script, "_run_job_script", run_script)
+    prompt = scheduler_prompt._build_job_prompt(
+        {"id": "inline", "name": "inline", "prompt": "Review.", "script": "collect.py",
+         "workdir": str(workdir)})
+
+    assert observed["script_workdir"] == str(workdir)
+    assert "collected data" in prompt

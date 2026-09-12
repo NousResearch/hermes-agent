@@ -106,6 +106,22 @@ class TestDeletedProfileTombstone:
         assert recreated.is_dir()
         assert "worker" in _named_homes(profile_env)
 
+    def test_delete_releases_this_process_session_db(self, profile_env):
+        import hermes_state_registry as registry
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        held = registry.acquire(profile_dir / "state.db")
+        assert held._conn is not None
+        try:
+            _delete("worker")
+            assert held._conn is None
+            recreated = create_profile("worker", no_alias=True, no_skills=True)
+            again = registry.acquire(recreated / "state.db")
+            assert again._conn is not None
+            registry.release(again)
+        finally:
+            registry.close_all()
+
     def test_profile_exists_is_false_for_tombstoned_shell(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         assert profile_exists("worker") is True

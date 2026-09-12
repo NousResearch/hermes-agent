@@ -1408,8 +1408,14 @@ def test_concurrent_due_exports_create_one_daily_package(tmp_path):
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(export) for _ in range(8)]
-        for future in futures:
+    for future in futures:
+        try:
             future.result()
+        except sqlite3.OperationalError as exc:
+            assert exc.sqlite_errorcode == sqlite3.SQLITE_BUSY
+            # Interactive exports deliberately fail fast on contention. Retry
+            # after all workers finish, as a later task completion would.
+            store.create_and_export_package_if_due()
 
     with sqlite3.connect(database_path) as connection:
         [outbox_count] = connection.execute(
@@ -1425,17 +1431,24 @@ def test_concurrent_model_call_updates_are_transactional(tmp_path):
     outbox_directory = tmp_path / "outbox"
     SharedMetricsStore(database_path, outbox_directory)
 
-    def record_calls(count: int) -> None:
+    def record_calls(count: int) -> int:
         store = SharedMetricsStore(database_path, outbox_directory)
+        busy_calls = 0
         for _ in range(count):
-            store.record_model_call(_dimensions(), _resource())
+            try:
+                store.record_model_call(_dimensions(), _resource())
+            except sqlite3.OperationalError as exc:
+                assert exc.sqlite_errorcode == sqlite3.SQLITE_BUSY
+                busy_calls += 1
+        return busy_calls
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(record_calls, 10) for _ in range(2)]
-        for future in futures:
-            future.result()
 
     restarted = SharedMetricsStore(database_path, outbox_directory)
+    # Check lossless increments without requiring contended writes to block.
+    for _ in range(sum(future.result() for future in futures)):
+        restarted.record_model_call(_dimensions(), _resource())
     assert restarted.counter_snapshot()[0]["value"] == 20
 
 

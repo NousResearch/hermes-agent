@@ -1495,6 +1495,16 @@ platform_toolsets:
 #     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
 #     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
 
+# Optional sentence streaming through a separately running VOICEVOX Engine.
+# Merge under your existing tts section; preserve tts.provider for whole-file
+# fallback. See docs/streaming-tts.md for the streaming/attachment distinction.
+# tts:
+#   streaming:
+#     provider: "voicevox"
+#   voicevox:
+#     base_url: "http://127.0.0.1:50021"
+#     speaker: 3             # ずんだもん・ノーマル; provider default is 0
+
 # =============================================================================
 # Voice Transcription (Speech-to-Text)
 # =============================================================================

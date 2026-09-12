@@ -66,6 +66,12 @@ export function useComposerVoice({
   const { t } = useI18n()
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
+  // The selectors below deliberately read the atom with `.get()` so the
+  // live-speech feed timer always sees the newest text.  Still subscribe here:
+  // without a React render on the first message.delta, voice conversation only
+  // notices the reply when `busy` flips false at turn completion — reducing
+  // sentence streaming to whole-response playback.
+  useStore($messages)
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).

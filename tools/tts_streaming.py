@@ -58,15 +58,27 @@ def take_speech_interrupted() -> bool:
     at, _interrupted_at = _interrupted_at, None
     return at is not None and time.monotonic() - at < _INTERRUPT_TTL_S
 
-# Sentence boundary: after .!? followed by whitespace, or a blank line.
-SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
+# Sentence boundary: Latin .!? + whitespace, Japanese 。！？ (often no space),
+# or a blank line. JA needs zero-width lookbehind so 「…。」 flushes immediately.
+SENTENCE_BOUNDARY_RE = re.compile(
+    r"(?<=[.!?])(?:\s|\n)|(?<=[。！？])|(?:\n\n)"
+)
 _THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL)
 
 
 class SentenceChunker:
-    """Incremental sentence cutter for LLM token deltas, shared by the speaker pipeline and the
-    speak-stream WebSocket so every surface cuts speech identically. Strips ``<think>`` blocks (even
-    split across deltas) and merges fragments shorter than *min_len* into the following sentence."""
+    """Incremental sentence cutter for LLM token deltas.
+
+    Shared by the speaker pipeline (`stream_tts_to_speaker`) and the
+    speak-stream WebSocket so every surface cuts speech identically. Strips
+    ``<think>`` blocks (even split across deltas) and merges fragments shorter
+    than *min_len* into the following sentence, so "Ha!" rides along with the
+    sentence after it instead of stalling as a tiny clip.
+
+    Japanese sentence punctuation is unambiguous, so even short clauses
+    (「うん。」「好きだよ。」) are emitted immediately. *min_len* only merges
+    other short fragments into the following sentence.
+    """
 
     def __init__(self, min_len: int = 20):
         self.min_len = min_len
@@ -78,15 +90,17 @@ class SentenceChunker:
         if "<think" in self.buf and "</think>" not in self.buf:
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
-        start = 0  # skip boundaries that would leave the head too short
-        while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
-            head = self.buf[: m.end()]
-            if len(head.strip()) < self.min_len:
-                start = m.end()
+        consumed = 0
+        # finditer advances past zero-width Japanese boundaries. Repeated
+        # search(..., m.end()) revisits the same boundary forever when a short
+        # head is retained (e.g. 「うん。」), wedging synthesis even after Stop.
+        for m in SENTENCE_BOUNDARY_RE.finditer(self.buf):
+            head = self.buf[consumed : m.end()]
+            if len(head.strip()) < self.min_len and not head.rstrip().endswith(("。", "！", "？")):
                 continue
             out.append(head)
-            self.buf = self.buf[m.end():]
-            start = 0
+            consumed = m.end()
+        self.buf = self.buf[consumed:]
         return out
 
     def flush(self) -> List[str]:
@@ -338,3 +352,73 @@ class XAIStreamer(StreamingTTSProvider):
                 if exc.__class__.__name__ != "ConnectionClosed":
                     logger.warning("xAI WS receive failed: %s", exc)
                 return
+
+
+@register("voicevox")
+class VoicevoxStreamer(StreamingTTSProvider):
+    """VOICEVOX sentence synthesis → 24 kHz mono int16 PCM.
+
+    The engine returns a complete WAV per sentence; this is sentence-level
+    pipelining, not incremental acoustic synthesis. No additional SDK required.
+    """
+
+    @staticmethod
+    def available() -> bool:
+        # stdlib only. Do not probe a hard-coded localhost endpoint (or add a
+        # round-trip before every reply); request failures follow the normal
+        # streaming fallback path using the configured endpoint.
+        return True
+
+    def __init__(self, tts_config: Dict, section: Dict):
+        named = (tts_config.get("providers") or {}).get("voicevox") or {}
+        merged = {**named, **section}
+        super().__init__(tts_config, merged)
+        # Retain compatibility with an existing command-provider configuration.
+        host = merged.get("host") or "127.0.0.1"
+        port = merged.get("port") or 50021
+        self.base = str(merged.get("base_url") or f"http://{host}:{port}").rstrip("/")
+        voice = section.get("speaker", section.get("voice", named.get("speaker", named.get("voice", 0))))
+        self.speaker = int(voice)
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        import io
+        import json
+        import urllib.parse
+        import urllib.request
+        import wave
+
+        if not text or not text.strip():
+            return
+        # The caller already splits text using the provider's configured cap.
+        # Never truncate a sentence here: every character must reach synthesis.
+        params = urllib.parse.urlencode({"text": text, "speaker": self.speaker})
+        request = urllib.request.Request(
+            f"{self.base}/audio_query?{params}", data=b"", method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            body = response.read(_STREAM_SENTENCE_BYTE_CAP + 1)
+        if len(body) > _STREAM_SENTENCE_BYTE_CAP:
+            raise RuntimeError("VOICEVOX audio query exceeded the response byte limit")
+        query = json.loads(body)
+        # The WebSocket start frame advertises this format before synthesis.
+        query["outputSamplingRate"] = self.sample_rate
+        query["outputStereo"] = False
+        request = urllib.request.Request(
+            f"{self.base}/synthesis?speaker={self.speaker}",
+            data=json.dumps(query).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json", "Accept": "audio/wav"},
+        )
+        with urllib.request.urlopen(request, timeout=45) as response:
+            wav_bytes = response.read(_STREAM_SENTENCE_BYTE_CAP + 1)
+        if len(wav_bytes) > _STREAM_SENTENCE_BYTE_CAP:
+            raise RuntimeError("VOICEVOX synthesis exceeded the response byte limit")
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
+            if (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) != (self.sample_rate, 1, 2):
+                raise RuntimeError("VOICEVOX must return 24000 Hz mono int16 WAV")
+            expected = wav.getnframes() * 2
+            pcm = wav.readframes(wav.getnframes())
+            if len(pcm) != expected or not pcm:
+                raise RuntimeError("VOICEVOX returned empty or truncated audio")
+        for offset in range(0, len(pcm), 4096):
+            yield pcm[offset:offset + 4096]

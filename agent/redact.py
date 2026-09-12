@@ -125,7 +125,7 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # structural delimiter before the key so prose, dotted technical settings,
 # relative URLs, and form bodies remain available to their dedicated passes.
 _INLINE_SECRET_ASSIGN_RE = re.compile(
-    r"(^|[{[(,;:]\s*|[\"'])"
+    r"(^|[{[(,;:]\s*|\s+(?=(?:token|auth|key)\s*=)|[\"'])"
     r"(token|secret|password|passwd|credential|auth|api[_-]?key)"
     r"(\s*=\s*)(?!<redacted(?:-[^>]+)?>)"
     r"((?:'[^']*'|\"[^\"]*\"|os\.(?:getenv|environ)\([^)]*\)|process\.env(?:\.[A-Za-z_]\w*|\[[^]]+\])|\$ENV\{[^}]+\}|[^\s,;&\"')\]}]+))",

@@ -2110,6 +2110,9 @@ def _run_merge_scan_for_policy(
                                 "blocker": deployment.blocker,
                             }
                         )
+                        if deployment.status != "completed":
+                            degraded = True
+                            deployment_failures.append(number)
                 except (RuntimeError, ValueError):
                     degraded = True
                     deployment_failures.append(number)
@@ -2193,6 +2196,27 @@ def _run_single_pr_merge_handoff(
         "method": result.receipt.method,
         "merge_commit_oid": result.receipt.merge_commit_oid,
     }
+    if merge_policy.post_merge is not None:
+        try:
+            existing = ledger.latest_deployment_receipt(
+                merge_policy.repository, pr_number
+            )
+            if getattr(existing, "status", None) != "completed":
+                deployment = PostMergeExecutor(
+                    merge_policy.post_merge, ledger
+                ).run(result.receipt)
+                payload["deployment"] = {
+                    "status": deployment.status,
+                    "blocker": deployment.blocker,
+                }
+                if deployment.status != "completed":
+                    payload["deployment_failure"] = True
+        except (LedgerStateError, RuntimeError, ValueError) as error:
+            payload["deployment"] = {
+                "status": "degraded",
+                "blocker": str(error),
+            }
+            payload["deployment_failure"] = True
     repair_policy = policy.repair_steward
     if repair_policy is None:
         payload["next_repair"] = {"status": "disabled", "created": 0, "skipped": {}}

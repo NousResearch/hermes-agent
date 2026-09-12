@@ -94,7 +94,9 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
 
     def capabilities(self) -> Dict[str, Any]:
         # images.edit() accepts up to 16 source images.
-        return {"modalities": ["text", "image"], "max_reference_images": 16}
+        return {
+            "modalities": ["text", "image"], "max_reference_images": 16,
+            "supports_background": ["transparent", "opaque", "auto"]}
 
     def generate(
         self, prompt: str, aspect_ratio: str = DEFAULT_ASPECT_RATIO, *,
@@ -127,6 +129,12 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         # ``response_format`` as an unknown parameter. Don't send it.
         request: Dict[str, Any] = dict(
             model=meta["api_model"], prompt=prompt, size=size, n=1, quality=meta["quality"])
+        # Background control (transparency): the API only honours it for PNG output,
+        # so pin output_format=png whenever an explicit background is requested.
+        background = kwargs.get("background")
+        if isinstance(background, str) and background.strip():
+            request["background"] = background.strip().lower()
+            request["output_format"] = "png"
         if is_edit:
             try:
                 files = [_named_bytes_io(ref) for ref in sources]

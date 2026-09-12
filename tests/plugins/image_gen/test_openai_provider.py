@@ -257,3 +257,39 @@ class TestGenerate:
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 
+
+# ── Background control (transparency) ──────────────────────────────────────
+
+
+class TestBackground:
+    """``background`` reaches the images API; PNG output is pinned alongside
+    it (the API only honours transparency for PNG). No request without it."""
+
+    def test_background_sent_with_pinned_png_output(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("raven sticker", background="  TRANSPARENT ")
+
+        assert result["success"] is True
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        assert call_kwargs["background"] == "transparent"
+        assert call_kwargs["output_format"] == "png"
+
+    def test_no_background_neither_key_sent(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat")
+
+        assert result["success"] is True
+        call_kwargs = fake_client.images.generate.call_args.kwargs
+        assert "background" not in call_kwargs
+        assert "output_format" not in call_kwargs
+
+    def test_capabilities_declare_background_support(self, provider):
+        caps = provider.capabilities()
+        assert caps["supports_background"] == ["transparent", "opaque", "auto"]
+

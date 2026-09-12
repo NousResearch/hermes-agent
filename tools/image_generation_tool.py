@@ -416,7 +416,8 @@ def image_generate_tool(
     num_inference_steps: Optional[int] = None, guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None, output_format: Optional[str] = None,
     seed: Optional[int] = None, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> str:
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    background: Optional[str] = None) -> str:
     """Generate (or, with source images + an ``edit_endpoint`` model, edit) an image via FAL.
 
     Extra kwargs are overrides filtered per-model via ``supports`` / ``edit_supports`` (dropped
@@ -430,7 +431,7 @@ def image_generate_tool(
     modality = "image" if use_edit else "text"
     overrides: Dict[str, Any] = {
         "num_inference_steps": num_inference_steps, "guidance_scale": guidance_scale,
-        "num_images": num_images, "output_format": output_format}
+        "num_images": num_images, "output_format": output_format, "background": background}
     debug_call_data = {
         "model": model_id,
         "parameters": {"prompt": prompt, "aspect_ratio": aspect_ratio, **overrides, "seed": seed,
@@ -598,7 +599,8 @@ def _provider_result(result, contract_error: str) -> str:
     return json.dumps(result)
 
 
-def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model=None) -> Dict[str, Any]:
+def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model=None,
+                         background=None) -> Dict[str, Any]:
     """Add the optional ``provider.generate(**kwargs)`` args in place (edit args only when supplied)."""
     if model:
         kwargs["model"] = model
@@ -611,12 +613,15 @@ def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model
             kwargs["reference_image_urls"] = norm_refs
     if upscale is not None:
         kwargs["upscale"] = bool(upscale)
+    if isinstance(background, str) and background.strip():
+        kwargs["background"] = background.strip().lower()
     return kwargs
 
 
 def _dispatch_to_plugin_provider(
     prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None):
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    background: Optional[str] = None):
     """JSON result from the selected plugin provider, or ``None`` to fall through to in-tree FAL
     (provider unset / ``"fal"`` / ``"nous"``). Providers without ``upscale`` ignore it via ``**kwargs``."""
     configured = _plugin_provider_name()
@@ -642,7 +647,7 @@ def _dispatch_to_plugin_provider(
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
     try:
         _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale,
-                             model=_read_configured_image_model())
+                             model=_read_configured_image_model(), background=background)
         result = provider.generate(**kwargs)
     except Exception as exc:
         # A TypeError from generate() predating image_url support (third-party plugin not yet
@@ -675,7 +680,8 @@ def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
 
 def _maybe_route_managed_krea(
     prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> Optional[str]:
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    background: Optional[str] = None) -> Optional[str]:
     """JSON result from the managed Krea gateway, or ``None`` to fall through.
 
     Fires only for a native ``krea-2-*`` model with no ``image_gen.provider`` other than
@@ -699,7 +705,7 @@ def _maybe_route_managed_krea(
         return None
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio, "model": normalized}
     try:
-        _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale)
+        _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, background=background)
         result = provider.generate(**kwargs)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Managed Krea routing failed: %s", exc)
@@ -739,6 +745,11 @@ def _handle_image_generate(args, **kw):
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     upscale = args.get("upscale")
+    background = args.get("background")
+    if isinstance(background, str) and background.strip():
+        background = background.strip().lower()
+    else:
+        background = None
     task_id = kw.get("task_id")
     # Confinement chokepoint BEFORE any dispatch: every route receives sandbox-confined bytes.
     image_url, reference_image_urls, confine_error = _confine_source_images(
@@ -748,7 +759,8 @@ def _handle_image_generate(args, **kw):
     # Order matters: explicit plugin provider (incl. "krea"), then model-driven managed Krea
     # interception (only when no provider is set, so BYO/direct FAL stays untouched), then FAL.
     sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
-                   upscale=upscale if isinstance(upscale, bool) else None)
+                   upscale=upscale if isinstance(upscale, bool) else None,
+                   background=background)
     raw = None
     for route in (_dispatch_to_plugin_provider, _maybe_route_managed_krea, image_generate_tool):
         raw = route(prompt, aspect_ratio, **sources)
@@ -787,6 +799,9 @@ def _active_image_capabilities() -> Dict[str, Any]:
                     info["max_reference_images"] = int(caps["max_reference_images"])
                 # Plugins opt in explicitly; absent = no upscale param.
                 info["supports_upscale"] = bool(caps.get("supports_upscale"))
+                # Plugins declare accepted background values (e.g. transparent); absent = no param.
+                if caps.get("supports_background"):
+                    info["supports_background"] = list(caps["supports_background"])
                 return info
         except Exception:  # noqa: BLE001
             pass
@@ -799,6 +814,11 @@ def _active_image_capabilities() -> Dict[str, Any]:
     info["max_reference_images"] = int(meta.get("max_reference_images") or 1) if can_edit else 0
     # Clarity is available on request for ANY catalog model (``upscale`` is only the default).
     info["supports_upscale"] = True
+    # Catalog models whose FAL schema has a ``background`` param (gpt-image-1.5,
+    # gpt-image-2.5) take the OpenAI-compatible transparency enum; the payload
+    # builder per-model-filters it, so unsupported models just drop it.
+    if "background" in meta.get("supports", set()):
+        info["supports_background"] = list(_BACKGROUND_VALUES)
     return info
 
 
@@ -821,6 +841,16 @@ _UPSCALE_PARAM = {
         "than fidelity."
     ),
 }
+
+# Accepted ``background`` values for backends with transparency control (the
+# OpenAI-compatible enum, also used by FAL's gpt-image endpoints).
+_BACKGROUND_VALUES = ("transparent", "opaque", "auto")
+
+_BACKGROUND_PARAM_DESCRIPTION = (
+    "Background control for the generated image. 'transparent' returns "
+    "an RGBA PNG with an alpha channel (ideal for stickers/logos); "
+    "'opaque' forces a solid background; 'auto' lets the model decide."
+)
 
 
 def _build_dynamic_image_schema() -> Dict[str, Any]:
@@ -856,6 +886,12 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
         edit_clause = " (text-to-image only — the active model cannot edit existing images)"
     if info.get("supports_upscale"):
         properties["upscale"] = _UPSCALE_PARAM
+    if info.get("supports_background"):
+        properties["background"] = {
+            "type": "string",
+            "enum": list(info["supports_background"]),
+            "description": _BACKGROUND_PARAM_DESCRIPTION,
+        }
     return {"description": base_desc.format(edit_clause=edit_clause),
             "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
 

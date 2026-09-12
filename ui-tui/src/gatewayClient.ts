@@ -27,8 +27,22 @@ const WS_CLOSED = 3
 // not expose an acknowledged ping/pong API, so this uses a small JSON-RPC
 // heartbeat that the TUI gateway explicitly answers. Healthy idle sockets stay
 // open; only a missing heartbeat ack forces close -> reconnect.
-export const WS_HEARTBEAT_INTERVAL_MS = 15_000
-export const WS_HEARTBEAT_DEAD_MS = 45_000
+// The dead window must be raisable for slow streaming models: a turn that
+// generates for >45s without an ack is otherwise torn down mid-stream, well
+// before the RPC timeout (issue #100167).
+export const WS_HEARTBEAT_INTERVAL_MS = Math.max(
+  5000,
+  parseInt(process.env.HERMES_TUI_HEARTBEAT_INTERVAL_MS ?? '15000', 10) || 15000
+)
+// The dead window must exceed the interval: a pairing like interval=20000 with
+// dead=15000 would let every ack expire before the next heartbeat is sent,
+// tripping the dead check on a healthy socket. Keep a 15s floor and otherwise
+// derive the floor from the interval so the pairing stays self-consistent.
+export const WS_HEARTBEAT_DEAD_MS = Math.max(
+  15000,
+  WS_HEARTBEAT_INTERVAL_MS + 5000,
+  parseInt(process.env.HERMES_TUI_HEARTBEAT_DEAD_MS ?? '45000', 10) || 45000
+)
 // Exponential backoff for reconnect attempts after a transport drop.
 export const RECONNECT_BASE_MS = 1_000
 export const RECONNECT_MAX_MS = 30_000

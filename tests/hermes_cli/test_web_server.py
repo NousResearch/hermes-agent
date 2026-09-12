@@ -5440,3 +5440,37 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
     res2 = client.get("/")
     assert res2.status_code == 200
     assert "Test" in res2.text
+
+
+class TestHeadlessNoFrontendLanding:
+    """`hermes serve` is headless: a real browser navigation to the gateway URL gets a
+    friendly HTML hint (auth already succeeded; the UI is the Desktop app) instead of raw
+    JSON, while fetch()/API/Desktop clients keep the JSON contract (Sec-Fetch-Mode is
+    cors/no-cors for fetch(), navigate only for top-level navigations — the Electron
+    token handshake fetch is unaffected either way: it only reads the ungated token page
+    at the root, which is served before the navigation check)."""
+
+    @staticmethod
+    def _client(monkeypatch):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        app = FastAPI()
+        _web_server_dashboard.mount_spa(app)
+        return TestClient(app)
+
+    def test_browser_navigation_gets_html_hint(self, monkeypatch):
+        client = self._client(monkeypatch)
+        resp = client.get("/anything", headers={"Sec-Fetch-Mode": "navigate"})
+        assert resp.status_code == 404
+        # The hint points at the Desktop app and echoes the gateway URL.
+        assert "Hermes Desktop" in resp.text
+        assert "http://testserver/anything" in resp.text
+        assert not resp.text.lstrip().startswith("{")
+
+    def test_fetch_clients_keep_json_404(self, monkeypatch):
+        client = self._client(monkeypatch)
+        resp = client.get("/anything")  # no Sec-Fetch-Mode → fetch()/API contract
+        assert resp.status_code == 404
+        assert resp.json()["error"] == _web_server_dashboard._HEADLESS_MSG

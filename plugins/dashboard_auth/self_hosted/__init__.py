@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
+from hermes_cli.dashboard_auth import InvalidCodeError, LoginStart, ProviderError, Session
 from plugins.dashboard_auth._shared import (
     JSON_HEADERS,
     TOKEN_ENDPOINT_TIMEOUT_SEC as _TOKEN_ENDPOINT_TIMEOUT_SEC,
@@ -160,7 +160,14 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
                 "OIDC token response missing id_token — ensure the 'openid' "
                 "scope is configured and the client is allowed to receive an "
                 "ID token."))
-        claims = self._verify_id_token(id_token)
+        try:
+            claims = self._verify_id_token(id_token)
+        except InvalidCodeError as exc:
+            # Verify-stage denial (expiry / wrong aud-iss / foreign key) inside a grant:
+            # map to the caller's bad_request_exc so the refresh scan rejects this
+            # provider (RefreshExpiredError) instead of crashing on an uncaught
+            # InvalidCodeError; the auth-code path keeps its 400.
+            raise bad_request_exc(str(exc)) from exc
         # Prefer a freshly-issued RT, else keep the previous (some IDPs don't rotate).
         return self._session(id_token, refresh_token_from(payload, previous_refresh_token), claims)
 

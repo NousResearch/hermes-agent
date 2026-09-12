@@ -265,6 +265,65 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert not (tmp_path / "cron/external-workers/exec-1.json").exists()
 
 
+def test_launch_external_worker_allows_delayed_cold_start_acknowledgement(
+    tmp_path, monkeypatch
+):
+    import cron.scheduler as scheduler
+
+    job = {"id": "job-cold", "execution_id": "exec-cold", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, *, unit_suffix: ["scope", "--", *command],
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "mark_execution_handoff_pending",
+        lambda _execution_id: {"id": "exec-cold", "handoff_pending": 1},
+    )
+
+    class FakeClock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+            if self.now >= 6.0 and not ack_path.exists():
+                ack_path.write_text(
+                    json.dumps({"pid": 4321, "execution_id": "exec-cold"}),
+                    encoding="utf-8",
+                )
+
+    clock = FakeClock()
+    ack_path = tmp_path / "cron/external-workers/exec-cold.ready"
+
+    class FakeProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            assert clock.now >= 6.0, "scheduler stopped waiting before cold-start ack"
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+
+    monkeypatch.setattr(
+        scheduler.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess()
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "get_execution",
+        lambda _execution_id: {"id": "exec-cold", "status": "completed"},
+    )
+    monkeypatch.setattr(scheduler.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(scheduler.time, "sleep", clock.sleep)
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    assert clock.now >= 6.0
+
+
 def test_external_worker_exit_rechecks_exact_execution_before_failure(monkeypatch):
     import cron.scheduler as scheduler
 

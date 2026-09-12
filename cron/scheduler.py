@@ -3049,6 +3049,9 @@ def _wait_for_external_cron_worker(
                 pass
 
 
+_EXTERNAL_WORKER_COLD_START_ACK_TIMEOUT_SECONDS = 12.0
+
+
 def _launch_external_cron_worker(job: dict) -> bool:
     """Launch *job* outside a managed gateway cgroup when required.
 
@@ -3150,7 +3153,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     with _running_lock:
         _restart_safe_waiter_job_ids.add(job_id)
 
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + _EXTERNAL_WORKER_COLD_START_ACK_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if ack_path.exists():
             try:
@@ -3212,9 +3215,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # handoff: that could duplicate side effects.  The execution owner/dead-owner
     # recovery ledger remains the authority.
     logger.warning(
-        "Cron external worker for job '%s' did not acknowledge within 5s; "
+        "Cron external worker for job '%s' did not acknowledge within %.0fs; "
         "leaving the durable execution claim untouched",
         job_id,
+        _EXTERNAL_WORKER_COLD_START_ACK_TIMEOUT_SECONDS,
     )
     return _wait_for_external_cron_worker(
         process,

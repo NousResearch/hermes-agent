@@ -15,7 +15,7 @@ def _setup_sessions(tmp_path, sessions_data):
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     index_file = sessions_dir / "sessions.json"
-    index_file.write_text(json.dumps(sessions_data))
+    index_file.write_text(json.dumps(sessions_data), encoding="utf-8")
     return sessions_dir, index_file
 
 

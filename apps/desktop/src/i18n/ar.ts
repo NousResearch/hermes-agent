@@ -2914,6 +2914,36 @@ export const ar = defineLocale({
         runningPrefixedTool: (prefix, action) => `جار تشغيل ${prefix.toLowerCase()} ${action.toLowerCase()}`,
         runningTool: action => `جار تشغيل ${action.toLowerCase()}`
       },
+      inspector: {
+        previewLimit: (count: number) =>
+          `تم إخفاء ${count.toLocaleString()} حرفًا إضافيًا في المعاينة — افتح تفاصيل الأداة لفحص البيانات المتاحة.`,
+        open: 'فتح تفاصيل الأداة',
+        title: 'تفاصيل الأداة',
+        notice:
+          'لقطة للبيانات المتاحة عند الفتح. أغلقها وأعد فتحها للتحديث. لا يمكن استعادة البيانات المقتطعة على الخادم أو غير المحفوظة هنا.',
+        search: 'بحث في القسم (حساس لحالة الأحرف)',
+        previousMatch: 'التطابق السابق',
+        nextMatch: 'التطابق التالي',
+        wrap: 'التفاف الأسطر',
+        copySection: 'نسخ القسم',
+        noMatch: 'لا يوجد تطابق في هذا القسم المتاح.',
+        unavailable: 'لم يتم استلام قيمة.',
+        empty: 'سلسلة فارغة',
+        serializationFailed: 'تعذر تحويل هذه القيمة إلى نص.',
+        previousPage: 'الصفحة السابقة',
+        nextPage: 'الصفحة التالية',
+        range: (start: number, end: number, total: number) =>
+          `${start.toLocaleString()}–${end.toLocaleString()} / ${total.toLocaleString()}`,
+        sections: {
+          args: 'الوسائط',
+          result: 'النتيجة',
+          metadata: 'البيانات الوصفية',
+          command: 'الأمر',
+          stdout: 'stdout',
+          stderr: 'stderr',
+          diff: 'الفروقات'
+        }
+      },
       titles: {
         browser_click: {
           done: 'تم النقر على عنصر الصفحة',

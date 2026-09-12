@@ -3958,6 +3958,36 @@ export const en: Translations = {
         runningPrefixedTool: (prefix, action) => `Running ${prefix.toLowerCase()} ${action.toLowerCase()}`,
         runningTool: action => `Running ${action.toLowerCase()}`
       },
+      inspector: {
+        previewLimit: (count: number) =>
+          `${count.toLocaleString()} more characters hidden in this preview — open tool details to inspect the available payload.`,
+        open: 'Open tool details',
+        title: 'Tool details',
+        notice:
+          'Snapshot of the payload available when opened. Close and reopen to refresh. Backend-truncated or unsaved data cannot be recovered here.',
+        search: 'Find in section (case-sensitive)',
+        previousMatch: 'Previous match',
+        nextMatch: 'Next match',
+        wrap: 'Wrap lines',
+        copySection: 'Copy section',
+        noMatch: 'No match in this available section.',
+        unavailable: 'No value was received.',
+        empty: 'Empty string',
+        serializationFailed: 'This value could not be serialized.',
+        previousPage: 'Previous page',
+        nextPage: 'Next page',
+        range: (start: number, end: number, total: number) =>
+          `${start.toLocaleString()}–${end.toLocaleString()} / ${total.toLocaleString()}`,
+        sections: {
+          args: 'Arguments',
+          result: 'Result',
+          metadata: 'Metadata',
+          command: 'Command',
+          stdout: 'stdout',
+          stderr: 'stderr',
+          diff: 'Diff'
+        }
+      },
       titles: {
         browser_click: { done: 'Clicked page element', pending: 'Clicking page element', pendingAction: 'Clicking' },
         browser_fill: { done: 'Filled form field', pending: 'Filling form field', pendingAction: 'Filling' },

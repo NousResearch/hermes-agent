@@ -9,6 +9,7 @@ import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { UserEditComposer } from '@/components/assistant-ui/thread/user-edit-composer'
 import { UserMessage } from '@/components/assistant-ui/thread/user-message'
+import { ToolInspectionProvider } from '@/components/assistant-ui/tool/tool-inspection'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGateway } from '@/hermes'
@@ -169,27 +170,29 @@ export const Thread = memo(function Thread({
 
   return (
     <ThreadEditContext.Provider value={editContext}>
-      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
-        <ThreadMessageList
-          clampToComposer={clampToComposer}
-          components={messageComponents}
-          emptyPlaceholder={emptyPlaceholder}
-          loadingIndicator={loadingIndicator}
-          sessionId={sessionId}
-          sessionKey={sessionKey}
-        />
-        {loading === 'session' && <CenteredThreadSpinner />}
-        <ThreadTimeline />
-        <ConfirmDialog
-          confirmLabel={copy.restoreConfirm}
-          description={copy.restoreBody}
-          destructive
-          onClose={closeRestoreConfirm}
-          onConfirm={confirmRestore}
-          open={Boolean(restoreConfirmTarget)}
-          title={copy.restoreTitle}
-        />
-      </div>
+      <ToolInspectionProvider scope={editContext}>
+        <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
+          <ThreadMessageList
+            clampToComposer={clampToComposer}
+            components={messageComponents}
+            emptyPlaceholder={emptyPlaceholder}
+            loadingIndicator={loadingIndicator}
+            sessionId={sessionId}
+            sessionKey={sessionKey}
+          />
+          {loading === 'session' && <CenteredThreadSpinner />}
+          <ThreadTimeline />
+          <ConfirmDialog
+            confirmLabel={copy.restoreConfirm}
+            description={copy.restoreBody}
+            destructive
+            onClose={closeRestoreConfirm}
+            onConfirm={confirmRestore}
+            open={Boolean(restoreConfirmTarget)}
+            title={copy.restoreTitle}
+          />
+        </div>
+      </ToolInspectionProvider>
     </ThreadEditContext.Provider>
   )
 })

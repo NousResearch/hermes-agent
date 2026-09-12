@@ -1191,6 +1191,26 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
   const args = parseMaybeObject(part.args)
   const result = parseMaybeObject(part.result)
   const detail = view.detail.trim()
+
+  // Copy an explicitly supplied stream/file body verbatim, even when short or
+  // empty. Length is never evidence that a command/path is the right payload.
+  const outputKeys =
+    part.toolName === 'terminal' || part.toolName === 'execute_code'
+      ? ['output', 'stdout', 'stderr']
+      : part.toolName === 'read_file'
+        ? ['content', 'text', 'data', 'body']
+        : []
+
+  for (const key of outputKeys) {
+    if (typeof result[key] === 'string') {
+      return { label: part.toolName === 'read_file' ? copy.file : copy.output, text: result[key] }
+    }
+  }
+
+  if (outputKeys.length && typeof part.result === 'string' && !Object.keys(result).length) {
+    return { label: part.toolName === 'read_file' ? copy.file : copy.output, text: part.result }
+  }
+
   const hasSubstantialOutput = detail.length > 16
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {

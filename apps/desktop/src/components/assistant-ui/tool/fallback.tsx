@@ -76,6 +76,7 @@ import {
 } from './fallback-model'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
 import { ToolRunTicker } from './run-ticker'
+import { ToolInspectionButton } from './tool-inspection'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
 // the per-row chrome (timer / preview). The flat ToolGroupSlot sets this
@@ -507,41 +508,39 @@ function ToolEntry({ part }: ToolEntryProps) {
   // a completed/failed row that would otherwise sit at the tail of the chat.
   // It goes in the in-flow `action` slot (not `trailing`) so it can't overlap
   // the disclosure caret's hit-target — see the comment above `trailing`.
-  const dismissAction = canDismiss ? (
-    <Tip label={statusCopy.dismiss}>
-      <Button
-        aria-label={statusCopy.dismiss}
-        className={cn(
-          'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
-          open
-            ? 'opacity-80'
-            : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
-        )}
-        onClick={event => {
-          event.stopPropagation()
-          dismissToolRow(disclosureId)
-        }}
-        size="icon-xs"
-        type="button"
-        variant="ghost"
-      >
-        <Codicon name="close" size="0.75rem" />
-      </Button>
-    </Tip>
-  ) : undefined
+  const dismissAction = (
+    <>
+      <ToolInspectionButton inlineDiff={inlineDiff} part={stablePart} />
+      {canDismiss ? (
+        <Tip label={statusCopy.dismiss}>
+          <Button
+            aria-label={statusCopy.dismiss}
+            className={cn(
+              'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
+              open
+                ? 'opacity-80'
+                : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
+            )}
+            onClick={event => {
+              event.stopPropagation()
+              dismissToolRow(disclosureId)
+            }}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="close" size="0.75rem" />
+          </Button>
+        </Tip>
+      ) : null}
+    </>
+  )
 
   if (dismissed) {
     return null
   }
 
-  // A completed file edit with no diff to review is a bare, unexpandable row.
-  // This is almost always a `write_file` create after a reload: only `patch`
-  // persists its diff in the tool result, so creates rehydrate diff-less and
-  // read like dead duplicates of the real diff row. Hide them — but keep
-  // in-flight writes (activity) and failures (errors) visible.
-  if (isFileEdit && !isPending && view.status !== 'error' && !view.inlineDiff) {
-    return null
-  }
+  // Even without a saved diff, the operation has inspectable args/result.
 
   return (
     <div

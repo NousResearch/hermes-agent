@@ -3382,6 +3382,36 @@ export const ja = defineLocale({
         runningPrefixedTool: (prefix, action) => `${prefix} ${action}を実行中`,
         runningTool: action => `${action}を実行中`
       },
+      inspector: {
+        previewLimit: (count: number) =>
+          `プレビューでは残り ${count.toLocaleString()} 文字を省略しています。ツールの詳細で受信済みのデータを確認できます。`,
+        open: 'ツールの詳細を開く',
+        title: 'ツールの詳細',
+        notice:
+          '開いた時点のデータです。更新するには開き直してください。サーバーで省略されたデータや未保存のデータは復元できません。',
+        search: 'セクション内を検索（大文字小文字を区別）',
+        previousMatch: '前の一致',
+        nextMatch: '次の一致',
+        wrap: '行を折り返す',
+        copySection: 'セクションをコピー',
+        noMatch: 'このセクションに一致はありません。',
+        unavailable: '値を受信していません。',
+        empty: '空の文字列',
+        serializationFailed: '値をテキストに変換できませんでした。',
+        previousPage: '前のページ',
+        nextPage: '次のページ',
+        range: (start: number, end: number, total: number) =>
+          `${start.toLocaleString()}–${end.toLocaleString()} / ${total.toLocaleString()}`,
+        sections: {
+          args: '引数',
+          result: '結果',
+          metadata: 'メタデータ',
+          command: 'コマンド',
+          stdout: 'stdout',
+          stderr: 'stderr',
+          diff: '差分'
+        }
+      },
       titles: {
         browser_click: {
           done: 'ページ要素をクリックしました',

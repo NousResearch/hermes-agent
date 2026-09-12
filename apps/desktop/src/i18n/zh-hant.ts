@@ -3266,6 +3266,35 @@ export const zhHant = defineLocale({
         runningPrefixedTool: (prefix, action) => `正在執行${prefix}${action}`,
         runningTool: action => `正在執行 ${action}`
       },
+      inspector: {
+        previewLimit: (count: number) =>
+          `此預覽還隱藏了 ${count.toLocaleString()} 個字元 — 開啟工具詳情以查看可用資料。`,
+        open: '開啟工具詳情',
+        title: '工具詳情',
+        notice: '開啟時可用資料的快照。關閉後重新開啟即可重新整理。無法還原伺服器截斷或未儲存的資料。',
+        search: '在此部分搜尋（區分大小寫）',
+        previousMatch: '上一個符合項目',
+        nextMatch: '下一個符合項目',
+        wrap: '自動換行',
+        copySection: '複製此部分',
+        noMatch: '可用內容中沒有符合項目。',
+        unavailable: '未收到值。',
+        empty: '空字串',
+        serializationFailed: '無法將此值序列化。',
+        previousPage: '上一頁',
+        nextPage: '下一頁',
+        range: (start: number, end: number, total: number) =>
+          `${start.toLocaleString()}–${end.toLocaleString()} / ${total.toLocaleString()}`,
+        sections: {
+          args: '參數',
+          result: '結果',
+          metadata: '中繼資料',
+          command: '命令',
+          stdout: 'stdout',
+          stderr: 'stderr',
+          diff: '差異'
+        }
+      },
       titles: {
         browser_click: { done: '已點擊頁面元素', pending: '正在點擊頁面元素', pendingAction: '正在點擊' },
         browser_fill: { done: '已填寫表單欄位', pending: '正在填寫表單欄位', pendingAction: '正在填寫' },

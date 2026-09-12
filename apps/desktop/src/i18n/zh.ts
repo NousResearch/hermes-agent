@@ -4083,6 +4083,35 @@ export const zh = defineLocale({
         runningPrefixedTool: (prefix, action) => `正在运行${prefix}${action}`,
         runningTool: action => `正在运行 ${action}`
       },
+      inspector: {
+        previewLimit: (count: number) =>
+          `此预览还隐藏了 ${count.toLocaleString()} 个字符 — 打开工具详情以查看可用数据。`,
+        open: '打开工具详情',
+        title: '工具详情',
+        notice: '打开时可用数据的快照。关闭后重新打开即可刷新。无法恢复服务端截断或未保存的数据。',
+        search: '在此部分搜索（区分大小写）',
+        previousMatch: '上一个匹配',
+        nextMatch: '下一个匹配',
+        wrap: '自动换行',
+        copySection: '复制此部分',
+        noMatch: '可用内容中没有匹配项。',
+        unavailable: '未收到值。',
+        empty: '空字符串',
+        serializationFailed: '无法将此值序列化。',
+        previousPage: '上一页',
+        nextPage: '下一页',
+        range: (start: number, end: number, total: number) =>
+          `${start.toLocaleString()}–${end.toLocaleString()} / ${total.toLocaleString()}`,
+        sections: {
+          args: '参数',
+          result: '结果',
+          metadata: '元数据',
+          command: '命令',
+          stdout: 'stdout',
+          stderr: 'stderr',
+          diff: '差异'
+        }
+      },
       titles: {
         browser_click: { done: '已点击页面元素', pending: '正在点击页面元素', pendingAction: '正在点击' },
         browser_fill: { done: '已填写表单字段', pending: '正在填写表单字段', pendingAction: '正在填写' },

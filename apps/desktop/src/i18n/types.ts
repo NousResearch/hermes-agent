@@ -3488,6 +3488,33 @@ export interface Translations {
         runningPrefixedTool: (prefix: string, action: string) => string
         runningTool: (action: string) => string
       }
+      inspector: {
+        previewLimit: (count: number) => string
+        open: string
+        title: string
+        notice: string
+        search: string
+        previousMatch: string
+        nextMatch: string
+        wrap: string
+        copySection: string
+        noMatch: string
+        unavailable: string
+        empty: string
+        serializationFailed: string
+        previousPage: string
+        nextPage: string
+        range: (start: number, end: number, total: number) => string
+        sections: {
+          args: string
+          result: string
+          metadata: string
+          command: string
+          stdout: string
+          stderr: string
+          diff: string
+        }
+      }
       titles: Record<ToolTitleKey, ToolTitleCopy>
     }
   }

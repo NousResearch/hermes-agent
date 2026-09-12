@@ -3688,6 +3688,36 @@ export const ru = defineLocale({
         runningPrefixedTool: (prefix, action) => `Выполняется: ${prefix.toLowerCase()} ${action.toLowerCase()}`,
         runningTool: action => `Выполняется: ${action.toLowerCase()}`
       },
+      inspector: {
+        previewLimit: (count: number) =>
+          `Ещё ${count.toLocaleString()} символов скрыто в превью — откройте детали инструмента для просмотра доступных данных.`,
+        open: 'Открыть детали инструмента',
+        title: 'Детали инструмента',
+        notice:
+          'Снимок данных на момент открытия. Для обновления закройте и откройте снова. Обрезанные на сервере или несохранённые данные здесь восстановить нельзя.',
+        search: 'Поиск в разделе (с учётом регистра)',
+        previousMatch: 'Предыдущее совпадение',
+        nextMatch: 'Следующее совпадение',
+        wrap: 'Перенос строк',
+        copySection: 'Копировать раздел',
+        noMatch: 'В доступном разделе совпадений нет.',
+        unavailable: 'Значение не получено.',
+        empty: 'Пустая строка',
+        serializationFailed: 'Не удалось преобразовать значение в текст.',
+        previousPage: 'Предыдущая страница',
+        nextPage: 'Следующая страница',
+        range: (start: number, end: number, total: number) =>
+          `${start.toLocaleString()}–${end.toLocaleString()} / ${total.toLocaleString()}`,
+        sections: {
+          args: 'Аргументы',
+          result: 'Результат',
+          metadata: 'Метаданные',
+          command: 'Команда',
+          stdout: 'stdout',
+          stderr: 'stderr',
+          diff: 'Diff'
+        }
+      },
       titles: {
         browser_click: {
           done: 'Нажат элемент страницы',

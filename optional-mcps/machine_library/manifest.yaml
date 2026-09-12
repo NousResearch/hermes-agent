@@ -2,19 +2,19 @@
 # Presence in this directory = approval. Merged via PR review.
 manifest_version: 1
 
-name: space_frontiers
+name: machine_library
 description: >-
   Search scholarly and public sources; fetch citable content.
-source: https://spacefrontiers.org/mcp
+source: https://machinelibrary.ai/mcp
 
-# Space Frontiers ships a hosted Streamable HTTP MCP server with native
+# Machine Library, the search product of Space Frontiers, provides native
 # OAuth 2.1, PKCE, and Dynamic Client Registration. Hermes's MCP client and
 # mcp_oauth_manager handle discovery, browser authorization, token exchange,
 # and refresh; nothing runs locally. The subdomain root is the Streamable HTTP
 # endpoint (POST /), rather than a landing page with a separate /mcp path.
 transport:
   type: http
-  url: https://mcp.spacefrontiers.org
+  url: https://mcp.machinelibrary.ai
 
 auth:
   type: oauth
@@ -24,7 +24,7 @@ auth:
 
 # Enable the four composable retrieval tools so Hermes can search, fetch, and
 # inspect source material directly. The higher-level spacefrontiers_research
-# agent remains available through `hermes mcp configure space_frontiers`, but
+# agent remains available through `hermes mcp configure machine_library`, but
 # is intentionally not enabled by default.
 tools:
   default_enabled:
@@ -35,25 +35,32 @@ tools:
 
 # Composer-suggestion triggers (desktop brand pills). Deliberately avoid the
 # generic phrase "deep research" so ordinary research prompts do not advertise
-# a third-party service unless the user mentions Space Frontiers or its URL.
+# a third-party service unless the user mentions Machine Library, Space
+# Frontiers, or either URL.
 suggest:
   keywords:
+    - machine library
+    - machinelibrary
     - space frontiers
     - spacefrontiers
   hosts:
+    - machinelibrary.ai
     - spacefrontiers.org
 
 post_install: |
-  On first connection Hermes opens a browser to authorize with Space Frontiers
-  (or run `hermes mcp login space_frontiers`). Approve access, then restart the
+  Machine Library is the search and AI product of Space Frontiers. Existing
+  Space Frontiers accounts and prepaid credits work here.
+
+  On first connection Hermes opens a browser to authorize with Machine Library
+  (or run `hermes mcp login machine_library`). Approve access, then restart the
   session so the selected tools load.
 
   The four retrieval tools are enabled by default: scholarly document search,
   social search, bounded full-text fetch, and in-document passage search. They
   return compact results and canonical source URIs so Hermes can inspect and
   cite the underlying material directly. Usage consumes prepaid API credits;
-  create or fund an account at https://spacefrontiers.org.
+  create or fund an account at https://machinelibrary.ai.
 
   The higher-level `spacefrontiers_research` agent is not enabled by default.
   Enable it or otherwise customize the tool selection any time with:
-    hermes mcp configure space_frontiers
+    hermes mcp configure machine_library

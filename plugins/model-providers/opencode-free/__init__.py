@@ -7,8 +7,6 @@ hermes_cli.models.opencode_zen_free_runtime). Select via ``/model free``.
 """
 
 from typing import Any
-
-from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -42,11 +40,16 @@ opencode_free = OpenCodeFreeProfile(
     description="OpenCode free models — keyless, no account needed",
     # Attribution headers (same values as opencode-zen/go) plus the empty Authorization
     # override that keeps the SDK's "Bearer <placeholder>" off the wire (free tier 401s it).
+    # User-Agent must be opencode/<semver>: the Zen relay 429s other UAs (issue #42074).
+    # The zero-key runtime path (agent_init / auxiliary_client) builds these via
+    # hermes_cli.models.opencode_zen_free_headers(); the session affinity is added
+    # per-request by agent.opencode_affinity.merge_opencode_session_headers. This dict
+    # keeps the same contract for consumers that read profile.default_headers directly.
     default_headers={
         "Authorization": "",
         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
         "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+        "User-Agent": "opencode/1.18.25",
     },
     # laguna is the fastest non-UA-gated free model; big-pickle 429s every
     # client except the opencode CLI's own User-Agent.

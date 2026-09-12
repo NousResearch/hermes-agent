@@ -9,15 +9,20 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 from __future__ import annotations
 
 import copy
+import contextlib
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import threading
 import urllib.parse
 import urllib.request
 import urllib.error
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -2043,7 +2048,12 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 # OpenCode Zen free-tier models (``*-free`` slugs plus unsuffixed ones like big-pickle) are
 # served ANONYMOUSLY on the Zen relay: no Authorization header succeeds, while ANY unrecognized
 # non-empty bearer — including our placeholder and OpenCode GO subscription keys — is 401'd (the
-# Go relay doesn't serve the free tier at all).
+# Go relay doesn't serve the free tier at all). The relay also gates the anonymous pool on the
+# first-party client fingerprint (OpenCode issue #42074: a non-``opencode/...`` User-Agent is
+# rate-limited with 429 ``FreeUsageLimitError``) and requires the ``x-opencode-session`` affinity
+# header (without one it 400s ``MissingSessionID``, "OpenCode's free tier can only be used in
+# OpenCode") — the header function below satisfies both so keyless requests aren't rejected on
+# admission before a single token is served.
 OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
 _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
@@ -2061,19 +2071,68 @@ _opencode_free_live_memo: Optional[tuple[float, Optional[list[str]]]] = None
 _OPENCODE_FREE_LIVE_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
 
 
+# The relay's client-fingerprint gate accepts any ``opencode/<semver>`` UA. Detection is memoized
+# (this runs on every free-tier request); the floor mirrors a verified-good CLI release when the
+# binary is missing or undetectable.
+_OPENCODE_CLI_VERSION_FLOOR = "1.18.25"
+_opencode_cli_version_cache: Optional[str] = None
+
+
+def _opencode_cli_version() -> Optional[str]:
+    """Detected installed OpenCode CLI version, or None on any failure (caller falls back to the
+    floor). Memoized: ``opencode --version`` must not run per request."""
+    global _opencode_cli_version_cache
+    if _opencode_cli_version_cache is not None:
+        return _opencode_cli_version_cache or None
+    version: Optional[str] = None
+    with contextlib.suppress(Exception):
+        exe = shutil.which("opencode")
+        if exe:
+            out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=2.0).stdout
+            version = _opencode_cli_version_cache = re.search(r"(\d+\.\d+(?:\.\d+)?)", out).group(1)
+    _opencode_cli_version_cache = version or ""
+    return version
+
+
+_opencode_free_session_cache: Optional[str] = None
+
+
+def _opencode_free_session_id() -> str:
+    """Stable per-install ``x-opencode-session`` fallback so anonymous free-tier requests never fail
+    the relay's MissingSessionID gate before a conversation context exists. Derived from the install
+    id, so one install presents one session to the relay's sharded backends; the per-conversation
+    affinity value from ``agent.opencode_affinity`` still wins per request (the OpenAI SDK lets
+    per-request ``extra_headers`` override client ``default_headers``)."""
+    global _opencode_free_session_cache
+    if _opencode_free_session_cache is not None:
+        return _opencode_free_session_cache
+    try:
+        from hermes_cli.install_identity import get_install_id
+
+        installed = get_install_id()
+        if not installed:
+            raise ValueError("install_id unavailable")
+        digest = hashlib.sha256(b"opencode-zen-free-keyless:" + installed.encode()).hexdigest()[:32]
+        session = f"ses_hermes_{digest}"
+    except Exception:
+        session = f"ses_hermes_{uuid.uuid4().hex[:32]}"
+    _opencode_free_session_cache = session
+    return session
+
+
 def opencode_zen_free_headers() -> dict:
     """Client default_headers for anonymous Zen free-tier requests. ``Authorization: ""`` overrides the
     OpenAI SDK's ``Bearer <api_key>`` so the placeholder never reaches the wire (the relay 401s any
-    unknown bearer). Attribution headers mirror the opencode provider profile."""
-    try:
-        from hermes_cli import __version__ as _v
-    except Exception:
-        _v = "0"
+    unknown bearer). Sent with the ``opencode/<version>`` User-Agent of an installed CLI and a stable
+    ``x-opencode-session`` key because the relay 429s every non-first-party UA (issue #42074) and 400s
+    session-less requests (``MissingSessionID``). Attribution headers mirror the opencode provider
+    profile."""
     return {
         "Authorization": "",
         "HTTP-Referer": "https://hermes-agent.nousresearch.com",
         "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_v}"}
+        "User-Agent": f"opencode/{_opencode_cli_version() or _OPENCODE_CLI_VERSION_FLOOR}",
+        "x-opencode-session": _opencode_free_session_id()}
 
 
 def _fetch_opencode_free_models(

@@ -19,6 +19,7 @@ free Ox Alpha model failed under an OpenCode subscription:
 """
 
 import os
+import re
 from unittest import mock
 
 import pytest
@@ -64,6 +65,43 @@ class TestFreeRuntime:
         headers = opencode_zen_free_headers()
         assert headers["Authorization"] == ""
         assert headers["X-Title"] == "Hermes Agent"
+
+    def test_headers_pass_relay_fingerprint_and_session_gates(self):
+        # The Zen relay 429s any non-first-party User-Agent (issue #42074) and 400s
+        # MissingSessionID when x-opencode-session is absent; keyless headers must always
+        # pass both admission gates. Value is detected/derived at runtime, never pinned.
+        headers = opencode_zen_free_headers()
+        assert re.match(r"^opencode/\d+\.\d+", headers["User-Agent"])
+        assert headers["x-opencode-session"].startswith("ses_")
+
+    def test_profile_mode_session_derived_from_root_install_id(self, tmp_path, monkeypatch):
+        """In profile mode (HERMES_HOME=<root>/profiles/<name>) the session id must
+        derive from the install_id at the ROOT, not the profile dir — the raw-read
+        version fell back to a fresh random UUID on every restart, defeating the
+        per-install affinity the relay's sharded backends rely on (review #105941)."""
+        import hashlib
+
+        import hermes_cli.models as models
+
+        root = tmp_path / "hermes-home"
+        root.mkdir()
+        install_id = "0123456789abcdef0123456789abcdef"
+        (root / "install_id").write_text(install_id + "\n")
+        profile = root / "profiles" / "myprofile"
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        expected = "ses_hermes_" + hashlib.sha256(
+            b"opencode-zen-free-keyless:" + install_id.encode()
+        ).hexdigest()[:32]
+        assert not (profile / "install_id").exists()  # the raw read would fail here
+
+        monkeypatch.setattr(models, "_opencode_free_session_cache", None)
+        first = models._opencode_free_session_id()
+        monkeypatch.setattr(models, "_opencode_free_session_cache", None)  # simulate a restart
+        second = models._opencode_free_session_id()
+
+        assert first == expected
+        assert second == expected  # stable across restarts, not a random UUID
 
 
 class TestRuntimeProviderKeylessRouting:

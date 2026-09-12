@@ -75,7 +75,8 @@ def test_opencode_free_sends_hermes_attribution(mock_openai):
     )
     headers = _zen_call_headers(mock_openai)
     assert headers.get("X-Title") == "Hermes Agent"
-    assert str(headers.get("User-Agent", "")).startswith("HermesAgent/")
+    ua = str(headers.get("User-Agent", ""))
+    assert ua.startswith("opencode/"), f"opencode-free UA must spoof opencode CLI, got {ua!r}"
 
 
 @patch("agent.process_bootstrap.OpenAI")

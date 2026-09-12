@@ -100,10 +100,10 @@ class ParityTelegramAdapter(BasePlatformAdapter):
 _real_instantiate = gateway_run.GatewayRunner._instantiate_adapter
 
 
-def _instantiate_adapter(self, platform: Platform, config: Any):
+async def _instantiate_adapter(self, platform: Platform, config: Any):
     if platform == Platform.TELEGRAM:
         return ParityTelegramAdapter(config, platform)
-    return _real_instantiate(self, platform, config)
+    return await _real_instantiate(self, platform, config)
 
 
 def main() -> None:

@@ -125,26 +125,33 @@ def _like_params(term: str, *, include_reasoning: bool = False) -> List[str]:
 
 
 def _reasoning_snippet_sql(terms: List[str]) -> Tuple[str, List[str]]:
-    """Bounded snippet from the first query term that matches a reasoning field."""
+    """Bounded snippet from the first query term and searchable field that match."""
     cases: List[str] = []
     params: List[str] = []
     for term in terms:
         pattern = f"%{_escape_like(term)}%"
-        for column in ("m.reasoning", "m.reasoning_content"):
+        for column in ("m.content", "m.tool_name", "m.tool_calls"):
             cases.append(
                 f"WHEN COALESCE({column}, '') LIKE ? ESCAPE '\\' "
                 f"THEN substr({column}, max(1, instr(lower({column}), lower(?)) - 40), 120)"
             )
             params.extend((pattern, term))
+        for column in ("m.reasoning", "m.reasoning_content"):
+            cases.append(
+                f"WHEN m.role = 'assistant' AND COALESCE({column}, '') LIKE ? ESCAPE '\\' "
+                f"THEN substr({column}, max(1, instr(lower({column}), lower(?)) - 40), 120)"
+            )
+            params.extend((pattern, term))
         cases.append(
-            "WHEN NOT json_valid(COALESCE(m.reasoning_details, '')) "
+            "WHEN m.role = 'assistant' AND NOT json_valid(COALESCE(m.reasoning_details, '')) "
             "AND COALESCE(m.reasoning_details, '') LIKE ? ESCAPE '\\' "
             "THEN substr(m.reasoning_details, "
             "max(1, instr(lower(m.reasoning_details), lower(?)) - 40), 120)"
         )
         params.extend((pattern, term))
         cases.append(
-            f"WHEN EXISTS (SELECT 1 FROM json_tree({_REASONING_DETAILS_JSON_SQL}) AS rd "
+            f"WHEN m.role = 'assistant' AND EXISTS "
+            f"(SELECT 1 FROM json_tree({_REASONING_DETAILS_JSON_SQL}) AS rd "
             "             WHERE rd.type = 'text' AND CAST(rd.value AS TEXT) LIKE ? ESCAPE '\\') "
             f"THEN (SELECT substr(CAST(rd.value AS TEXT), "
             "                         max(1, instr(lower(CAST(rd.value AS TEXT)), lower(?)) - 40), 120) "
@@ -152,10 +159,9 @@ def _reasoning_snippet_sql(terms: List[str]) -> Tuple[str, List[str]]:
             "      WHERE rd.type = 'text' AND CAST(rd.value AS TEXT) LIKE ? ESCAPE '\\' LIMIT 1)"
         )
         params.extend((pattern, term, pattern))
-    params.append(terms[0])
     return (
         f"CASE {' '.join(cases)} "
-        "ELSE substr(m.content, max(1, instr(m.content, ?) - 40), 120) END AS snippet",
+        "ELSE '' END AS snippet",
         params,
     )
 

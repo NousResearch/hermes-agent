@@ -59,6 +59,11 @@ class MCPServerRunMixin:
         """
         if not self._native_config_managed:
             return False
+        with self._config_authority_lock:
+            return self._reconcile_config_authority()
+
+    def _reconcile_config_authority(self) -> bool:
+        """Reconcile native scopes while serialized against shared adoption."""
         key = _registration._server_key_for_task(self)
         with _core._lock:
             owner_scope = _core._server_scope_keys.get(key)

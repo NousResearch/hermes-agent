@@ -6,6 +6,7 @@ live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_re
 import json
 import logging
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
@@ -473,22 +474,28 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         if not shared:
             continue
         key, server = shared[0]
-        # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
-        with _core._lock:
-            _core._server_tool_scopes.setdefault(key, set()).add(scope)
-        if registry.get_tool_names_for_toolset(f"mcp-{name}"):
-            continue
-        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
-        candidates += _utility_candidates(
-            name, _select_utility_schemas(name, server, config), server.tool_timeout)
-        names = _register_candidates(
-            name, _resolve_name_collisions(name, candidates),
-            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)
-        if names:
-            registered_servers += 1
+        authority_lock = getattr(server, "_config_authority_lock", nullcontext())
+        with authority_lock:
+            # Selection and publication are one authority transaction: config
+            # retirement cannot remove the task between them.
             with _core._lock:
-                server._registered_tool_names = sorted(
-                    set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
+                if (_core._servers.get(key) is not server
+                        or getattr(server, "_retired_from_config", False)):
+                    continue
+                _core._server_tool_scopes.setdefault(key, set()).add(scope)
+            if registry.get_tool_names_for_toolset(f"mcp-{name}"):
+                continue
+            candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
+            candidates += _utility_candidates(
+                name, _select_utility_schemas(name, server, config), server.tool_timeout)
+            names = _register_candidates(
+                name, _resolve_name_collisions(name, candidates),
+                check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)
+            if names:
+                registered_servers += 1
+                with _core._lock:
+                    server._registered_tool_names = sorted(
+                        set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
     return registered_servers
 
 

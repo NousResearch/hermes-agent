@@ -1,6 +1,7 @@
 """Live MCP tasks stop when another process removes their native config."""
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 
@@ -361,3 +362,69 @@ async def test_parked_native_task_polls_config_without_waiting_for_revival(monke
     result = await asyncio.wait_for(server._wait_for_reconnect_or_shutdown(), timeout=0.5)
     assert result == "shutdown"
     assert server._retired_from_config is True
+
+
+def test_adoption_revalidates_after_retirement_cas(tmp_path, monkeypatch):
+    """A profile cannot publish an overlay after its selected task retires."""
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools import mcp_tool_registration
+    from tools.registry import registry
+
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    for home in homes.values():
+        home.mkdir()
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+    cfg = {"url": "https://mcp.example/shared"}
+    server = mcp_tool.MCPServerTask("shared")
+    server._config = cfg
+    server.session = object()
+    server._tools = [SimpleNamespace(
+        name="ping", description="", inputSchema={"type": "object", "properties": {}}, annotations=None)]
+    server.initialize_result = None
+    server._registered_tool_names = []
+    selected = threading.Event()
+    resume = threading.Event()
+
+    class GateLock:
+        def __enter__(self):
+            selected.set()
+            assert resume.wait(2)
+
+        def __exit__(self, *_exc):
+            return False
+
+    token = set_hermes_home_override(homes["a"])
+    scope_a = hermes_home_key(homes["a"])
+    try:
+        mcp_tool_discovery._adopt_server("shared", server)
+        key = (scope_a, "shared")
+        server._config_authority_lock = GateLock()
+        result = []
+
+        def adopt_b():
+            worker_token = set_hermes_home_override(homes["b"])
+            try:
+                result.append(mcp_tool_registration.register_connected_into_current_scope({"shared": cfg}))
+            finally:
+                reset_hermes_home_override(worker_token)
+
+        worker = threading.Thread(target=adopt_b)
+        worker.start()
+        assert selected.wait(2)
+        with mcp_tool._lock:
+            server._retired_from_config = True
+            mcp_tool._servers.pop(key)
+        resume.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        scope_b = hermes_home_key(homes["b"])
+        assert result == [0]
+        assert scope_b not in mcp_tool._server_tool_scopes.get(key, set())
+        assert registry.snapshot_registration("mcp__shared__ping", scope=scope_b) is None
+    finally:
+        resume.set()
+        reset_hermes_home_override(token)
+        with mcp_tool._lock:
+            mcp_tool._servers.clear()
+            mcp_tool._server_scope_keys.clear()
+            mcp_tool._server_tool_scopes.clear()

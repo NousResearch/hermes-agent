@@ -96,6 +96,57 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
+    def test_zero_failed_count_is_not_failure(self):
+        result = json.dumps({"success": True, "failed": 0, "processed": 12})
+        assert _detect_tool_failure("cronjob_manage", result) == (False, "")
+
+    def test_null_error_is_not_failure(self):
+        result = json.dumps({"success": True, "error": None})
+        assert _detect_tool_failure("plugin_tool", result) == (False, "")
+
+    def test_nested_failed_under_success_is_not_failure(self):
+        result = json.dumps({"success": True, "diagnostics": {"failed": 0}})
+        assert _detect_tool_failure("plugin_tool", result) == (False, "")
+
+    def test_plain_text_error_still_fails(self):
+        is_failure, _ = _detect_tool_failure("web_search", "Error: boom")
+        assert is_failure is True
+
+    def test_success_false_still_fails(self):
+        result = json.dumps({"success": False, "error": "nope"})
+        assert _detect_tool_failure("read_file", result)[0] is True
+
+    def test_nonzero_failed_count_is_failure(self):
+        result = json.dumps({"failed": 3, "processed": 12})
+        assert _detect_tool_failure("cronjob_manage", result)[0] is True
+
+    def test_success_true_wins_over_nonzero_failed(self):
+        result = json.dumps({"success": True, "failed": 3, "processed": 12})
+        assert _detect_tool_failure("cronjob_manage", result) == (False, "")
+
+    def test_zero_failed_without_success_is_not_failure(self):
+        result = json.dumps({"failed": 0, "processed": 12})
+        assert _detect_tool_failure("cronjob_manage", result) == (False, "")
+
+    def test_failed_true_is_failure(self):
+        result = json.dumps({"failed": True})
+        assert _detect_tool_failure("plugin_tool", result)[0] is True
+
+    def test_null_error_without_success_is_not_failure(self):
+        result = json.dumps({"error": None})
+        assert _detect_tool_failure("plugin_tool", result) == (False, "")
+
+    def test_json_error_string_still_fails(self):
+        is_failure, _ = _detect_tool_failure("web_search", '{"error":"x"}')
+        assert is_failure is True
+
+    def test_terminal_nonzero_exit_unchanged(self):
+        result = json.dumps({"output": "", "exit_code": 1})
+        assert _detect_tool_failure("terminal", result)[0] is True
+
+    def test_ambiguous_failed_object_falls_open_to_substring(self):
+        result = json.dumps({"failed": {"count": 0}})
+        assert _detect_tool_failure("plugin_tool", result) == (True, " [error]")
 
 
 class TestGetCuteToolMessageFailureSuffix:

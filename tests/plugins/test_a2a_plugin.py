@@ -492,6 +492,52 @@ class TestClientTools:
         assert "input-required" in out
         assert "ctx-q" in out
 
+    def test_call_returns_all_artifacts_not_just_the_first(self, monkeypatch):
+        """Peers that run several commands emit stdout-1/stdout-2 artifacts; the
+        client must surface every artifact's text, never silently drop later ones."""
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        def art(name, text):
+            return {"name": name, "parts": [protocol.text_part(text)]}
+
+        task = protocol.build_task("t", "c1", protocol.STATE_COMPLETED, "ignored")
+        task["artifacts"] = [
+            art("stdout-1", "week-one events"),
+            art("thinking", "internal monologue"),
+            art("stdout-2", "week-two events"),
+        ]
+
+        monkeypatch.setattr(tools, "_http_post_json",
+                            lambda url, body, headers, timeout: protocol.jsonrpc_result(body["id"], task))
+        out = tools.a2a_call({"agent": "r", "message": "what happened both weeks?"})
+        assert "week-one events" in out
+        assert "week-two events" in out  # was silently dropped (first-artifact return)
+        assert "internal monologue" not in out  # thinking artifacts stay invisible
+
+    def test_call_prefers_polished_response_artifact(self, monkeypatch):
+        """A `response` artifact supersedes raw stdout dumps (it is the agent's
+        formatted answer), but must not hide stdout text when absent."""
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        def art(name, text):
+            return {"name": name, "parts": [protocol.text_part(text)]}
+
+        task = protocol.build_task("t", "c1", protocol.STATE_COMPLETED, "ignored")
+        task["artifacts"] = [
+            art("stdout-1", "raw dump"),
+            art("response", "formatted answer"),
+        ]
+
+        monkeypatch.setattr(tools, "_http_post_json",
+                            lambda url, body, headers, timeout: protocol.jsonrpc_result(body["id"], task))
+        out = tools.a2a_call({"agent": "r", "message": "summarize"})
+        assert "formatted answer" in out
+        assert "raw dump" not in out
+
     def test_rpc_url_prefers_supported_interfaces(self):
         card = {
             "url": "http://legacy:1/",

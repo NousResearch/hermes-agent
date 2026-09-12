@@ -135,11 +135,26 @@ def _reply_text_from_result(result: Any) -> str:
     result = protocol.unwrap_send_message_response(result)
     if not isinstance(result, dict):
         return str(result)
-    # Artifacts first (final output), then status message (interim/clarify), else bare Message.
+    # Collect text from EVERY artifact, not just the first: peers that run several
+    # commands emit stdout-1, stdout-2, ... plus a polished `response` artifact, and
+    # returning the first one silently drops later output. Thinking/reasoning
+    # artifacts are internal noise — skipped. When a polished `response`/`final`
+    # artifact exists it supersedes the raw stdout dumps.
+    skipped = ("thinking", "reasoning", "plan")
+    polished_names = ("response", "final", "answer")
+    texts: list[tuple[str, str]] = []
     for artifact in result.get("artifacts", []) or []:
+        name = str(artifact.get("name", "")).strip().lower()
+        if name in skipped:
+            continue
         txt = protocol.extract_text(artifact)
         if txt:
-            return txt
+            texts.append((name, txt))
+    polished = [t for name, t in texts if name in polished_names]
+    if polished:
+        return "\n\n".join(polished)
+    if texts:
+        return "\n\n".join(f"[{name}]\n{t}" if name else t for name, t in texts)
     return protocol.extract_text((result.get("status", {}) or {}).get("message") or result)
 
 

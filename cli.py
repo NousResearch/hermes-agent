@@ -8,6 +8,7 @@ except ModuleNotFoundError:
     pass
 
 import logging
+from agent.display import is_vivid_mode, set_vivid_mode
 import os
 import functools
 import shutil
@@ -511,6 +512,7 @@ def _init_logging_and_display_from_config() -> None:
         lambda: _im("hermes_cli.skin_engine").init_skin_from_config(CLI_CONFIG),
         lambda: _im("agent.display").set_tool_preview_max_len(int(_display("tool_preview_length", 0) or 0)),
         lambda: _im("agent.display").set_friendly_tool_labels(bool(_display("friendly_tool_labels", True))),
+        lambda: _im("agent.display").set_vivid_mode(bool(_display("vivid", False))),
     ):
         try:
             step()
@@ -1485,6 +1487,31 @@ def _terminal_width_for_streaming() -> int:
     return max(20, _terminal_columns() - len(_STREAM_PAD) - 2)
 
 
+def _get_skin_for_render():
+    """Return the active skin (with content colors), or None."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin()
+    except Exception:
+        return None
+
+
+def _theme_markdown(md, skin):
+    """Rebuild the Markdown with skin content colors via code_theme + style."""
+    plain = getattr(md, "markup", "") or ""
+    if not plain:
+        return md
+    from rich.markdown import Markdown as _Markdown
+    style_color = skin.get_content_color("markdown_bold") or skin.get_content_color("markdown_h3") or "none"
+    inline_code_color = skin.get_content_color("markdown_code") or None
+    return _Markdown(
+        plain,
+        code_theme="github-dark",
+        inline_code_theme=inline_code_color,
+        style=style_color,
+    )
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -1503,7 +1530,15 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     plain = _rich_text_from_ansi(text or "").plain
     plain = _preserve_windows_dot_segments_for_markdown(plain)
     plain = realign_markdown_tables(plain, panel_width)
-    return Markdown(plain)
+    md = Markdown(plain)
+    if is_vivid_mode():
+        try:
+            skin = _get_skin_for_render()
+            if skin:
+                md = _theme_markdown(md, skin)
+        except Exception:
+            pass
+    return md
 
 
 def _post_stream_transform_output(response: str, result: dict | None) -> str:

@@ -1063,6 +1063,75 @@ _CUTE_LINES = {
 }
 
 
+def _colorize(line: str, *, path: str | None = None, kind: str = "read") -> str:
+    """Apply skin content colors when vivid mode is on. No-op otherwise."""
+    if not is_vivid_mode():
+        return line
+    skin = _get_skin()
+    if not skin:
+        return line
+    v = skin.get_content_color("tool_verb", "")
+    e = skin.get_content_color("tool_emoji", "")
+    d = skin.get_content_color("tool_duration", "")
+    if not (v or e or d):
+        return line
+    import re
+    result = line
+    # 1. Duration suffix
+    duration_re = re.compile(r"(\s+)(\d+(?:\.\d+)?s)$")
+    duration_match = duration_re.search(result)
+    before_duration = result
+    duration_suffix_str = ""
+    if duration_match:
+        before_duration = result[:duration_match.start()]
+        whitespace_before_duration = duration_match.group(1)
+        duration_text = duration_match.group(2)
+        duration_suffix_str = f"{whitespace_before_duration}[{d}]{duration_text}[/]" if d else result[duration_match.start():]
+    # 2. Emoji and verb
+    if before_duration and len(before_duration) > 0:
+        first_char = before_duration[0]
+        rest_after_first = before_duration[1:] if len(before_duration) > 1 else ""
+        stripped = rest_after_first.lstrip()
+        emoji_parts = stripped.split(None, 1)
+        if len(emoji_parts) >= 1:
+            emoji_token = emoji_parts[0]
+            rest_after_emoji = emoji_parts[1] if len(emoji_parts) > 1 else ""
+            verb_parts = rest_after_emoji.split(None, 1)
+            if len(verb_parts) >= 1:
+                verb_token = verb_parts[0]
+                preview_text = verb_parts[1] if len(verb_parts) > 1 else ""
+                original_spaces_after_sep = rest_after_first[:len(rest_after_first) - len(stripped)]
+                colored_emoji_token = f"[{e}]{emoji_token}[/]" if e else emoji_token
+                colored_verb_token = f"[{v}]{verb_token}[/]" if v else verb_token
+                result = first_char + original_spaces_after_sep + colored_emoji_token
+                result += "  " + colored_verb_token
+                if preview_text:
+                    result += "  " + preview_text
+                if duration_match:
+                    result += duration_suffix_str
+            else:
+                colored_emoji_token = f"[{e}]{emoji_token}[/]" if e else emoji_token
+                result = first_char + original_spaces_after_sep + colored_emoji_token + ("  " + rest_after_emoji if rest_after_emoji else "")
+                if duration_match:
+                    result += duration_suffix_str
+        else:
+            result = before_duration + (duration_suffix_str if duration_match else "")
+    else:
+        result = before_duration + (duration_suffix_str if duration_match else "")
+    # 3. Path highlighting
+    if path and is_vivid_mode():
+        skin_path_color = None
+        if kind == "read":
+            skin_path_color = skin.get_content_color("tool_path_read", "")
+        elif kind == "modified":
+            skin_path_color = skin.get_content_color("tool_path_modified", "")
+        elif kind == "write":
+            skin_path_color = skin.get_content_color("tool_path", "")
+        if skin_path_color and path and path in result:
+            result = result.replace(path, f"[{skin_path_color}]{path}[/]", 1)
+    return result
+
+
 def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
     """Tool completion line for CLI quiet mode: ``| {emoji} {verb:9} {detail}  {duration}``, plus a
     failure suffix from :func:`_detect_tool_failure`; the leading ``┊`` becomes the skin's tool prefix."""
@@ -1071,6 +1140,24 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
     render = _CUTE_LINES.get(tool_name)
     body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
     line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
+    # Compute path/kind for path tools
+    visible_path = None
+    kind_arg = None
+    if tool_name == "read_file":
+        path_str = args.get('path', '')
+        visible_path = build_tool_preview('read_file', args) or path_str
+        kind_arg = "read"
+    elif tool_name == "write_file":
+        path_str = args.get('path', '')
+        visible_path = _cute_path(path_str) if path_str else None
+        kind_arg = "write"
+    elif tool_name == "patch":
+        path_str = args.get('path', '')
+        visible_path = _cute_path(path_str) if path_str else None
+        kind_arg = "modified"
+    # Apply colorization
+    if is_vivid_mode():
+        line = _colorize(line, path=visible_path, kind=kind_arg or 'read') if visible_path else _colorize(line)
     return f"{line}{failure_suffix}" if is_failure else line
 
 
@@ -1083,6 +1170,20 @@ def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: s
         safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else "tool"
         safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else "done"
         return f"┊ ⚡ {safe_name:9} completed  {safe_duration}"
+
+
+_vivid_mode: bool = False
+
+
+def set_vivid_mode(enabled: bool) -> None:
+    """Set the global vivid mode flag (display.vivid)."""
+    global _vivid_mode
+    _vivid_mode = bool(enabled)
+
+
+def is_vivid_mode() -> bool:
+    """Return whether vivid content styling is enabled."""
+    return _vivid_mode
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

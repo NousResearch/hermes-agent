@@ -4996,6 +4996,27 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
             root.setLevel(_stderr_level)
 
 
+def _shutdown_signal_is_service_manager_stop(received_signal, ctx: Optional[dict]) -> bool:
+    """True when our own service manager is stopping the unit — ``systemctl stop``/``restart``, or the
+    needrestart sweep that follows ``apt-daily-upgrade``.
+
+    Such a SIGTERM is a planned stop even without a marker. The planned-stop marker is written only by
+    the Hermes CLI, so a manager-initiated stop used to fall through to the "bare kill" branch and exit
+    non-zero: every ``systemctl restart`` marked the unit ``failed``, and the next boot pruned live
+    sessions as "left by a crashed gateway". The non-zero exit buys nothing here either — systemd never
+    auto-restarts a unit it stopped itself, whatever the exit status. The cases the non-zero exit exists
+    for (container, OOM, bare kill) are unaffected: they carry no ``INVOCATION_ID`` — docker's PID 1
+    included — or their parent is not the service manager.
+    """
+    if received_signal != signal.SIGTERM or not ctx:
+        return False
+    if not ctx.get("systemd_invocation_id"):  # set by systemd for its unit's processes only
+        return False
+    # A system unit's parent is PID 1; a user unit's is ``systemd --user``, named systemd as well.
+    parent = ctx.get("parent")
+    return isinstance(parent, dict) and parent.get("name") == "systemd"
+
+
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     def shutdown_signal_handler(received_signal=None):
@@ -5015,15 +5036,22 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             return snapshot_shutdown_context(received_signal)
 
         planned_takeover = bool(_best_effort(_takeover, "Takeover marker check failed: %s"))
+        # Snapshot BEFORE the marker check below consumes the marker, so the forensic line still shows it.
+        _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
         planned_stop = received_signal == signal.SIGINT or (
             not planned_takeover and bool(_best_effort(_planned_stop, "Planned stop marker check failed: %s")))
-        _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
+        manager_stop = not planned_takeover and not planned_stop and bool(_best_effort(
+            lambda: _shutdown_signal_is_service_manager_stop(received_signal, _shutdown_ctx),
+            "Service-manager stop check failed: %s"))
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 
         if planned_takeover:
             logger.info("Received %s as a planned --replace takeover — exiting cleanly", sig_name or "SIGTERM")
         elif planned_stop:
             logger.info("Received %s as a planned gateway stop — exiting cleanly", sig_name or "SIGTERM/SIGINT")
+        elif manager_stop:
+            logger.info("Received %s from the service manager (unit stop/restart) — exiting cleanly",
+                        sig_name or "SIGTERM")
         else:
             # Mirrored onto the runner so _stop_impl suppresses the gateway_state=stopped persist for
             # unexpected signals; operator stops take the `planned_stop` branch and leave it False (DO persist).

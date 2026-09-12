@@ -258,6 +258,11 @@ class GatewayNotificationsMixin:
             "Pinned async-delegation completion to owning session %s (was %s) for routing key %s (#57498)",
             target_session_id, prior_session_id, session_entry.session_key,
         )
+        # Telegram DM topic lane: rebind (chat_id, thread_id) → owning session_id. The compression
+        # branch above (advance_compression_session) already syncs the binding; the plain
+        # switch_session path did not, leaving the topic row stale. switch_session preserves origin.
+        if not follows_compression:
+            await self._rebind_telegram_topic_after_switch(switched.origin, switched)
         return switched
 
     async def _deliver_media_from_response(

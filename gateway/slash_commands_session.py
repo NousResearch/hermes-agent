@@ -924,6 +924,10 @@ class GatewaySessionCommandsMixin:
         # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)
+        # Telegram DM topic lane: rebind (chat_id, thread_id) → resumed session_id so the next
+        # message uses the resumed session instead of switching back to the old one (same paired
+        # rebind /new performs). switch_session preserves the entry origin used for the lane guard.
+        await self._rebind_telegram_topic_after_switch(new_entry.origin or source, new_entry)
         title = await self._session_db.get_session_title(target_id) or name
         try:
             history = await self.async_session_store.load_transcript(target_id)
@@ -1072,6 +1076,9 @@ class GatewaySessionCommandsMixin:
             return t("gateway.branch.switch_failed")
         self._clear_session_boundary_security_state(session_key)
         self._evict_cached_agent(session_key)
+        # Telegram DM topic lane: rebind (chat_id, thread_id) → branched session_id (same paired
+        # rebind /new performs) so the topic follows the branch instead of the parent.
+        await self._rebind_telegram_topic_after_switch(new_entry.origin or source, new_entry)
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)

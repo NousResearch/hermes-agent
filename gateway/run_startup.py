@@ -1528,6 +1528,10 @@ class GatewayStartupMixin:
         switched = await self.async_session_store.switch_session(session_key, cli_session_id)
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
+        # Telegram DM topic lane: rebind (chat_id, thread_id) → CLI session_id (same paired rebind
+        # /new performs) so the topic tracks the handed-off session instead of the prior one. Drove
+        # thread 34250 to 15 sessions deep on one stale row before this fix.
+        await self._rebind_telegram_topic_after_switch(dest.source, switched)
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
         # running-agent state so the synthetic turn isn't queued behind it.
         self._evict_cached_agent(session_key)

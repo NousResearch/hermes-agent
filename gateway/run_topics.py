@@ -200,6 +200,29 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
+    async def _rebind_telegram_topic_after_switch(self, source, session_entry) -> None:
+        """Pair a ``switch_session`` routing move with the durable topic rebind.
+
+        ``switch_session`` (routing) and ``bind_telegram_topic`` (the durable
+        ``telegram_dm_topic_bindings`` row) are decoupled: moving the route without
+        rebinding leaves the row pointing at the OLD session, so the next inbound
+        message switches back and the retire/archive helpers resolve the wrong topic.
+        ``/new`` already does this inline; ``/resume``, ``/branch``, the CLI-handoff
+        worker, and async-delegation completion call this after their switch.
+
+        Guarded by ``_is_telegram_topic_lane`` (no-op outside a Telegram DM topic lane)
+        and run off-loop via ``asyncio.to_thread``; best-effort like the ``/new`` path.
+        See #20470, #29712, #33414 and the switch-surface binding fix.
+        """
+        if session_entry is None or source is None:
+            return
+        if not await asyncio.to_thread(self._is_telegram_topic_lane, source):
+            return
+        try:
+            await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
+        except Exception:
+            logger.debug("Failed to rebind Telegram topic after session switch", exc_info=True)
+
     def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
         """Pin lobby-shaped topic-mode DM replies (missing ``message_thread_id`` or General) to the
         user's most-recent bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM

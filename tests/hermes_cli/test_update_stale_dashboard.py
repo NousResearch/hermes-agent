@@ -479,13 +479,14 @@ class TestManualBackendRespawn:
              patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
              patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
              patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch.object(main_dashboard, "_dashboard_cwd_for_pid", return_value="/install/root"), \
              patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
              patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes(restart_managed=True)
 
-        respawn.assert_called_once_with([argv])
+        respawn.assert_called_once_with([(argv, "/install/root")])
         assert "when you're ready" not in capsys.readouterr().out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
@@ -534,13 +535,14 @@ class TestManualBackendRespawn:
              patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
              patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
              patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch.object(main_dashboard, "_dashboard_cwd_for_pid", return_value="/install/root"), \
              patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
              patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
              patch("os.kill", side_effect=fake_kill), \
              patch("time.sleep"):
             _kill_stale_dashboard_processes(restart_managed=True)
 
-        respawn.assert_called_once_with([argv])
+        respawn.assert_called_once_with([(argv, "/install/root")])
         assert "when you're ready" not in capsys.readouterr().out
 
     def test_respawn_adds_no_open_to_dashboard_commands(self, tmp_path, monkeypatch):
@@ -573,6 +575,30 @@ class TestManualBackendRespawn:
         assert failed == [["hermes", "serve"]]
         out = capsys.readouterr().out
         assert "✗ failed to restart" in out
+
+    def test_respawn_anchors_relative_argv_to_captured_cwd(self, tmp_path, monkeypatch):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with patch.object(live.subprocess, "Popen") as popen:
+            failed = live._respawn_dashboard_processes([
+                (["./venv/bin/python", "./venv/bin/hermes", "dashboard"], "/install/root")
+            ])
+
+        assert failed == []
+        assert popen.call_args.kwargs["cwd"] == "/install/root"
+
+    def test_respawn_rejects_relative_argv_without_captured_cwd(self, tmp_path, monkeypatch):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with patch.object(live.subprocess, "Popen") as popen:
+            failed = live._respawn_dashboard_processes([
+                (["./venv/bin/hermes", "dashboard"], None)
+            ])
+
+        assert failed == [["./venv/bin/hermes", "dashboard"]]
+        popen.assert_not_called()
 
 
 class TestFilterDashboardRespawnCandidates:

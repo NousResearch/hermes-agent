@@ -237,7 +237,23 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         return None
 
 
-def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
+def _dashboard_cwd_for_pid(pid: int) -> str | None:
+    """Working directory needed to replay a process's relative argv."""
+    if sys.platform == "win32":
+        return None
+    import psutil
+    try:
+        proc_cwd = f"/proc/{pid}/cwd"
+        if os.path.exists(proc_cwd):
+            return os.readlink(proc_cwd)
+        return psutil.Process(pid).cwd() or None
+    except (OSError, psutil.Error):
+        return None
+
+
+def _respawn_dashboard_processes(
+    commands: list[list[str] | tuple[list[str], str | None]],
+) -> list[list[str]]:
     """Respawn manually-started dashboards after ``hermes update``, detached, logging to
     ``logs/dashboard-restart.log``; returns the argvs that failed to spawn. Callers pre-filter via
     ``_filter_dashboard_respawn_candidates`` (no Desktop ``--port 0`` backends, capped per profile).
@@ -251,8 +267,12 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     with contextlib.suppress(OSError):
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for command in commands:
+    for request in commands:
+        command, cwd = request if isinstance(request, tuple) else (request, None)
         try:
+            executable = Path(command[0])
+            if cwd is None and not executable.is_absolute() and executable.parent != Path("."):
+                raise ValueError("original working directory is unavailable for relative argv")
             # Keep restarted dashboards headless; reopening a browser after a
             # background update is noisy and fails in SSH/headless sessions.
             if "dashboard" in command and "--no-open" not in command:
@@ -260,7 +280,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
             with open(log_path, "ab") as log_f:
                 subprocess.Popen(
                     command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
-                    start_new_session=True, close_fds=True)
+                    start_new_session=True, close_fds=True, cwd=cwd)
             respawned.append(command)
         except (OSError, ValueError) as exc:
             failed.append((command, str(exc)))

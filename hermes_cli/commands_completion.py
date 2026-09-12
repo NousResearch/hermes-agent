@@ -271,10 +271,12 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
-        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None) -> None:
+        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        commands: Mapping[str, str] | None = None) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
         self._skill_bundles_provider = skill_bundles_provider
+        self._commands = commands if commands is not None else COMMANDS
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
@@ -442,7 +444,7 @@ class SlashCommandCompleter(Completer):
         def _cmd_completion(cmd_name: str, meta: str):
             return _completion(self._completion_text(cmd_name, word), word, f"/{cmd_name}", meta)
 
-        for cmd, desc in COMMANDS.items():
+        for cmd, desc in self._commands.items():
             if self._command_allowed(cmd) and cmd[1:].startswith(word):
                 yield _cmd_completion(cmd[1:], desc)
         for cmd, info in self._call_provider(self._skill_bundles_provider).items():

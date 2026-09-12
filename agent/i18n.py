@@ -143,6 +143,11 @@ def get_language() -> str:
     return _normalize_lang(env_lang) if env_lang else _config_language_cached() or DEFAULT_LANGUAGE
 
 
+def normalize_language(value: Any) -> str:
+    """Return the supported language code for a wire/request value."""
+    return _normalize_lang(value)
+
+
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted catalog key to the active (or explicit ``lang``) language.
 
@@ -165,4 +170,4 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         return value
 
 
-__all__ = ["SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache"]
+__all__ = ["SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "normalize_language", "reset_language_cache"]

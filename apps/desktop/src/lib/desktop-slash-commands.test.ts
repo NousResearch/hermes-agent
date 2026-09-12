@@ -358,6 +358,15 @@ describe('desktop slash command curation', () => {
     )
   })
 
+  it('keeps server-localized descriptions ahead of English desktop copy', () => {
+    const filtered = filterDesktopCommandsCatalog({
+      language: 'ko',
+      pairs: [['/new', '새 세션을 시작합니다']]
+    })
+
+    expect(filtered.pairs).toEqual([['/new', '새 세션을 시작합니다']])
+  })
+
   it('builds /skin completions from desktop themes', () => {
     const completions = desktopSkinSlashCompletions(
       [

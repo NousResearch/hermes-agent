@@ -231,8 +231,11 @@ def _(rid, params: dict) -> dict:
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_skill_commands
     from agent.skill_bundles import get_skill_bundles
+    from hermes_cli.commands import localized_command_catalog
+    localized_commands = dict(localized_command_catalog(str(params.get("language") or "").strip() or None)["pairs"])
     completer = SlashCommandCompleter(
-        skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles())
+        skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles(),
+        commands=localized_commands)
     # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
     # skills/bundles are the only completions for an inline `/skill` typed mid-message.
     skill_names = {key.lstrip("/").lower() for key in (*get_skill_commands(), *get_skill_bundles())}

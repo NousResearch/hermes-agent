@@ -66,8 +66,8 @@ def managed_python_env(
     env = dict(os.environ if base_env is None else base_env)
     for key in (
         "CONDA_DEFAULT_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT", "UV_NO_MANAGED_PYTHON",
-        "UV_PYTHON", "UV_PYTHON_DOWNLOADS", "UV_SYSTEM_PYTHON", "VIRTUAL_ENV", "PYTHONHOME",
-        "PYTHONPATH"):
+        "UV_PYTHON", "UV_PYTHON_DOWNLOADS", "UV_PYTHON_PREFERENCE", "UV_SYSTEM_PYTHON",
+        "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
         env.pop(key, None)
     env.update({
         "UV_MANAGED_PYTHON": "1", "UV_NO_CONFIG": "1", "UV_PYTHON_INSTALL_BIN": "0",

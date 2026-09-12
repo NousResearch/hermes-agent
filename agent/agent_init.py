@@ -1270,6 +1270,9 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
     if not skip_memory:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+            # Align with doctor/dashboard: builtin/built-in/none → no external plugin.
+            from plugins.memory import normalize_memory_provider_name as _norm_mem
+            _mem_provider_name = _norm_mem(_mem_provider_name)
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem

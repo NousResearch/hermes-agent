@@ -1242,7 +1242,13 @@ check_network_prerequisites() {
 
     local url
     local failed=false
-    local checks=("https://pypi.org/simple/" "https://duckduckgo.com/")
+    # Install-critical hosts only: pypi.org serves the venv, github.com serves the
+    # clone. A "web search works" proxy like duckduckgo.com is intentionally NOT a
+    # gate — it is policy-blocked on mainland-China networks where the install
+    # itself works fine, and a probe that fails there printed a false
+    # "Network checks failed" warning before a single byte was fetched.
+    local checks=("https://pypi.org/simple/" "https://github.com/")
+    local web_search_reachable=true
 
     if ! command -v curl >/dev/null 2>&1; then
         log_warn "curl not found; skipping connectivity probes"
@@ -1255,6 +1261,15 @@ check_network_prerequisites() {
     local pids=()
     local tmpdir
     tmpdir=$(mktemp -d)
+    # Informational web-search probe (duckduckgo.com) — never gates the warning:
+    # on networks where it is policy-blocked, everything the installer needs can
+    # still be reachable, so its failure is only mentioned, never counted.
+    (
+        if ! curl -fsSI --max-time 8 "https://duckduckgo.com/" >/dev/null 2>&1; then
+            : > "$tmpdir/web_search_blocked"
+        fi
+    ) &
+    pids+=($!)
     local i=0
     for url in "${checks[@]}"; do
         (
@@ -1275,7 +1290,14 @@ check_network_prerequisites() {
         fi
         i=$((i + 1))
     done
+    if [ -e "$tmpdir/web_search_blocked" ]; then
+        web_search_reachable=false
+    fi
     rm -rf "$tmpdir"
+
+    if [ "$failed" = false ] && [ "$web_search_reachable" = false ]; then
+        log_info "Web search (duckduckgo.com) is unreachable; the install itself is not affected."
+    fi
 
     if [ "$failed" = false ]; then
         log_success "Internet connectivity looks good"
@@ -1286,7 +1308,7 @@ check_network_prerequisites() {
         log_warn "Termux network prerequisites may be incomplete."
         log_info "Try: pkg install -y ca-certificates curl && pkg update"
         log_info "If mirrors are stale: termux-change-repo"
-        log_info "Then test: curl -I https://pypi.org/simple/ && curl -I https://duckduckgo.com/"
+        log_info "Then test: curl -I https://pypi.org/simple/ && curl -I https://github.com/"
     else
         log_warn "Network checks failed. Hermes install may complete, but web search and dependency downloads can fail."
         log_info "Verify internet/DNS and retry if pip install fails."

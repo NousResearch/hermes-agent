@@ -1203,6 +1203,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     """Screenshot the current page for visual inspection. Native-vision models get the image
     attached to the conversation; otherwise the auxiliary vision model returns a text
     analysis. The file is kept and its path returned (MEDIA:<path>)."""
+    from agent.vault_identity_freeze import refuse_if_identity_frozen
+    frozen = refuse_if_identity_frozen(task_id)
+    if frozen:
+        return frozen
     if _is_camofox_mode():
         return _camofox("camofox_vision", question, annotate, task_id)
 

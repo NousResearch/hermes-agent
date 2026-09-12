@@ -96,6 +96,8 @@ account token (`OP_SERVICE_ACCOUNT_TOKEN`).
 
 ```yaml
 vault:
+  identity:
+    enabled: false          # SSN / tax / passport fill (off by default)
   onepassword:
     enabled: false          # opt OUT of a detected manager (default: on when installed)
     account: ""             # `op --account` shorthand; empty = default

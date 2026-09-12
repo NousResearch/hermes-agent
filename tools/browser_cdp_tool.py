@@ -262,6 +262,10 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     WebSocket instead — the only reliable way to evaluate inside an iframe where fresh per-call connections
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
+    from agent.vault_identity_freeze import refuse_identity_cdp
+    frozen = refuse_identity_cdp(method, params or {}, task_id)
+    if frozen:
+        return frozen
     effective_task_id = task_id or "default"
 
     if frame_id:

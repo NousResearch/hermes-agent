@@ -2177,6 +2177,9 @@ DEFAULT_CONFIG = {
     # External password managers are unlocked per session with a masked master-password prompt;
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
+        "identity": {
+            "enabled": False,   # SSN / tax / passport fill. Off by default; opt in explicitly.
+        },
         "onepassword": {
             "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
             "account": "",          # account shorthand for `op --account`; empty = default account.

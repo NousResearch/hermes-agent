@@ -188,6 +188,13 @@ _TAB_PROBES = {
     "login": "!!document.querySelector('input[type=password]')",
     "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
     "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
+    "identity": (
+        "!!document.querySelector('input[autocomplete=ssn], input[autocomplete=tax-id], "
+        "input[autocomplete=itin], input[autocomplete=ein], input[autocomplete=national-id], "
+        "input[autocomplete=passport], input[autocomplete=passport-number], "
+        "[name*=ssn i], [name*=itin i], [name*=passport i], [name*=tax-id i], [name*=tax_id i], "
+        "[aria-label*=social security i], [placeholder*=ssn i], [placeholder*=passport i]')"
+    ),
 }
 
 
@@ -402,12 +409,19 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         build_fill_js,
         build_inspection_js,
         classify_checkout_control,
+        classify_identity_control,
         classify_login_control,
         select_checkout_fills,
         select_password_fill,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
-    from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
+    from agent.vault_store import (
+        ADDRESS_FIELDS,
+        IDENTITY_FIELDS,
+        PAYMENT_FIELDS,
+        identity_vault_enabled,
+        scrub_secret_from_text,
+    )
 
     effective_task_id = task_id or "default"
     backend = backend_for_handle(handle)
@@ -435,6 +449,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if meta.kind != "login" and not meta.origin:
         return json.dumps({"success": False, "error_type": "no_origin",
                            "error": f"Vault item {handle!r} has no bound origin; {meta.kind} items are filled only on the site they were saved for."})
+    if meta.kind == "identity" and not identity_vault_enabled():
+        return json.dumps({"success": False, "error_type": "identity_disabled",
+                           "error": "Identity vault items are disabled (set vault.identity.enabled: true)."})
     if meta.kind == "payment" and not _confirm_payment_fill(meta.label, str(meta.origin)):
         return json.dumps({"success": False, "error_type": "payment_declined",
                            "error": "The user did not confirm filling this payment card. Do not retry; ask them instead."})
@@ -472,7 +489,12 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     if not isinstance(raw_controls, list):
         return json.dumps({"success": False, "error": "Page input inspection returned no usable controls."})
 
-    classify = classify_login_control if meta.kind == "login" else classify_checkout_control
+    if meta.kind == "login":
+        classify = classify_login_control
+    elif meta.kind == "identity":
+        classify = classify_identity_control
+    else:
+        classify = classify_checkout_control
     classified: list[ClassifiedLoginControl] = []
     for raw in raw_controls:
         if not isinstance(raw, dict):
@@ -490,7 +512,12 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
             fills = select_password_fill(classified, secret["password"])
         else:
             secret = backend.resolve_secret(handle)
-            fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
+            field_tokens = (
+                PAYMENT_FIELDS if meta.kind == "payment"
+                else IDENTITY_FIELDS if meta.kind == "identity"
+                else ADDRESS_FIELDS
+            )
+            fills = select_checkout_fills(classified, secret, field_tokens)
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
@@ -498,12 +525,16 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         return json.dumps(
             {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}
         )
+    if meta.kind == "identity" and not _confirm_identity_fill(fills, str(meta.origin)):
+        return json.dumps({"success": False, "error_type": "identity_declined",
+                           "error": "The user did not confirm filling this identity field. Do not retry; ask them instead."})
 
     # Register the secret bytes with the model-egress redaction boundary
     # BEFORE they touch the page: any later browser_* result (including
     # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
     # Address values are not secrets but the card fields are: register every payment value.
-    for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
+    # Identity numbers are secrets too: register every identity value before the write.
+    for value in (secret.values() if meta.kind in ("payment", "identity") else [secret.get("password", "")]):
         register_vault_redaction_value(value)
 
     try:
@@ -539,6 +570,10 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
             }
         )
     filled = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
+    if meta.kind == "identity" and int(filled) > 0:
+        from agent.vault_identity_freeze import activate_identity_freeze
+
+        activate_identity_freeze(str(meta.origin))
 
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": meta.origin}
@@ -563,6 +598,29 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
         surface="vault-payment") == "accept"
 
 
+_IDENTITY_FIELD_TITLES = {
+    "ssn": "SSN",
+    "tax-id": "tax_id",
+    "itin": "ITIN",
+    "ein": "EIN",
+    "national-id": "national_id",
+    "passport-number": "passport_number",
+}
+
+
+def _confirm_identity_fill(fills: list, origin: str) -> bool:
+    """Payment-class confirm before an SSN/tax/passport number is written. Headless / decline / cancel refuse."""
+    from tools.approval_prompt import request_elicitation_consent
+
+    token = str((fills[0] or {}).get("token") or "identity") if fills else "identity"
+    field = _IDENTITY_FIELD_TITLES.get(token, token)
+    return request_elicitation_consent(
+        f"Fill identity field '{field}' on {origin}",
+        "The agent wants to enter a saved identity number (SSN / tax / passport) into this page. "
+        "The value never enters the conversation. Approve only if you intend to fill it here.",
+        surface="vault-identity") == "accept"
+
+
 # ---------------------------------------------------------------------------
 # Schemas + registration
 # ---------------------------------------------------------------------------
@@ -570,8 +628,8 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
 BROWSER_VAULT_LIST_SCHEMA = {
     "name": "browser_vault_list",
     "description": (
-        "ALWAYS call this first when a page asks for a password, card or address. Lists saved website logins, "
-        "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
+        "ALWAYS call this first when a page asks for a password, card, address or identity number. Lists saved website logins, "
+        "payment cards, addresses and (when enabled) identity items as handles with metadata (kind, label, backend, bound origin; logins also "
         "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
         "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
         "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
@@ -605,10 +663,11 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
         "the password field (type the identifier/username yourself first with the browser's input tool); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
-        "fills the address fields. Values are resolved server-side and never appear in the conversation. "
-        "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
-        "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
-        "payment_declined result."
+        "fills the address fields; an identity item fills SSN/tax/passport after the user confirms "
+        "(refused when vault.identity.enabled is false). Values are resolved server-side and never appear "
+        "in the conversation. Refused unless the page origin exactly matches the item's bound origin "
+        "(re-checked atomically at fill time). If a password manager is locked the user is prompted to unlock "
+        "first. Never retry a payment_declined or identity_declined result."
     ),
     "parameters": {
         "type": "object",

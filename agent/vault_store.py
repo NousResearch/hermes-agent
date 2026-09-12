@@ -11,8 +11,9 @@ Design notes:
   file and vault file are created 0600 under ``<HERMES_HOME>/vault/``.
 - Ported design (opaque-handle vault fill) from Merit-Systems/OpenInstinct
   (MIT): lib/manager/server/secret-store.ts + vault services.
-- Three item kinds: ``login`` (password-only secret), ``payment`` (card fields) and
-  ``address``; ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` are the canonical payload names.
+- Four item kinds: ``login`` (password-only secret), ``payment`` (card fields),
+  ``address``, and ``identity`` (SSN/tax/passport; gated by ``vault.identity.enabled``).
+  ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` / ``IDENTITY_FIELDS`` are the canonical payload names.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from urllib.parse import urlsplit
 
 from hermes_constants import get_hermes_home
 
-VAULT_KINDS = ("login", "payment", "address")
+VAULT_KINDS = ("login", "payment", "address", "identity")
 
 LOGIN_IDENTIFIER_TYPES = ("email", "phone", "username")
 
@@ -45,6 +46,10 @@ PAYMENT_FIELDS = {
 ADDRESS_FIELDS = {
     "address_line1": "address-line1", "address_line2": "address-line2", "city": "address-level2",
     "state": "address-level1", "postal_code": "postal-code", "country": "country-name",
+}
+IDENTITY_FIELDS = {
+    "ssn": "ssn", "tax_id": "tax-id", "itin": "itin", "ein": "ein",
+    "national_id": "national-id", "passport_number": "passport-number",
 }
 REQUIRED_FIELDS = {"payment": ("card_number", "exp_month", "exp_year", "cvc"),
                    "address": ("address_line1", "city", "postal_code", "country")}
@@ -65,6 +70,17 @@ except ImportError:  # pragma: no cover - platform-specific fallback
 
 class VaultError(Exception):
     """Vault failure that is safe to surface (never contains secret values)."""
+
+
+def identity_vault_enabled() -> bool:
+    """``vault.identity.enabled`` — default / missing is false (identity is opt-in)."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        block = (load_config_readonly().get("vault") or {}).get("identity") or {}
+        return bool(block.get("enabled"))
+    except Exception:
+        return False
 
 
 _OTP_ALGOS = {"SHA1": "sha1", "SHA256": "sha256", "SHA512": "sha512"}
@@ -345,6 +361,18 @@ class VaultStore:
             # metadata and any stray origin echo is dropped.
             otp_secret = normalize_otp_secret(str(secret.get("otp_secret") or ""))
             secret = {"password": secret["password"], **({"otp_secret": otp_secret} if otp_secret else {})}
+        elif kind == "identity":
+            if not identity_vault_enabled():
+                raise VaultError("identity items are disabled (set vault.identity.enabled: true)")
+            if not origin:
+                raise VaultError("origin is required for identity items")
+            norm_origin = normalize_origin(origin)
+            # File/PDF/image keys are dropped (never stored); at least one canonical field is required.
+            secret = {k: str(v) for k, v in secret.items() if k in IDENTITY_FIELDS and str(v or "").strip()}
+            if not secret:
+                raise VaultError(
+                    "identity items require at least one of ssn, tax_id, itin, ein, national_id, passport_number"
+                )
         else:
             allowed = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
             secret = {k: str(v) for k, v in secret.items() if k in allowed and str(v or "").strip()}

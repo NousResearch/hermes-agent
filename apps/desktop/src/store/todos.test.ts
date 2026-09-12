@@ -52,6 +52,15 @@ describe('setSessionTodos finished-list auto-clear', () => {
 
     expect($todosBySession.get().s1).toHaveLength(2)
   })
+
+  it('does not re-show a finished list when the same revision is read again', () => {
+    setSessionTodos('s1', [todo('a', 'completed')], 3)
+    vi.advanceTimersByTime(5_000)
+
+    setSessionTodos('s1', [todo('a', 'completed')], 3)
+
+    expect($todosBySession.get().s1).toBeUndefined()
+  })
 })
 
 describe('clearActiveSessionTodos (turn-end cleanup)', () => {
@@ -95,10 +104,10 @@ describe('todosForHydration (stale-active guard on restore)', () => {
     expect(todosForHydration([todo('a', 'pending')])).toBeNull()
   })
 
-  it('restores a finished list so its linger shows the final checkmarks', () => {
+  it('does not restore a finished list from an earlier turn', () => {
     const finished = [todo('a', 'completed'), todo('b', 'cancelled')]
 
-    expect(todosForHydration(finished)).toEqual(finished)
+    expect(todosForHydration(finished)).toBeNull()
   })
 
   it('returns null when there is nothing stored', () => {

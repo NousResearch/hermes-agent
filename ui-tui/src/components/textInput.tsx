@@ -331,6 +331,70 @@ function nextPos(s: string, p: number) {
   return s.length
 }
 
+/**
+ * Previous full Unicode code point boundary before `p`, in UTF-16 indices.
+ *
+ * Unlike `prevPos` (grapheme-cluster granularity), this steps back exactly
+ * one code point and never splits a surrogate pair: an emoji like U+1F600
+ * (two UTF-16 units) stays a single deletable unit.
+ */
+function prevCodepointPos(s: string, p: number): number {
+  const pos = Math.max(0, Math.min(p, s.length))
+
+  if (pos === 0) {
+    return 0
+  }
+
+  const last = pos - 1
+  const code = s.charCodeAt(last)
+
+  // A trailing low surrogate is the second half of a surrogate pair; the
+  // code point begins one UTF-16 unit earlier.
+  if (code >= 0xdc00 && code <= 0xdfff && last > 0) {
+    return last - 1
+  }
+
+  return last
+}
+
+/** Any Unicode combining mark (Mn / Mc / Me): Thai vowels & tones,
+ *  Devanagari vowel signs, Vietnamese / Arabic diacritics, etc. */
+const COMBINING_MARK_RE = /\p{M}/u
+
+/**
+ * Backward-delete for the composer (readline Backspace semantics).
+ *
+ * Cursor movement keeps grapheme-cluster granularity (`prevPos`), but a
+ * Backspace at the very end of the input whose preceding code point is a
+ * combining mark removes just that mark — the convention native text fields
+ * follow for Thai (ก + ◌ิ → ก), Devanagari, Vietnamese and Arabic
+ * diacritics. Deleting the whole cluster forces retyping the base consonant
+ * after every vowel/tone typo (upstream #94512).
+ *
+ * Everywhere else — plain ASCII, mid-text backspace, ZWJ emoji sequences,
+ * IME compositions — keeps the deliberate grapheme-cluster delete so
+ * pre-existing behavior is untouched. Per-codepoint deletion is deliberately
+ * limited to end-of-input: after removing a trailing mark the cursor lands
+ * at the end of the string (always a grapheme boundary), so `commit`'s
+ * `snapPos` cannot yank it mid-cluster.
+ */
+export function backspaceDelete(value: string, cursor: number): { cursor: number; value: string } {
+  if (cursor <= 0) {
+    return { cursor, value }
+  }
+
+  const codepointStart = prevCodepointPos(value, cursor)
+  const prevCode = value.codePointAt(codepointStart)
+  const atEnd = cursor === value.length
+
+  const prevIsCombining =
+    prevCode !== undefined && COMBINING_MARK_RE.test(String.fromCodePoint(prevCode))
+
+  const back = atEnd && prevIsCombining ? codepointStart : prevPos(value, cursor)
+
+  return { cursor: back, value: value.slice(0, back) + value.slice(cursor) }
+}
+
 function wordLeft(s: string, p: number) {
   let i = snapPos(s, p) - 1
 
@@ -1553,9 +1617,11 @@ export function TextInput({
 
           return
         } else {
-          const t = prevPos(v, c)
-          v = v.slice(0, t) + v.slice(c)
-          c = t
+          // Grapheme-cluster delete EXCEPT at end-of-input over a combining
+          // mark, where the trailing mark (one code point) is removed so a
+          // Thai/Devanagari/etc. vowel-tone typo does not eat the base glyph
+          // (upstream #94512). See `backspaceDelete`.
+          ;({ cursor: c, value: v } = backspaceDelete(v, c))
         }
       } else if (delFwd && c < v.length) {
         if (isLineKillModifier(k)) {

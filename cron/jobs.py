@@ -2781,13 +2781,19 @@ def _sweep_completed_oneshots(
 
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
-    with _fire_job_lock(job_id) as acquired:
-        if not acquired:
-            return False
-        return _heartbeat_fire_claim_locked(
-            job_id,
-            expected_owner=expected_owner,
-        )
+    """Refresh an active ``fire_claim`` without extending another owner's lease.
+
+    This is a pure metadata timestamp update (no external side effects), so it
+    does NOT need the fire fence lock.  Holding ``_fire_job_lock`` here while
+    inside it acquiring ``_jobs_lock`` inverted the lock order relative to
+    ``mark_job_run`` (which takes ``_fire_job_lock`` while already holding
+    ``_jobs_lock`` via the gateway tick), causing a deadlock when the global
+    jobs-file flock was contended (#106737).
+    """
+    return _heartbeat_fire_claim_locked(
+        job_id,
+        expected_owner=expected_owner,
+    )
 
 
 def _heartbeat_fire_claim_locked(job_id: str, *, expected_owner: str) -> bool:

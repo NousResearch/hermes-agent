@@ -75,23 +75,21 @@ class _ReadConfig(dict):
 
 
 def _read_config() -> dict:
+    from plugins.memory.honcho.oauth import _read_config as _read_config_tolerant
     path = _config_path()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        raw = {}
-    return _ReadConfig(raw, path)
+    return _ReadConfig(_read_config_tolerant(path), path)
 
 
 class ConfigWriteRefused(Exception):
     """honcho.json exists on disk but does not parse, so no command may overwrite it."""
 
 
-def _refuse_unparseable(path: Path) -> None:
-    """Raise ConfigWriteRefused when ``path`` exists but cannot be parsed; writing back ``{}`` would drop every host."""
+def _refuse_unparseable(path: Path) -> dict:
+    """Return ``path``'s parsed content ({} when absent); raise ConfigWriteRefused when it exists but cannot
+    be parsed, since writing back ``{}`` would drop every host."""
     from plugins.memory.honcho.oauth import _read_config_strict
     try:
-        _read_config_strict(path)
+        return _read_config_strict(path)
     except (OSError, ValueError) as e:
         raise ConfigWriteRefused(f"{path} exists but could not be read as JSON ({e}). Nothing was written. "
                                  "Fix or move the file, then re-run.") from e
@@ -138,17 +136,18 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
     """Persist ``cfg`` under the token refresh's cross-process lock. The object _read_config() returned
     has only its edits applied onto a fresh read of disk; a plain dict is written whole. A read that
     resolved to a seed file (~/.honcho or a profile) is written whole only while ``path`` does not exist."""
-    from plugins.memory.honcho.oauth import _config_refresh_lock, _read_config_strict, _refresh_lock
+    from plugins.memory.honcho.oauth import _config_refresh_lock, _refresh_lock
     from utils import atomic_json_write
     path = path or _local_config_path()
     # The file lock is best-effort; _refresh_lock is what keeps an in-process refresh thread out.
     with _refresh_lock, _config_refresh_lock(path):
-        _refuse_unparseable(path)
+        disk = _refuse_unparseable(path)
         out = cfg
-        if getattr(cfg, "path", None) == path:
-            out = _apply_edits(cfg.snapshot, cfg, _read_config_strict(path))
-        elif isinstance(cfg, _ReadConfig) and path.exists():
-            out = _apply_edits(cfg.snapshot, cfg, _overlay_local(cfg.snapshot, _read_config_strict(path)))
+        if isinstance(cfg, _ReadConfig):
+            if cfg.path == path:
+                out = _apply_edits(cfg.snapshot, cfg, disk)
+            elif path.exists():
+                out = _apply_edits(cfg.snapshot, cfg, _overlay_local(cfg.snapshot, disk))
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, out, mode=0o600)
         if isinstance(cfg, _ReadConfig):  # a later write on the same object applies only edits made after this one

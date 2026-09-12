@@ -367,18 +367,17 @@ def force_refresh_token(path: Path, host: str, *, failed_access_token: str | Non
         if cred is None:
             _expiry_cache.pop(key, None)
             return None
+        # Adopting a sibling's rotation is a disk read, so it comes before the exchange gates: disk, not
+        # the expiry cache, is the signal (the cache is empty in sibling processes).
+        cached = _expiry_cache.get(key)
+        moved_off_failed = failed_access_token and cred.access_token != failed_access_token
+        moved_off_cached = cached is not None and cred.access_token != cached[1]
+        if (moved_off_failed or moved_off_cached) and not cred.is_expired(now=now):
+            _expiry_cache[key] = (cred.expires_at, cred.access_token)
+            return cred.access_token
         # Dead grant, or an exchange just failed transiently: callers fail open.
         if _grant_is_dead(key, cred) or _in_failure_cooldown(key):
             return None
-        # Disk, not the expiry cache, is the signal: the cache is empty in sibling processes.
-        if failed_access_token and cred.access_token != failed_access_token and not cred.is_expired(now=now):
-            _expiry_cache[key] = (cred.expires_at, cred.access_token)
-            return cred.access_token
-        cached = _expiry_cache.get(key)
-        # Another thread or process already rotated: adopt the newer on-disk token.
-        if cached is not None and cred.access_token != cached[1] and not cred.is_expired(now=now):
-            _expiry_cache[key] = (cred.expires_at, cred.access_token)
-            return cred.access_token
         rotated = _rotate_and_persist(path, host, key, cred, now=now, op_label="forced refresh")
         if rotated is not None:
             logger.info("Honcho OAuth token force-refreshed for host %s after an auth failure", host)

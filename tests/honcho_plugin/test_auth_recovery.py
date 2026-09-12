@@ -193,10 +193,11 @@ class TestForceRefreshToken:
         )
         assert oauth.force_refresh_token(path, "hermes") == "hch-at-2"
 
-    @pytest.mark.parametrize("rotated_by", ["first waiter", "sibling process"])
+    @pytest.mark.parametrize("rotated_by", ["first waiter", "sibling process", "sibling process during our cooldown"])
     def test_401_on_a_bearer_disk_has_moved_off_adopts_without_exchange(self, tmp_path, monkeypatch, rotated_by):
         """The failing bearer disagreeing with disk is enough to adopt: a replayed refresh token can
-        revoke the grant, and the expiry cache is empty in a sibling process."""
+        revoke the grant, and the expiry cache is empty in a sibling process. Adopting is a disk read,
+        so our own recent failed exchange (the cooldown) does not block it."""
         path = tmp_path / "honcho.json"
         far = time.time() + 7200
         _write(path, {"hosts": {"hermes": _host_block(expires_at=far)}})
@@ -206,6 +207,8 @@ class TestForceRefreshToken:
         else:
             _write(path, {"hosts": {"hermes": {**_host_block(refresh="hch-rt-new2", expires_at=far), "apiKey": "hch-at-new2"}}})
             oauth._expiry_cache.clear()
+            if rotated_by.endswith("cooldown"):
+                oauth._refresh_failure_at[(str(path), "hermes")] = time.monotonic()
         monkeypatch.setattr(oauth, "_http_post_form_status", lambda *a, **k: pytest.fail("must adopt the on-disk grant, not exchange"))
         assert oauth.force_refresh_token(path, "hermes", failed_access_token="hch-at-old") == "hch-at-new2"
         assert oauth._expiry_cache[(str(path), "hermes")][1] == "hch-at-new2"

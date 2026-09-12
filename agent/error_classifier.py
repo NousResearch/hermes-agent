@@ -568,6 +568,12 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
         return _v(_R.thinking_signature)
+    # Kimi coding-endpoint (and proxies) reject replayed reasoning_details with
+    # HTTP 400 "invalid type". Same self-heal as thinking_signature: strip
+    # reasoning_details from api_messages only. Both substrings required so
+    # unrelated 400s naming the field stay format_error. Not provider-gated.
+    if status == 400 and "reasoning_details" in msg and "invalid type" in msg:
+        return _v(_R.thinking_signature)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:
         return _v(_R.long_context_tier, should_compress=True)

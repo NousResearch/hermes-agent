@@ -885,6 +885,45 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.long_context_tier
         assert result.should_compress is True
 
+    # ── Kimi coding-endpoint reasoning_details invalid type (#108071) ──
+
+    def test_kimi_reasoning_details_invalid_type_is_thinking_signature(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'the reasoning_details at position 2 entry 0 has an invalid type', 'type': 'invalid_request_error'}}",
+            status_code=400,
+            body={"error": {"message": "the reasoning_details at position 2 entry 0 has an invalid type", "type": "invalid_request_error"}},
+        )
+        r = classify_api_error(e, provider="custom", model="k3")
+        assert r.reason == FailoverReason.thinking_signature and r.retryable is True
+        assert r.should_compress is False
+
+    def test_reasoning_details_without_invalid_type_is_not_thinking_signature(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'the reasoning_details field is not supported', 'type': 'invalid_request_error'}}",
+            status_code=400,
+            body={"error": {"message": "the reasoning_details field is not supported", "type": "invalid_request_error"}},
+        )
+        r = classify_api_error(e, provider="custom", model="k3")
+        assert r.reason != FailoverReason.thinking_signature
+
+    def test_invalid_type_without_reasoning_details_is_not_thinking_signature(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'the tool_calls at position 0 has an invalid type', 'type': 'invalid_request_error'}}",
+            status_code=400,
+            body={"error": {"message": "the tool_calls at position 0 has an invalid type", "type": "invalid_request_error"}},
+        )
+        r = classify_api_error(e, provider="custom", model="k3")
+        assert r.reason != FailoverReason.thinking_signature
+
+    def test_anthropic_thinking_signature_400_still_thinking_signature(self):
+        e = MockAPIError(
+            "thinking blocks in the latest assistant message cannot be modified",
+            status_code=400,
+        )
+        r = classify_api_error(e, provider="anthropic", model="claude-sonnet-4")
+        assert r.reason == FailoverReason.thinking_signature
+        assert r.retryable is True
+
 
     # ── Provider-specific: Anthropic OAuth 1M-context beta forbidden ──
 

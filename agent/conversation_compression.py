@@ -3058,7 +3058,7 @@ def _finish_compaction_boundary(
     agent: Any, compressed: list, *, new_system_prompt: str, old_session_id: Optional[str], in_place: bool,
     compacted_in_place: bool, session_commit_succeeded: bool, defer_context_engine_notification: bool,
     compression_made_progress: bool, compression_used_fallback: bool, compression_feasibility_skip: bool,
-    task_id: str,
+    task_id: str, candidate_discarded: bool,
 ) -> int:
     """Post-commit bookkeeping: notify engines/providers/hooks, re-arm usage tracking.
     Returns the rough post-compression token estimate (diagnostics only)."""
@@ -3106,7 +3106,7 @@ def _finish_compaction_boundary(
 
     # session:compress lets hooks ingest the old session before it's lost;
     # in_place=True tells them the same id was compacted rather than rotated.
-    if getattr(agent, "event_callback", None):
+    if not candidate_discarded and getattr(agent, "event_callback", None):
         with _swallow('event_callback error on session:compress: %s'):
             agent.event_callback(
                 "session:compress",
@@ -3233,6 +3233,9 @@ class _CommitOutcome:
     session_commit_succeeded: bool = False
     compacted_in_place: bool = False
     made_progress: bool = False
+    # Candidate disposition, not SQL settlement or later bookkeeping success.
+    # No-store acceptance and publication followed by a prompt error remain completions.
+    candidate_discarded: bool = False
 
 
 def _commit_compaction(
@@ -3248,6 +3251,7 @@ def _commit_compaction(
     """
     session_commit_succeeded = False
     compacted_in_place = False
+    candidate_discarded = False
     commit_started_at = time.monotonic()
     split_status = "not_applicable"
     old_session_id: Optional[str] = None  # bound only once rotation begins
@@ -3348,6 +3352,7 @@ def _commit_compaction(
                 # needed).
                 messages[:] = copy.deepcopy(messages_before_compression)
                 compressed = messages
+                candidate_discarded = True
                 made_progress = False
                 _restore_prune_rearm_tokens(agent.context_compressor, attempt.snapshot)
             split_status = "aborted" if old_session_id is None and not in_place else "failed_not_indexed"
@@ -3371,6 +3376,7 @@ def _commit_compaction(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
         split_status=split_status, session_commit_succeeded=session_commit_succeeded,
         compacted_in_place=compacted_in_place, made_progress=made_progress,
+        candidate_discarded=candidate_discarded,
     )
 
 
@@ -3715,6 +3721,7 @@ def compress_context(
             agent, compressed, new_system_prompt=new_system_prompt, old_session_id=commit.old_session_id,
             in_place=in_place, compacted_in_place=commit.compacted_in_place,
             session_commit_succeeded=commit.session_commit_succeeded,
+            candidate_discarded=commit.candidate_discarded,
             defer_context_engine_notification=defer_context_engine_notification,
             compression_made_progress=commit.made_progress, compression_used_fallback=_compression_used_fallback,
             compression_feasibility_skip=_compression_feasibility_skip, task_id=task_id,

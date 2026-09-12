@@ -17,11 +17,48 @@ export function createPreviewWatchRegistry({
   sendChanged,
   debounceMs,
   watchImpl = fs.watch,
-  log = console.warn
+  log = console.warn,
+  retryAttempts = 20,
+  retryDelayMs = 250
 }) {
   const watchers = new Map()
 
-  function watch(filePath) {
+  // A transient signal (EINTR) or a briefly-inaccessible directory can make
+  // the SYNCHRONOUS fs.watch() creation throw even though a moment later it
+  // would succeed. On macOS a signal landing mid-syscall raises EINTR right
+  // when the user is about to preview a file in a live repo; retrying for a
+  // bounded budget absorbs that, then the terminal case rethrows (which the
+  // IPC wrapper turns into a rejected invoke — the same crash-free contract
+  // as a hard ENOENT/EPERM). This mirrors the error-containment spirit of
+  // the registry: transient conditions retried, genuinely-broken targets
+  // surfaced, never an uncaught throw that kills the main process.
+  function isRetryable(err: unknown): boolean {
+    const code = (err as NodeJS.ErrnoException)?.code
+
+    return code === 'EINTR' || code === 'EAGAIN' || code === 'EWOULDBLOCK'
+  }
+
+  async function createWatcher(
+    target: string,
+    listener: (...args: any[]) => void
+  ): Promise<fs.FSWatcher> {
+    let attempt = 0
+
+    while (true) {
+      try {
+        return watchImpl(target, listener) as fs.FSWatcher
+      } catch (err) {
+        if (!isRetryable(err) || attempt >= retryAttempts) {
+          throw err
+        }
+
+        attempt += 1
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
+      }
+    }
+  }
+
+  async function watch(filePath) {
     const watchDir = path.dirname(filePath)
     const targetName = path.basename(filePath)
     const id = crypto.randomBytes(12).toString('base64url')
@@ -41,7 +78,7 @@ export function createPreviewWatchRegistry({
     let watcher
 
     try {
-      watcher = watchImpl(watchDir, (_eventType: any, filename: any) => {
+      watcher = await createWatcher(watchDir, (_eventType: any, filename: any) => {
         if (!active) {
           return
         }
@@ -69,9 +106,10 @@ export function createPreviewWatchRegistry({
       })
     } catch (err) {
       // fs.watch can throw SYNCHRONOUSLY (e.g. ENOENT/EPERM when the watch
-      // directory was deleted before the call). Log for diagnostics, then
-      // rethrow: inside ipcMain.handle this becomes a rejected invoke() for
-      // the renderer — terminal for this watch, never a main-process crash.
+      // directory was deleted before the call). Transient EINTR/EAGAIN/
+      // EWOULDBLOCK are retried; other failures are logged and rethrown:
+      // inside ipcMain.handle this becomes a rejected invoke() for the
+      // renderer — terminal for this watch, never a main-process crash.
       log(`[preview-watch] failed to watch ${watchDir}:`, err)
       throw err
     }
@@ -108,7 +146,7 @@ export function createPreviewWatchRegistry({
    * in the directory fires the debounced callback. The same error-containment
    * and lifecycle management applies.
    */
-  function watchDirectory(
+  async function watchDirectory(
     dirPath,
     { dirExists }: { dirExists: (p: string) => boolean } = { dirExists: p => fs.existsSync(p) }
   ) {
@@ -126,7 +164,7 @@ export function createPreviewWatchRegistry({
     let watcher
 
     try {
-      watcher = watchImpl(dirPath, () => {
+      watcher = await createWatcher(dirPath, () => {
         if (!active) {
           return
         }

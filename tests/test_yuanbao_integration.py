@@ -127,7 +127,8 @@ class TestGatewayRunnerRegistration:
         runner._session_model_overrides = {}
         return runner, GatewayRunner
 
-    def test_runner_creates_yuanbao_adapter(self):
+    @pytest.mark.asyncio
+    async def test_runner_creates_yuanbao_adapter(self):
         """GatewayRunner._create_adapter 能为 YUANBAO 返回 YuanbaoAdapter 实例"""
         from gateway.config import GatewayConfig
         config = make_config(enabled=True)
@@ -137,7 +138,7 @@ class TestGatewayRunnerRegistration:
             runner, _ = self._make_minimal_runner(gw_config)
             # websockets 在测试环境可能未安装，mock 掉 WEBSOCKETS_AVAILABLE
             with patch("gateway.platforms.yuanbao.WEBSOCKETS_AVAILABLE", True):
-                adapter = runner._create_adapter(Platform.YUANBAO, config)
+                adapter = await runner._create_adapter(Platform.YUANBAO, config)
         except ImportError as e:
             pytest.skip(f"run.py import unavailable in test env: {e}")
 

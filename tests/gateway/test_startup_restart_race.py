@@ -146,7 +146,7 @@ async def test_startup_aborts_when_restart_begins_during_platform_connect(tmp_pa
         first_disconnected.set()
 
     telegram.disconnect = disconnect_and_release
-    runner._create_adapter = MagicMock(side_effect=[telegram, slack])
+    runner._create_adapter = AsyncMock(side_effect=[telegram, slack])
 
     result = await asyncio.wait_for(runner.start(), timeout=30)
 

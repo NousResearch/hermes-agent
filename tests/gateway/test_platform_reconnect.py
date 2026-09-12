@@ -104,7 +104,7 @@ class TestStartupPlatformIsolation:
             Platform.TELEGRAM: StubAdapter(platform=Platform.TELEGRAM),
             Platform.FEISHU: StubAdapter(platform=Platform.FEISHU),
         }
-        runner._create_adapter = MagicMock(
+        runner._create_adapter = AsyncMock(
             side_effect=lambda platform, _config: adapters[platform]
         )
         runner._connect_adapter_with_timeout = AsyncMock(

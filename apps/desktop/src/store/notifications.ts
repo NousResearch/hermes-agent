@@ -1,7 +1,6 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
-import { isLocalBackendSlotWaitTimeout, requestPoolLimitsSettings } from '@/store/pool-limits'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
 
@@ -196,19 +195,12 @@ export function notify(input: NotificationInput): string {
 
 export function notifyError(error: unknown, fallback: string): string {
   const readable = readableError(error, fallback)
-  const poolSlotTimeout = isLocalBackendSlotWaitTimeout(error)
 
   return notify({
-    action: poolSlotTimeout
-      ? {
-          label: translateNow('desktop.poolSlotTimeoutOpenSettings'),
-          onClick: requestPoolLimitsSettings
-        }
-      : undefined,
     kind: 'error',
     title: fallback,
-    message: poolSlotTimeout ? translateNow('desktop.poolSlotTimeoutBody') : readable.message,
-    detail: poolSlotTimeout ? readable.message : readable.detail
+    message: readable.message,
+    detail: readable.detail
   })
 }
 

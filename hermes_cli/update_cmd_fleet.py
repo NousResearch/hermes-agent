@@ -25,6 +25,14 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 # The existing ``.update-incomplete`` / ``.lazy-refresh-incomplete`` markers gate dependency/venv repair;
 # this one is the fleet-restart obligation after a git pull that advanced HEAD (#95294).
 _FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
+# Lease-with-verification bounds (see _reconcile_fleet_restart_pending): an external restart
+# (launchd KeepAlive, desktop respawn, reboot) can discharge the obligation before any
+# ``hermes update`` runs; only positive evidence clears, ambiguity keeps warning (#XRE marker-fix).
+_FLEET_RESTART_PENDING_IDLE_GRACE_SECONDS = 600.0      # trust "no live gateways" only after this
+# Age ceiling applies ONLY to unverifiable evidence: expected_sha="" legacy markers and
+# unknown/unresolvable probe verdicts. Provably stale rows (code_sha present && != expected)
+# NEVER age out — the cure for those is a gateway restart, not time. See _fleet_restart_verdict.
+_FLEET_RESTART_PENDING_MAX_AGE_SECONDS = 7 * 86400.0   # backstop for unverifiable markers
 
 _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
@@ -46,7 +54,17 @@ def _fleet_restart_pending_marker_path() -> Path:
 
 
 def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> None:
-    """Drop the pull→restart obligation breadcrumb. Never raises."""
+    """Drop the pull→restart obligation breadcrumb. Never raises.
+
+    Written even when *expected_sha* is empty (sha resolution can be flaky exactly on the
+    interrupted runs this marker exists for) — but with a LOUD log, so an unverifiable
+    obligation is visible: it can only be discharged by the age ceiling. See update_cmd.py's
+    write site. Marker format (additive-only; readers tolerate missing fields):
+      started=<unix ts>      write time
+      pid=<int>              updater pid — WRITE-LOCK while alive (see _marker_writer_alive)
+      writer_start=<epoch>   writer's process creation time (pid+start pairing, recycle-safe)
+      expected_sha=<40hex>   the obligation in force; empty = unverifiable (age-ceiling only)
+    """
     from hermes_cli.update_cmd import _m
     path = _fleet_restart_pending_marker_path()
     if _m()._pytest_owns_live_checkout(path.parent):
@@ -54,11 +72,27 @@ def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> None:
         return
     try:
         lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
+        with suppress(Exception):
+            from gateway.status import get_process_start_time
+            writer_start = get_process_start_time(os.getpid())
+            if writer_start is not None:
+                lines.append(f"writer_start={writer_start}")
         if expected_sha:
             lines.append(f"expected_sha={expected_sha}")
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        else:
+            logger.warning(
+                "fleet_restart_pending written WITHOUT expected_sha: unverifiable obligation, "
+                "dischargeable only by the %d-day age ceiling", _FLEET_RESTART_PENDING_MAX_AGE_SECONDS // 86400,
+            )
+        # Atomic replace: a kill mid-write must never leave a truncated marker that parses
+        # as {} and silently degrades to the age-ceiling path.
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
     except OSError as exc:
         logger.debug("Could not write fleet-restart-pending marker: %s", exc)
+        with suppress(OSError):
+            path.with_name(path.name + ".tmp").unlink()
 
 
 def _clear_fleet_restart_pending_marker() -> None:
@@ -172,6 +206,9 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         if not owed:
             return False
         fleet = collect_fleet_versions()
+        # None = sweep incomplete: evidence unavailable, cannot cover the receipt (fail-closed).
+        if fleet is None:
+            return False
         if not fleet or any(
             row.get("state") != "current" or row.get("code_sha") != expected_sha
             for row in fleet
@@ -183,15 +220,147 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _read_fleet_restart_pending_marker() -> dict[str, str]:
+    """Parse the marker's key=value lines; {} when absent/unreadable. Never raises."""
+    try:
+        text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if key and value:
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def _marker_writer_alive(fields: dict[str, str]) -> bool:
+    """True while the updater PID that wrote the marker exists (an update may be in flight).
+
+    Liveness is a WRITE-LOCK, never an expiry rule: a dead writer means the update that owed
+    the restart was interrupted — the pending condition is real until live evidence discharges it.
+    Identity is pid + writer_start pairing (gateway.status.get_process_start_time precedent):
+    a recycled PID whose creation time differs from the recorded one is NOT the writer.
+    """
+    try:
+        pid = int(fields.get("pid", ""))
+    except ValueError:
+        return False
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True  # our own process wrote it — treat as in-flight
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    except OSError:
+        return False
+    recorded_start = fields.get("writer_start", "")
+    if not recorded_start:
+        return True  # legacy marker without the pairing field: pid-only check (additive format)
+    try:
+        from gateway.status import get_process_start_time
+        live_start = get_process_start_time(pid)
+    except Exception:
+        return True  # start time unreadable: keep the conservative write-lock
+    if live_start is None:
+        return True
+    try:
+        return abs(float(live_start) - float(recorded_start)) < 1.0
+    except ValueError:
+        return True  # malformed field: conservative write-lock
+
+
+def _marker_age_seconds(fields: dict[str, str]) -> float:
+    try:
+        return max(0.0, _time.time() - float(fields.get("started", "")))
+    except ValueError:
+        return 0.0
+
+
+def _fleet_restart_verdict(expected_sha: str) -> str:
+    """Live-fleet verdict vs the marker's own obligation: 'match' | 'stale' | 'idle' | 'unknown'.
+
+    Compares against the MARKER's expected_sha (not checkout HEAD): a later pull rewrites the
+    marker, so marker.expected_sha is always the obligation currently in force.
+
+    'stale' is reserved for PROVABLY stale rows: code_sha PRESENT and != expected_sha.
+    Rows with state "unknown" or a missing/unresolvable code_sha are UNVERIFIABLE evidence
+    (gateway predates the identity stamp, or its state file could not be parsed) — they yield
+    verdict "unknown", which routes to the age ceiling instead of pinning the marker forever.
+    A None probe result (incomplete sweep) is also "unknown": never fail open on partial data.
+    """
+    if not expected_sha:
+        return "unknown"
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        rows = collect_fleet_versions()
+    except Exception:
+        return "unknown"
+    if rows is None:
+        return "unknown"  # sweep incomplete — evidence unavailable (fail-closed, A1)
+    # Malformed/non-dict rows are unverifiable evidence: drop them, and if nothing
+    # trustworthy remains, fail closed (never crash the reconcile path — R4).
+    rows = [row for row in rows if isinstance(row, dict)]
+    live = [row for row in rows if row.get("state") != "down"]
+    if not live:
+        return "idle"
+    stale = any(
+        isinstance(row.get("code_sha"), str) and row.get("code_sha") and row["code_sha"] != expected_sha
+        for row in live
+    )
+    if stale:
+        return "stale"
+    return "match" if all(row.get("code_sha") == expected_sha for row in live) else "unknown"
+
+
+def _reconcile_fleet_restart_pending() -> bool:
+    """Verify-then-clear an obligation an external restart may already have discharged.
+
+    Fail-closed: only positive evidence clears (every live gateway stamps the marker's
+    expected_sha, or no gateways are live past the grace window, or an unverifiable marker
+    hits the age ceiling). Ambiguity keeps the marker and the warning.
+
+    CONTRACT: this function MAY CLEAR the marker as a side effect. It is called from
+    ``_pending_fleet_restart_needed`` (a predicate in name only), which is invoked from the
+    CLI-startup warning and the update catch-up gate — both WANT the reconciliation. Any
+    future caller that needs a pure query must not use this path.
+    """
+    fields = _read_fleet_restart_pending_marker()
+    if _marker_writer_alive(fields):
+        return True  # update in flight — don't race it
+    expected = fields.get("expected_sha", "")
+    verdict = _fleet_restart_verdict(expected)
+    if verdict == "match":
+        _clear_fleet_restart_pending_marker()
+        # Warning-level: auto-discharge must be visible in errors.log (audit trail, wizred R3).
+        logger.warning("fleet_restart_pending CLEARED: all live gateways stamp the marker's expected_sha")
+        return False
+    if verdict == "idle" and _marker_age_seconds(fields) > _FLEET_RESTART_PENDING_IDLE_GRACE_SECONDS:
+        _clear_fleet_restart_pending_marker()
+        logger.warning("fleet_restart_pending CLEARED: no live gateways to restart (past grace window)")
+        return False
+    if verdict == "unknown" and _marker_age_seconds(fields) > _FLEET_RESTART_PENDING_MAX_AGE_SECONDS:
+        _clear_fleet_restart_pending_marker()
+        logger.warning("fleet_restart_pending CLEARED: unverifiable marker hit the %d-day age ceiling",
+                       _FLEET_RESTART_PENDING_MAX_AGE_SECONDS // 86400)
+        return False
+    return True  # stale / ambiguous / within grace — keep warning
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
 
-    # The marker has no runtime inventory and may belong to a newer, killed update
-    # than latest.json. An older receipt cannot discharge that unknown obligation.
+    # The marker's payload (started/pid/expected_sha) is reconciled against LIVE fleet state
+    # before it may warn: an external restart that already brought every gateway onto the
+    # marker's expected_sha discharges the obligation (lease-with-verification, fail-closed).
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
-            return True
+            return _reconcile_fleet_restart_pending()
     if not _receipt_reports_stale_runtime():
         return False
     return not _live_fleet_covers_receipt(_current_checkout_sha())

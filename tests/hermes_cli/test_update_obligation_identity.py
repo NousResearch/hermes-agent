@@ -83,4 +83,32 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
         })
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: rows)
-    assert update_cmd_fleet._pending_fleet_restart_needed()
+    if bad == "marker":
+        # REVERSED (lease-with-verification): a stranded marker whose expected_sha matches a
+        # fully-current live fleet is DISCHARGED by that evidence — live truth outranks the
+        # breadcrumb. The old assertion (marker beats live evidence) pinned the 26-day warning bug.
+        try:
+            assert not update_cmd_fleet._pending_fleet_restart_needed()
+        finally:
+            update_cmd_fleet._clear_fleet_restart_pending_marker()
+    else:
+        assert update_cmd_fleet._pending_fleet_restart_needed()
+
+
+def test_unverifiable_row_routes_to_age_ceiling_not_forever_pin(monkeypatch):
+    """M1 (wizred): a row with state='unknown'/code_sha=None is UNVERIFIABLE evidence, not
+    provably stale — it must yield verdict 'unknown' (age-ceiling route), never a forever
+    'stale' pin. Contrast: a present-and-different code_sha stays provably stale."""
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
+    # Unverifiable row: no sha to compare.
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [{"profile": "beta", "state": "unknown", "code_sha": None}],
+    )
+    assert update_cmd_fleet._fleet_restart_verdict("new") == "unknown"
+    # Inverse: present-and-different sha is PROVABLY stale (restart is the cure, not time).
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [{"profile": "beta", "state": "stale", "code_sha": "old"}],
+    )
+    assert update_cmd_fleet._fleet_restart_verdict("new") == "stale"

@@ -17,6 +17,8 @@ No live gateway, no network. Git and restart are mocked.
 from __future__ import annotations
 
 import json
+import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +28,7 @@ import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_fleet as update_cmd_fleet
+from hermes_cli import update_receipt
 import hermes_cli.update_cmd_deps as update_cmd_deps
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
@@ -609,3 +612,322 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+# ---------------------------------------------------------------------------
+# Lease-with-verification: a stranded marker must yield to live fleet evidence.
+# Markers are written DIRECTLY (bypassing the writer) so their pid is dead — the
+# "update in flight" state; the writer-alive guard is exercised separately.
+# ---------------------------------------------------------------------------
+
+_DEAD_PID = 999_999_998
+
+
+def _stranded_marker(expected_sha: str, *, age_seconds: float = 0.0) -> None:
+    path = update_cmd._fleet_restart_pending_marker_path()
+    started = time.time() - age_seconds
+    path.write_text(
+        f"started={started}\npid={_DEAD_PID}\nexpected_sha={expected_sha}\n", encoding="utf-8"
+    )
+
+
+def test_marker_with_live_fleet_at_expected_sha_discharges(monkeypatch):
+    _stranded_marker("a" * 40)
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [{"profile": "neo", "pid": 5, "state": "current", "code_sha": "a" * 40}],
+    )
+    try:
+        assert update_cmd_fleet._pending_fleet_restart_needed() is False
+        assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_dead_pid_marker_with_current_fleet_discharges(monkeypatch):
+    _stranded_marker("b" * 40, age_seconds=26 * 86400)  # the 26-day neo shape
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [
+            {"profile": "herc", "pid": 6, "state": "current", "code_sha": "b" * 40},
+            {"profile": "nvx", "pid": 7, "state": "current", "code_sha": "b" * 40},
+        ],
+    )
+    try:
+        assert update_cmd_fleet._pending_fleet_restart_needed() is False
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_marker_with_stale_fleet_still_pends(monkeypatch):
+    _stranded_marker("c" * 40)
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [{"profile": "neo", "pid": 8, "state": "stale", "code_sha": "old"}],
+    )
+    try:
+        assert update_cmd_fleet._pending_fleet_restart_needed() is True
+        assert update_cmd._fleet_restart_pending_marker_path().is_file()  # fail-closed: kept
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_marker_with_unprobeable_fleet_pends(monkeypatch):
+    _stranded_marker("d" * 40)
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: [])
+    try:
+        assert update_cmd_fleet._pending_fleet_restart_needed() is True  # no evidence ≠ discharge
+        assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_marker_writer_alive_keeps_pending():
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    marker.write_text(
+        f"started={time.time()}\npid={os.getpid()}\nexpected_sha={'e' * 40}\n", encoding="utf-8"
+    )
+    try:
+        assert update_cmd_fleet._pending_fleet_restart_needed() is True  # update in flight: don't race
+        assert marker.is_file()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_marker_without_expected_sha_discharges_only_via_age_ceiling(monkeypatch):
+    path = update_cmd._fleet_restart_pending_marker_path()
+    path.write_text(f"started={time.time()}\npid={_DEAD_PID}\n", encoding="utf-8")
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: [])
+    try:
+        # young unverifiable marker: keep warning
+        assert update_cmd_fleet._pending_fleet_restart_needed() is True
+        assert path.is_file()
+        # past the 30-day ceiling: clear
+        path.write_text(
+            f"started={time.time() - 31 * 86400}\npid={_DEAD_PID}\n", encoding="utf-8"
+        )
+        assert update_cmd_fleet._pending_fleet_restart_needed() is False
+        assert not path.exists()
+    finally:
+        if path.exists():
+            update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_catchup_is_noop_when_fleet_already_current(monkeypatch):
+    _stranded_marker("f" * 40)
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [{"profile": "neo", "pid": 9, "state": "current", "code_sha": "f" * 40}],
+    )
+    called = {"ran": False}
+
+    def _must_not_run():
+        called["ran"] = True
+        return True
+
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", _must_not_run)
+    monkeypatch.setattr(update_cmd_fleet, "_run_pending_fleet_restart", _must_not_run)
+    update_cmd_fleet._apply_pending_fleet_restart_catchup()
+    assert called["ran"] is False
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_startup_warn_silent_when_fleet_current_despite_marker(monkeypatch, capsys):
+    _stranded_marker("1" * 40)
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [{"profile": "xbook", "pid": 10, "state": "current", "code_sha": "1" * 40}],
+    )
+    try:
+        update_cmd._warn_pending_fleet_restart_on_startup()
+        captured = capsys.readouterr()
+        assert "did not restart running gateways" not in captured.err
+        assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    finally:
+        if update_cmd._fleet_restart_pending_marker_path().exists():
+            update_cmd._clear_fleet_restart_pending_marker()
+
+
+# ---------------------------------------------------------------------------
+# Pre-commit bundle (FUP-20260910-11): A1 partial-probe fail-open, M1 stale-vs-
+# unknown forever-pin, atomic write, pid+writer_start pairing, 7d ceiling.
+# ---------------------------------------------------------------------------
+
+def _fleet_rows(*specs):
+    """Build fleet rows: (state, code_sha) tuples -> row dicts."""
+    return [
+        {"profile": f"p{i}", "pid": 100 + i, "state": state, "code_sha": sha}
+        for i, (state, sha) in enumerate(specs)
+    ]
+
+
+def test_probe_abort_midloop_never_clears_marker(monkeypatch, capsys):
+    """T1 (A1 fault-injection, MANDATORY): a sweep that raises on profile k of N returns
+    None; verdict is unknown; the marker is NOT cleared AND the warning persists."""
+    _stranded_marker("a" * 40)
+    calls = {"n": 0}
+
+    def _aborting_probe():
+        # A1 fault-injection at the collect contract layer: an aborted sweep returns
+        # None (per-profile isolation catches the raise inside collect_fleet_versions
+        # and converts it to None) — NEVER partial rows, even when the rows gathered
+        # before the abort all match expected_sha. First call exercises the None
+        # contract; later calls raise outright to prove the except path too.
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("profile k exploded mid-sweep")
+        return None  # aborted sweep — even though rows seen before the abort matched
+
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", _aborting_probe)
+    try:
+        # Not cleared...
+        assert update_cmd_fleet._pending_fleet_restart_needed() is True
+        assert update_cmd._fleet_restart_pending_marker_path().is_file()
+        # ...and still warning (fail-closed = not cleared AND still warning).
+        update_cmd._warn_pending_fleet_restart_on_startup()
+        assert "did not restart running gateways" in capsys.readouterr().err
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+def test_probe_error_does_not_start_grace_clock(monkeypatch):
+    """T2 (neo's caution): consecutive probe errors past the idle-grace window do NOT
+    clear — errors route to the age ceiling only, never the grace path."""
+    _stranded_marker("b" * 40, age_seconds=3600)  # 1h old: way past the 600s grace
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: None,  # aborted sweep (None), not a clean empty sweep
+    )
+    try:
+        assert update_cmd_fleet._pending_fleet_restart_needed() is True
+        assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_unknown_sha_gateway_clears_at_age_ceiling_not_forever(monkeypatch):
+    """T3 (M1): a legacy pre-stamp gateway (state=unknown / code_sha=None) yields verdict
+    unknown, which routes to the age ceiling — the marker does NOT pin forever."""
+    _stranded_marker("c" * 40, age_seconds=1 * 3600)
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [{"profile": "legacy", "pid": 11, "state": "unknown", "code_sha": None}],
+    )
+    path = update_cmd._fleet_restart_pending_marker_path()
+    try:
+        # young unverifiable: keep warning (fail-closed)
+        assert update_cmd_fleet._pending_fleet_restart_needed() is True
+        assert path.is_file()
+        # past the 7d ceiling: clear (not forever)
+        path.write_text(
+            f"started={time.time() - 8 * 86400}\npid={_DEAD_PID}\nexpected_sha={'c' * 40}\n",
+            encoding="utf-8",
+        )
+        assert update_cmd_fleet._pending_fleet_restart_needed() is False
+        assert not path.exists()
+    finally:
+        if path.exists():
+            update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_stale_with_present_sha_keeps_pending_indefinitely(monkeypatch):
+    """T4 (M1 inverse): a PROVABLY stale row (code_sha present && != expected) holds the
+    marker past ANY age — the cure is a restart, not time."""
+    _stranded_marker("d" * 40, age_seconds=100 * 86400)
+    monkeypatch.setattr(
+        update_receipt, "collect_fleet_versions",
+        lambda: [{"profile": "neo", "pid": 12, "state": "stale", "code_sha": "olds" + "h" * 36}],
+    )
+    try:
+        assert update_cmd_fleet._pending_fleet_restart_needed() is True
+        assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_recycled_writer_pid_does_not_block_reconcile(monkeypatch):
+    """T5 (Change 5): a live pid whose process start time DIFFERS from the recorded
+    writer_start is a recycled PID, not the writer — reconciliation proceeds."""
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    marker.write_text(
+        f"started={time.time()}\npid={os.getpid()}\nwriter_start=1234567890.0\n"
+        f"expected_sha={'e' * 40}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet, "_fleet_restart_verdict", lambda expected: "match"
+    )
+    try:
+        assert update_cmd_fleet._marker_writer_alive(
+            {"pid": str(os.getpid()), "writer_start": "1234567890.0"}
+        ) is True  # our OWN pid still counts as in-flight regardless of pairing
+        # A different live pid with a mismatched start time does not count as the writer.
+        def _other_process_start(pid):
+            return 9999999999.0 if pid == 987654 else None
+        from gateway import status as gw_status
+        monkeypatch.setattr(gw_status, "get_process_start_time", _other_process_start)
+        monkeypatch.setattr(update_cmd_fleet.os, "kill", lambda pid, sig: None)  # pid "exists"
+        assert update_cmd_fleet._marker_writer_alive(
+            {"pid": "987654", "writer_start": "1234567890.0"}
+        ) is False
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_writer_alive_with_matching_start_time_blocks(monkeypatch):
+    """T6 (Change 5 inverse): a live pid with a MATCHING start time is the writer —
+    write-lock holds, reconciliation is suppressed."""
+    live_start = 1700000000.0
+    from gateway import status as gw_status
+    monkeypatch.setattr(gw_status, "get_process_start_time", lambda pid: live_start)
+    monkeypatch.setattr(update_cmd_fleet.os, "kill", lambda pid, sig: None)
+    assert update_cmd_fleet._marker_writer_alive(
+        {"pid": "987654", "writer_start": str(live_start)}
+    ) is True
+
+
+def test_truncated_marker_write_is_atomic(monkeypatch):
+    """T7 (M3): the writer uses temp+os.replace — no torn-marker parse window; the tmp
+    file never survives a successful write."""
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="7" * 40)
+    path = update_cmd._fleet_restart_pending_marker_path()
+    try:
+        assert path.is_file()
+        assert not path.with_name(path.name + ".tmp").exists()
+        fields = update_cmd_fleet._read_fleet_restart_pending_marker()
+        assert fields.get("expected_sha") == "7" * 40
+        assert fields.get("writer_start")  # pairing field present on fresh writes
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_unverifiable_write_is_loud_not_refused(monkeypatch, caplog):
+    """Change 4 (wizred variant): expected_sha="" markers are still written (interrupt-
+    recovery net) with a LOUD warning — never silently, never refused."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.update_cmd"):
+        update_cmd._write_fleet_restart_pending_marker(expected_sha="")
+    path = update_cmd._fleet_restart_pending_marker_path()
+    try:
+        assert path.is_file()
+        assert any("WITHOUT expected_sha" in rec.message for rec in caplog.records)
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_error_vs_idle_distinction(monkeypatch):
+    """T8 (item 3 merged with A1): an aborted sweep with zero good rows -> verdict
+    'unknown', NOT 'idle' — the grace window must not run on a broken probe."""
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: None)
+    assert update_cmd_fleet._fleet_restart_verdict("8" * 40) == "unknown"
+
+
+def test_reconcile_contract_may_clear_marker():
+    """T9 (M2 guard): the reconcile path is documented as a may-clear operation reached
+    through the _pending_fleet_restart_needed predicate — pin the wiring so a future
+    refactor cannot silently drop the side effect."""
+    import inspect
+    reconcile_doc = update_cmd_fleet._reconcile_fleet_restart_pending.__doc__ or ""
+    assert "MAY CLEAR" in reconcile_doc
+    # The predicate routes through the reconciler (the side-effecting path).
+    src = inspect.getsource(update_cmd_fleet._pending_fleet_restart_needed)
+    assert "_reconcile_fleet_restart_pending()" in src

@@ -1227,7 +1227,9 @@ def _apply_pulled_update(
 
     # Gateways still serve pre-pull modules until the restart phase; an interrupt before a
     # completed restart leaves this marker so the next update catches up even when git is
-    # current. Distinct from ``.update-incomplete`` (venv/install repair).
+    # current. Distinct from ``.update-incomplete`` (venv/install repair). Written even when
+    # post_pull_sha is None (interrupt-recovery net) — the writer logs loudly so an
+    # unverifiable (expected_sha="") obligation is visible and ages out via the ceiling.
     # See #95294.
     _write_fleet_restart_pending_marker(expected_sha=post_pull_sha or "")
     # Stale .pyc would ImportError on gateway restart when new source references new names.

@@ -2100,7 +2100,7 @@ class GatewayTurnMixin:
 
     def _format_session_info(self) -> str:
         """Model / provider / context-length / endpoint block so users can spot bad context detection."""
-        from gateway.run import _resolve_gateway_model_context
+        from gateway.run_model_context import _resolve_gateway_model_context
         resolved = _resolve_gateway_model_context()
         context_length = resolved.context_length
         ctx_source = {

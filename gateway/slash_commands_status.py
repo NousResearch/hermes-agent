@@ -375,7 +375,8 @@ class GatewayStatusCommandsMixin:
             row = await _quiet(lambda: self._session_db.get_session(session_entry.session_id))
             model_name = _clean_str(row.get("model", "")) if isinstance(row, dict) else ""
         if not context_length:
-            from gateway.run import _profile_runtime_scope, _resolve_gateway_model_context
+            from gateway.run import _profile_runtime_scope
+            from gateway.run_model_context import _resolve_gateway_model_context
 
             def _resolve_nonresident_context():
                 if getattr(getattr(self, "config", None), "multiplex_profiles", False):

@@ -46,7 +46,7 @@ With the `a2a` toolset enabled, the agent gets:
 | Tool | What it does |
 |---|---|
 | `a2a_discover(url)` | Fetch and summarize a peer's Agent Card |
-| `a2a_call(agent, message, context_id?)` | Send a task, get the reply; multi-turn via `context_id` |
+| `a2a_call(agent, message, context_id?, metadata?)` | Send a task, get the reply; multi-turn via `context_id`; extension data via `params.metadata` |
 | `a2a_list()` | Configured peers, saved conversations, metrics |
 | `a2a_history(context_id)` | Recall a persisted A2A conversation |
 | `a2a_orchestrate(capability, message, mode?)` | Fan a task out to every peer advertising a capability (`all` / `first` / `best`) |

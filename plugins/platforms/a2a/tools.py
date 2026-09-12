@@ -95,7 +95,10 @@ def _rpc_url(base_url: str, card: Optional[dict]) -> str:
     return base_url.rstrip("/")
 
 
-def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
+def _send_task(
+    agent_label: str, peer: dict, message: str, context_id: str,
+    metadata: Optional[dict] = None,
+) -> tuple[str, str, str]:
     """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
     ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
     base_url = peer.get("url", "")
@@ -114,7 +117,14 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     tenant = str(iface["tenant"]) if iface and iface.get("tenant") else str(peer.get("tenant") or "")
     if tenant:
         rpc_body["params"]["tenant"] = tenant
-    security.audit("outbound", agent_label, rpc_body["id"], safe_message)
+    safe_metadata = security.redact_outbound_data(metadata) if metadata is not None else None
+    if safe_metadata is not None:
+        rpc_body["params"]["metadata"] = safe_metadata
+        metadata_summary = json.dumps(safe_metadata, ensure_ascii=False, separators=(",", ":"))
+        audit_summary = f"metadata={metadata_summary[:240] + '…' if len(metadata_summary) > 240 else metadata_summary}\nmessage={safe_message}"
+    else:
+        audit_summary = safe_message
+    security.audit("outbound", agent_label, rpc_body["id"], audit_summary)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
     resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
@@ -180,11 +190,14 @@ def a2a_call(args: dict, **_: Any) -> str:
     context_id = str(args.get("context_id") or args.get("contextId") or "").strip()
     if not agent or not message:
         return "Error: both 'agent' and 'message' are required."
+    metadata = args.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return "Error: 'metadata' must be a JSON object."
     peer = _resolve_peer(agent)
     if not peer or not peer.get("url"):
         return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
     try:
-        reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+        reply, reply_ctx, state = _send_task(agent, peer, message, context_id, metadata=metadata)
     except urllib.error.HTTPError as e:
         return _HTTP_CALL_ERRORS.get(e.code, "Error: call to '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
     except ValueError as e:
@@ -308,7 +321,8 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
                  "reply to continue a multi-turn exchange.",
                  {"agent": _str("Configured peer name (from a2a_agents) or a full http(s):// URL."),
                   "message": _str("The task / message to send the peer, in natural language."),
-                  "context_id": _str("Optional: context id from a prior reply, to continue the conversation.")},
+                  "context_id": _str("Optional: context id from a prior reply, to continue the conversation."),
+                  "metadata": {"type": "object", "description": "Optional metadata for SendMessage params.metadata.", "additionalProperties": True}},
                  ["agent", "message"]),
     "a2a_list": (a2a_list, "List configured A2A peer agents, persisted A2A conversations, and metrics.", {}, []),
     "a2a_history": (a2a_history,

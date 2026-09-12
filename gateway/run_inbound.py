@@ -34,6 +34,25 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# --- Automatic inbound-voice STT bounds (#105315) ---------------------------
+# One automatic transcription is a blocking call off-loaded with ``asyncio.to_thread``. Before
+# this, a call that never returned — local whisper wedged in CUDA init/model load on Windows, a
+# stalled provider socket — kept the inbound turn (and the platform's typing indicator) alive
+# forever with nothing in the logs: the start marker was DEBUG and no branch that emits the
+# neutral "could not be transcribed" note was ever reached. ``stt.timeout_seconds`` overrides.
+_AUTO_STT_TIMEOUT_SECONDS = 180.0
+
+
+def _auto_stt_timeout_seconds() -> float:
+    """Hard cap for ONE automatic inbound-voice STT call (``stt.timeout_seconds``, else 180s)."""
+    try:
+        from tools.transcription_tools import _load_stt_config
+        raw = _load_stt_config().get("timeout_seconds")
+        value = float(raw) if raw is not None else _AUTO_STT_TIMEOUT_SECONDS
+    except Exception:  # noqa: BLE001 - a missing/unparsable value must not remove the bound
+        return _AUTO_STT_TIMEOUT_SECONDS
+    return value if value > 0 else _AUTO_STT_TIMEOUT_SECONDS
+
 
 class GatewayInboundMixin:
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
@@ -1927,16 +1946,53 @@ class GatewayInboundMixin:
         agent_path = to_agent_visible_cache_path(os.path.abspath(path))
         return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
 
+    async def _bounded_stt_call(
+        self, fn, args: tuple, *, path: str, stage: str, timeout_s: float
+    ) -> Optional[dict]:
+        """Await one blocking STT call off-loop, bounded by *timeout_s*; ``None`` = never returned."""
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            # ponytail: wait_for only abandons the future — the worker thread keeps running (usually
+            # wedged in model load / CUDA init) until the process exits, so callers must not stack a
+            # second backend call on top of a timed-out one.
+            logger.error(
+                "Auto-transcription (%s stage) did not return within %.1fs for %s — abandoning this "
+                "clip so the turn is not stuck behind STT; a wedged local model load / CUDA init is "
+                "the usual cause (#105315)", stage, timeout_s, path,
+            )
+            return None
+
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> Tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
-        result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
+        timeout_s = _auto_stt_timeout_seconds()
+        # INFO, not DEBUG: an operator must be able to tell "STT is wedged" from "STT never ran".
+        logger.info("Auto-transcribing inbound voice: %s (timeout %.0fs)", path, timeout_s)
+        try:
+            result = await self._bounded_stt_call(
+                transcribe_audio, (path, None, "gateway"), path=path,
+                stage="configured provider", timeout_s=timeout_s,
+            )
+        except Exception as e:
+            # A *raising* provider used to skip the local fallback entirely (the exception escaped
+            # to the caller's handler); treat it as a failed result so the recovery path still runs.
+            logger.warning("Configured STT raised for %s: %s", path, e)
+            result = {"success": False, "error": str(e)}
+        if result is None:
+            return None, self._untranscribed_audio_note(path)
         if not result.get("success"):
-            fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
-            if fallback.get("success"):
+            fallback = await self._bounded_stt_call(
+                transcribe_audio_local_fallback, (path,), path=path,
+                stage="local fallback", timeout_s=timeout_s,
+            )
+            if fallback is not None and fallback.get("success"):
                 logger.info("Configured STT failed for %s; recovered with local STT", path)
                 result = fallback
-        if not result["success"]:
-            logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
+        if result is None or not result.get("success"):
+            logger.warning(
+                "Voice transcription failed for %s: %s", path,
+                "the backend never returned" if result is None else result.get("error", "unknown error"),
+            )
             return None, self._untranscribed_audio_note(path)
         transcript = result["transcript"]
         # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
@@ -1990,7 +2046,7 @@ class GatewayInboundMixin:
                     successful_transcripts.append(transcript)
                 enriched_parts.append(note)
             except Exception as e:
-                logger.error("Transcription error: %s", e)
+                logger.error("Transcription error for %s: %s", path, e, exc_info=True)
                 enriched_parts.append(self._untranscribed_audio_note(path))
 
         if enriched_parts:

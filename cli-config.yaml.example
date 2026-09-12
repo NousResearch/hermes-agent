@@ -1504,6 +1504,13 @@ platform_toolsets:
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
+  # Hard cap (seconds) on ONE automatic inbound-voice transcription, default 180.
+  # Without it a call that never returns — local whisper wedged in model load / CUDA
+  # init on Windows, a stalled provider socket — leaves the inbound turn (and the
+  # platform's typing indicator) running forever, with no reply and no log. On
+  # timeout the neutral "[voice message could not be transcribed automatically]" note
+  # reaches the agent instead. Raise it for slow first-time model loads on weak GPUs.
+  # timeout_seconds: 180
   # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
   # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
   # silence inflates upload time, per-audio-minute billing, and hallucination risk.

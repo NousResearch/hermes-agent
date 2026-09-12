@@ -58,16 +58,21 @@ def _save_all(data: Dict[str, Any]) -> None:
 
 def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
     """Return cached entry when fingerprint matches (and TTL holds), else None. ``tools/list``
-    results may carry ``ttlMs`` (SEP-2549); an entry older than a recorded TTL is a miss so the
-    next startup re-probes instead of serving a stale manifest forever. Entries without a TTL
-    never expire. ``cacheScope`` is irrelevant: this cache is per-user local disk."""
+    results may carry ``ttlMs`` (SEP-2549); an entry older than a recorded positive TTL is a miss
+    so the next startup re-probes instead of serving a stale manifest forever. The spec calls
+    ``0`` (and negative, treated as 0) "immediately stale", the same default it assigns an absent
+    value; this cache serves all three like an absent TTL. Its one consumer is lazy startup,
+    which deliberately registers a stale snapshot under a matching fingerprint and refreshes it
+    on the server's first use. ``cacheScope`` is irrelevant: this cache is per-user local disk."""
     with _cache_lock:
         entry = _load_all().get(server_name)
     if not isinstance(entry, dict) or entry.get("fingerprint") != fingerprint:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    expired = (isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float))
+    # Only a positive TTL expires on time; ``>= 0`` made every 0-TTL entry a miss at write time.
+    expired = (isinstance(ttl_ms, (int, float)) and ttl_ms > 0
+               and isinstance(written_at, (int, float))
                and (time.time() - written_at) * 1000.0 >= float(ttl_ms))
     return None if expired else entry
 

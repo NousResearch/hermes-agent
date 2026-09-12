@@ -1782,11 +1782,38 @@ def _load_tool_progress_mode() -> str:
     return mode if mode in _TOOL_PROGRESS_MODES else "all"
 
 
-def _gui_surface_toolsets(platform: str) -> set[str]:
+def _project_toolset_disabled(cfg: dict | None = None) -> bool:
+    """True when agent.disabled_toolsets explicitly suppresses ``project``.
+
+    ``_load_enabled_toolsets`` folds client-surface toolsets (including
+    ``project``) back in after ``_get_platform_tools`` already subtracted
+    ``disabled_toolsets``. That re-add made ``disabled_toolsets: [project]``
+    a no-op on desktop/TUI (#54433). Honor the disable here too.
+    """
+    try:
+        cfg = cfg if cfg is not None else _load_cfg()
+        agent_cfg = (cfg.get("agent") or {}) if isinstance(cfg, dict) else {}
+        disabled = agent_cfg.get("disabled_toolsets") or []
+        return any(str(ts).strip() == "project" for ts in disabled)
+    except Exception:
+        return False
+
+
+def _gui_surface_toolsets(platform: str, cfg: dict | None = None) -> set[str]:
     """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
-    backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
-    return {"project", "desktop_ui"} if platform == "desktop" else {"project"}
+    backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule).
+
+    When ``agent.disabled_toolsets`` lists ``project``, omit it so the desktop
+    re-add cannot override the user's disable (#54433). ``desktop_ui`` is
+    unaffected.
+    """
+    surfaces: set[str] = set()
+    if not _project_toolset_disabled(cfg):
+        surfaces.add("project")
+    if platform == "desktop":
+        surfaces.add("desktop_ui")
+    return surfaces
 
 
 def _tui_notice(text: str) -> None:
@@ -1869,7 +1896,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
-        return sorted(enabled | _gui_surface_toolsets(session_platform)) if enabled else None
+        return sorted(enabled | _gui_surface_toolsets(session_platform, cfg)) if enabled else None
     except Exception:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")

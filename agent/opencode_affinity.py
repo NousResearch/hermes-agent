@@ -17,7 +17,7 @@ so the header cannot drift per code path.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
 
@@ -43,6 +43,19 @@ def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool
         return False
 
 
+def resolve_affinity_key(session_id: Optional[str] = None) -> str:
+    """Return the normalized rotation-stable conversation affinity key."""
+    try:
+        from agent.portal_tags import get_affinity_scope, get_conversation_context
+        from agent.transports.codex import _cache_scope_from_session_id
+
+        return _cache_scope_from_session_id(
+            get_affinity_scope() or get_conversation_context() or session_id
+        )
+    except Exception:
+        return str(session_id or "")
+
+
 def opencode_session_headers(
     provider: Optional[str],
     base_url: Optional[str],
@@ -51,28 +64,31 @@ def opencode_session_headers(
     """Return ``{"x-opencode-session": <key>}`` for OpenCode targets, else ``{}``."""
     if not is_opencode_target(provider, base_url):
         return {}
-    try:
-        from agent.portal_tags import get_affinity_scope, get_conversation_context
-        from agent.transports.codex import _cache_scope_from_session_id
-
-        key = _cache_scope_from_session_id(
-            # Top-level session_id → OpenRouter's sticky routing key. Per their prompt-caching docs it is
-            # used directly as the routing key instead of hashing the opening messages, and it activates
-            # stickiness on the first successful request rather than only after a cache hit. Resolve it from
-            # the declared routing scope first (set only by a host that names its own conversation, #96811),
-            # then the ambient conversation contextvar, with the explicit argument as fallback. The gap this
-            # closes is the auxiliary call sites — compression, title generation, vision, web_extract,
-            # session_search, MoA slots — which funnel through ``agent.auxiliary_client``. That module has
-            # no session handle and passes no ``session_id``, so those calls sent NO sticky key at all and
-            # each routed independently of the conversation it belonged to (#70820). Mirrors the Nous Portal
-            # profile, which resolves the same way (f2f4df064d). The ambient value is the session-lineage
-            # ROOT, so it also stays stable for installs that opt out of the default ``compression.in_place:
-            # true`` and across delegate-subagent trees.
-            get_affinity_scope() or get_conversation_context() or session_id
-        )
-    except Exception:
-        key = str(session_id or "")
+    key = resolve_affinity_key(session_id)
     return {OPENCODE_SESSION_HEADER: key} if key else {}
+
+
+def custom_provider_session_affinity_headers(
+    provider: Optional[str],
+    base_url: Optional[str],
+    session_id: Optional[str] = None,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+) -> dict[str, str]:
+    """Return ``{<session_affinity_header>: <key>}`` for custom providers declaring one, else ``{}``."""
+    try:
+        from hermes_cli.config_providers import get_custom_provider_session_affinity_header
+
+        header = get_custom_provider_session_affinity_header(
+            base_url=base_url,
+            provider=provider,
+            custom_providers=custom_providers,
+        )
+        if not header:
+            return {}
+        key = resolve_affinity_key(session_id)
+        return {header: key} if key else {}
+    except Exception:
+        return {}
 
 
 def merge_opencode_session_headers(
@@ -80,13 +96,18 @@ def merge_opencode_session_headers(
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Merge the affinity header into ``kwargs["extra_headers"]`` (in place).
+    """Merge OpenCode or custom provider affinity headers into ``kwargs["extra_headers"]`` (in place).
 
     Existing per-request headers win, so a caller-pinned value is preserved.
-    Non-OpenCode targets are left untouched.
+    Non-OpenCode and non-affinity targets are left untouched.
     """
     headers = opencode_session_headers(provider, base_url, session_id)
+    if not headers:
+        headers = custom_provider_session_affinity_headers(
+            provider, base_url, session_id, custom_providers=custom_providers
+        )
     if headers:
         existing = kwargs.get("extra_headers")
         merged = dict(existing) if isinstance(existing, dict) else {}
@@ -94,3 +115,7 @@ def merge_opencode_session_headers(
             merged.setdefault(key, value)
         kwargs["extra_headers"] = merged
     return kwargs
+
+
+# Alias for callers naming the generalized capability
+merge_session_affinity_headers = merge_opencode_session_headers

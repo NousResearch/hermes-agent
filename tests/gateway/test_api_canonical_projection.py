@@ -166,3 +166,44 @@ async def test_exact_responses_retry_replays_before_conversation_expansion(api, 
             statuses.append((resp.status, (await resp.json()).get('status')))
     assert statuses == [(200, 'completed'), (200, 'completed')]
     assert calls == ['hello']
+
+
+@pytest.mark.asyncio
+async def test_cancelled_observer_is_unregistered_and_never_breaks_the_survivor(api, owner):
+    """Two request tasks observe one admission. Cancelling one (client disconnect) must drop
+    exactly its observer entry; the other keeps streaming, and a raising callback on the
+    owner path is isolated from canonical execution."""
+    from gateway.session_api_turn import observe_api_turn
+    admitted = admit_api_turn(api, session_id='observers', user_message='hello', conversation_history=[])
+    _, ref, row = admitted
+    started, release = asyncio.Event(), asyncio.Event()
+    survivor, cancelled_saw = [], []
+
+    def broken(*args):
+        raise RuntimeError('client sink is gone')
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        started.set()
+        await release.wait()
+        turn = _turn_runner(owner, ref)
+        turn.combined_tool_complete_callback('call-1', 'read_file', {'path': 'a.txt'}, 'body')
+        execution_result.get()['result'] = {'final_response': 'ok'}
+        return 'ok'
+    owner.runner._handle_message = handle
+    first = asyncio.ensure_future(observe_api_turn(admitted, tool_complete_callback=lambda *a: cancelled_saw.append(a)))
+    second = asyncio.ensure_future(observe_api_turn(admitted, tool_complete_callback=lambda *a: survivor.append(a)))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert len(owner.api_observers[row['admission_id']]) == 1
+    # A sink that raises on the owner path must not abort the turn or starve the survivor.
+    third = asyncio.ensure_future(observe_api_turn(admitted, tool_complete_callback=broken))
+    await asyncio.sleep(0)
+    release.set()
+    (result, _), (third_result, _) = await asyncio.wait_for(asyncio.gather(second, third), timeout=5)
+    assert result['final_response'] == third_result['final_response'] == 'ok'
+    assert survivor == [('call-1', 'read_file', {'path': 'a.txt'}, 'body')]
+    assert cancelled_saw == []
+    assert row['admission_id'] not in owner.api_observers

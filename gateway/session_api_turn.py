@@ -173,13 +173,20 @@ async def observe_api_turn(admitted, **kwargs):
     observers = getattr(authority, 'api_observers', None)
     if observers is None:
         observers = authority.api_observers = {}
-    observers.setdefault(row['admission_id'], []).append({
-        key: kwargs[key] for key in ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback')
-        if kwargs.get(key) is not None})
-    authority._publish_pending(ref)
-    authority._schedule(ref)
-    await asyncio.shield(waiter)
-    observers.pop(row['admission_id'], None)
+    observer = {key: kwargs[key] for key in ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback')
+                if kwargs.get(key) is not None}
+    registered = observers.setdefault(row['admission_id'], [])
+    registered.append(observer)
+    try:
+        authority._publish_pending(ref)
+        authority._schedule(ref)
+        await asyncio.shield(waiter)
+    finally:
+        # Shielding keeps the canonical turn alive past a cancelled request; only this
+        # request's observer leaves, and the entry itself goes once the last one is gone.
+        registered.remove(observer)
+        if not registered:
+            observers.pop(row['admission_id'], None)
     saved = admission_result(authority.db, row['admission_id'])
     if saved is None:
         from hermes_state_runtime import get_session_admission
@@ -238,13 +245,22 @@ def _api_observers(authority, session_id):
     return tuple(getattr(authority, 'api_observers', {}).get(admission_id, ()))
 
 
-def publish_api_event(authority, session_id, event_type, payload):
-    if event_type != 'message.delta':
-        return
+def _notify_observers(authority, session_id, key, *args):
+    """Observer callbacks are request-owned sinks; one that raises (closed socket, torn-down
+    loop) must not abort canonical execution or starve the other observers."""
+    import logging
     for observer in _api_observers(authority, session_id):
-        callback = observer.get('stream_delta_callback')
+        callback = observer.get(key)
         if callback:
-            callback(payload['text'])
+            try:
+                callback(*args)
+            except Exception:
+                logging.getLogger(__name__).warning('API observer %s failed for %s', key, session_id, exc_info=True)
+
+
+def publish_api_event(authority, session_id, event_type, payload):
+    if event_type == 'message.delta':
+        _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
 
 
 def publish_api_tool_event(authority, session_id, generation, event_type, call_id, tool_name, args, result=None):
@@ -256,15 +272,10 @@ def publish_api_tool_event(authority, session_id, generation, event_type, call_i
             authority.check_approval_generation(session_id, generation)
         except RuntimeStoreError:
             return
-        for observer in _api_observers(authority, session_id):
-            if event_type == 'tool.start':
-                callback = observer.get('tool_start_callback')
-                if callback:
-                    callback(call_id, tool_name, args or {})
-            elif event_type == 'tool.complete':
-                callback = observer.get('tool_complete_callback')
-                if callback:
-                    callback(call_id, tool_name, args or {}, result)
+        if event_type == 'tool.start':
+            _notify_observers(authority, session_id, 'tool_start_callback', call_id, tool_name, args or {})
+        elif event_type == 'tool.complete':
+            _notify_observers(authority, session_id, 'tool_complete_callback', call_id, tool_name, args or {}, result)
 
 
 def prepare_api_runtime(model, runtime_kwargs):

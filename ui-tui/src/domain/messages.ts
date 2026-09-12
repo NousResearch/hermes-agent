@@ -50,6 +50,19 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
+    if (display_kind === 'review_summary') {
+      const reviewId = (row as TranscriptRow).display_metadata?.review_id
+      out.push({
+        role: 'system',
+        text,
+        ...(createdAt !== undefined && { createdAt }),
+        ...(typeof reviewId === 'string' && { reviewId })
+      })
+      pending = []
+
+      continue
+    }
+
     if (display_kind === 'model_switch') {
       out.push({ kind: 'event', role: 'system', text: 'model changed' })
       pending = []

@@ -123,6 +123,9 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
         tool_calls = msg.get("tool_calls") or []
         if display_kind == "hidden":
             continue
+        if display_kind == "review_summary" and isinstance(content, str) and content.strip():
+            entries.append(("event", _sanitize_display_text(content)))
+            continue
         if display_kind in _RESUME_EVENT_TEXT:
             metadata = msg.get("display_metadata") or {}
             label = metadata.get("display_text") if display_kind == "async_delegation_complete" else None

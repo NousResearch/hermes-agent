@@ -302,6 +302,24 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
   })
 
+  it('reads review receipts on the explicit owner without activating or resuming it', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'desktop-alias',
+      targetProfile: 'backend-worker'
+    }
+    vi.mocked(hermesApi).mockResolvedValueOnce({ session_id: 'group/sid', messages: [] })
+    await host.listReviewSummaries(route, 'group/sid')
+    expect(hermesApi).toHaveBeenCalledWith({
+      connectionId: 'source-a',
+      path: '/api/sessions/group%2Fsid/review-summaries?profile=backend-worker',
+      timeoutMs: 15_000
+    })
+    expect(requestGatewayForAgent).not.toHaveBeenCalled()
+    await expect(host.listReviewSummaries({ ...route, connectionId: '' }, 'group/sid')).rejects.toThrow('owning route')
+  })
+
   it('reads and hides persisted sessions through the source primary without activating the profile', async () => {
     const route = {
       connectionId: 'source-a',

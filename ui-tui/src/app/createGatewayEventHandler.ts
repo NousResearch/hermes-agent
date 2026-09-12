@@ -1357,7 +1357,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const text = String(ev.payload?.text ?? '').trim()
 
         if (text) {
-          sys(text)
+          const reviewId = ev.payload?.review_id
+          const timestamp = ev.payload?.timestamp
+
+          if (reviewId) {
+            setHistoryItems(previous =>
+              previous.some(message => message.reviewId === reviewId)
+                ? previous
+                : [
+                    ...previous,
+                    {
+                      role: 'system',
+                      text,
+                      reviewId,
+                      ...(typeof timestamp === 'number' &&
+                        Number.isFinite(timestamp) &&
+                        timestamp > 0 && { createdAt: timestamp })
+                    }
+                  ]
+            )
+          } else {
+            sys(text) // legacy backend without durable receipt identity
+          }
         }
 
         return

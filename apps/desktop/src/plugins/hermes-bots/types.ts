@@ -152,6 +152,15 @@ export interface GroupMessage {
   thread?: string
 }
 
+/** Display cache only; never part of the room's model-facing log/watermarks. */
+export interface GroupReviewReceipt {
+  at: number
+  id: string
+  member: string
+  memberKey: string
+  text: string
+}
+
 export interface GroupHold {
   at?: number
   noted?: boolean
@@ -163,6 +172,7 @@ export interface GroupChat {
   holds?: Record<string, GroupHold>
   image?: null | string
   log: GroupMessage[]
+  reviewReceipts?: GroupReviewReceipt[]
   members?: GroupMember[]
   /** Immutable identity, so a rename doesn't fork the room. */
   roomId?: null | string

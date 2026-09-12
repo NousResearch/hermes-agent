@@ -818,6 +818,25 @@ class SessionMessagesMixin:
                 rows.reverse()
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
+    def get_review_summaries(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Recent display-only review receipts across compression, never sibling forks.
+
+        Filter before LIMIT so a long tool transcript cannot crowd out the receipts.
+        Compaction-archived receipts remain visible; explicit rewind rows do not.
+        """
+        ids = self.get_compression_lineage(session_id) or [session_id]
+        limit = min(50, max(0, int(limit)))
+        rows = []
+        for start in range(0, len(ids), 900):
+            chunk = ids[start:start + 900]
+            rows.extend(self._read_all(
+                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(chunk)}) "
+                "AND display_kind = 'review_summary' AND (active = 1 OR compacted = 1) "
+                "ORDER BY id DESC LIMIT ?", [*chunk, limit]))
+        rows.sort(key=lambda row: row["id"], reverse=True)
+        return [self._row_to_message_dict(row, warn_context="get_review_summaries", summary_flag=True)
+                for row in reversed(rows[:limit])]
+
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
         ids = [s for s in session_ids if s]

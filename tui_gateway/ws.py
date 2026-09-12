@@ -290,7 +290,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
-        authority = getattr(getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
+        authority = ws.scope.get('hermes.session_authority') or getattr(
+            getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
         if authority is not None:
             from gateway.session_controls import AuthorityConnection
             authority_connection = AuthorityConnection(authority, transport, auth_identity or {})

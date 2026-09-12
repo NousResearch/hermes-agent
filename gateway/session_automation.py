@@ -21,7 +21,8 @@ def producer_identity(runner, event):
 
 
 def completion_admission(runner, event):
-    authority = getattr(runner, 'session_authority', None)
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
     if authority is None:
         return None
     entry = runner.session_store.lookup_by_session_key(str(event.get('session_key') or ''))
@@ -49,7 +50,8 @@ def _owner(runner, event):
         raise RuntimeStoreError('admission_conflict')
     if expected != entry.session_id:
         # A completed child may follow compression, but never /new or an unrelated resume.
-        if runner.session_authority.db.get_compression_tip(expected) != entry.session_id:
+        from gateway.session_authorities import active_authority
+        if active_authority(runner).db.get_compression_tip(expected) != entry.session_id:
             raise RuntimeStoreError('admission_conflict')
     return entry
 

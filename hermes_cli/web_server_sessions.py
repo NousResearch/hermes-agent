@@ -91,8 +91,15 @@ def _session_mutation_context(request, profile):
     if authority is None:
         raise HTTPException(status_code=503, detail='session_authority_unavailable')
     home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
-    if home.resolve() != Path(authority.db.db_path).parent.resolve():
+    # ``?profile=`` selects a served home; its own authority (not the launch one) owns the mutation.
+    from gateway.session_authorities import authority_for_home
+    runner = getattr(request.app.state, 'gateway_runner', None)
+    owner = authority_for_home(runner, home) if runner is not None else None
+    if owner is None and home.resolve() == Path(authority.db.db_path).parent.resolve():
+        owner = authority
+    if owner is None:
         raise HTTPException(status_code=403, detail='profile_mismatch')
+    authority = owner
     if native is not None and native['profile_id'] != authority.profile_id:
         raise HTTPException(status_code=403, detail='profile_mismatch')
     return authority, Principal(subject, authority.profile_id,
@@ -191,6 +198,12 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             db.close()
             raise
     except (sqlite3.DatabaseError, UnicodeDecodeError) as exc:
+        from hermes_state_errors import is_malformed_db_error
+        if isinstance(exc, sqlite3.DatabaseError) and is_malformed_db_error(exc):
+            # Same structured 503 the analytics routers publish (``corrupt_store_as_status``): a
+            # corrupt image names the repair (`hermes doctor`), never a generic "schema unavailable".
+            from hermes_cli.web_routers._common import corrupt_store_status
+            raise corrupt_store_status(db_path, exc) from exc
         if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_error(exc):
             detail = "Session store is busy (disk I/O or lock). Retry; the list was not cleared."
         else:

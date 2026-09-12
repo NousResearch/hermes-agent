@@ -51,7 +51,10 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     from hermes_cli.heartbeat import HeartbeatManager
     from hermes_state_runtime import list_session_admissions
 
-    authority = runner.session_authority
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    if authority is None:
+        return
     pending = list_session_admissions(authority.db, session_id=session_id)
     if any(row['payload'].get('native_text_v1', {}).get('automation', {}).get('heartbeat')
            for row in pending):

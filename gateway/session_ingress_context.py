@@ -93,10 +93,12 @@ def _binding(runner, source, profile):
         homes = {}
         for name, path in reserved:
             canonical = Path(path).resolve()
-            if name in homes or canonical in homes.values() or not canonical.is_dir():
+            if name in homes or canonical in homes.values():
                 raise RuntimeStoreError('profile_mismatch')
             homes[name] = canonical
-        primary = getattr(runner, '_primary_profile_name', None) or 'default'
+        primary = getattr(runner, '_primary_profile_name', None)
+        if not primary:
+            raise RuntimeStoreError('profile_mismatch')
         owner_name = profile or primary
         if homes.get(owner_name) != home:
             raise RuntimeStoreError('profile_mismatch')
@@ -109,14 +111,23 @@ def _binding(runner, source, profile):
             if len(best) != 1:
                 raise RuntimeStoreError('admission_conflict')
             runtime_profile = best[0].profile
+        elif source.profile and source.profile in homes and source.platform.value in ('webhook', 'api_server', 'msgraph_webhook'):
+            # ``/p/<profile>/`` producers address a served profile explicitly on the HOST's
+            # listener; that URL prefix is the route (webhook.py / api_server.py stamp it).
+            runtime_profile = source.profile
         else:
             runtime_profile = owner_name
         if (source.profile or primary) != runtime_profile or runtime_profile not in homes:
             raise RuntimeStoreError('profile_mismatch')
         runtime_home = homes[runtime_profile]
-    # A configured/transport home is NOT proof of a runtime DB owner. The current
-    # single-authority runner must refuse another runtime rather than use launch DB.
-    if Path(runner.session_authority.db.db_path).resolve().parent != runtime_home:
+        # Revoking ONE served profile (its directory removed) fails that profile only.
+        if not runtime_home.is_dir():
+            raise RuntimeStoreError('profile_mismatch')
+    # A configured/transport home is NOT proof of a runtime DB owner: the runtime home must be
+    # one this process reserved and built an authority for, never a borrowed launch DB.
+    from gateway.session_authorities import authority_for_home
+    authority = authority_for_home(runner, runtime_home)
+    if authority is None:
         raise RuntimeStoreError('profile_mismatch')
     if relay:
         transport, connector = _relay_connector(adapter, source)

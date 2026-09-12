@@ -59,8 +59,10 @@ class GatewayTurnPrepareMixin:
             from gateway.run import _runtime_agent_kwargs
             from gateway.session_policy import launch_key
             from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
-            frozen = policy.config(self.session_authority)
-            key = launch_key(self.session_authority, policy)
+            from gateway.session_authorities import active_authority
+            authority = active_authority(self)
+            frozen = policy.config(authority)
+            key = launch_key(authority, policy)
             import json
             runtime = _resolve_named_custom_runtime(requested_provider=policy.provider,
                 explicit_api_key=key, explicit_base_url=json.loads(policy.request_json).get('base_url'),
@@ -516,10 +518,15 @@ class GatewayTurnPrepareMixin:
         # Multiplex: the home channel may live only in the profile secret scope, not os.environ.
         home_env = ""
         if env_key:
-            with suppress(Exception):
-                from agent.secret_scope import get_secret
+            # A secondary with no home channel must not borrow the default profile's from
+            # os.environ; only an UNSCOPED single-profile read may fall back to the process env.
+            from agent.secret_scope import UnscopedSecretError, get_secret
+            try:
                 home_env = (get_secret(env_key) or "").strip()
-            home_env = home_env or (os.getenv(env_key) or "").strip()
+            except UnscopedSecretError:
+                home_env = (os.getenv(env_key) or "").strip()
+            except Exception:
+                home_env = ""
         # Also honor in-memory / yaml home_channel on this platform.
         with suppress(Exception):
             if not home_env and self.config.get_home_channel(source.platform):

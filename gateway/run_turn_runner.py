@@ -55,7 +55,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
-        authority = getattr(runner, "session_authority", None)
+        from gateway.session_authorities import active_authority
+        authority = active_authority(runner)
         self._approval_owner = None
         if authority is not None:
             source = getattr(ctx, 'source', None)
@@ -810,8 +811,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def run_sync(self):
         from gateway.session_policy import policy_for_source, policy_scope
         from gateway.session_api_turn import api_policy_scope
+        from gateway.session_authorities import active_authority
         with policy_scope(policy_for_source(self._runner, self._ctx.source),
-                          authority=getattr(self._runner, "session_authority", None)), api_policy_scope():
+                          authority=active_authority(self._runner)), api_policy_scope():
             result = self._run_sync_scoped()
             from gateway.session_results import execution_result
             captured = execution_result.get()

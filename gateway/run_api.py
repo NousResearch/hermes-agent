@@ -142,20 +142,26 @@ class GatewayRuntimeAPI:
             await ws.close(code=4403)
             return
         try:
-            grant = self.runner.session_ticket_store.redeem(
-                ticket, profile_id=self.runner.session_authority.profile_id,
-                purpose='interactive')
+            grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='interactive')
         except PermissionError:
             try:
-                grant = self.runner.session_ticket_store.redeem(
-                    ticket, profile_id=self.runner.session_authority.profile_id,
-                    purpose='worker-adoption')
+                grant = self.runner.session_ticket_store.redeem(ticket, profile_id=None, purpose='worker-adoption')
             except PermissionError:
                 # Browser/OAuth tickets have a separate issuer.
                 return await self.app(scope, receive, send)
+        from gateway.session_authorities import authority_for_profile_id
+        authority = authority_for_profile_id(self.runner, grant['profile_id'])
+        if authority is None:
+            await ws.close(code=4403)
+            return
+        # The ticket names the served profile; this connection binds to that home's authority.
+        scope['hermes.session_authority'] = authority
         from tui_gateway.ws import handle_ws
-        await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
-                                          'profile_id': grant['profile_id'],
-                                          'instance_id': grant['instance_id'],
-                                          'capabilities': grant['capabilities'], 'native_bootstrap': True},
-                        subprotocol='hermes-gateway-v1')
+        from gateway.run import _profile_runtime_scope
+        from pathlib import Path
+        with _profile_runtime_scope(Path(authority.profile_id), hydrate_secrets=False):
+            await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
+                                              'profile_id': grant['profile_id'],
+                                              'instance_id': grant['instance_id'],
+                                              'capabilities': grant['capabilities'], 'native_bootstrap': True},
+                            subprotocol='hermes-gateway-v1')

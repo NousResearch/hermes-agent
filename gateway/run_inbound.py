@@ -1211,11 +1211,18 @@ class GatewayInboundMixin:
         if _reply is not None:
             return _reply
 
-        authority = getattr(self, 'session_authority', None)
+        # The message handler entered the routed profile's scope; its authority owns this turn.
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
         if authority is not None and not event.get_command() and not is_internal:
             from gateway.session_ingress import admit_message, executing_admission
             if not executing_admission.get():
                 return await admit_message(authority, event)
+        if (authority is None and not is_internal and not event.get_command()
+                and getattr(self, 'session_authority', None) is not None):
+            # Scoped to a home this process does not serve: never fall back to the launch ledger.
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('profile_mismatch')
 
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)

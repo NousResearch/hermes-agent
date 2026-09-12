@@ -9,9 +9,9 @@ async def producer_scope(adapter, event):
     from gateway.run import _async_profile_runtime_scope
     from gateway.session_ingress_context import native_callback
 
+    from gateway.session_authorities import authority_for_home
     runner = getattr(adapter._message_handler, '__self__', None)
-    authority = getattr(runner, 'session_authority', None)
-    if authority is None:
+    if getattr(runner, 'session_authority', None) is None:
         raise RuntimeStoreError('not_found')
     registered, profile = runner._owning_profile(adapter, adapter.platform)
     home = getattr(runner, '_native_transport_homes', {}).get(profile)
@@ -24,6 +24,10 @@ async def producer_scope(adapter, event):
         source.profile_route_rejected = True
     source._authorization_profile_home = home
     runtime_home = runner._resolve_profile_home_for_source(source) if source.profile else home
+    # The routed profile's own ledger admits the delivery; an unserved route is refused.
+    authority = authority_for_home(runner, runtime_home)
+    if authority is None:
+        raise RuntimeStoreError('profile_mismatch')
     with native_callback(runner, event, home, profile):
         async with _async_profile_runtime_scope(runtime_home):
             yield authority

@@ -83,24 +83,28 @@ async def authenticate_native_http(request):
     tickets = request.headers.getlist(HEADER)
     if not tickets:
         return None
+    from gateway.session_authorities import all_authorities, authority_for_profile_id
     runner = getattr(request.app.state, 'gateway_runner', None)
     descriptor = getattr(runner, 'session_runtime_descriptor', {})
-    authority = getattr(runner, 'session_authority', None)
+    authorities = all_authorities(runner)
     store = getattr(runner, 'session_ticket_store', None)
     peer = request.scope.get('hermes.gateway_socket_peer')
     if (len(tickets) != 1 or 'origin' in request.headers or not peer
             or peer[0] not in {'127.0.0.1', '::1'}
             or descriptor.get('state') != 'ready' or getattr(runner, '_draining', True)
-            or authority is None or store is None
+            or not authorities or store is None
             or store.instance_id != descriptor.get('instance_id')
-            or authority.instance_id != store.instance_id
+            or any(a.instance_id != store.instance_id for a in authorities)
             or descriptor.get('served_profiles') != [
-                {'profile_id': authority.profile_id, 'home': authority.profile_id}]):
+                {'profile_id': a.profile_id, 'home': a.profile_id} for a in authorities]):
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
     try:
-        grant = store.redeem(tickets[0], profile_id=authority.profile_id, purpose='native-http')
+        # The ticket names the served profile it was minted for; that home's authority owns it.
+        grant = store.redeem(tickets[0], profile_id=None, purpose='native-http')
         if grant['capabilities'] != frozenset({'http:owner'}):
             raise PermissionError('invalid native grant')
+        if authority_for_profile_id(runner, grant['profile_id']) is None:
+            raise PermissionError('unserved native grant')
     except PermissionError:
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
     try:

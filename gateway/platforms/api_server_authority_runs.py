@@ -4,8 +4,14 @@ from gateway.session_results import admission_result
 from hermes_state_runtime import RuntimeStoreError, _row
 
 
+def _authority(adapter):
+    """The routed profile's authority: ``/p/<profile>/`` middleware already entered its scope."""
+    from gateway.session_authorities import active_authority
+    return active_authority(adapter.gateway_runner)
+
+
 def run_admission(adapter, run_id):
-    authority = getattr(adapter.gateway_runner, 'session_authority', None)
+    authority = _authority(adapter)
     if authority is None:
         return None
     with authority.db._read_ctx() as conn:
@@ -39,7 +45,7 @@ def run_projection(adapter, run_id):
 
 async def send_clarify(adapter, *, chat_id, **kwargs):
     from gateway.platforms.base import SendResult
-    authority = getattr(adapter.gateway_runner, 'session_authority', None)
+    authority = _authority(adapter)
     if authority is None or chat_id not in authority.sessions:
         return SendResult(success=False, error='No canonical API session')
     handle = authority._handle(SessionRef(authority.profile_id, chat_id))

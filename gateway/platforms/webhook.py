@@ -594,7 +594,8 @@ class WebhookAdapter(BasePlatformAdapter):
             return _json_error("Admission unavailable; retry this delivery", 503)
         if getattr(event, '_webhook_duplicate', False):
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
-        authority = self._message_handler.__self__.session_authority
+        from gateway.session_authorities import authority_for_profile_id
+        authority = authority_for_profile_id(self._message_handler.__self__, receipt.ref.profile_id)
         task = asyncio.create_task(self._finalize_delivery(event, authority, receipt))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)

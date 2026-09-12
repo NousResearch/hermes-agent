@@ -1364,12 +1364,22 @@ def _tour_request(sid: str, payload: dict) -> str:
 
 
 def _clear_pending(sid: str | None = None) -> None:
-    """Release pending prompts with an empty answer: only *sid*'s (session.interrupt must not cancel other
-    sessions' prompts), or every one when *sid* is None (shutdown)."""
+    """Release pending prompts: only *sid*'s (session.interrupt must not cancel other
+    sessions' prompts), or every one when *sid* is None (shutdown).
+
+    A clarify released by interrupt/shutdown is NOT a voluntary cancel: surface it to
+    the tool as the timeout sentinel ("user walked away") instead of empty answers the
+    agent re-prompts forever (boucle bug 08/09 — voir
+    /srv/docs/incidents/2026-09-08-boucle-clarify-liste-choix.md). Other prompt types
+    keep the historical empty-answer contract.
+    """
+    from tools.clarify_tool import TIMEOUT_RESPONSE
+
     with _prompt_lock:
         for rid, (owner_sid, ev) in list(_pending.items()):
             if sid is None or owner_sid == sid:
-                _answers[rid] = ""
+                event = _pending_prompt_payloads.get(rid, (None,))[0]
+                _answers[rid] = TIMEOUT_RESPONSE if event == "clarify.request" else ""
                 ev.set()
 
 

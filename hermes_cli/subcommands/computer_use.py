@@ -113,6 +113,15 @@ def _cu_perms_grant(args) -> None:
     sys.exit(request_permissions_grant())
 
 
+def _cu_host_bridge(args) -> int:
+    from tools.computer_use.host_bridge_cli import run_host_bridge
+    run_host_bridge(allowed_hosts=[h.strip() for h in args.allowed_hosts.split(",") if h.strip()],
+                    allowed_origins=[o.strip() for o in args.allowed_origins.split(",") if o.strip()] if args.allowed_origins else [],
+                    port=args.port, bind=args.bind,
+                    session_idle_timeout=getattr(args, "session_idle_timeout", 1800) or 1800)
+    return 0
+
+
 def build_computer_use_parser(subparsers) -> None:
     """Attach the ``computer-use`` subcommand to ``subparsers``."""
     computer_use_parser = subparsers.add_parser(
@@ -140,6 +149,28 @@ def build_computer_use_parser(subparsers) -> None:
             "PATH. The upstream install.sh always pulls the latest release, "
             "so this performs an in-place upgrade.")
     computer_use_sub.add_parser("status", help="Print whether cua-driver is installed and on PATH")
+    computer_use_bridge = computer_use_sub.add_parser(
+        "host-bridge", help="Run the CUA host bridge on this machine (drive this desktop remotely)",
+        description="Expose this machine's cua-driver over an authenticated streamable-HTTP\n"
+            "bridge so a remote Hermes agent (computer_use.remote.* + HERMES_CUA_REMOTE_TOKEN)\n"
+            "can drive this desktop. --allowed-hosts is the mandatory Host-header allowlist —\n"
+            "entries are exact-match Host values and must include the port when the bridge\n"
+            "listens on a nonstandard port (e.g. host:8765); an empty allowlist would let any\n"
+            "page drive the desktop, so the bridge refuses to start without it.\n"
+            "--allowed-origins is a separate list for browser-origin protection, not an\n"
+            "alternative spelling of --allowed-hosts; the two headers are validated\n"
+            "independently. Pass --bind 0.0.0.0 only when the remote agent reaches this host\n"
+            "over a trusted network.")
+    computer_use_bridge.add_argument("--port", type=int, default=8765,
+        help="TCP port to listen on")
+    computer_use_bridge.add_argument("--bind", default="127.0.0.1",
+        help="Address to bind (default 127.0.0.1; use 0.0.0.0 for remote access)")
+    computer_use_bridge.add_argument("--allowed-hosts", required=True,
+        help="Comma-separated allowed Host headers (required; include the port, e.g. host:8765)")
+    computer_use_bridge.add_argument("--allowed-origins", default="",
+        help="Comma-separated allowed browser Origins (default: none beyond --allowed-hosts)")
+    computer_use_bridge.add_argument("--session-idle-timeout", type=int, default=1800,
+        help="Seconds an idle bridge session is kept before teardown")
     computer_use_doctor = computer_use_sub.add_parser(
         "doctor", help="Run cua-driver `health_report` and surface the check matrix",
         description="Drive cua-driver's stable `health_report` MCP tool and render\n"
@@ -181,7 +212,7 @@ def build_computer_use_parser(subparsers) -> None:
         computer_use_perms.print_help()
 
     _actions = {"install": _cu_install, "status": _cu_status, "doctor": _cu_doctor,
-                "permissions": _cu_permissions}
+                "permissions": _cu_permissions, "host-bridge": _cu_host_bridge}
 
     def cmd_computer_use(args):
         handler = _actions.get(getattr(args, "computer_use_action", None))

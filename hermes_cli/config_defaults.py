@@ -2266,6 +2266,10 @@ DEFAULT_CONFIG = {
         # closed unless signed with the official com.trycua.driver identity. Only for local driver
         # development from source.
         "allow_unsigned_driver": False,
+        # Authenticated remote transport: drive a cua-driver host bridge (hermes computer-use
+        # bridge) on another machine instead of a local driver. Requires the bridge URL here and
+        # HERMES_CUA_REMOTE_TOKEN in .env (>= 32 bytes; secrets.token_hex(32)); HTTP is loopback-only.
+        "remote": {"enabled": False, "url": ""},
     },
     # Egress credential-injection proxy (iron-proxy) for remote terminal sandboxes (Docker today):
     # the sandbox sees opaque tokens and iron-proxy swaps in real credentials at egress, so a
@@ -2538,6 +2542,10 @@ OPTIONAL_ENV_VARS = {
         "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
         "Azure Foundry base URL", None, password=False),
     # ── Tool API keys ──
+    "HERMES_CUA_REMOTE_TOKEN": _tool(
+        "Bearer token for remote CUA transport (computer_use.remote.enabled=true; >= 32 bytes; "
+        "generate with secrets.token_hex(32))", "Remote CUA transport token", advanced=True,
+        tools=["computer_use"]),
     "EXA_API_KEY": _tool("Exa API key for AI-native web search and contents", "Exa API key",
         "https://exa.ai/", tools=["web_search", "web_extract"]),
     "PARALLEL_API_KEY": _tool("Parallel API key for AI-native web search and extract",

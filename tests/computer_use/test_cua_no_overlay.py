@@ -26,8 +26,7 @@ class TestNoOverlayFlag:
 
 
     def test_explicit_true_overrides(self):
-        with patch("hermes_cli.config.load_config",
-                   return_value={"computer_use": {"no_overlay": True}}):
+        with patch.object(cua_backend, "_computer_use_cfg", return_value={"no_overlay": True}):
             assert cua_backend._cua_no_overlay() is True
 
 
@@ -66,7 +65,7 @@ class TestNoOverlayFlag:
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch.object(cua_backend, "_computer_use_cfg", return_value={}):
             assert cua_backend._cua_no_overlay() is True
 
     @pytest.mark.linux_only
@@ -75,7 +74,7 @@ class TestNoOverlayFlag:
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch.object(cua_backend, "_computer_use_cfg", return_value={}):
             assert cua_backend._cua_no_overlay() is True
 
     @pytest.mark.linux_only
@@ -86,7 +85,7 @@ class TestNoOverlayFlag:
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
         monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch.object(cua_backend, "_computer_use_cfg", return_value={}):
             assert cua_backend._cua_no_overlay() is False
 
     @pytest.mark.linux_only
@@ -96,8 +95,7 @@ class TestNoOverlayFlag:
         monkeypatch.setenv("DISPLAY", ":0")
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
-        with patch("hermes_cli.config.load_config",
-                   return_value={"computer_use": {"no_overlay": False}}):
+        with patch.object(cua_backend, "_computer_use_cfg", return_value={"no_overlay": False}):
             assert cua_backend._cua_no_overlay() is False
 
 

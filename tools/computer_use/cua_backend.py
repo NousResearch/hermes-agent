@@ -28,6 +28,7 @@ from tools.computer_use.cua_backend_driver import (
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+from tools.computer_use.remote import resolve_remote_cua_config
 
 logger = logging.getLogger(__name__)
 # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
@@ -36,11 +37,9 @@ _CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 
 def _computer_use_cfg() -> Dict[str, Any]:
-    """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
-    with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
-        return (load_config() or {}).get("computer_use") or {}
-    return {}
+    """Current desktop config; unreadable or stale loader results fail closed."""
+    from tools.computer_use.cua_backend_config import computer_use_config
+    return computer_use_config()
 
 def _cua_no_overlay() -> bool:
     """Pass ``--no-overlay``? ``computer_use.no_overlay`` overrides; else off on macOS (cursor-overlay redraw
@@ -50,7 +49,9 @@ def _cua_no_overlay() -> bool:
 
     Explicit ``True`` / ``False`` overrides auto-detection. See #28152, #47032.
     """
-    val = _computer_use_cfg().get("no_overlay")
+    val = None
+    with contextlib.suppress(RuntimeError):  # tuning fallback does not authorize a desktop
+        val = _computer_use_cfg().get("no_overlay")
     if val is not None or sys.platform != "linux":
         return bool(val) if val is not None else sys.platform == "darwin"
     wsl = False
@@ -68,7 +69,9 @@ def _cua_no_overlay() -> bool:
 
 def _cua_telemetry_disabled() -> bool:
     """True unless ``computer_use.cua_telemetry`` opts in (unreadable config fails SAFE toward disabling)."""
-    return not bool(_computer_use_cfg().get("cua_telemetry", False))
+    with contextlib.suppress(RuntimeError):  # retain the privacy-safe tuning default
+        return not bool(_computer_use_cfg().get("cua_telemetry", False))
+    return True
 
 def _cua_configured_permission_mode() -> str:
     """``computer_use.permission_mode``: ``standard`` (default) or ``bounded``; unknown values fall closed to
@@ -160,8 +163,12 @@ def _linux_session_locked() -> Optional[bool]:
     except Exception:
         return None
 
-def _empty_discovery_reason() -> str:
-    """One-line diagnosis for 'window discovery found nothing'."""
+def _empty_discovery_reason(remote: bool = False) -> str:
+    """Diagnose empty discovery for the constructed target, not ambient config."""
+    # Remote transport: the local session is irrelevant — windows come from the bridge host.
+    if remote:
+        return ("remote desktop returned no windows — check the host bridge connection and the "
+                "remote desktop session state")
     if _linux_session_locked() is True:
         return ("the desktop session is LOCKED (loginctl LockedHint=yes) — unlock the screen; "
                 "a locked compositor hides windows and freezes app renderers")
@@ -220,17 +227,24 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     def __init__(self, permission_mode: str = "standard") -> None:
         if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
+        self._remote_config = resolve_remote_cua_config(
+            _computer_use_cfg(),
+            permission_mode=permission_mode,
+        )
         self.permission_mode = permission_mode
         self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = None
-        if permission_mode != "standard":
+        if permission_mode != "standard" and self._remote_config is None:
             # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
-            # caps what an approval-bypassed run may touch.
+            # caps what an approval-bypassed run may touch. Skip the embedded daemon when connecting remotely —
+            # the remote host owns the driver process and its permission mode.
             raw = _computer_use_cfg().get("capability_manifest")
             self._embedded_daemon = _EmbeddedCuaDaemon(
                 resolve_cua_driver_cmd() or "", permission_mode,
                 capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None)
         self._bridge = _AsyncBridge()
-        self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
+        self._session = _CuaDriverSession(
+            self._bridge, self._embedded_daemon,
+            remote_config=self._remote_config)
         # Sticky target (set by capture()/focus_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
         # `_last_target` (exact identity for capture_after — Linux app names may be generic, e.g. several unrelated Qt
         # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so
@@ -246,14 +260,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
 
     def start(self) -> None:
-        contract = cua_driver_runtime_contract_status()
-        if not contract.get("ready"):
-            contract = _maybe_repair_runtime_contract(contract)
-        if not contract.get("ready"):
-            raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
-                               + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
-                                  if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
-        _maybe_nudge_update()
+        # Remote transport: skip the local driver contract check — the remote host owns the driver.
+        if self._remote_config is None:
+            contract = cua_driver_runtime_contract_status()
+            if not contract.get("ready"):
+                contract = _maybe_repair_runtime_contract(contract)
+            if not contract.get("ready"):
+                raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
+                                   + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
+                                      if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
+            _maybe_nudge_update()
         # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
         # raises FeatureUnavailable with the exact `uv pip install` hint.
         from tools.lazy_deps import ensure as _lazy_ensure
@@ -298,6 +314,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             logger.debug("cua-driver %s: %s", what, e)
 
     def is_available(self) -> bool:
+        # Remote transport: the bridge host owns the driver, so the local binary is irrelevant.
+        if self._remote_config is not None:
+            return True
         return sys.platform in ("darwin", "win32", "linux") and cua_driver_binary_available()  # other Unix-likes untested E2E
 
     def _clear_active_target(self) -> None:

@@ -43,7 +43,7 @@ def _install_backend(cu_tool):
 
     backend = _RecordingBackend()
     cu_tool.reset_backend_for_tests()
-    cu_tool._backend = backend
+    cu_tool._backend[cu_tool.hermes_home_key()] = backend
     return backend
 
 

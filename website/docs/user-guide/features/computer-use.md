@@ -453,6 +453,45 @@ Swap the backend entirely (for testing):
 HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 ```
 
+### Remote host bridge
+
+A headless gateway can drive cua-driver on another machine over authenticated
+MCP streamable HTTP. The gateway needs neither a local display nor a local
+driver:
+
+```yaml
+computer_use:
+  permission_mode: standard
+  remote:
+    enabled: true
+    url: https://desktop.example.com:8765/mcp
+```
+
+Set `HERMES_CUA_REMOTE_TOKEN` in the profile's secret environment (at least
+32 bytes). Non-loopback client connections require HTTPS; redirects and ambient
+HTTP proxies are disabled. Remote sessions support `standard` permissions only.
+They never fall back to the gateway's CLI, including when the remote host returns
+no windows.
+
+A written `remote` block requires an explicit boolean `enabled` choice; a URL
+without that choice is an error, not permission to drive the local screen. The
+current expanded configuration must match the normal loader's effective values,
+so an unrelated loader failure cannot substitute defaults or a deleted target
+from its last-known-good cache. This direct integration does not support a
+`computer_use.provider` selector; provider selection belongs to the provider-seam
+alternative.
+
+On the desktop host, use `hermes computer-use host-bridge --help`. Without a
+Hermes installation, copy `host_bridge_standalone.py`, `host_bridge.py` and
+`host_validation.py` from `tools/computer_use/` together. The standalone launcher
+still needs Python 3.11+, MCP, Starlette, Uvicorn and cua-driver. Host allowlists
+contain the exact Host header, including its port; Origin allowlists contain
+full origins. Protect non-loopback deployments with TLS.
+
+The separately published `cua-host-bridge` package is not automatically kept in
+sync with this source tree. VM provisioning and fleet supervision are separate
+from the transport. Configuration changes do not hot-swap a running backend.
+
 ### Telemetry
 
 cua-driver ships with anonymous usage telemetry (PostHog) enabled by default

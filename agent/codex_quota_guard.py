@@ -86,6 +86,15 @@ def check_daily_budget(*, base_url: str = "", api_key: str = "") -> Optional[str
         baseline = float(state.get("baseline_weekly_percent", used))
     except (TypeError, ValueError):
         baseline = used
+
+    # The provider's weekly window can reset during the same local day.
+    # If its usage percentage drops below our persisted baseline, start a
+    # fresh daily baseline from the new weekly window.
+    if used < baseline:
+        baseline = used
+        state = {"day": today, "baseline_weekly_percent": used}
+        _save_state(state)
+
     spent = max(0.0, used - baseline)
     if spent < budget:
         return None

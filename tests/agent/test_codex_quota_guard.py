@@ -23,7 +23,7 @@ def test_blocks_after_daily_delta(monkeypatch, tmp_path):
     message = guard.check_daily_budget()
     assert message is not None
     assert "11.0%" in message
-    assert "No fallback provider" in message
+    assert "blocked until tomorrow" in message
 
 
 def test_state_survives_process_style_reload(monkeypatch, tmp_path):

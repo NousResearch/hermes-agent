@@ -32,6 +32,7 @@ import { Card } from "@nous-research/ui/ui/components/card";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
+import { SkillPicker } from "@/components/SkillPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
@@ -92,6 +93,8 @@ interface ChatSidebarProps {
   className?: string;
   onDashboardNewSessionRequest?: () => void;
   onSessionTitleChange?: (title: string | null) => void;
+  /** Inject a slash-skill command into the chat PTY. Optional: picker still renders. */
+  onSendToTerminal?: (cmd: string) => void;
 }
 
 /** Build the ``session.create`` params for the sidecar session.
@@ -115,6 +118,7 @@ export function ChatSidebar({
   className,
   onDashboardNewSessionRequest,
   onSessionTitleChange,
+  onSendToTerminal,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
@@ -486,6 +490,8 @@ export function ChatSidebar({
           {STATE_LABEL[state]}
         </Badge>
       </Card>
+
+      <SkillPicker profile={profile} onLaunch={onSendToTerminal} />
 
       {supportsReasoning && (
         <Card className="py-0">

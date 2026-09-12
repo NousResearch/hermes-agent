@@ -11,6 +11,7 @@ const apiMocks = vi.hoisted(() => ({
     capabilities: { supports_reasoning: false },
     model: "test/model",
   })),
+  getSkills: vi.fn(async () => []),
 }));
 
 const gatewayMocks = vi.hoisted(() => {
@@ -36,7 +37,10 @@ const reloadMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  api: { getModelInfo: apiMocks.getModelInfo },
+  api: {
+    getModelInfo: apiMocks.getModelInfo,
+    getSkills: apiMocks.getSkills,
+  },
   buildWsUrl: apiMocks.buildWsUrl,
 }));
 vi.mock("@/lib/dashboard-auth-reload", () => ({
@@ -127,6 +131,16 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
   vi.unstubAllGlobals();
+});
+
+describe("ChatSidebar skills card", () => {
+  it("renders a skills widget next to the model card", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" />);
+
+    expect(container.textContent).toMatch(/skills/i);
+  });
 });
 
 describe("ChatSidebar event socket", () => {

@@ -177,6 +177,25 @@ def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
     assert b.total_device_bytes == UMA_RAM  # RAM path, not the pool
 
 
+def test_vulkan_device_is_budgeted_as_discrete_vram(monkeypatch):
+    """An accelerated Vulkan runtime is allocator truth for a discrete AMD card;
+    system RAM must not be relabeled as its graphics memory."""
+    total, free = 16368 << 20, 7347 << 20
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 20 * GIB))
+    monkeypatch.setattr(hw, "_engine_device_info", lambda: (
+        total, free, "Vulkan", "AMD Radeon RX 6800 XT"))
+
+    planning = hw.probe_budget(planning=True)
+    live = hw.probe_budget(planning=False)
+
+    assert planning.uma is False
+    assert planning.total_device_bytes == total
+    assert planning.ram_available_bytes == 32 * GIB
+    assert live.total_device_bytes == total
+    assert live.usable_vram_bytes == max(0, free - hw._MARGIN_FLOOR)
+
+
 def test_smi_resolver_caches_and_survives_empty_path(monkeypatch):
     """The resolver consults PATH first, and a resolution (hit or miss) is
     cached for the process."""
@@ -240,10 +259,33 @@ def test_pool_probe_miss_retries_after_ttl(monkeypatch):
 # ── device-line parsing (engine fallback) ────────────────────
 
 
+def test_vulkan_device_line_reports_total_and_free_vram():
+    line = "  Vulkan0: AMD Radeon RX 6800 XT (16368 MiB, 7347 MiB free)"
+    match = hw._DEVICE_LINE_RE.search(line)
+    assert match
+    assert match.group("backend") == "Vulkan"
+    assert match.group("name") == "AMD Radeon RX 6800 XT"
+    assert int(match.group("total")) == 16368
+    assert int(match.group("free")) == 7347
+
+
+def test_metal_device_stays_uma(monkeypatch):
+    monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 20 * GIB))
+    monkeypatch.setattr(hw, "_engine_device_info", lambda: (
+        32 * GIB, 20 * GIB, "Metal", "Apple GPU"))
+    monkeypatch.setattr(hw, "_device_pool_view", lambda: None)
+
+    budget = hw.probe_budget(planning=True)
+
+    assert budget.uma is True
+    assert budget.total_device_bytes == 32 * GIB
+
+
 def test_device_line_regex_handles_parenthesized_names():
     """Device names may contain their own parentheses — the LAST
     parenthesized group must win."""
     line = ("  CUDA0: NVIDIA Example Device (1234-core Example GPU) "
             "(46464 MiB, 46284 MiB free)")
     m = hw._DEVICE_LINE_RE.search(line)
-    assert m and int(m.group(1)) == 46464
+    assert m and int(m.group("total")) == 46464

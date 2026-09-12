@@ -128,6 +128,12 @@ export const shouldClampTranscriptBudget = (hidden: boolean, renderBudget: numbe
 // still well under the measured 780ms single-jump freeze.
 const BACKFILL_STEP = 290
 
+// Auto-spent budget pages while a parked reading offset waits for the tree
+// to cover it (see the grow effect). The real bound is the transcript
+// itself; this only stops a truncated-window fetch that never lands from
+// re-arming forever.
+const PARKED_OFFSET_MAX_PAGES = 96
+
 export const transcriptBackfillFrameCount = (
   firstPaint = FIRST_PAINT_BUDGET,
   step = BACKFILL_STEP,
@@ -497,6 +503,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // load in progress, not a reading position anyone chose — never anchor to it.
   const loadSettledRef = useRef(false)
   const cancelRestoreRef = useRef<(() => void) | null>(null)
+  // Pages auto-spent toward the current parked offset; reset at each park.
+  const autoGrowPagesRef = useRef(0)
+  // Bumped when the settle loop parks an offset, so the grow effect below
+  // re-runs with fresh state even when no other dependency changed.
+  const [restoreGrowTick, setRestoreGrowTick] = useState(0)
   const isRunning = useAuiState(s => s.thread.isRunning)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
@@ -514,6 +525,17 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const el = scrollRef.current
 
     if (!el || !loadSettledRef.current) {
+      return
+    }
+
+    // A following view can be caught mid-catch-up: an earlier prepend slid
+    // the content down while the stick's re-pin hasn't landed yet, so
+    // sh - scrollTop measures a transient overshoot. Parking that value
+    // strands the view exactly that far above the bottom once the stick
+    // catches up. Following means the bottom is the destination.
+    if (el.getAttribute('data-following') === 'true' && threadScrollStateFromMetrics(el).kind !== 'bottom') {
+      restoreFromBottomRef.current = el.clientHeight
+
       return
     }
 
@@ -860,6 +882,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           // can't be overwritten by a mid-load anchor measurement. The restore
           // effect flips settled once it consumes the parked value.
           restoreFromBottomRef.current = target.fromBottom + node.clientHeight
+          // Reset the auto-spend counter and wake the grow effect below: the
+          // parked offset needs the tree to grow, and once the render has
+          // topped out nothing else re-runs the growth check. The tick makes
+          // the effect re-read fresh budget/render state.
+          autoGrowPagesRef.current = 0
+          setRestoreGrowTick(tick => tick + 1)
         } else {
           loadSettledRef.current = true
         }
@@ -1007,6 +1035,56 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
     // renderBudget covers DOM pages; groups.length covers store-window expands.
   }, [scrollRef, renderBudget, groups.length])
+
+  // A parked offset deeper than the tree needs the transcript to GROW, and
+  // nothing else keeps growing it — the budget backfill tops out at one pane
+  // page and only a user click used to spend more. Spend pages in the same
+  // order as "Show earlier" (DOM budget first, then the store window) until
+  // the tree covers the parked offset; each committed budget re-runs this
+  // effect for the next page. Without this the view stays stranded at the
+  // clamped top and, because the load never counts as settled, the recorded
+  // position never refreshes — every switch back strands it at the same
+  // spot. The parked ref must survive these spends untouched: it is
+  // re-applied (never re-measured), so no anchor is taken here.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const restoreFromBottom = restoreFromBottomRef.current
+
+    if (!el || restoreFromBottom == null || el.scrollHeight >= restoreFromBottom) {
+      return
+    }
+
+    // Wait for the stepped backfill to top out first: while it is still
+    // climbing the tree may cover the offset on its own, and racing it would
+    // only hoard pages. A hidden pane stays put entirely — its budget is
+    // clamped to the live tail and the reveal re-runs this effect.
+    if (renderBudget < paneBudget || !paneVisible) {
+      return
+    }
+
+    const action = resolveShowEarlierAction(hiddenCount, olderAvailable)
+
+    if (!action || autoGrowPagesRef.current >= PARKED_OFFSET_MAX_PAGES) {
+      return
+    }
+
+    autoGrowPagesRef.current += 1
+    startTransition(() => setRenderBudget(budget => budget + paneBudget))
+
+    if (action === 'window') {
+      expandWindow()
+    }
+  }, [
+    restoreGrowTick,
+    scrollRef,
+    renderBudget,
+    groups.length,
+    hiddenCount,
+    olderAvailable,
+    paneBudget,
+    expandWindow,
+    paneVisible
+  ])
 
   // The row array is memoized on the inputs the rows actually read. This
   // component re-renders on every isAtBottom flip — and use-stick-to-bottom

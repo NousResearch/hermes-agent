@@ -1803,6 +1803,15 @@ class BasePlatformAdapter(ABC):
     # Typing indicator renders TEXT (status line); the gateway then feeds set_status_text().
     supports_status_text: bool = False
 
+    # Whether the user can SEE the streamed preview of a reply as it
+    # accumulates (Telegram/Discord live-edit bubbles, ...). True for every
+    # visible messaging platform. Adapters where the "stream" is never shown
+    # to a human — A2A persists the reply it receives — set False, and the
+    # stream consumer then delivers the COMPLETE final text instead of the
+    # continuation: prefix dedup only makes sense when the prefix was already
+    # displayed somewhere (#95753).
+    HAS_VISIBLE_STREAM: bool = True
+
     def set_status_text(self, chat_id: str, text: Optional[str]) -> None:
         """Set or clear (``None``) the live working-state phrase for a chat. In-memory only: the
         next typing refresh renders it; a no-op store on adapters that never read

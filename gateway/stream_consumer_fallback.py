@@ -49,6 +49,13 @@ class StreamFallbackMixin:
 
     def _continuation_text(self, final_text: str) -> str:
         """Return only the part of final_text the user has not already seen."""
+        if getattr(self.adapter, "HAS_VISIBLE_STREAM", True) is False:
+            # No visible streaming preview exists for this adapter, so
+            # nobody has seen the prefix — stripping it would silently
+            # truncate the delivered/persisted reply by the preview length
+            # (#95753: A2A persisted "ter, good copy..." for
+            # "Peter, good copy...").
+            return final_text
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
             return final_text[len(prefix):].lstrip()

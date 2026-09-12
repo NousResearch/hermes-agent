@@ -182,6 +182,137 @@ def test_pending_needed_when_marker_exists():
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+# ---------------------------------------------------------------------------
+# Marker self-heal: #106682 — fleet_restart_pending cleared when fleet
+# already runs the expected SHA
+# ---------------------------------------------------------------------------
+
+
+def test_parse_marker_expected_sha_with_sha():
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123")
+    assert update_cmd._parse_marker_expected_sha() == "abc123"
+    update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_parse_marker_expected_sha_without_sha():
+    update_cmd._write_fleet_restart_pending_marker()
+    assert update_cmd._parse_marker_expected_sha() is None
+    update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_parse_marker_expected_sha_no_file():
+    update_cmd._clear_fleet_restart_pending_marker()
+    assert update_cmd._parse_marker_expected_sha() is None
+
+
+def test_live_fleet_satisfies_marker_all_match():
+    fleet = [
+        {"profile": "default", "pid": 1, "code_sha": "abc123", "state": "current"},
+        {"profile": "work", "pid": 2, "code_sha": "abc123", "state": "current"},
+    ]
+    assert update_cmd._live_fleet_satisfies_marker("abc123", _fleet_versions=fleet) is True
+
+
+def test_live_fleet_satisfies_marker_one_stale():
+    fleet = [
+        {"profile": "default", "pid": 1, "code_sha": "abc123", "state": "current"},
+        {"profile": "work", "pid": 2, "code_sha": "oldsha", "state": "stale"},
+    ]
+    assert update_cmd._live_fleet_satisfies_marker("abc123", _fleet_versions=fleet) is False
+
+
+def test_live_fleet_satisfies_marker_empty_fleet():
+    assert update_cmd._live_fleet_satisfies_marker("abc123", _fleet_versions=[]) is False
+
+
+def test_live_fleet_satisfies_marker_empty_sha():
+    assert update_cmd._live_fleet_satisfies_marker("", _fleet_versions=[]) is False
+
+
+def test_pending_needed_self_heals_when_fleet_satisfies_marker(monkeypatch):
+    """Marker with expected_sha cleared when live fleet already runs it."""
+    expected_sha = "cafe0000" + "a" * 32
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=expected_sha)
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+
+    fleet = [
+        {"profile": "default", "pid": 1, "code_sha": expected_sha, "state": "current"},
+    ]
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: fleet,
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+    # Marker should have been auto-cleared.
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_pending_needed_keeps_marker_when_fleet_sha_mismatches(monkeypatch):
+    """Marker with expected_sha retained when a gateway runs different code."""
+    expected_sha = "cafe0000" + "a" * 32
+    stale_sha = "dead0000" + "b" * 32
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=expected_sha)
+
+    fleet = [
+        {"profile": "default", "pid": 1, "code_sha": stale_sha, "state": "stale"},
+    ]
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: fleet,
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+    # Marker must survive — fleet is genuinely stale.
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_pending_needed_keeps_marker_when_fleet_probe_fails(monkeypatch):
+    """Marker retained when collect_fleet_versions throws."""
+    expected_sha = "cafe0000" + "a" * 32
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=expected_sha)
+
+    def _boom(**k):
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions", _boom
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_pending_needed_keeps_marker_without_expected_sha(monkeypatch):
+    """Marker without expected_sha cannot be self-healed."""
+    update_cmd._write_fleet_restart_pending_marker()  # no expected_sha
+    assert update_cmd._pending_fleet_restart_needed() is True
+    update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_startup_warn_silent_when_fleet_satisfies_marker(monkeypatch, capsys):
+    """Startup warning suppressed when fleet already runs the marker's SHA."""
+    expected_sha = "cafe0000" + "a" * 32
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=expected_sha)
+
+    fleet = [
+        {"profile": "default", "pid": 1, "code_sha": expected_sha, "state": "current"},
+    ]
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **k: fleet,
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == ""
+    # Marker should be cleared.
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
 def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     disk_sha = "e" * 40
     old_sha = "7" * 40

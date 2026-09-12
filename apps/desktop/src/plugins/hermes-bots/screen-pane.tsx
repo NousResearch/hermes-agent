@@ -78,8 +78,15 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     })
   }, [bot, refresh, status?.profile_key])
 
-  const detach = useCallback(() => {
+  const detach = useCallback((handBack = false) => {
     attachGeneration.current += 1
+
+    // noVNC closes without a status. Intentional pane closure must send 1000
+    // first; reconnect teardown must keep the human lease instead.
+    if (handBack) {
+      socket.current?.close(1000)
+    }
+
     rfb.current?.disconnect()
     rfb.current = null
     socket.current?.close()
@@ -158,7 +165,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
   // Visibility is not lifecycle: the stream stays attached while the pane is
   // hidden; only unmount tears it down (and hands control back server-side).
-  useEffect(() => () => detach(), [detach])
+  useEffect(() => () => detach(true), [detach])
 
   useEffect(() => {
     if (status?.running && conn === 'idle') {

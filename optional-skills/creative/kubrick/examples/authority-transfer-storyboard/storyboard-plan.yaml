@@ -1,0 +1,55 @@
+storyboard_id: authority-transfer-three-frame
+frames:
+  - frame_id: frame-001
+    node_states:
+      observed_1: vacant but still authoritative
+      observed_2: held by supervisor
+      observed_3: closed to subordinate
+    motif_ownership:
+      observed_2: supervisor
+    object_states:
+      badge: cracked and functional
+    light_states:
+      doorway: cool and restricted
+    material_states:
+      badge: crack visible
+    convergence_sites:
+      - primary
+    residue_add:
+      - workers orient toward the empty chair
+  - frame_id: frame-002
+    node_states:
+      observed_1: vacant and institutionally active
+      observed_2: transferred to subordinate
+      observed_3: opening to subordinate
+    motif_ownership:
+      observed_2: subordinate
+    object_states:
+      badge: cracked and presented at doorway
+    light_states:
+      doorway: opening with neutral spill
+    material_states:
+      badge: crack remains visible
+    convergence_sites:
+      - primary
+    required_mutations:
+      - ownership transfer
+    residue_add:
+      - former supervisor remains outside
+  - frame_id: frame-003
+    node_states:
+      observed_1: vacant and institutionally active
+      observed_2: worn by subordinate
+      observed_3: open to subordinate and closed to former supervisor
+    motif_ownership:
+      observed_2: subordinate
+    object_states:
+      badge: cracked and worn
+    light_states:
+      doorway: lit from inside
+    material_states:
+      badge: crack remains visible
+    convergence_sites:
+      - primary
+    residue_add:
+      - former supervisor remains outside

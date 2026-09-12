@@ -1,0 +1,36 @@
+manifest_version: 0.11.1
+batch_id: hermes-corpus-wave1-batch1
+runtime: standalone-hermes
+patterns:
+  - id: alchemical_calcination_false_structure
+    path: references/patterns/alchemical/alchemical_calcination_false_structure.json
+    routes: [false_authority_breakdown, humiliation_to_agency, brittle_identity]
+  - id: alchemical_dissolution_boundary_loss
+    path: references/patterns/alchemical/alchemical_dissolution_boundary_loss.json
+    routes: [boundary_loss, contamination, identity_permeability]
+  - id: alchemical_separation_signal_from_noise
+    path: references/patterns/alchemical/alchemical_separation_signal_from_noise.json
+    routes: [discernment, evidence_selection, severance]
+  - id: kubrick_center_transfer_authority
+    path: references/patterns/cinematic/kubrick_center_transfer_authority.json
+    routes: [authority_transfer, absent_center, system_replaces_person]
+  - id: sonic_motif_source_migration
+    path: references/patterns/sound-rhythmic/sonic_motif_source_migration.json
+    routes: [distributed_agency, unseen_power, sonic_residue]
+  - id: japanese_ma_active_interval
+    path: references/patterns/cinematic/japanese_ma_active_interval.json
+    routes: [active_absence, relational_distance, delayed_response]
+  - id: interface_badge_authority_transfer
+    path: references/patterns/contemporary/interface_badge_authority_transfer.json
+    routes: [platform_authority, social_proof, status_revocation]
+selection_policy:
+  primary_limit: 1
+  supporting_limit: 2
+  minimum_confidence: 0.55
+  fail_closed: NOT_COMPUTABLE
+guards:
+  observed_structure_required: true
+  mutation_required: true
+  provenance_required: true
+  latent_surface_default: true
+  tradition_boundary_required_for_non_western_sources: true

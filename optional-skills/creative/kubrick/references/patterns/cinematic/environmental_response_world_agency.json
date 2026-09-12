@@ -1,0 +1,23 @@
+{
+  "pattern_id": "environmental_response_world_agency",
+  "title": "Environmental Response / World Carries Agency",
+  "version": "0.11.3",
+  "domain": "cinematic",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative cinematic environment analysis","title":"Environment as causal participant","date":"cross-period","cultural_context":"Narrative space, atmosphere, and material response"}],
+  "observed_structure": ["the environment has a stable behavioral baseline", "character action produces a measurable environmental response", "the response changes later choices without requiring personification"],
+  "dramatic_operations": ["make place causally active", "externalize accumulated pressure", "bind action to environmental consequence"],
+  "transformation_grammars": ["action-to-environmental-response", "place-as-system"],
+  "cinematic_affordances": ["ambient rhythm changing after action", "light, weather, machinery, or crowd flow responding", "location retaining altered state", "later blocking adapting to environmental change"],
+  "applicable_genres": ["drama", "horror", "science fiction", "fantasy", "thriller"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general environmental agency pattern; do not claim spiritual identity for a place without project-specific provenance"],
+  "misuse_risks": ["weather mirrors emotion cliché", "environmental change without causality", "anthropomorphism replacing world rules"],
+  "mutation_requirements": {"required":true,"variables":["baseline","response channel","response delay","persistence","behavioral consequence"]},
+  "transferable_structure": "a stable environment responds to action and preserves the response as a causal condition for later behavior",
+  "non_transferable_surface": "borrowed animist, sacred-land, or genius-loci claims without cultural and narrative grounding",
+  "production_cost": {"location_dependency":0.6,"prop_dependency":0.3,"lighting_dependency":0.5,"VFX_dependency":0.2},
+  "lexicon_links": ["world_soul", "genius_loci", "resonance", "aether"],
+  "confidence": 0.83
+}

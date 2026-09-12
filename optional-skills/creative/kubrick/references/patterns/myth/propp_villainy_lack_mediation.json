@@ -1,0 +1,24 @@
+{
+  "pattern_id": "propp_villainy_lack_mediation",
+  "title": "Proppian Villainy / Lack / Mediation",
+  "version": "0.11.5",
+  "domain": "myth-folklore",
+  "source_tier": "PRIMARY",
+  "source_refs": [{"author": "Vladimir Propp", "title": "Morphology of the Folktale", "date": "1928"}],
+  "observed_structure": [
+    "A concrete harm or lack destabilizes the prior order.",
+    "Knowledge of that condition reaches an agent and creates an obligation to act."
+  ],
+  "dramatic_operations": ["lack", "villainy", "mediation"],
+  "transformation_grammars": ["lack", "mediation"],
+  "cinematic_affordances": ["disrupted home", "evidence of absence", "message or witness that activates action"],
+  "misuse_risks": ["mechanical hero's-journey substitution", "villainy without consequence", "abstract lack without observable evidence"],
+  "mutation_requirements": {
+    "required": true,
+    "variables": ["kind of lack", "who recognizes it", "cost of mediation", "agent obligation", "resolution condition"]
+  },
+  "transferable_structure": "Introduce an observable lack or harm, then mediate it to an agent whose choices become causally constrained.",
+  "non_transferable_surface": "Do not copy folktale roles, quest objects, magical helpers, or culturally specific tale surfaces.",
+  "production_cost": "low",
+  "confidence": 0.8
+}

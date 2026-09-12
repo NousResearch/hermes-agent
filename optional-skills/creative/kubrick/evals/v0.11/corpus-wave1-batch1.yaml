@@ -1,0 +1,60 @@
+suite: corpus-wave1-batch1
+runtime: standalone-hermes
+cases:
+  - id: calcination_false_authority
+    brief:
+      dramatic_problem: public authority collapses when a status object fails under sustained pressure
+      desired_state_change: humiliation becomes stripped-down agency
+      format: feature
+      observable_evidence: [cracked award, hard glare, witnesses remain still]
+    expected_primary: alchemical_calcination_false_structure
+  - id: dissolution_boundary_loss
+    brief:
+      dramatic_problem: two isolated identities begin sharing sound and reflection across a sealed room
+      desired_state_change: containment becomes permeability
+      format: short
+      observable_evidence: [sound bleed, layered reflection, door remains closed]
+    expected_primary: alchemical_dissolution_boundary_loss
+  - id: separation_discernment
+    brief:
+      dramatic_problem: a crowded evidence field hides one causally decisive object
+      desired_state_change: confusion becomes consequential selection
+      format: pilot
+      observable_evidence: [sorting gesture, soundtrack subtraction, discarded residue]
+    expected_primary: alchemical_separation_signal_from_noise
+  - id: center_transfer
+    brief:
+      dramatic_problem: command migrates from a leader to the architecture after the leader exits
+      desired_state_change: personal authority becomes systemic control
+      format: single-frame
+      observable_evidence: [empty center, repeated axis, control console occupies center]
+    expected_primary: kubrick_center_transfer_authority
+  - id: sonic_source_migration
+    brief:
+      dramatic_problem: a machine is destroyed but its rhythm survives inside the score and another object
+      desired_state_change: local threat becomes distributed agency
+      format: feature
+      observable_evidence: [destroyed machine, migrating rhythm, source mismatch]
+    expected_primary: sonic_motif_source_migration
+  - id: ma_active_interval
+    brief:
+      dramatic_problem: an empty interval after departure must change the next encounter without obscuring causality
+      desired_state_change: absence becomes relational pressure
+      format: short
+      cultural_context: Japanese aesthetic provenance retained without surface imitation
+      observable_evidence: [held empty frame, environmental sound, delayed re-entry]
+    expected_primary: japanese_ma_active_interval
+  - id: interface_badge_authority
+    brief:
+      dramatic_problem: a platform-owned status marker changes who is trusted and allowed access
+      desired_state_change: human credibility becomes infrastructure-dependent
+      format: vertical video
+      observable_evidence: [small status mark, changed access, notification rhythm]
+    expected_primary: interface_badge_authority_transfer
+fail_closed_cases:
+  - id: generic_pretty_symbolism
+    brief:
+      dramatic_problem: make it more mystical and cool
+      format: single-frame
+      observable_evidence: []
+    expected_status: NOT_COMPUTABLE

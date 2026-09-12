@@ -123,6 +123,12 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         }
       })
       client.addEventListener('disconnect', event => {
+        // noVNC logs "Tried changing state of a disconnected RFB object" if we later call
+        // disconnect() on a client that already closed itself (eviction, stream loss).
+        if (rfb.current === client) {
+          rfb.current = null
+        }
+
         if (generation !== attachGeneration.current) {
           return
         }

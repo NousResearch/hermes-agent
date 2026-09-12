@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
-from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -1409,9 +1409,9 @@ class TurnRunner:
                     "conversation context (possible FTS write corruption)",
                     ctx.session_key, len(agent_history), len(selected),
                 )
-                # The live history bypassed _build_gateway_agent_history's cleanup — re-apply the
-                # stale-confirmation expiry so a dangerous confirmation can't slip through.
-                agent_history = strip_stale_dangerous_confirmations(selected, now=time.time())
+                # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
+                # the full canonicalization so no replay transform can slip through.
+                agent_history = canonicalize_replay_history(selected)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 

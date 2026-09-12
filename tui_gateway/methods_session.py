@@ -517,7 +517,7 @@ class _Resume:
     def restore(self):
         """``(sanitized model history, display history, raw history)`` for a cold/eager resume."""
         raw, display = self.read_history()
-        return sanitize_replay_history(raw), display, raw
+        return canonicalize_replay_history(raw), display, raw
 
     def info(self, cwd: str, overrides: dict) -> dict:
         return _lazy_resume_info(cwd, model=(overrides.get("model_override") or {}).get("model") or "",

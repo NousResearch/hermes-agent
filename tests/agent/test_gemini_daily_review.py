@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import threading
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from agent.gemini_daily_review import (
+    AlertDeliveryIndeterminateError,
     DailyReviewRunner,
     SolReviewer,
     _parse_verdict,
@@ -145,6 +147,18 @@ def test_sol_reviewer_creates_fresh_toolless_memoryless_agent_per_receipt():
         assert kwargs["model"] == "gpt-5.6-sol"
 
 
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("arbitrary-provider", "gpt-5.6-sol"),
+        ("openai-codex", "arbitrary-model"),
+    ],
+)
+def test_sol_reviewer_rejects_noncanonical_requested_identity(provider: str, model: str):
+    with pytest.raises(ValueError, match="reviewer_identity_mismatch"):
+        SolReviewer(provider=provider, model=model, agent_factory=lambda **_kwargs: None)
+
+
 def test_sol_reviewer_fails_closed_on_actual_provider_or_model_mismatch():
     class WrongAgent:
         provider = "openrouter"
@@ -160,6 +174,24 @@ def test_sol_reviewer_fails_closed_on_actual_provider_or_model_mismatch():
         provider="openai-codex",
         model="gpt-5.6-sol",
         agent_factory=WrongAgent,
+    )
+
+    with pytest.raises(RuntimeError, match="reviewer_identity_mismatch"):
+        reviewer("review this")
+
+
+def test_sol_reviewer_fails_closed_when_actual_identity_is_unavailable():
+    class IdentitylessAgent:
+        def __init__(self, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    reviewer = SolReviewer(
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+        agent_factory=IdentitylessAgent,
     )
 
     with pytest.raises(RuntimeError, match="reviewer_identity_mismatch"):
@@ -196,6 +228,13 @@ def test_runner_reviews_full_cohort_but_worker_failures_fail_closed(tmp_path: Pa
     assert len(alerts) == 1
     items = store.list_review_items(store.get_review_batch("2026-09-11")["batch_id"])
     assert [item["verdict"] for item in items].count("fail") == 2
+    failed_worker_item = next(item for item in items if item["receipt_id"] == "grt_1")
+    assert failed_worker_item["failure_kind"] == "worker_failure"
+    assert json.loads(failed_worker_item["review_json"]) == {
+        "verdict": "pass",
+        "reason": "acceptable",
+        "failure_kind": "none",
+    }
 
 
 def test_runner_alerts_only_sanitized_receipt_ids_and_reasons_on_quality_failure(tmp_path: Path):
@@ -226,6 +265,23 @@ def test_runner_alerts_only_sanitized_receipt_ids_and_reasons_on_quality_failure
 def test_successful_failure_alert_persists_exact_channel_and_message_ts(tmp_path: Path):
     store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
     add_attempt(store, "grt_a")
+    pre_send: list[dict] = []
+
+    def sender(message: str) -> dict:
+        batch = store.get_review_batch("2026-09-11")
+        assert batch is not None
+        pre_send.append(batch)
+        assert batch["alert_status"] == "sending"
+        assert batch["slack_channel_id"] == "C_ROUTE_FAILURES"
+        assert batch["alert_message_sha256"] == hashlib.sha256(message.encode()).hexdigest()
+        assert batch["alert_delivery_key"] == (
+            f"gemini-daily-review:{batch['batch_id']}:{batch['alert_message_sha256']}"
+        )
+        return {
+            "success": True,
+            "chat_id": "C_ROUTE_FAILURES",
+            "message_id": "1720000000.000001",
+        }
 
     result = DailyReviewRunner(
         store=store,
@@ -234,17 +290,14 @@ def test_successful_failure_alert_persists_exact_channel_and_message_ts(tmp_path
         ),
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
-        alert_sender=lambda _message: {
-            "success": True,
-            "chat_id": "C_ROUTE_FAILURES",
-            "message_id": "1720000000.000001",
-        },
+        alert_sender=sender,
         alert_channel_id="C_ROUTE_FAILURES",
     ).run(target_day="2026-09-11", seed=bytes.fromhex("45" * 32))
 
     batch = store.get_review_batch("2026-09-11")
     assert batch is not None
     assert result["alert_status"] == "sent"
+    assert len(pre_send) == 1
     assert batch["slack_channel_id"] == "C_ROUTE_FAILURES"
     assert batch["slack_message_ts"] == "1720000000.000001"
     assert batch["alert_status"] == "sent"
@@ -306,6 +359,242 @@ def test_wrong_channel_delivery_remains_pending_and_retries_same_batch(tmp_path:
     assert calls[0] == calls[1]
 
 
+def test_indeterminate_alert_delivery_keeps_lease_and_blocks_immediate_retry(
+    tmp_path: Path,
+):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_a")
+    calls: list[str] = []
+
+    def indeterminate_sender(message: str) -> dict:
+        calls.append(message)
+        raise AlertDeliveryIndeterminateError("delivery outcome is unknown")
+
+    runner = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: (
+            lambda _prompt: {
+                "verdict": "fail",
+                "reason": "bad output",
+                "failure_kind": "quality_failure",
+            }
+        ),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=indeterminate_sender,
+        alert_channel_id="C_ROUTE_FAILURES",
+        sample_size=1,
+        clock=lambda: datetime(2026, 9, 12, 16, 0, tzinfo=UTC),
+    )
+
+    first = runner.run(target_day=date(2026, 9, 11), seed=bytes.fromhex("50" * 32))
+    second = runner.run(target_day=date(2026, 9, 11), seed=bytes.fromhex("51" * 32))
+    persisted = store.get_review_batch("2026-09-11")
+
+    assert first["alert_status"] == "sending"
+    assert second["alert_status"] == "sending"
+    assert persisted is not None
+    assert persisted["alert_status"] == "sending"
+    assert len(calls) == 1
+
+
+def test_pending_alert_retry_reuses_persisted_payload_and_destination(tmp_path: Path):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_a")
+    batch = store.create_or_get_review_batch(
+        routing_day="2026-09-11",
+        timezone_name="America/Los_Angeles",
+        sample_size_requested=1,
+        eligible_count=1,
+        sample_seed_hex="49" * 32,
+        sample_receipt_ids=["grt_a"],
+    )
+    assert store.claim_review_batch(batch["batch_id"])
+    original = "original persisted alert payload"
+    original_hash = hashlib.sha256(original.encode()).hexdigest()
+    store.update_review_batch(
+        batch["batch_id"],
+        status="failed",
+        alert_status="pending",
+        alert_message=original,
+        alert_delivery_key=f"gemini-daily-review:{batch['batch_id']}:{original_hash}",
+        slack_channel_id="C_ROUTE_FAILURES",
+    )
+
+    sent: list[str] = []
+
+    def sender(message: str) -> dict:
+        sent.append(message)
+        return {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.25"}
+
+    result = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: pytest.fail("terminal batch must not be re-reviewed"),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=sender,
+        alert_channel_id="C_CHANGED_AFTER_STAGING",
+    ).run(target_day="2026-09-11")
+
+    persisted = store.get_review_batch("2026-09-11")
+    assert persisted is not None
+    assert result["alert_status"] == "sent"
+    assert sent == [original]
+    assert persisted["alert_message"] == original
+    assert persisted["slack_channel_id"] == "C_ROUTE_FAILURES"
+    assert persisted["alert_message_sha256"] == original_hash
+    assert persisted["alert_delivery_key"] == (
+        f"gemini-daily-review:{batch['batch_id']}:{original_hash}"
+    )
+
+
+def test_concurrent_pending_alert_retries_admit_only_one_sender(tmp_path: Path):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_a")
+    failing_runner = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: (
+            lambda _prompt: {"verdict": "fail", "reason": "bad", "failure_kind": "correctness"}
+        ),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda _message: {"success": False},
+        alert_channel_id="C_ROUTE_FAILURES",
+    )
+    assert failing_runner.run(target_day="2026-09-11")["alert_status"] == "pending"
+
+    entered = threading.Event()
+    release = threading.Event()
+    sends: list[str] = []
+
+    def sender(message: str) -> dict:
+        sends.append(message)
+        entered.set()
+        assert release.wait(timeout=5)
+        return {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.3"}
+
+    runners = [
+        DailyReviewRunner(
+            store=store,
+            reviewer_factory=lambda: pytest.fail("terminal batch must not be re-reviewed"),
+            reviewer_provider="openai-codex",
+            reviewer_model="gpt-5.6-sol",
+            alert_sender=sender,
+            alert_channel_id="C_ROUTE_FAILURES",
+        )
+        for _ in range(2)
+    ]
+    errors: list[BaseException] = []
+
+    def retry(runner: DailyReviewRunner) -> None:
+        try:
+            runner.run(target_day="2026-09-11")
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=retry, args=(runners[0],))
+    second = threading.Thread(target=retry, args=(runners[1],))
+    first.start()
+    assert entered.wait(timeout=5)
+    second.start()
+    second.join(timeout=5)
+    release.set()
+    first.join(timeout=5)
+
+    assert errors == []
+    assert len(sends) == 1
+    completed = store.get_review_batch("2026-09-11")
+    assert completed is not None
+    assert completed["alert_status"] == "sent"
+
+
+def test_stale_outbox_initializer_cannot_reset_an_active_delivery_lease(tmp_path: Path):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_a")
+    now = datetime(2026, 9, 12, 12, tzinfo=UTC)
+    runner = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: (
+            lambda _prompt: {
+                "verdict": "fail",
+                "reason": "bad",
+                "failure_kind": "correctness",
+            }
+        ),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda _message: {"success": False},
+        alert_channel_id="C_ROUTE_FAILURES",
+        clock=lambda: now,
+    )
+    assert runner.run(target_day="2026-09-11")["alert_status"] == "pending"
+    stale = store.get_review_batch("2026-09-11")
+    assert stale is not None
+    assert store.claim_alert_delivery(
+        stale["batch_id"],
+        lease_token="owner-a",
+        now=now,
+        stale_before=now - timedelta(seconds=1),
+    )
+
+    runner._persist_alert_outbox(stale, stale["alert_message"])
+
+    current = store.get_review_batch("2026-09-11")
+    assert current is not None
+    assert current["alert_status"] == "sending"
+    assert current["alert_lease_token"] == "owner-a"
+    assert not store.claim_alert_delivery(
+        current["batch_id"],
+        lease_token="owner-b",
+        now=now,
+        stale_before=now - timedelta(seconds=1),
+    )
+
+
+def test_stale_alert_delivery_lease_is_reclaimed_on_later_tick(tmp_path: Path):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    add_attempt(store, "grt_a")
+    now = datetime(2026, 9, 12, 12, tzinfo=UTC)
+    runner = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: (
+            lambda _prompt: {"verdict": "fail", "reason": "bad", "failure_kind": "correctness"}
+        ),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda _message: {"success": False},
+        alert_channel_id="C_ROUTE_FAILURES",
+        clock=lambda: now,
+        lease_timeout_seconds=10,
+    )
+    assert runner.run(target_day="2026-09-11")["alert_status"] == "pending"
+    batch = store.get_review_batch("2026-09-11")
+    assert batch is not None
+    assert store.claim_alert_delivery(
+        batch["batch_id"],
+        lease_token="abandoned",
+        now=now,
+        stale_before=now,
+    )
+
+    recovered = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: pytest.fail("terminal batch must not be re-reviewed"),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda _message: {
+            "success": True,
+            "chat_id": "C_ROUTE_FAILURES",
+            "message_id": "1.4",
+        },
+        alert_channel_id="C_ROUTE_FAILURES",
+        clock=lambda: now + timedelta(seconds=11),
+        lease_timeout_seconds=10,
+    ).run(target_day="2026-09-11")
+
+    assert recovered["alert_status"] == "sent"
+
+
 def test_runner_fail_closes_and_alerts_on_malformed_reviewer_output(tmp_path: Path):
     store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
     add_attempt(store, "grt_a")
@@ -322,9 +611,9 @@ def test_runner_fail_closes_and_alerts_on_malformed_reviewer_output(tmp_path: Pa
     ).run(target_day="2026-09-11", seed=bytes.fromhex("55" * 32))
 
     assert result["status"] == "pipeline_failed"
-    assert result["reviewed_count"] == 1
+    assert result["reviewed_count"] == 0
     assert len(alerts) == 1
-    assert "PIPELINE FAIL" in alerts[0]
+    assert "PIPELINE FAIL — 0/1 reviews completed" in alerts[0]
 
 
 def test_second_run_reuses_terminal_batch_without_duplicate_reviews_or_alerts(tmp_path: Path):

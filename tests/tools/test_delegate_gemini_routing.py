@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -11,7 +13,12 @@ import pytest
 from agent.antigravity_delegate import AntigravityDelegateChild
 from agent.antigravity_worker import AntigravityResult
 from agent.gemini_route_receipts import GeminiReceiptStore
-from tools.delegate_tool import DELEGATE_TASK_SCHEMA, delegate_task
+from tools.delegate_tool import (
+    DELEGATE_TASK_SCHEMA,
+    _build_antigravity_delegate_child,
+    _merge_child_route_metadata,
+    delegate_task,
+)
 
 
 def parent() -> MagicMock:
@@ -102,6 +109,12 @@ def test_schema_exposes_only_bounded_routing_metadata():
 
 def test_disabled_config_preserves_existing_sol_child_path():
     sol = fake_child()
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
     with (
         patch("tools.delegate_tool._load_config", return_value=routing_config(enabled=False)),
         patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
@@ -111,10 +124,27 @@ def test_disabled_config_preserves_existing_sol_child_path():
         }),
         patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol) as build_sol,
         patch("tools.delegate_tool._build_antigravity_delegate_child") as build_gemini,
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
     ):
         result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
 
     assert result["results"][0]["summary"] == "sol answer"
+    assert not {
+        "route",
+        "route_reason",
+        "worker_route",
+        "worker_provider",
+        "worker_model_requested",
+        "route_receipt_id",
+        "fallback_used",
+    } & result["results"][0].keys()
+    assert not {
+        "worker_route",
+        "worker_provider",
+        "worker_model_requested",
+        "route_receipt_id",
+        "fallback_used",
+    } & stops[0].keys()
     build_sol.assert_called_once()
     build_gemini.assert_not_called()
 
@@ -151,6 +181,89 @@ def test_eligible_leaf_builds_gemini_adapter_with_sol_fallback():
     assert kwargs["route_reason"] == "eligible output-only leaf delegation"
 
 
+def test_receipt_initialization_failure_runs_prebuilt_sol_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sol = fake_child("fallback answer")
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
+        patch(
+            "agent.gemini_route_receipts.GeminiReceiptStore",
+            side_effect=RuntimeError("receipt unavailable"),
+        ),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    public = result["results"][0]
+    assert public["summary"] == "fallback answer"
+    assert public["route"] == "sol_after_receipt_error"
+    assert public["worker_route"] == "sol"
+    assert public["fallback_used"] is True
+    assert public["gemini_error_code"] == "receipt_initialization_failed"
+    assert "route_receipt_id" in public
+    assert public["route_receipt_id"] is None
+    assert stops[0]["worker_route"] == "sol"
+    assert stops[0]["fallback_used"] is True
+    assert stops[0]["gemini_error_code"] == "receipt_initialization_failed"
+    assert "route_receipt_id" in stops[0]
+    assert stops[0]["route_receipt_id"] is None
+
+
+def test_receipt_initialization_failure_without_fallback_is_structured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
+    with (
+        patch(
+            "tools.delegate_tool._load_config",
+            return_value=routing_config(fallback_to_delegation_model=False),
+        ),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch(
+            "agent.gemini_route_receipts.GeminiReceiptStore",
+            side_effect=RuntimeError("receipt unavailable"),
+        ),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    public = result["results"][0]
+    assert public["status"] == "failed"
+    assert public["error"] == "Gemini receipt initialization failed"
+    assert public["gemini_error_code"] == "receipt_initialization_failed"
+    assert public["fallback_used"] is False
+    assert "route_receipt_id" in public
+    assert public["route_receipt_id"] is None
+    assert "route_receipt_id" in stops[0]
+    assert stops[0]["route_receipt_id"] is None
+
+
 def test_omitted_single_task_metadata_uses_standard_profile_defaults():
     routed = fake_child("gemini answer")
     sol = fake_child()
@@ -173,6 +286,12 @@ def test_omitted_single_task_metadata_uses_standard_profile_defaults():
 
 def test_omitted_classification_uses_restricted_profile_default_and_blocks_explicit_gemini():
     sol = fake_child()
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
     with (
         patch(
             "tools.delegate_tool._load_config",
@@ -186,14 +305,28 @@ def test_omitted_classification_uses_restricted_profile_default_and_blocks_expli
         }),
         patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
         patch("tools.delegate_tool._build_antigravity_delegate_child") as build_gemini,
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
     ):
         result = json.loads(
             delegate_task(goal="summarize", route="gemini", parent_agent=parent())
         )
 
     assert result["results"][0]["worker_route"] == "sol"
+    assert "route_receipt_id" in result["results"][0]
+    assert result["results"][0]["route_receipt_id"] is None
+    assert "route_receipt_id" in stops[0]
+    assert stops[0]["route_receipt_id"] is None
     assert "restricted" in result["results"][0]["route_reason"]
     build_gemini.assert_not_called()
+
+
+def test_terminal_null_route_metadata_clears_stale_pre_execution_value():
+    entry = {"route_receipt_id": "grt_stale"}
+
+    _merge_child_route_metadata(entry, None, {"route_receipt_id": None})
+
+    assert "route_receipt_id" in entry
+    assert entry["route_receipt_id"] is None
 
 
 def test_public_results_and_lifecycle_hooks_carry_exact_route_metadata():
@@ -202,6 +335,15 @@ def test_public_results_and_lifecycle_hooks_carry_exact_route_metadata():
     routed = fake_child("gemini answer")
     routed.requested_provider = "google-antigravity"
     routed.requested_model = "gemini-3.8-flash-low"
+    routed._route_metadata = {
+        "route": "gemini",
+        "route_reason": "eligible output-only leaf delegation",
+        "worker_route": "gemini",
+        "worker_provider": "google-antigravity",
+        "worker_model_requested": "gemini-3.8-flash-low",
+        "route_receipt_id": "grt_123",
+        "fallback_used": False,
+    }
     routed.run_conversation.return_value = {
         "final_response": "gemini answer",
         "completed": True,
@@ -257,9 +399,269 @@ def test_public_results_and_lifecycle_hooks_carry_exact_route_metadata():
         "fallback_used": False,
     }
     assert {key: public[key] for key in expected} == expected
-    assert {key: starts[0][key] for key in expected} == {**expected, "route_receipt_id": None}
+    assert {key: starts[0][key] for key in expected} == expected
     assert starts[0]["parent_subagent_id"] == "parent-sa"
     assert {key: stops[0][key] for key in expected} == expected
+
+
+def test_terminal_result_overrides_start_metadata_after_gemini_fallback():
+    routed = fake_child("fallback answer")
+    routed._route_metadata = {
+        "route": "gemini",
+        "route_reason": "eligible output-only leaf delegation",
+        "worker_route": "gemini",
+        "worker_provider": "google-antigravity",
+        "worker_model_requested": "gemini-3.8-flash-low",
+        "route_receipt_id": "grt_fallback",
+        "fallback_used": False,
+    }
+    routed.run_conversation.return_value = {
+        "final_response": "fallback answer",
+        "completed": True,
+        "api_calls": 1,
+        "messages": [],
+        "route": "gemini_then_sol",
+        "route_reason": "eligible output-only leaf delegation",
+        "worker_route": "sol",
+        "worker_provider": "openai-codex",
+        "worker_model_requested": "gpt-5.6-sol",
+        "route_receipt_id": "grt_fallback",
+        "fallback_used": True,
+        "gemini_error_code": "worker_timeout",
+    }
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=fake_child()),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=routed),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    expected = {
+        "route": "gemini_then_sol",
+        "worker_route": "sol",
+        "worker_provider": "openai-codex",
+        "worker_model_requested": "gpt-5.6-sol",
+        "route_receipt_id": "grt_fallback",
+        "fallback_used": True,
+        "gemini_error_code": "worker_timeout",
+    }
+    public = result["results"][0]
+    assert {key: public[key] for key in expected} == expected
+    stop_expected = {key: value for key, value in expected.items() if key != "route"}
+    assert {key: stops[0][key] for key in stop_expected} == stop_expected
+
+
+def test_outer_exception_keeps_current_gemini_fallback_metadata():
+    routed = fake_child()
+    routed._route_metadata = {
+        "route": "gemini_then_sol",
+        "route_reason": "eligible output-only leaf delegation",
+        "worker_route": "sol",
+        "worker_provider": "openai-codex",
+        "worker_model_requested": "gpt-5.6-sol",
+        "route_receipt_id": "grt_fallback_outer",
+        "fallback_used": True,
+        "gemini_error_code": "worker_timeout",
+    }
+    routed.run_conversation.side_effect = RuntimeError("private fallback details")
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=fake_child()),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=routed),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    public = result["results"][0]
+    assert public["status"] == "error"
+    assert public["worker_route"] == "sol"
+    assert public["worker_provider"] == "openai-codex"
+    assert public["worker_model_requested"] == "gpt-5.6-sol"
+    assert public["route_receipt_id"] == "grt_fallback_outer"
+    assert public["fallback_used"] is True
+    assert public["gemini_error_code"] == "worker_timeout"
+    assert stops[0]["worker_route"] == "sol"
+    assert stops[0]["fallback_used"] is True
+    assert stops[0]["gemini_error_code"] == "worker_timeout"
+
+
+def test_malformed_terminal_result_keeps_current_gemini_fallback_metadata():
+    routed = fake_child()
+    routed._route_metadata = {
+        "route": "gemini_then_sol",
+        "route_reason": "eligible output-only leaf delegation",
+        "worker_route": "sol",
+        "worker_provider": "openai-codex",
+        "worker_model_requested": "gpt-5.6-sol",
+        "route_receipt_id": "grt_malformed",
+        "fallback_used": True,
+        "gemini_error_code": "invalid_response",
+    }
+    routed.run_conversation.return_value = None
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=fake_child()),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=routed),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    public = result["results"][0]
+    assert public["status"] == "error"
+    assert public["worker_route"] == "sol"
+    assert public["route_receipt_id"] == "grt_malformed"
+    assert public["fallback_used"] is True
+    assert public["gemini_error_code"] == "invalid_response"
+    assert stops[0]["worker_route"] == "sol"
+    assert stops[0]["fallback_used"] is True
+
+
+@pytest.mark.parametrize("fabricated_status", ["error", "interrupted"])
+def test_batch_fabricated_exit_keeps_current_gemini_fallback_metadata(
+    fabricated_status: str,
+):
+    routed_children = [fake_child(), fake_child()]
+    for index, child in enumerate(routed_children):
+        child._route_metadata = {
+            "route": "gemini_then_sol",
+            "route_reason": "eligible output-only leaf delegation",
+            "worker_route": "sol",
+            "worker_provider": "openai-codex",
+            "worker_model_requested": "gpt-5.6-sol",
+            "route_receipt_id": f"grt_batch_{index}",
+            "fallback_used": True,
+            "gemini_error_code": "worker_exception",
+        }
+    parent_agent = parent()
+    parent_agent._interrupt_requested = fabricated_status == "interrupted"
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
+    def fabricated_run(*_args, **_kwargs):
+        if fabricated_status == "error":
+            raise RuntimeError("fabricated future failure")
+        time.sleep(0.1)
+        return {"status": "completed", "summary": "too late", "task_index": 0}
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch(
+            "tools.delegate_tool._build_child_preserving_parent_tools",
+            side_effect=[fake_child(), fake_child()],
+        ),
+        patch(
+            "tools.delegate_tool._build_antigravity_delegate_child",
+            side_effect=routed_children,
+        ),
+        patch("tools.delegate_tool._run_single_child", side_effect=fabricated_run),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
+    ):
+        result = json.loads(
+            delegate_task(
+                tasks=[{"goal": "first"}, {"goal": "second"}],
+                parent_agent=parent_agent,
+            )
+        )
+
+    assert len(result["results"]) == 2
+    for index, public in enumerate(result["results"]):
+        assert public["status"] == fabricated_status
+        assert public["worker_route"] == "sol"
+        assert public["route_receipt_id"] == f"grt_batch_{index}"
+        assert public["fallback_used"] is True
+        assert public["gemini_error_code"] == "worker_exception"
+    assert len(stops) == 2
+    assert all(stop["worker_route"] == "sol" for stop in stops)
+    assert all(stop["fallback_used"] is True for stop in stops)
+
+
+def test_real_adapter_timeout_keeps_current_gemini_fallback_metadata(tmp_path: Path):
+    routed = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    assert routed.fallback_child is not None
+
+    def slow_fallback(**_kwargs):
+        time.sleep(1.0)
+        return {"final_response": "too late", "completed": True}
+
+    routed.fallback_child.run_conversation.side_effect = slow_fallback
+    stops: list[dict] = []
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._get_child_timeout", return_value=0.5),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=fake_child()),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=routed),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    public = result["results"][0]
+    assert public["status"] == "timeout"
+    assert public["worker_route"] == "sol"
+    assert public["worker_provider"] == "openai-codex"
+    assert public["worker_model_requested"] == "gpt-5.6-sol"
+    assert public["route_receipt_id"] == routed.receipt_id
+    assert public["fallback_used"] is True
+    assert public["gemini_error_code"] == "nonzero_exit"
+    assert stops[0]["worker_route"] == "sol"
+    assert stops[0]["fallback_used"] is True
+    assert stops[0]["gemini_error_code"] == "nonzero_exit"
 
 
 @pytest.mark.parametrize(
@@ -355,6 +757,27 @@ def make_adapter(tmp_path: Path, worker: FakeWorker, *, fallback=True):
     )
 
 
+def test_builder_prepares_receipt_before_lifecycle_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    worker = FakeWorker(worker_result(ok=True))
+
+    with patch("agent.antigravity_worker.AntigravityWorker", return_value=worker):
+        adapter = _build_antigravity_delegate_child(
+            task_index=0,
+            task={"goal": "summarize", "data_classification": "standard"},
+            fallback_child=fake_child("fallback answer"),
+            routing_cfg=routing_config()["gemini_routing"],
+            route_reason="eligible output-only leaf delegation",
+            parent_agent=parent(),
+        )
+
+    assert adapter.receipt_id.startswith("grt_")
+    assert adapter._route_metadata["route_receipt_id"] == adapter.receipt_id
+    assert adapter.store.get_attempt(adapter.receipt_id)["process_started_at_utc"] is None
+
+
 def test_adapter_returns_gemini_output_and_records_two_phase_receipt(tmp_path: Path):
     adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=True)))
 
@@ -382,7 +805,7 @@ def test_adapter_records_failure_then_runs_prebuilt_sol_fallback(tmp_path: Path)
     result = adapter.run_conversation("summarize", task_id="child-task")
 
     assert result["final_response"] == "fallback answer"
-    assert result["worker_route"] == "gemini_then_sol"
+    assert result["worker_route"] == "sol"
     assert result["worker_provider"] == "openai-codex"
     assert result["worker_model_requested"] == "gpt-5.6-sol"
     assert result["route_receipt_id"] == adapter.receipt_id
@@ -391,6 +814,56 @@ def test_adapter_records_failure_then_runs_prebuilt_sol_fallback(tmp_path: Path)
     assert row["worker_status"] == "failed"
     assert row["fallback_used"] == 1
     assert row["error_code"] == "nonzero_exit"
+
+
+def test_adapter_returns_structured_metadata_when_sol_fallback_raises(tmp_path: Path):
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    assert adapter.fallback_child is not None
+    adapter.fallback_child.run_conversation.side_effect = RuntimeError(
+        "private fallback details"
+    )
+
+    result = adapter.run_conversation("summarize", task_id="child-task")
+
+    assert result["completed"] is False
+    assert result["error"] == "Sol fallback raised RuntimeError"
+    assert "private fallback details" not in result["error"]
+    assert result["route"] == "gemini_then_sol"
+    assert result["worker_route"] == "sol"
+    assert result["worker_provider"] == "openai-codex"
+    assert result["worker_model_requested"] == "gpt-5.6-sol"
+    assert result["route_receipt_id"] == adapter.receipt_id
+    assert result["fallback_used"] is True
+    assert result["gemini_error_code"] == "nonzero_exit"
+
+
+def test_receipt_completion_failure_without_fallback_preserves_gemini_worker_truth(
+    tmp_path: Path,
+):
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=True)), fallback=False)
+    adapter.store.complete_attempt = MagicMock(side_effect=sqlite3.OperationalError("locked"))
+
+    result = adapter.run_conversation("summarize", task_id="child-task")
+
+    assert result["completed"] is False
+    assert result["route"] == "sol_after_receipt_error"
+    assert result["worker_route"] == "gemini"
+    assert result["worker_provider"] == "antigravity-subscription"
+    assert result["worker_model_requested"] == "gemini-3.8-flash-low"
+    assert result["fallback_used"] is False
+
+
+def test_receipt_completion_failure_with_fallback_reports_sol_worker(tmp_path: Path):
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=True)))
+    adapter.store.complete_attempt = MagicMock(side_effect=sqlite3.OperationalError("locked"))
+
+    result = adapter.run_conversation("summarize", task_id="child-task")
+
+    assert result["route"] == "sol_after_receipt_error"
+    assert result["worker_route"] == "sol"
+    assert result["worker_provider"] == "openai-codex"
+    assert result["worker_model_requested"] == "gpt-5.6-sol"
+    assert result["fallback_used"] is True
 
 
 def test_adapter_without_fallback_returns_a_structured_failure(tmp_path: Path):

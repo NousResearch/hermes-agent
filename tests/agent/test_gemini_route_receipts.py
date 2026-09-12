@@ -64,6 +64,98 @@ def test_store_creates_exact_schema_and_private_permissions(tmp_path: Path):
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() in {"wal", "delete"}
 
 
+def test_legacy_schema_migration_holds_immediate_write_transaction(tmp_path: Path):
+    db_path = tmp_path / "profile" / "routing" / "gemini-routing.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE daily_review_batches (batch_id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE daily_review_items "
+            "(batch_id TEXT NOT NULL, receipt_id TEXT NOT NULL)"
+        )
+
+    statements: list[str] = []
+
+    class TracedStore(GeminiReceiptStore):
+        def _open_write(self):
+            conn = super()._open_write()
+            conn.set_trace_callback(statements.append)
+            return conn
+
+    TracedStore(db_path)
+
+    normalized = [statement.strip().upper() for statement in statements]
+    first_alter = next(i for i, statement in enumerate(normalized) if statement.startswith("ALTER TABLE"))
+    assert "BEGIN IMMEDIATE" in normalized[:first_alter]
+
+
+def test_concurrent_connections_upgrade_one_legacy_schema(tmp_path: Path):
+    db_path = tmp_path / "profile" / "routing" / "gemini-routing.sqlite3"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE daily_review_batches (batch_id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE daily_review_items "
+            "(batch_id TEXT NOT NULL, receipt_id TEXT NOT NULL)"
+        )
+
+    barrier = threading.Barrier(8)
+    errors: list[BaseException] = []
+
+    def open_store() -> None:
+        try:
+            barrier.wait(timeout=5)
+            GeminiReceiptStore(db_path)
+        except BaseException as exc:  # pragma: no cover - diagnostic collection
+            errors.append(exc)
+
+    threads = [threading.Thread(target=open_store) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    with sqlite3.connect(db_path) as conn:
+        batch_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(daily_review_batches)")
+        }
+        item_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(daily_review_items)")
+        }
+    assert {
+        "alert_delivery_key",
+        "alert_message",
+        "slack_workspace_id",
+        "alert_lease_token",
+        "alert_lease_started_at_utc",
+    } <= batch_columns
+    assert "failure_kind" in item_columns
+
+
+def test_store_retries_locked_journal_initialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import agent.gemini_route_receipts as receipts_module
+
+    real_apply = receipts_module.apply_wal_with_fallback
+    attempts = 0
+
+    def locked_once(conn, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_apply(conn, **kwargs)
+
+    monkeypatch.setattr(receipts_module, "apply_wal_with_fallback", locked_once)
+
+    make_store(tmp_path)
+
+    assert attempts == 2
+
+
 def test_attempt_lifecycle_hashes_and_success_payload(tmp_path: Path):
     store = make_store(tmp_path)
     receipt_id = prepare(store)
@@ -284,6 +376,43 @@ def test_receipt_store_fails_closed_when_private_modes_cannot_be_enforced(
 
     with pytest.raises(RuntimeError, match="private permissions"):
         GeminiReceiptStore(tmp_path / "routing" / "routing.sqlite3")
+
+
+def test_receipt_store_rejects_symlink_and_non_regular_database_paths(tmp_path: Path):
+    target = tmp_path / "target.sqlite3"
+    target.write_bytes(b"")
+    symlink = tmp_path / "routing.sqlite3"
+    symlink.symlink_to(target)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        GeminiReceiptStore(symlink)
+
+    directory = tmp_path / "database-directory"
+    directory.mkdir()
+    with pytest.raises(RuntimeError, match="regular file"):
+        GeminiReceiptStore(directory)
+
+
+def test_write_connection_rechecks_sidecar_permissions_after_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    store = make_store(tmp_path)
+    wal = Path(f"{store.path}-wal")
+    shm = Path(f"{store.path}-shm")
+
+    class FakeConnection:
+        def close(self):
+            for path in (wal, shm):
+                path.write_bytes(b"test-sidecar")
+                path.chmod(0o644)
+
+    monkeypatch.setattr(store, "_open_write", lambda: FakeConnection())
+
+    with store._write_connection():
+        pass
+
+    assert stat.S_IMODE(wal.stat().st_mode) == 0o600
+    assert stat.S_IMODE(shm.stat().st_mode) == 0o600
 
 
 def test_read_methods_use_read_only_sqlite_connections(tmp_path: Path, monkeypatch):

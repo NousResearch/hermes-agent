@@ -17,6 +17,12 @@ ReviewCallable = Callable[[str], Mapping[str, Any] | str]
 ReviewerFactory = Callable[[], ReviewCallable]
 AlertSender = Callable[[str], Any]
 Clock = Callable[[], datetime]
+SOL_REVIEWER_PROVIDER = "openai-codex"
+SOL_REVIEWER_MODEL = "gpt-5.6-sol"
+
+
+class AlertDeliveryIndeterminateError(RuntimeError):
+    """The Slack send may have succeeded but cannot yet be reconciled."""
 
 
 def sample_receipt_ids(
@@ -121,8 +127,8 @@ class SolReviewer:
         reasoning_effort: str = "medium",
         agent_factory: Callable[..., Any] | None = None,
     ) -> None:
-        if not provider or not model:
-            raise ValueError("review provider and model are required")
+        if provider != SOL_REVIEWER_PROVIDER or model != SOL_REVIEWER_MODEL:
+            raise ValueError("reviewer_identity_mismatch")
         if agent_factory is None:
             from run_agent import AIAgent
 
@@ -151,8 +157,8 @@ class SolReviewer:
                 "workspace context, or outside knowledge. Return strict JSON only."
             ),
         )
-        actual_provider = getattr(agent, "provider", self.provider)
-        actual_model = getattr(agent, "model", self.model)
+        actual_provider = getattr(agent, "provider", None)
+        actual_model = getattr(agent, "model", None)
         if actual_provider != self.provider or actual_model != self.model:
             close = getattr(agent, "close", None)
             if callable(close):
@@ -190,6 +196,7 @@ class DailyReviewRunner:
         reviewer_model: str,
         alert_sender: AlertSender,
         alert_channel_id: str,
+        alert_workspace_id: str | None = None,
         sample_size: int = 5,
         timezone_name: str = "America/Los_Angeles",
         clock: Clock | None = None,
@@ -205,6 +212,7 @@ class DailyReviewRunner:
         self.reviewer_model = reviewer_model
         self.alert_sender = alert_sender
         self.alert_channel_id = alert_channel_id
+        self.alert_workspace_id = alert_workspace_id
         self.sample_size = max(0, int(sample_size))
         self.timezone_name = timezone_name
         self.clock = clock or (lambda: datetime.now(timezone.utc))
@@ -215,13 +223,16 @@ class DailyReviewRunner:
         *,
         target_day: str | date,
         seed: bytes | None = None,
+        pipeline_preflight_error: str | None = None,
     ) -> dict[str, Any]:
         day = target_day.isoformat() if isinstance(target_day, date) else str(target_day)
         existing = self.store.get_review_batch(day)
         if existing is not None:
             if existing["status"] in {"passed", "failed", "pipeline_failed"}:
-                if existing["alert_status"] == "pending":
+                if existing["alert_status"] in {"pending", "sending"}:
                     alert = self._alert_for_batch(existing)
+                    if existing["alert_status"] == "pending":
+                        existing = self._persist_alert_outbox(existing, alert)
                     self._deliver_alert(existing, alert)
                     existing = self.store.get_review_batch(day) or existing
                 return self._result_from_batch(existing)
@@ -241,7 +252,9 @@ class DailyReviewRunner:
                     stale_before=stale_before,
                     pipeline_error="stale_review_lease",
                     alert_message=alert,
+                    slack_channel_id=self.alert_channel_id,
                     completed_at=now,
+                    slack_workspace_id=self.alert_workspace_id,
                 )
                 current = self.store.get_review_batch(day) or existing
                 if terminalized and (
@@ -278,6 +291,28 @@ class DailyReviewRunner:
                 current, status=current["status"] if terminal else "in_progress"
             )
 
+        if pipeline_preflight_error is not None:
+            alert = self._failure_alert(
+                day,
+                [{"receipt_id": "pipeline", "reason": pipeline_preflight_error}],
+                pipeline=True,
+                batch=batch,
+            )
+            self.store.update_review_batch(
+                batch["batch_id"],
+                status="pipeline_failed",
+                pipeline_error=pipeline_preflight_error,
+                alert_status="pending",
+                alert_message=alert,
+                alert_delivery_key=self._alert_delivery_key(str(batch["batch_id"]), alert),
+                slack_channel_id=self.alert_channel_id,
+                slack_workspace_id=self.alert_workspace_id,
+            )
+            current = self.store.get_review_batch(day) or batch
+            self._deliver_alert(current, alert)
+            completed = self.store.get_review_batch(day) or current
+            return self._result_from_batch(completed)
+
         selected = json.loads(batch["sample_receipt_ids_json"])
         failures: list[dict[str, str]] = []
         pipeline_error: str | None = None
@@ -304,7 +339,8 @@ class DailyReviewRunner:
                 break
             try:
                 reviewer = self.reviewer_factory()
-                verdict = _parse_verdict(reviewer(build_review_prompt(attempt)))
+                raw_verdict = _parse_verdict(reviewer(build_review_prompt(attempt)))
+                verdict = raw_verdict
                 if attempt.get("worker_status") != "completed" or attempt.get("error_code"):
                     verdict = {
                         "verdict": "fail",
@@ -319,8 +355,9 @@ class DailyReviewRunner:
                     reviewer_model=self.reviewer_model,
                     review_status="completed",
                     verdict=verdict["verdict"],
+                    failure_kind=verdict["failure_kind"],
                     reason=verdict["reason"],
-                    review_json=verdict,
+                    review_json=raw_verdict,
                     completed_at=self.clock(),
                 )
                 if verdict["verdict"] == "fail":
@@ -361,12 +398,16 @@ class DailyReviewRunner:
             status = "passed"
             alert = None
 
+        delivery_key = self._alert_delivery_key(str(batch["batch_id"]), alert) if alert else None
         self.store.update_review_batch(
             batch["batch_id"],
             status=status,
             pipeline_error=pipeline_error,
             alert_status="pending" if alert else "not_needed",
             alert_message=alert,
+            alert_delivery_key=delivery_key,
+            slack_channel_id=self.alert_channel_id if alert else None,
+            slack_workspace_id=self.alert_workspace_id if alert else None,
         )
         if alert:
             current_batch = self.store.get_review_batch(day) or {**batch, "status": status}
@@ -393,7 +434,7 @@ class DailyReviewRunner:
         batch: Mapping[str, Any],
     ) -> str:
         sampled = len(json.loads(str(batch["sample_receipt_ids_json"])))
-        reviewed = len(self.store.list_review_items(str(batch["batch_id"])))
+        reviewed = self._completed_review_count(str(batch["batch_id"]))
         receipt_path = self._display_receipt_path()
         if pipeline:
             return (
@@ -413,6 +454,9 @@ class DailyReviewRunner:
         return f"~/{relative}"
 
     def _alert_for_batch(self, batch: Mapping[str, Any]) -> str:
+        persisted = batch.get("alert_message")
+        if isinstance(persisted, str) and persisted:
+            return persisted
         pipeline = batch["status"] == "pipeline_failed"
         items = self.store.list_review_items(str(batch["batch_id"]))
         failures = [item for item in items if item.get("verdict") == "fail"]
@@ -423,30 +467,80 @@ class DailyReviewRunner:
         )
 
     def _deliver_alert(self, batch: Mapping[str, Any], alert: str) -> None:
+        lease_token = secrets.token_hex(16)
+        now = self.clock()
+        stale_before = now - timedelta(seconds=self.lease_timeout_seconds)
+        if not self.store.claim_alert_delivery(
+            str(batch["batch_id"]),
+            lease_token=lease_token,
+            now=now,
+            stale_before=stale_before,
+        ):
+            return
+        claimed = self.store.get_review_batch(str(batch["routing_day"])) or batch
         try:
+            expected_hash = hashlib.sha256(alert.encode("utf-8")).hexdigest()
+            expected_key = self._alert_delivery_key(str(batch["batch_id"]), alert)
+            expected_channel = str(claimed.get("slack_channel_id") or "")
+            if (
+                claimed.get("alert_status") != "sending"
+                or claimed.get("alert_lease_token") != lease_token
+                or claimed.get("alert_message") != alert
+                or claimed.get("alert_message_sha256") != expected_hash
+                or claimed.get("alert_delivery_key") != expected_key
+                or not expected_channel
+            ):
+                raise RuntimeError("Slack alert outbox identity mismatch")
             delivery = self.alert_sender(alert)
             if not isinstance(delivery, Mapping) or delivery.get("success") is not True:
                 raise RuntimeError("Slack delivery was not confirmed")
             channel = str(delivery.get("chat_id") or delivery.get("channel") or "")
             message_ts = str(delivery.get("message_id") or delivery.get("ts") or "")
-            if channel != self.alert_channel_id or not message_ts:
+            if channel != expected_channel or not message_ts:
                 raise RuntimeError("Slack delivery target or message receipt mismatch")
+        except AlertDeliveryIndeterminateError:
+            return
         except Exception:
-            self.store.update_review_batch(
-                str(batch["batch_id"]),
-                status=str(batch["status"]),
-                pipeline_error=batch.get("pipeline_error"),
-                alert_status="pending",
+            self.store.release_alert_delivery(
+                str(batch["batch_id"]), lease_token=lease_token
             )
             return
-        self.store.update_review_batch(
+        self.store.complete_alert_delivery(
             str(batch["batch_id"]),
-            status=str(batch["status"]),
-            pipeline_error=batch.get("pipeline_error"),
-            alert_status="sent",
+            lease_token=lease_token,
             slack_channel_id=channel,
             slack_message_ts=message_ts,
         )
+
+    @staticmethod
+    def _alert_delivery_key(batch_id: str, alert: str) -> str:
+        digest = hashlib.sha256(alert.encode("utf-8")).hexdigest()
+        return f"gemini-daily-review:{batch_id}:{digest}"
+
+    def _persist_alert_outbox(
+        self, batch: Mapping[str, Any], alert: str
+    ) -> dict[str, Any]:
+        digest = hashlib.sha256(alert.encode("utf-8")).hexdigest()
+        delivery_key = self._alert_delivery_key(str(batch["batch_id"]), alert)
+        persisted_hash = str(batch.get("alert_message_sha256") or "")
+        persisted_key = str(batch.get("alert_delivery_key") or "")
+        persisted_channel = str(batch.get("slack_channel_id") or "")
+        persisted_workspace = str(batch.get("slack_workspace_id") or "")
+        if (
+            (persisted_hash and persisted_hash != digest)
+            or (persisted_key and persisted_key != delivery_key)
+        ):
+            return dict(batch)
+        destination_channel = persisted_channel or self.alert_channel_id
+        destination_workspace = persisted_workspace or self.alert_workspace_id
+        self.store.initialize_alert_outbox(
+            str(batch["batch_id"]),
+            alert_message=alert,
+            alert_delivery_key=delivery_key,
+            slack_channel_id=destination_channel,
+            slack_workspace_id=destination_workspace,
+        )
+        return self.store.get_review_batch(str(batch["routing_day"])) or dict(batch)
 
     def _result_from_batch(
         self, batch: Mapping[str, Any], *, status: str | None = None
@@ -458,9 +552,17 @@ class DailyReviewRunner:
             "status": status or batch["status"],
             "eligible_count": int(batch["eligible_count"]),
             "sample_size": len(json.loads(batch["sample_receipt_ids_json"])),
-            "reviewed_count": len(items),
+            "reviewed_count": sum(
+                item.get("review_status") == "completed" for item in items
+            ),
             "alert_status": batch["alert_status"],
         }
+
+    def _completed_review_count(self, batch_id: str) -> int:
+        return sum(
+            item.get("review_status") == "completed"
+            for item in self.store.list_review_items(batch_id)
+        )
 
 
 def main() -> dict[str, Any]:

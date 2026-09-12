@@ -8,6 +8,7 @@ import os
 import secrets
 import sqlite3
 import stat
+import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from hermes_state import apply_wal_with_fallback
 
 UTC = timezone.utc
 DEFAULT_TIMEZONE = "America/Los_Angeles"
+_JOURNAL_BUSY_RETRY_DELAYS = (0.01, 0.05, 0.1)
 _TERMINAL_ATTEMPT_STATUSES = frozenset(
     {"completed", "failed", "timeout", "cancelled", "malformed", "denied", "oversized"}
 )
@@ -50,6 +52,22 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def resolve_profile_receipt_path(hermes_home: Path, configured_path: str | Path) -> Path:
+    """Resolve a configured receipt DB path without leaving the active profile."""
+    root = hermes_home.resolve()
+    configured = Path(configured_path)
+    if configured.is_absolute():
+        raise ValueError(
+            "delegation.gemini_routing.receipt_db must be relative to HERMES_HOME"
+        )
+    candidate = (root / configured).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("delegation.gemini_routing.receipt_db escapes HERMES_HOME") from exc
+    return candidate
+
+
 def routing_day_for(when: datetime, timezone_name: str = DEFAULT_TIMEZONE) -> str:
     """Return the immutable local calendar day for an aware UTC instant."""
     return _as_utc(when).astimezone(ZoneInfo(timezone_name)).date().isoformat()
@@ -63,11 +81,23 @@ class GeminiReceiptStore:
         self._initialize()
 
     def _initialize(self) -> None:
+        self._reject_unsafe_path(self.path.parent, expected="directory")
+        self._reject_unsafe_path(self.path, expected="regular file")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._enforce_private_mode(self.path.parent, 0o700)
-        with self._write_connection() as conn:
+        with self._transaction() as conn:
             self._ensure_schema(conn)
-        self._enforce_private_mode(self.path, 0o600)
+        self._enforce_sqlite_artifact_modes()
+
+    @staticmethod
+    def _reject_unsafe_path(path: Path, *, expected: str) -> None:
+        if path.is_symlink():
+            raise RuntimeError(f"receipt {expected} path must not be a symlink: {path}")
+        if not path.exists():
+            return
+        valid = path.is_dir() if expected == "directory" else path.is_file()
+        if not valid:
+            raise RuntimeError(f"receipt database path must be a regular file: {path}")
 
     @staticmethod
     def _enforce_private_mode(path: Path, expected_mode: int) -> None:
@@ -83,24 +113,38 @@ class GeminiReceiptStore:
             )
 
     def _open_write(self) -> sqlite3.Connection:
+        self._reject_unsafe_path(self.path, expected="regular file")
         conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA foreign_keys=ON")
-            actual = apply_wal_with_fallback(conn, db_label="routing/gemini-routing.sqlite3")
+            actual: str | None = None
+            for attempt in range(len(_JOURNAL_BUSY_RETRY_DELAYS) + 1):
+                try:
+                    actual = apply_wal_with_fallback(
+                        conn, db_label="routing/gemini-routing.sqlite3"
+                    )
+                    break
+                except sqlite3.OperationalError as exc:
+                    code = getattr(exc, "sqlite_errorcode", None)
+                    message = str(exc).lower()
+                    busy = code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or any(
+                        marker in message for marker in ("locked", "busy")
+                    )
+                    if not busy or attempt == len(_JOURNAL_BUSY_RETRY_DELAYS):
+                        raise
+                    time.sleep(_JOURNAL_BUSY_RETRY_DELAYS[attempt])
             if actual not in {"wal", "delete"}:
                 raise sqlite3.OperationalError(f"unsupported journal mode returned: {actual}")
-            for suffix in ("", "-wal", "-shm"):
-                candidate = Path(f"{self.path}{suffix}")
-                if candidate.exists():
-                    self._enforce_private_mode(candidate, 0o600)
+            self._enforce_sqlite_artifact_modes()
         except Exception:
             conn.close()
             raise
         return conn
 
     def _open_readonly(self) -> sqlite3.Connection:
+        self._reject_unsafe_path(self.path, expected="regular file")
         uri = f"file:{quote(str(self.path.resolve()), safe='/')}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=5.0)
         conn.row_factory = sqlite3.Row
@@ -114,7 +158,17 @@ class GeminiReceiptStore:
         try:
             yield conn
         finally:
-            conn.close()
+            try:
+                conn.close()
+            finally:
+                self._enforce_sqlite_artifact_modes()
+
+    def _enforce_sqlite_artifact_modes(self) -> None:
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(f"{self.path}{suffix}")
+            if candidate.exists() or candidate.is_symlink():
+                self._reject_unsafe_path(candidate, expected="regular file")
+                self._enforce_private_mode(candidate, 0o600)
 
     @contextmanager
     def _read_connection(self) -> Iterator[sqlite3.Connection]:
@@ -138,8 +192,7 @@ class GeminiReceiptStore:
 
     @staticmethod
     def _ensure_schema(conn: sqlite3.Connection) -> None:
-        conn.executescript(
-            """
+        schema = """
             CREATE TABLE IF NOT EXISTS gemini_attempts (
                 receipt_id TEXT PRIMARY KEY,
                 parent_session_id TEXT NOT NULL,
@@ -193,8 +246,13 @@ class GeminiReceiptStore:
                 completed_at_utc TEXT,
                 pipeline_error TEXT,
                 alert_status TEXT NOT NULL DEFAULT 'not_needed',
+                alert_message TEXT,
                 alert_message_sha256 TEXT,
+                alert_delivery_key TEXT,
+                alert_lease_token TEXT,
+                alert_lease_started_at_utc TEXT,
                 slack_channel_id TEXT,
+                slack_workspace_id TEXT,
                 slack_message_ts TEXT,
                 created_at_utc TEXT NOT NULL
             );
@@ -207,6 +265,7 @@ class GeminiReceiptStore:
                 reviewer_model TEXT NOT NULL,
                 review_status TEXT NOT NULL,
                 verdict TEXT,
+                failure_kind TEXT,
                 reason TEXT,
                 review_json TEXT,
                 review_sha256 TEXT,
@@ -219,7 +278,29 @@ class GeminiReceiptStore:
                 FOREIGN KEY (receipt_id) REFERENCES gemini_attempts(receipt_id)
             );
             """
-        )
+        for statement in schema.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+        item_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(daily_review_items)")
+        }
+        if "failure_kind" not in item_columns:
+            conn.execute("ALTER TABLE daily_review_items ADD COLUMN failure_kind TEXT")
+        batch_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(daily_review_batches)")
+        }
+        if "alert_delivery_key" not in batch_columns:
+            conn.execute("ALTER TABLE daily_review_batches ADD COLUMN alert_delivery_key TEXT")
+        if "alert_message" not in batch_columns:
+            conn.execute("ALTER TABLE daily_review_batches ADD COLUMN alert_message TEXT")
+        if "slack_workspace_id" not in batch_columns:
+            conn.execute("ALTER TABLE daily_review_batches ADD COLUMN slack_workspace_id TEXT")
+        if "alert_lease_token" not in batch_columns:
+            conn.execute("ALTER TABLE daily_review_batches ADD COLUMN alert_lease_token TEXT")
+        if "alert_lease_started_at_utc" not in batch_columns:
+            conn.execute(
+                "ALTER TABLE daily_review_batches ADD COLUMN alert_lease_started_at_utc TEXT"
+            )
 
     def prepare_attempt(
         self,
@@ -449,14 +530,19 @@ class GeminiReceiptStore:
         stale_before: datetime,
         pipeline_error: str,
         alert_message: str,
+        slack_channel_id: str,
         completed_at: datetime,
+        slack_workspace_id: str | None = None,
     ) -> bool:
         """Atomically terminalize an abandoned review lease exactly once."""
+        alert_sha256 = _sha256(alert_message)
+        delivery_key = f"gemini-daily-review:{batch_id}:{alert_sha256}"
         with self._transaction() as conn:
             cursor = conn.execute(
                 """UPDATE daily_review_batches
                    SET status='pipeline_failed', completed_at_utc=?, pipeline_error=?,
-                       alert_status='pending', alert_message_sha256=?
+                       alert_status='pending', alert_message=?, alert_message_sha256=?,
+                       alert_delivery_key=?, slack_channel_id=?, slack_workspace_id=?
                    WHERE batch_id=?
                      AND status IN ('preparing', 'reviewing')
                      AND started_at_utc <= ?
@@ -464,7 +550,11 @@ class GeminiReceiptStore:
                 (
                     _iso(completed_at),
                     pipeline_error,
-                    _sha256(alert_message),
+                    alert_message,
+                    alert_sha256,
+                    delivery_key,
+                    slack_channel_id,
+                    slack_workspace_id,
                     batch_id,
                     _iso(stale_before),
                 ),
@@ -475,6 +565,67 @@ class GeminiReceiptStore:
         with self._read_connection() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM daily_review_batches").fetchone()[0])
 
+    def claim_alert_delivery(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        now: datetime,
+        stale_before: datetime,
+    ) -> bool:
+        """Atomically admit one pending sender or reclaim one stale sender lease."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE daily_review_batches
+                   SET alert_status='sending', alert_lease_token=?,
+                       alert_lease_started_at_utc=?
+                   WHERE batch_id=?
+                     AND (
+                         alert_status='pending'
+                         OR (
+                             alert_status='sending'
+                             AND alert_lease_started_at_utc IS NOT NULL
+                             AND alert_lease_started_at_utc <= ?
+                         )
+                     )
+                """,
+                (lease_token, _iso(now), batch_id, _iso(stale_before)),
+            )
+        return cursor.rowcount == 1
+
+    def release_alert_delivery(self, batch_id: str, *, lease_token: str) -> bool:
+        """Return an owned failed delivery attempt to the durable pending state."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE daily_review_batches
+                   SET alert_status='pending', alert_lease_token=NULL,
+                       alert_lease_started_at_utc=NULL
+                   WHERE batch_id=? AND alert_status='sending' AND alert_lease_token=?
+                """,
+                (batch_id, lease_token),
+            )
+        return cursor.rowcount == 1
+
+    def complete_alert_delivery(
+        self,
+        batch_id: str,
+        *,
+        lease_token: str,
+        slack_channel_id: str,
+        slack_message_ts: str,
+    ) -> bool:
+        """Persist a confirmed Slack receipt only for the current lease owner."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE daily_review_batches
+                   SET alert_status='sent', slack_channel_id=?, slack_message_ts=?,
+                       alert_lease_token=NULL, alert_lease_started_at_utc=NULL
+                   WHERE batch_id=? AND alert_status='sending' AND alert_lease_token=?
+                """,
+                (slack_channel_id, slack_message_ts, batch_id, lease_token),
+            )
+        return cursor.rowcount == 1
+
     def update_review_batch(
         self,
         batch_id: str,
@@ -483,7 +634,9 @@ class GeminiReceiptStore:
         pipeline_error: str | None = None,
         alert_status: str | None = None,
         alert_message: str | None = None,
+        alert_delivery_key: str | None = None,
         slack_channel_id: str | None = None,
+        slack_workspace_id: str | None = None,
         slack_message_ts: str | None = None,
         completed_at: datetime | None = None,
     ) -> None:
@@ -495,8 +648,11 @@ class GeminiReceiptStore:
                 """UPDATE daily_review_batches SET
                        status=?, completed_at_utc=?, pipeline_error=?,
                        alert_status=COALESCE(?, alert_status),
+                       alert_message=COALESCE(?, alert_message),
                        alert_message_sha256=COALESCE(?, alert_message_sha256),
+                       alert_delivery_key=COALESCE(?, alert_delivery_key),
                        slack_channel_id=COALESCE(?, slack_channel_id),
+                       slack_workspace_id=COALESCE(?, slack_workspace_id),
                        slack_message_ts=COALESCE(?, slack_message_ts)
                    WHERE batch_id=?
                 """,
@@ -505,14 +661,59 @@ class GeminiReceiptStore:
                     terminal_at,
                     pipeline_error,
                     alert_status,
+                    alert_message,
                     _sha256(alert_message) if alert_message is not None else None,
+                    alert_delivery_key,
                     slack_channel_id,
+                    slack_workspace_id,
                     slack_message_ts,
                     batch_id,
                 ),
             )
             if cursor.rowcount != 1:
                 raise KeyError(batch_id)
+
+    def initialize_alert_outbox(
+        self,
+        batch_id: str,
+        *,
+        alert_message: str,
+        alert_delivery_key: str,
+        slack_channel_id: str,
+        slack_workspace_id: str | None = None,
+    ) -> bool:
+        """Fill pending legacy outbox fields without disturbing an active lease."""
+        alert_sha256 = _sha256(alert_message)
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE daily_review_batches SET
+                       alert_message=COALESCE(alert_message, ?),
+                       alert_message_sha256=COALESCE(alert_message_sha256, ?),
+                       alert_delivery_key=COALESCE(alert_delivery_key, ?),
+                       slack_channel_id=COALESCE(slack_channel_id, ?),
+                       slack_workspace_id=COALESCE(slack_workspace_id, ?)
+                   WHERE batch_id=? AND alert_status='pending'
+                     AND (alert_message IS NULL OR alert_message=?)
+                     AND (alert_message_sha256 IS NULL OR alert_message_sha256=?)
+                     AND (alert_delivery_key IS NULL OR alert_delivery_key=?)
+                     AND (slack_channel_id IS NULL OR slack_channel_id=?)
+                     AND (slack_workspace_id IS NULL OR slack_workspace_id IS ?)
+                """,
+                (
+                    alert_message,
+                    alert_sha256,
+                    alert_delivery_key,
+                    slack_channel_id,
+                    slack_workspace_id,
+                    batch_id,
+                    alert_message,
+                    alert_sha256,
+                    alert_delivery_key,
+                    slack_channel_id,
+                    slack_workspace_id,
+                ),
+            )
+        return cursor.rowcount == 1
 
     def add_review_item(
         self,
@@ -524,6 +725,7 @@ class GeminiReceiptStore:
         reviewer_model: str,
         review_status: str,
         verdict: str | None = None,
+        failure_kind: str | None = None,
         reason: str | None = None,
         review_json: Mapping[str, Any] | None = None,
         error_code: str | None = None,
@@ -536,9 +738,9 @@ class GeminiReceiptStore:
             conn.execute(
                 """INSERT INTO daily_review_items (
                        batch_id, receipt_id, ordinal, reviewer_provider, reviewer_model,
-                       review_status, verdict, reason, review_json, review_sha256,
+                       review_status, verdict, failure_kind, reason, review_json, review_sha256,
                        started_at_utc, completed_at_utc, error_code, error_message
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch_id,
@@ -548,6 +750,7 @@ class GeminiReceiptStore:
                     reviewer_model,
                     review_status,
                     verdict,
+                    failure_kind,
                     reason,
                     raw,
                     _sha256(raw) if raw is not None else None,

@@ -138,6 +138,59 @@ def test_task_defaults_come_from_policy_config():
     assert "Sol" in decision.reason
 
 
+@pytest.mark.parametrize(
+    "config",
+    [
+        {**ENABLED_CONFIG, "enabled": "false"},
+        {**ENABLED_CONFIG, "profiles": "default"},
+        {**ENABLED_CONFIG, "default_route": "gemni"},
+        {**ENABLED_CONFIG, "default_data_classification": "restriced"},
+        {**ENABLED_CONFIG, "default_route": []},
+        {**ENABLED_CONFIG, "default_data_classification": {}},
+    ],
+    ids=[
+        "non-boolean-enabled",
+        "non-list-profiles",
+        "unknown-default-route",
+        "unknown-default-classification",
+        "non-string-default-route",
+        "non-string-default-classification",
+    ],
+)
+def test_malformed_security_config_fails_closed_to_sol(config):
+    decision = decide_delegation_route(
+        task={"goal": "Draft a summary."},
+        role="worker",
+        profile="default",
+        config=config,
+    )
+
+    assert decision.route == "sol"
+    assert decision.eligible_for_daily_review is False
+    assert "invalid" in decision.reason.lower()
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        {"goal": "Draft a summary.", "route": []},
+        {"goal": "Draft a summary.", "data_classification": {}},
+    ],
+    ids=["non-string-task-route", "non-string-task-classification"],
+)
+def test_malformed_task_routing_fields_fail_closed_to_sol(task):
+    decision = decide_delegation_route(
+        task=task,
+        role="worker",
+        profile="default",
+        config=ENABLED_CONFIG,
+    )
+
+    assert decision.route == "sol"
+    assert decision.eligible_for_daily_review is False
+    assert "invalid" in decision.reason.lower()
+
+
 def test_route_decision_is_frozen():
     decision = RouteDecision(
         route="gemini",

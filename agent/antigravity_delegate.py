@@ -82,6 +82,37 @@ class AntigravityDelegateChild:
         self._status = "ready"
         self._closed = False
 
+    def prepare_receipt(self) -> str:
+        """Persist the pre-execution receipt before lifecycle publication."""
+        if self.receipt_id:
+            return self.receipt_id
+        self.receipt_id = self.store.prepare_attempt(
+            parent_session_id=self.parent_session_id,
+            parent_turn_id=self.parent_turn_id,
+            child_session_id=self.session_id,
+            task_index=self.task_index,
+            route_requested=self.route_requested,
+            route_decision="gemini",
+            route_reason=self.route_reason,
+            data_classification=self.data_classification,
+            output_contract=self.output_contract,
+            goal_text=self.goal,
+            context_text=self.context,
+            requested_provider=self.requested_provider,
+            requested_model=self.requested_model,
+            requested_effort=self.requested_effort,
+        )
+        self._route_metadata = {
+            "route": "gemini",
+            "route_reason": self.route_reason,
+            "worker_route": "gemini",
+            "worker_provider": self.requested_provider,
+            "worker_model_requested": self.requested_model,
+            "route_receipt_id": self.receipt_id,
+            "fallback_used": False,
+        }
+        return self.receipt_id
+
     def run_conversation(
         self,
         user_message: str,
@@ -92,22 +123,7 @@ class AntigravityDelegateChild:
         with self._activity_lock:
             self._status = "preparing"
         try:
-            self.receipt_id = self.store.prepare_attempt(
-                parent_session_id=self.parent_session_id,
-                parent_turn_id=self.parent_turn_id,
-                child_session_id=self.session_id,
-                task_index=self.task_index,
-                route_requested=self.route_requested,
-                route_decision="gemini",
-                route_reason=self.route_reason,
-                data_classification=self.data_classification,
-                output_contract=self.output_contract,
-                goal_text=self.goal,
-                context_text=self.context,
-                requested_provider=self.requested_provider,
-                requested_model=self.requested_model,
-                requested_effort=self.requested_effort,
-            )
+            self.prepare_receipt()
         except Exception:
             return self._fallback_or_failure(
                 "Gemini route receipt could not be prepared",
@@ -160,6 +176,7 @@ class AntigravityDelegateChild:
             return self._fallback_or_failure(
                 "Gemini route result could not be recorded",
                 route="sol_after_receipt_error",
+                worker_route="gemini",
             )
 
         if result.status == "success" and result.response:
@@ -191,16 +208,42 @@ class AntigravityDelegateChild:
         *,
         route: str,
         error_code: str | None = None,
+        worker_route: str | None = None,
     ) -> dict[str, Any]:
         if self.fallback_child is not None:
             with self._activity_lock:
                 self._status = "fallback"
             if self.tool_progress_callback is not None:
                 self.fallback_child.tool_progress_callback = self.tool_progress_callback
-            result = self.fallback_child.run_conversation(
-                user_message=self.goal,
-                task_id=f"fallback-{self.task_index}",
-            )
+            fallback_metadata = {
+                "route": route,
+                "route_reason": self.route_reason,
+                "worker_route": "sol",
+                "worker_provider": str(
+                    getattr(self.fallback_child, "provider", "delegation-model")
+                ),
+                "worker_model_requested": str(
+                    getattr(self.fallback_child, "model", "")
+                ),
+                "route_receipt_id": self.receipt_id or None,
+                "fallback_used": True,
+            }
+            if error_code:
+                fallback_metadata["gemini_error_code"] = error_code
+            self._route_metadata = dict(fallback_metadata)
+            try:
+                result = self.fallback_child.run_conversation(
+                    user_message=self.goal,
+                    task_id=f"fallback-{self.task_index}",
+                )
+            except Exception as exc:
+                result = {
+                    "final_response": "",
+                    "completed": False,
+                    "api_calls": 0,
+                    "messages": [],
+                    "error": f"Sol fallback raised {type(exc).__name__}",
+                }
             if not isinstance(result, dict):
                 result = {
                     "final_response": "",
@@ -210,21 +253,9 @@ class AntigravityDelegateChild:
                     "error": "Sol fallback returned an invalid result",
                 }
             result = dict(result)
-            result["route"] = route
-            result["route_reason"] = self.route_reason
-            result["worker_route"] = route
-            result["worker_provider"] = str(
-                getattr(self.fallback_child, "provider", "delegation-model")
-            )
-            result["worker_model_requested"] = str(
-                getattr(self.fallback_child, "model", "")
-            )
-            result["route_receipt_id"] = self.receipt_id or None
-            result["fallback_used"] = True
+            result.update(fallback_metadata)
             if self.receipt_id:
                 result["receipt_id"] = self.receipt_id
-            if error_code:
-                result["gemini_error_code"] = error_code
             with self._activity_lock:
                 self._status = "completed" if result.get("final_response") else "failed"
             return result
@@ -241,7 +272,7 @@ class AntigravityDelegateChild:
             "route_reason": self.route_reason,
             "receipt_id": self.receipt_id or None,
             "gemini_error_code": error_code,
-            "worker_route": route,
+            "worker_route": worker_route or route,
             "worker_provider": self.requested_provider,
             "worker_model_requested": self.requested_model,
             "route_receipt_id": self.receipt_id or None,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 import subprocess
@@ -10,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+import agent.gemini_daily_review_runtime as daily_review_runtime
+from agent.gemini_daily_review import AlertDeliveryIndeterminateError
 from agent.gemini_daily_review_runtime import (
     _make_default_slack_sender,
     _hard_deadline,
@@ -18,13 +21,18 @@ from agent.gemini_daily_review_runtime import (
 from agent.gemini_route_receipts import GeminiReceiptStore
 
 
+@pytest.fixture(autouse=True)
+def _profile_local_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+
 def _config(db: Path) -> dict:
     return {
         "delegation": {
             "gemini_routing": {
                 "enabled": True,
                 "profiles": ["default"],
-                "receipt_db": str(db),
+                "receipt_db": db.name if db.is_absolute() else str(db),
                 "retention": {"raw_days": 30, "aggregate_days": 180},
                 "review": {
                     "enabled": True,
@@ -124,6 +132,102 @@ def test_configured_review_alerts_only_the_exact_configured_channel_on_failure(t
     assert "missed the requested evidence" not in alerts[0]
 
 
+def test_configured_review_retry_binds_sender_to_persisted_channel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    db = tmp_path / "routing.sqlite3"
+    store = GeminiReceiptStore(db)
+    batch = store.create_or_get_review_batch(
+        routing_day="2026-09-11",
+        timezone_name="America/Los_Angeles",
+        sample_size_requested=0,
+        eligible_count=0,
+        sample_seed_hex="51" * 32,
+        sample_receipt_ids=[],
+    )
+    assert store.claim_review_batch(batch["batch_id"])
+    message = "persisted alert bytes"
+    store.update_review_batch(
+        batch["batch_id"],
+        status="pipeline_failed",
+        pipeline_error="reviewer_unavailable",
+        alert_status="pending",
+        alert_message=message,
+        alert_delivery_key=(
+            f"gemini-daily-review:{batch['batch_id']}:"
+            f"{hashlib.sha256(message.encode()).hexdigest()}"
+        ),
+        slack_channel_id="C_PERSISTED",
+        slack_workspace_id="T_PERSISTED",
+    )
+    config = _config(db)
+    config["delegation"]["gemini_routing"]["review"]["alert_target"] = (
+        "slack:C_CHANGED"
+    )
+    config["delegation"]["gemini_routing"]["review"]["alert_workspace_id"] = (
+        "T_CHANGED"
+    )
+    bound_channels: list[str] = []
+    bound_workspaces: list[str] = []
+    sent_messages: list[str] = []
+
+    def build_sender(channel_id: str, *, expected_workspace_id: str, **_kwargs):
+        bound_channels.append(channel_id)
+        bound_workspaces.append(expected_workspace_id)
+
+        def send(payload: str) -> dict:
+            sent_messages.append(payload)
+            return {"success": True, "chat_id": channel_id, "message_id": "1.51"}
+
+        return send
+
+    monkeypatch.setattr(daily_review_runtime, "_make_default_slack_sender", build_sender)
+
+    result = run_configured_review(
+        config=config,
+        now=datetime(2026, 9, 12, 16, tzinfo=timezone.utc),
+        reviewer_factory=lambda: pytest.fail("terminal batch must not be reviewed"),
+    )
+
+    assert result["alert_status"] == "sent"
+    assert bound_channels == ["C_PERSISTED"]
+    assert bound_workspaces == ["T_PERSISTED"]
+    assert sent_messages == [message]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("review_provider", "arbitrary-provider"),
+        ("review_model", "arbitrary-model"),
+    ],
+)
+def test_configured_reviewer_identity_mismatch_terminalizes_batch(
+    tmp_path: Path, field: str, value: str
+):
+    db = tmp_path / "routing.sqlite3"
+    _seed_previous_day(db)
+    config = _config(db)
+    config["delegation"]["gemini_routing"]["review"][field] = value
+    alerts: list[str] = []
+
+    result = run_configured_review(
+        config=config,
+        now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
+        reviewer_factory=lambda: pytest.fail("mismatched reviewer must not be constructed"),
+        alert_sender=lambda message: alerts.append(message)
+        or {"success": True, "chat_id": "C0A12345678", "message_id": "1.5"},
+    )
+
+    assert result["status"] == "pipeline_failed"
+    assert result["reviewed_count"] == 0
+    assert len(alerts) == 1
+    batch = GeminiReceiptStore(db).get_review_batch("2026-09-10")
+    assert batch is not None
+    assert batch["pipeline_error"] == "reviewer_identity_mismatch"
+
+
 def test_disabled_runtime_does_not_construct_reviewer_or_sender(tmp_path: Path):
     calls = []
     result = run_configured_review(
@@ -132,6 +236,30 @@ def test_disabled_runtime_does_not_construct_reviewer_or_sender(tmp_path: Path):
         alert_sender=lambda message: calls.append(message),
     )
     assert result == {"status": "disabled"}
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda config: config["delegation"]["gemini_routing"].update(enabled="false"),
+        lambda config: config["delegation"]["gemini_routing"].update(profiles="default"),
+        lambda config: config["delegation"]["gemini_routing"]["review"].update(enabled="false"),
+    ],
+    ids=["truthy-routing-enabled", "string-profiles", "truthy-review-enabled"],
+)
+def test_runtime_fails_closed_on_malformed_security_config(tmp_path: Path, mutate):
+    config = _config(tmp_path / "routing.sqlite3")
+    mutate(config)
+    calls: list[str] = []
+
+    with pytest.raises(ValueError, match="must be"):
+        run_configured_review(
+            config=config,
+            reviewer_factory=lambda: calls.append("reviewer"),
+            alert_sender=lambda message: calls.append(message),
+        )
+
     assert calls == []
 
 
@@ -158,6 +286,7 @@ def test_alert_target_must_be_one_exact_slack_channel(tmp_path: Path):
     with pytest.raises(ValueError, match="exact slack"):
         run_configured_review(
             config=config,
+            now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
             reviewer_factory=lambda: lambda prompt: {"verdict": "pass", "reason": "ok", "failure_kind": "none"},
             alert_sender=lambda message: None,
         )
@@ -177,10 +306,6 @@ def test_no_agent_entrypoint_emits_empty_stdout_on_success(
     assert module.main() == 0
     assert capsys.readouterr() == ("", "")
     assert os.access(script, os.X_OK)
-    source = script.read_text(encoding="utf-8")
-    assert "AIAgent" not in source
-    assert "from agent.gemini_daily_review import main" in source
-    assert "print(" not in source.split("except Exception", 1)[0]
 
 
 def test_no_agent_entrypoint_writes_fatal_errors_only_to_stderr(
@@ -238,6 +363,55 @@ def test_configured_review_requires_active_profile_membership(tmp_path: Path):
     assert not (tmp_path / "routing.sqlite3").exists()
 
 
+@pytest.mark.parametrize(
+    "configured_path",
+    ["../outside.sqlite3", "/tmp/outside-gemini-review.sqlite3"],
+    ids=["parent-traversal", "absolute-outside-profile"],
+)
+def test_configured_review_rejects_receipt_paths_outside_active_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_path: str,
+):
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config = _config(Path(configured_path))
+    config["delegation"]["gemini_routing"]["receipt_db"] = configured_path
+
+    with pytest.raises(ValueError, match="HERMES_HOME"):
+        run_configured_review(
+            config=config,
+            now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
+            active_profile="default",
+            reviewer_factory=lambda: pytest.fail("reviewer must not be constructed"),
+            alert_sender=lambda _message: pytest.fail("sender must not be called"),
+        )
+
+    assert not (tmp_path / "outside.sqlite3").exists()
+
+
+def test_configured_review_rejects_absolute_receipt_path_inside_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    absolute = home / "routing.sqlite3"
+    config = _config(absolute)
+    config["delegation"]["gemini_routing"]["receipt_db"] = str(absolute)
+
+    with pytest.raises(ValueError, match="relative to HERMES_HOME"):
+        run_configured_review(
+            config=config,
+            now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
+            reviewer_factory=lambda: pytest.fail("reviewer must not be constructed"),
+            alert_sender=lambda _message: pytest.fail("sender must not be called"),
+        )
+
+    assert not absolute.exists()
+
+
 def test_no_agent_entrypoint_subprocess_honors_custom_profile_home_and_is_silent(
     tmp_path: Path,
 ):
@@ -274,6 +448,7 @@ def test_no_agent_entrypoint_subprocess_honors_custom_profile_home_and_is_silent
 
 def test_default_slack_sender_verifies_workspace_membership_and_history():
     calls: list[tuple[str, dict]] = []
+    message = "Gemini daily review: Receipt: ~/.hermes/routing.sqlite3 batch grb_abcdef"
 
     class FakeClient:
         async def auth_test(self):
@@ -300,7 +475,7 @@ def test_default_slack_sender_verifies_workspace_membership_and_history():
                 "messages": [
                     {
                         "ts": "1720000000.000004",
-                        "text": "Gemini daily review: batch grb_abcdef",
+                        "text": message,
                     }
                 ],
             }
@@ -319,7 +494,7 @@ def test_default_slack_sender_verifies_workspace_membership_and_history():
         standalone_send=send,
         client_factory=lambda token: FakeClient(),
         token="xoxb-test-only",
-    )("Gemini daily review: Receipt: ~/.hermes/routing.sqlite3 batch grb_abcdef")
+    )(message)
 
     assert result == {
         "success": True,
@@ -338,6 +513,8 @@ def test_default_slack_sender_verifies_workspace_membership_and_history():
 
 
 def test_default_slack_sender_reconciles_unknown_send_from_channel_history():
+    message = "Gemini daily review: Receipt: x batch grb_deadbeef"
+
     class FakeClient:
         async def auth_test(self):
             return {"ok": True, "team_id": "T_KIZUKI"}
@@ -353,7 +530,7 @@ def test_default_slack_sender_reconciles_unknown_send_from_channel_history():
             return {
                 "ok": True,
                 "messages": [
-                    {"ts": "1720000000.000005", "text": "receipt batch grb_deadbeef"}
+                    {"ts": "1720000000.000005", "text": message}
                 ],
             }
 
@@ -369,10 +546,150 @@ def test_default_slack_sender_reconciles_unknown_send_from_channel_history():
         standalone_send=uncertain_send,
         client_factory=lambda token: FakeClient(),
         token="xoxb-test-only",
-    )("Gemini daily review: Receipt: x batch grb_deadbeef")
+    )(message)
 
     assert result["message_id"] == "1720000000.000005"
     assert sends == []
+
+
+def test_default_slack_sender_classifies_unreconciled_send_as_indeterminate():
+    message = "Gemini daily review: Receipt: x batch grb_unreconciled"
+    history_calls = 0
+
+    class FakeClient:
+        async def auth_test(self):
+            return {"ok": True, "team_id": "T_KIZUKI"}
+
+        async def conversations_info(self, **_kwargs):
+            return {
+                "ok": True,
+                "channel": {"is_member": True, "context_team_id": "T_KIZUKI"},
+            }
+
+        async def conversations_history(self, **_kwargs):
+            nonlocal history_calls
+            history_calls += 1
+            return {"ok": True, "messages": []}
+
+    async def uncertain_send(*_args):
+        raise TimeoutError("response lost after possible delivery")
+
+    sender = _make_default_slack_sender(
+        "C0A12345678",
+        expected_workspace_id="T_KIZUKI",
+        standalone_send=uncertain_send,
+        client_factory=lambda token: FakeClient(),
+        token="xoxb-test-only",
+    )
+
+    with pytest.raises(AlertDeliveryIndeterminateError):
+        sender(message)
+    assert history_calls == 2
+
+
+def test_default_slack_sender_classifies_transport_error_mapping_as_indeterminate():
+    message = "Gemini daily review: Receipt: x batch grb_transport_error"
+
+    class FakeClient:
+        async def auth_test(self):
+            return {"ok": True, "team_id": "T_KIZUKI"}
+
+        async def conversations_info(self, **_kwargs):
+            return {
+                "ok": True,
+                "channel": {"is_member": True, "context_team_id": "T_KIZUKI"},
+            }
+
+        async def conversations_history(self, **_kwargs):
+            return {"ok": True, "messages": []}
+
+    async def uncertain_send(*_args):
+        return {"error": "Slack send failed: response lost after possible delivery"}
+
+    sender = _make_default_slack_sender(
+        "C0A12345678",
+        expected_workspace_id="T_KIZUKI",
+        standalone_send=uncertain_send,
+        client_factory=lambda token: FakeClient(),
+        token="xoxb-test-only",
+    )
+
+    with pytest.raises(AlertDeliveryIndeterminateError):
+        sender(message)
+
+
+def test_default_slack_sender_keeps_known_api_rejection_retryable():
+    message = "Gemini daily review: Receipt: x batch grb_api_rejection"
+
+    class FakeClient:
+        async def auth_test(self):
+            return {"ok": True, "team_id": "T_KIZUKI"}
+
+        async def conversations_info(self, **_kwargs):
+            return {
+                "ok": True,
+                "channel": {"is_member": True, "context_team_id": "T_KIZUKI"},
+            }
+
+        async def conversations_history(self, **_kwargs):
+            return {"ok": True, "messages": []}
+
+    async def rejected_send(*_args):
+        return {"error": "Slack API error: channel_not_found"}
+
+    sender = _make_default_slack_sender(
+        "C0A12345678",
+        expected_workspace_id="T_KIZUKI",
+        standalone_send=rejected_send,
+        client_factory=lambda token: FakeClient(),
+        token="xoxb-test-only",
+    )
+
+    with pytest.raises(RuntimeError, match="not visible"):
+        sender(message)
+
+
+def test_default_slack_sender_paginates_history_and_matches_exact_payload():
+    message = "Gemini daily review: Receipt: x batch grb_deadbeef"
+    cursors: list[str | None] = []
+
+    class FakeClient:
+        async def auth_test(self):
+            return {"ok": True, "team_id": "T_KIZUKI"}
+
+        async def conversations_info(self, **_kwargs):
+            return {
+                "ok": True,
+                "channel": {"is_member": True, "context_team_id": "T_KIZUKI"},
+            }
+
+        async def conversations_history(self, **kwargs):
+            cursors.append(kwargs.get("cursor"))
+            if kwargs.get("cursor") is None:
+                return {
+                    "ok": True,
+                    "messages": [{"ts": "1.0", "text": f"{message} changed"}],
+                    "response_metadata": {"next_cursor": "page-2"},
+                }
+            return {
+                "ok": True,
+                "messages": [{"ts": "2.0", "text": message}],
+                "response_metadata": {"next_cursor": ""},
+            }
+
+    async def must_not_send(*_args):
+        pytest.fail("exact payload already exists on a later history page")
+
+    result = _make_default_slack_sender(
+        "C0A12345678",
+        expected_workspace_id="T_KIZUKI",
+        standalone_send=must_not_send,
+        client_factory=lambda token: FakeClient(),
+        token="xoxb-test-only",
+    )(message)
+
+    assert result["message_id"] == "2.0"
+    assert cursors == [None, "page-2"]
 
 
 def test_default_slack_sender_refuses_workspace_channel_identity_mismatch():

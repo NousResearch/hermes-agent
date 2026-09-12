@@ -6,6 +6,8 @@ import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from agent.gemini_daily_review import (
     DailyReviewRunner,
     SolReviewer,
@@ -361,3 +363,84 @@ def test_concurrent_runs_claim_one_daily_batch_once(tmp_path: Path):
     assert {result["status"] for result in results} <= {"passed", "in_progress"}
     assert store.count_review_batches() == 1
     assert len(store.list_review_items(store.get_review_batch("2026-09-11")["batch_id"])) == 1
+
+
+@pytest.mark.parametrize("stale_status", ["preparing", "reviewing"])
+def test_stale_review_lease_becomes_pipeline_failure_without_rerun(
+    tmp_path: Path, stale_status: str
+):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    stale_started = datetime(2026, 9, 11, 7, 0, tzinfo=UTC)
+    batch = store.create_or_get_review_batch(
+        routing_day="2026-09-11",
+        timezone_name="America/Los_Angeles",
+        sample_size_requested=5,
+        eligible_count=0,
+        sample_seed_hex="44" * 32,
+        sample_receipt_ids=[],
+        started_at=stale_started,
+    )
+    if stale_status == "reviewing":
+        assert store.claim_review_batch(batch["batch_id"]) is True
+
+    reviewer_calls: list[str] = []
+    alerts: list[str] = []
+    result = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: lambda prompt: reviewer_calls.append(prompt),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda message: alerts.append(message)
+        or {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.1"},
+        alert_channel_id="C_ROUTE_FAILURES",
+        clock=lambda: datetime(2026, 9, 11, 7, 3, tzinfo=UTC),
+        lease_timeout_seconds=150,
+    ).run(target_day="2026-09-11")
+
+    persisted = store.get_review_batch("2026-09-11")
+    assert result["status"] == "pipeline_failed"
+    assert persisted is not None
+    assert persisted["status"] == "pipeline_failed"
+    assert persisted["pipeline_error"] == "stale_review_lease"
+    assert persisted["alert_status"] == "sent"
+    assert len(alerts) == 1
+    assert reviewer_calls == []
+
+
+def test_started_nonterminal_attempt_is_a_pipeline_failure_not_a_sol_review(tmp_path: Path):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    started = datetime(2026, 9, 11, 7, 0, tzinfo=UTC)
+    store.prepare_attempt(
+        receipt_id="grt_stale",
+        parent_session_id="parent",
+        parent_turn_id="turn",
+        child_session_id="child",
+        task_index=0,
+        route_requested="auto",
+        route_decision="gemini",
+        route_reason="eligible_leaf",
+        data_classification="standard",
+        output_contract="text",
+        goal_text="goal",
+        context_text="context",
+        requested_provider="antigravity-subscription",
+        requested_model="gemini-3.8-flash-low",
+        requested_effort="low",
+        started_at=started,
+    )
+    store.mark_process_started("grt_stale", when=started)
+    alerts: list[str] = []
+    reviewer_calls: list[str] = []
+    result = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: lambda prompt: reviewer_calls.append(prompt),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda message: alerts.append(message)
+        or {"success": True, "chat_id": "C_ROUTE_FAILURES", "message_id": "1.1"},
+        alert_channel_id="C_ROUTE_FAILURES",
+    ).run(target_day="2026-09-11", seed=bytes.fromhex("99" * 32))
+
+    assert result["status"] == "pipeline_failed"
+    assert reviewer_calls == []
+    assert len(alerts) == 1

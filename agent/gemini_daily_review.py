@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -16,6 +16,7 @@ from agent.gemini_route_receipts import GeminiReceiptStore, _canonical_json
 ReviewCallable = Callable[[str], Mapping[str, Any] | str]
 ReviewerFactory = Callable[[], ReviewCallable]
 AlertSender = Callable[[str], Any]
+Clock = Callable[[], datetime]
 
 
 def _seeded_digest(seed: bytes, counter: int) -> bytes:
@@ -181,6 +182,8 @@ class DailyReviewRunner:
         alert_channel_id: str,
         sample_size: int = 5,
         timezone_name: str = "America/Los_Angeles",
+        clock: Clock | None = None,
+        lease_timeout_seconds: int = 150,
     ) -> None:
         if not reviewer_provider or not reviewer_model:
             raise ValueError("reviewer provider and model are required")
@@ -194,6 +197,8 @@ class DailyReviewRunner:
         self.alert_channel_id = alert_channel_id
         self.sample_size = max(0, int(sample_size))
         self.timezone_name = timezone_name
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.lease_timeout_seconds = max(1, int(lease_timeout_seconds))
 
     def run(
         self,
@@ -210,6 +215,32 @@ class DailyReviewRunner:
                     self._deliver_alert(existing, alert)
                     existing = self.store.get_review_batch(day) or existing
                 return self._result_from_batch(existing)
+            if existing["status"] in {"preparing", "reviewing"} and self._lease_is_stale(
+                existing
+            ):
+                alert = self._failure_alert(
+                    day,
+                    [{"receipt_id": "pipeline", "reason": "stale_review_lease"}],
+                    pipeline=True,
+                    batch=existing,
+                )
+                now = self.clock()
+                stale_before = now - timedelta(seconds=self.lease_timeout_seconds)
+                terminalized = self.store.fail_stale_review_batch(
+                    str(existing["batch_id"]),
+                    stale_before=stale_before,
+                    pipeline_error="stale_review_lease",
+                    alert_message=alert,
+                    completed_at=now,
+                )
+                current = self.store.get_review_batch(day) or existing
+                if terminalized and (
+                    current["status"] == "pipeline_failed"
+                    and current["alert_status"] == "pending"
+                ):
+                    self._deliver_alert(current, alert)
+                    current = self.store.get_review_batch(day) or current
+                return self._result_from_batch(current)
             if existing["status"] == "reviewing":
                 return self._result_from_batch(existing, status="in_progress")
 
@@ -247,6 +278,20 @@ class DailyReviewRunner:
             ):
                 continue
             attempt = self.store.get_attempt(receipt_id)
+            if attempt.get("completed_at_utc") is None:
+                pipeline_error = "stale_started_attempt"
+                self.store.add_review_item(
+                    batch_id=batch["batch_id"],
+                    receipt_id=receipt_id,
+                    ordinal=ordinal,
+                    reviewer_provider=self.reviewer_provider,
+                    reviewer_model=self.reviewer_model,
+                    review_status="failed",
+                    error_code="stale_started_attempt",
+                    error_message=pipeline_error,
+                    completed_at=self.clock(),
+                )
+                break
             try:
                 reviewer = self.reviewer_factory()
                 verdict = _parse_verdict(reviewer(build_review_prompt(attempt)))
@@ -260,7 +305,7 @@ class DailyReviewRunner:
                     verdict=verdict["verdict"],
                     reason=verdict["reason"],
                     review_json=verdict,
-                    completed_at=datetime.now().astimezone(),
+                    completed_at=self.clock(),
                 )
                 if verdict["verdict"] == "fail":
                     failures.append(
@@ -281,7 +326,7 @@ class DailyReviewRunner:
                         else "reviewer_failed"
                     ),
                     error_message=pipeline_error,
-                    completed_at=datetime.now().astimezone(),
+                    completed_at=self.clock(),
                 )
                 break
 
@@ -312,6 +357,16 @@ class DailyReviewRunner:
             self._deliver_alert(current_batch, alert)
         completed = self.store.get_review_batch(day) or batch
         return self._result_from_batch(completed)
+
+    def _lease_is_stale(self, batch: Mapping[str, Any]) -> bool:
+        started = datetime.fromisoformat(str(batch["started_at_utc"]))
+        if started.tzinfo is None:
+            raise ValueError("review batch started_at_utc must be timezone-aware")
+        now = self.clock()
+        if now.tzinfo is None:
+            raise ValueError("review clock must return a timezone-aware datetime")
+        elapsed = now.astimezone(timezone.utc) - started.astimezone(timezone.utc)
+        return elapsed >= timedelta(seconds=self.lease_timeout_seconds)
 
     def _failure_alert(
         self,

@@ -430,6 +430,35 @@ class GeminiReceiptStore:
             )
         return cursor.rowcount == 1
 
+    def fail_stale_review_batch(
+        self,
+        batch_id: str,
+        *,
+        stale_before: datetime,
+        pipeline_error: str,
+        alert_message: str,
+        completed_at: datetime,
+    ) -> bool:
+        """Atomically terminalize an abandoned review lease exactly once."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE daily_review_batches
+                   SET status='pipeline_failed', completed_at_utc=?, pipeline_error=?,
+                       alert_status='pending', alert_message_sha256=?
+                   WHERE batch_id=?
+                     AND status IN ('preparing', 'reviewing')
+                     AND started_at_utc <= ?
+                """,
+                (
+                    _iso(completed_at),
+                    pipeline_error,
+                    _sha256(alert_message),
+                    batch_id,
+                    _iso(stale_before),
+                ),
+            )
+        return cursor.rowcount == 1
+
     def count_review_batches(self) -> int:
         with self._read_connection() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM daily_review_batches").fetchone()[0])

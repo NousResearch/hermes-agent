@@ -29,6 +29,20 @@ function fixture(kit) {
   fs.writeFileSync(path.join(desktop, 'package.json'), JSON.stringify({ name: 'fixture', version: '0.21.1' }))
   fs.writeFileSync(path.join(desktop, 'electron-builder.config.cjs'), `module.exports=${JSON.stringify({ directories: { buildResources: kit }, toolsets: { winCodeSign: { url: 'file://' + kit } } })}\n`)
   fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
+  // Assembly does not depend on production artwork or the icon build step.
+  const iconsScript = path.join(root, 'fixture-icons.ps1')
+  fs.writeFileSync(iconsScript, String.raw`
+param([string]$Dir)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+New-Item -ItemType Directory -Force $Dir | Out-Null
+foreach ($asset in @(@('StoreLogo.png',50), @('Square150x150Logo.png',150), @('Square44x44Logo.png',44))) {
+  $image = New-Object System.Drawing.Bitmap([int]$asset[1], [int]$asset[1])
+  try { $image.Save((Join-Path $Dir $asset[0]), [System.Drawing.Imaging.ImageFormat]::Png) }
+  finally { $image.Dispose() }
+}
+`)
+  run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', iconsScript, '-Dir', path.join(root, 'icons')], root)
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     !/^(AZURE_|CLOUDFLARE_|HERMES_|GITHUB_|GH_|NODE_OPTIONS$)/i.test(key)))
   Object.assign(env, { HERMES_PAYLOAD_TAG: '', CI: '', GIT_CONFIG_GLOBAL: path.join(root, 'git-config'),
@@ -55,7 +69,7 @@ function makePackage(makeappx, root, release, metadata, variant, arch, env) {
   fs.mkdirSync(content)
   fs.mkdirSync(path.join(content, 'assets'))
   for (const name of ['StoreLogo.png', 'Square150x150Logo.png', 'Square44x44Logo.png']) {
-    fs.copyFileSync(path.join(repo, 'apps/desktop/assets/appx', name), path.join(content, 'assets', name))
+    fs.copyFileSync(path.join(root, 'icons', name), path.join(content, 'assets', name))
   }
   const name = metadata.identity.store ? metadata.identity.storeMsix.identityName : metadata.identity.msixAppIdWithOrg
   const publisher = metadata.identity.store ? metadata.identity.storeMsix.publisher : 'CN=Fixture'

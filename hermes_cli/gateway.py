@@ -6056,20 +6056,21 @@ def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
+    if getattr(args, "drain", False):
+        from hermes_cli.gateway_desktop_drain import desktop_profile_homes, drain_all_desktop_work
+        # Register cleanup before the s6 dispatch: the supervisor path returns
+        # immediately, so it must not bypass the drain or leave its marker behind
+        # if the process is interrupted while waiting.
+        if stop_all:
+            from gateway.drain_control import clear_drain_request
+            homes = desktop_profile_homes()
+            atexit.register(lambda: [clear_drain_request(home=home) for home in homes])
+        drain_all_desktop_work()
     # Under s6 a bare pkill is seen as a crash and restarted; go through the supervisor.
     if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
         return
     if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
         return
-
-    if stop_all and getattr(args, "drain", False):
-        from hermes_cli.gateway_desktop_drain import desktop_profile_homes, drain_all_desktop_work
-        # wait_for_desktop_drain() has no deadline by design, so a killed/interrupted
-        # `gateway stop --drain` must not leave the marker behind wedging the next start.
-        from gateway.drain_control import clear_drain_request
-        homes = desktop_profile_homes()
-        atexit.register(lambda: [clear_drain_request(home=home) for home in homes])
-        drain_all_desktop_work()
 
     service_available = _stop_installed_service(system)
     if stop_all:

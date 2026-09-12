@@ -128,7 +128,7 @@ _INLINE_SECRET_ASSIGN_RE = re.compile(
     r"(^|[{[(,]\s*|[\"'])"
     r"(token|secret|password|passwd|credential|auth|api[_-]?key)"
     r"(\s*=\s*)(?!<redacted(?:-[^>]+)?>)"
-    r"(?:'[^']*'|\"[^\"]*\"|[^\s,;&\"']+)",
+    r"((?:'[^']*'|\"[^\"]*\"|os\.(?:getenv|environ)\([^)]*\)|process\.env(?:\.[A-Za-z_]\w*|\[[^]]+\])|\$ENV\{[^}]+\}|[^\s,;&\"']+))",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -212,7 +212,7 @@ _KEY_KEYWORD_RE = re.compile(
 # are gated on value shape (_looks_like_opaque_credential).
 _STRONG_KEY_KEYWORD_RE = re.compile(
     r"(?:api|auth|access|refresh|session|id|bearer)[ _.\\-]?(?:key|token)"
-    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|auth|bearer",
+    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|bearer",
     re.IGNORECASE,
 )
 
@@ -526,7 +526,13 @@ def _redact_assignments(text: str) -> str:
             # params; the lowercase one would (issue #77484).
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
             text = _INLINE_SECRET_ASSIGN_RE.sub(
-                lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}***",
+                lambda match: (
+                    match.group(0)
+                    if not _should_redact_assignment(
+                        match.group(2), match.group(4), check_keyword=True
+                    )
+                    else f"{match.group(1)}{match.group(2)}{match.group(3)}***"
+                ),
                 text,
             )
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks

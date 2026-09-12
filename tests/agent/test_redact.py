@@ -1152,6 +1152,8 @@ class TestValueAwareGatingCorpus:
         "num_key_value_heads=8",
         "token: CPU",
         "llm_load_tensors: per_layer_token_embd.weight=CPU buffer",
+        "(auth=none)",
+        'token=os.getenv("TOKEN")',
     ]
 
     # Obviously-fake but shape-realistic secrets: every one of these must

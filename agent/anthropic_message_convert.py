@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.anthropic_endpoints import (
     _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
-    _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
+    _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking, _normalized_lower,
 )
 
 logger = logging.getLogger(__name__)
@@ -380,11 +380,18 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # than relocated. #56195 covered the complementary shape (blank content -> top-level marker); this is
     # the interleaved thinking + preamble-text + tool_use shape.
     content = m.get("content", "")
+    # Provenance stamp (see build_assistant_message): must survive whichever path builds the
+    # converted message, since _manage_thinking_signatures reads it from ``result`` (the
+    # converted list), not from the original ``messages`` this function consumes.
+    signed_base_url = m.get("_thinking_signed_base_url")
     ordered_blocks = m.get("anthropic_content_blocks")
     if isinstance(ordered_blocks, list) and ordered_blocks:
         replayed = _replay_ordered_blocks(m, ordered_blocks)
         if replayed:
-            return {"role": "assistant", "content": replayed}
+            out = {"role": "assistant", "content": replayed}
+            if signed_base_url is not None:
+                out["_thinking_signed_base_url"] = signed_base_url
+            return out
     blocks = _extract_preserved_thinking_blocks(m)
     # Blank text blocks are dropped; a cache marker riding on one is relocated onto the last
     # surviving cacheable block (prompt_caching sets cache_control on content[-1], which may be
@@ -415,7 +422,10 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     effective = blocks or [_text_block(_EMPTY_TEXT_PLACEHOLDER)]
     _apply_assistant_cache_control_to_last_cacheable_block(effective, relocated_cc)
     _apply_assistant_cache_control_to_last_cacheable_block(effective, m.get("cache_control"))
-    return {"role": "assistant", "content": effective}
+    out = {"role": "assistant", "content": effective}
+    if signed_base_url is not None:
+        out["_thinking_signed_base_url"] = signed_base_url
+    return out
 
 
 def _tool_result_content(m: Dict[str, Any]) -> Any:
@@ -553,6 +563,17 @@ def _keep_valid_latest_thinking(content: List[Any], signature_dead: bool) -> Lis
     return new_content
 
 
+def _thinking_signature_foreign(m: Dict[str, Any], current_endpoint: str) -> bool:
+    """True when this turn's thinking signature was minted on a DIFFERENT Anthropic-family
+    endpoint than the one we're converting for right now (e.g. a Kimi-coding primary that
+    failed over to direct Anthropic). Signatures are provider-bound — Anthropic signs each
+    thinking block against the endpoint that produced it and 400s on replay elsewhere
+    ("Invalid signature in thinking block"). Absent stamp (legacy data, non-Anthropic modes)
+    is never treated as foreign — only an explicit mismatch counts."""
+    signed_base_url = m.get("_thinking_signed_base_url")
+    return signed_base_url is not None and _normalized_lower(signed_base_url) != current_endpoint
+
+
 def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
@@ -568,6 +589,7 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
         is_third_party and _model_name_is_deepseek_thinking(model)
     )
+    current_endpoint = _normalized_lower(base_url)
     last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
     for idx, m in _assistant_block_lists(result):
         if is_kimi:
@@ -582,13 +604,17 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
         elif is_third_party or idx != last_assistant_idx:
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
         else:
-            new_content = _keep_valid_latest_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
+            new_content = _keep_valid_latest_thinking(
+                m["content"],
+                bool(m.get("_thinking_signature_invalidated")) or _thinking_signature_foreign(m, current_endpoint),
+            )
             m["content"] = new_content or [_text_block("(empty)")]
         # cache_control on thinking blocks interferes with signature validation.
         for b in m["content"]:
             if _block_type(b) in _THINKING_TYPES:
                 b.pop("cache_control", None)
         m.pop("_thinking_signature_invalidated", None)  # internal flag, never on the wire
+        m.pop("_thinking_signed_base_url", None)  # internal flag, never on the wire
 
 
 def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:

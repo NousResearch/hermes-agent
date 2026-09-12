@@ -370,17 +370,22 @@ def _recover_format_errors(
     the request was repaired and should be retried."""
     # Upstream mutation invalidates Anthropic's thinking-block signature (400). Strip
     # ``reasoning_details`` from ``api_messages`` only, never ``messages`` (state.db).
+    # ``_convert_assistant_message`` prefers the verbatim ``anthropic_content_blocks`` channel
+    # over ``reasoning_details`` when both are present (interleaved-thinking replay,
+    # #_replay_ordered_blocks), so a signature riding only in that channel survives a
+    # reasoning_details-only strip and the retry hits the identical 400 again. Strip both.
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
         _retry.thinking_sig_retry_attempted = True
         _api_stripped = 0
         for _m in api_messages:
-            if isinstance(_m, dict) and "reasoning_details" in _m:
+            if isinstance(_m, dict) and ("reasoning_details" in _m or "anthropic_content_blocks" in _m):
                 _m.pop("reasoning_details", None)
+                _m.pop("anthropic_content_blocks", None)
                 _api_stripped += 1
-        _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details from api_messages for retry...")
+        _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details/anthropic_content_blocks from api_messages for retry...")
         logger.warning(
             "%sThinking block signature recovery: stripped "
-            "reasoning_details from %d api_messages "
+            "reasoning_details/anthropic_content_blocks from %d api_messages "
             "(canonical messages unchanged)",
             agent.log_prefix, _api_stripped,
         )

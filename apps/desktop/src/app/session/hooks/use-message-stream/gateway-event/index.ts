@@ -98,6 +98,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
   const unscopedStreamSessionIdRef = useRef<string | null>(null)
+  const unscopedStreamContestedRef = useRef(false)
 
   // session.info arrives in bursts (agent build ready + turn end + title /
   // MCP / compress edges within the same second). Each used to fire its own
@@ -156,14 +157,23 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const explicitSid = event.session_id || ''
 
+      const pinnedSessionId = unscopedStreamSessionIdRef.current
+      const pinnedState = pinnedSessionId ? sessionStateByRuntimeIdRef.current.get(pinnedSessionId) : undefined
+      const pinnedSessionHasLiveTurn = Boolean(
+        pinnedState && (pinnedState.awaitingResponse || pinnedState.busy || pinnedState.streamId || pinnedState.sawAssistantPayload)
+      )
+
       const route = resolveGatewayEventSessionId({
         activeSessionId: activeSessionIdRef.current,
         eventType: event.type,
         explicitSessionId: explicitSid,
+        pinnedSessionHasLiveTurn,
+        unscopedStreamContested: unscopedStreamContestedRef.current,
         unscopedStreamSessionId: unscopedStreamSessionIdRef.current
       })
 
       unscopedStreamSessionIdRef.current = route.nextUnscopedStreamSessionId
+      unscopedStreamContestedRef.current = route.nextUnscopedStreamContested ?? false
 
       if (route.drop) {
         return

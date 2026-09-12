@@ -72,11 +72,20 @@ export interface GatewayEventSessionRouteInput {
   activeSessionId: null | string
   eventType: string | undefined
   explicitSessionId: string
+  /** Same live-turn predicate the consumer uses for #43142 straggler drop
+   *  (`awaitingResponse || busy || streamId || sawAssistantPayload`) on the
+   *  *pinned* session. Omitted / false keeps today's pin-steal on a new
+   *  unscoped ``message.start``. */
+  pinnedSessionHasLiveTurn?: boolean
+  /** True while two unscoped turns share the single pin slot (#108045). */
+  unscopedStreamContested?: boolean
   unscopedStreamSessionId: null | string
 }
 
 export interface GatewayEventSessionRoute {
   drop: boolean
+  /** Present only when true so omitted/false preserves exact-equality callers. */
+  nextUnscopedStreamContested?: boolean
   nextUnscopedStreamSessionId: null | string
   /** True when the event was attributed via the pinned stream session rather
    *  than the active-session fallback. The caller uses this to drop late
@@ -116,17 +125,26 @@ export function approvalReplaySessionId(
   return target
 }
 
+function withContested(route: GatewayEventSessionRoute, contested: boolean | undefined): GatewayEventSessionRoute {
+  return contested ? { ...route, nextUnscopedStreamContested: true } : route
+}
+
 /**
  * Resolve which runtime session owns a gateway event.
  *
  * Explicit ``session_id`` always wins. Unscoped stream events pin to the
  * session that received ``message.start`` so a mid-turn chat switch cannot
  * steal live deltas / tool events onto the newly focused transcript.
+ * A second unscoped ``message.start`` while that pin is still live refuses
+ * the steal and marks the slot contested (#108045); leftover unsid deltas
+ * then drop instead of painting into the focused chat.
  */
 export function resolveGatewayEventSessionId({
   activeSessionId,
   eventType,
   explicitSessionId,
+  pinnedSessionHasLiveTurn,
+  unscopedStreamContested,
   unscopedStreamSessionId
 }: GatewayEventSessionRouteInput): GatewayEventSessionRoute {
   if (explicitSessionId) {
@@ -135,24 +153,85 @@ export function resolveGatewayEventSessionId({
         ? null
         : unscopedStreamSessionId
 
-    return {
-      drop: false,
-      nextUnscopedStreamSessionId,
-      pinned: true,
-      sessionId: explicitSessionId
-    }
+    return withContested(
+      {
+        drop: false,
+        nextUnscopedStreamSessionId,
+        pinned: true,
+        sessionId: explicitSessionId
+      },
+      Boolean(nextUnscopedStreamSessionId) && unscopedStreamContested === true
+    )
   }
 
   if (gatewayEventRequiresSessionId(eventType)) {
-    return {
-      drop: true,
-      nextUnscopedStreamSessionId: unscopedStreamSessionId,
-      pinned: false,
-      sessionId: null
-    }
+    return withContested(
+      {
+        drop: true,
+        nextUnscopedStreamSessionId: unscopedStreamSessionId,
+        pinned: false,
+        sessionId: null
+      },
+      unscopedStreamContested === true
+    )
   }
 
   const streamEvent = eventType ? UNSCOPED_STREAM_EVENT_TYPES.has(eventType) : false
+
+  if (unscopedStreamContested === true) {
+    if (eventType === 'message.start') {
+      return {
+        drop: false,
+        nextUnscopedStreamContested: true,
+        nextUnscopedStreamSessionId: unscopedStreamSessionId,
+        pinned: false,
+        sessionId: activeSessionId
+      }
+    }
+
+    if (eventType && UNSCOPED_STREAM_END_EVENT_TYPES.has(eventType)) {
+      return {
+        drop: true,
+        nextUnscopedStreamSessionId: null,
+        pinned: false,
+        sessionId: null
+      }
+    }
+
+    if (streamEvent) {
+      return {
+        drop: true,
+        nextUnscopedStreamContested: true,
+        nextUnscopedStreamSessionId: unscopedStreamSessionId,
+        pinned: false,
+        sessionId: null
+      }
+    }
+
+    return {
+      drop: false,
+      nextUnscopedStreamContested: true,
+      nextUnscopedStreamSessionId: unscopedStreamSessionId,
+      pinned: false,
+      sessionId: activeSessionId
+    }
+  }
+
+  if (
+    eventType === 'message.start' &&
+    unscopedStreamSessionId &&
+    activeSessionId &&
+    activeSessionId !== unscopedStreamSessionId &&
+    pinnedSessionHasLiveTurn === true
+  ) {
+    return {
+      drop: false,
+      nextUnscopedStreamContested: true,
+      nextUnscopedStreamSessionId: unscopedStreamSessionId,
+      pinned: false,
+      sessionId: activeSessionId
+    }
+  }
 
   const sessionId =
     eventType === 'message.start'

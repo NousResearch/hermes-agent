@@ -139,4 +139,121 @@ describe('gateway event routing', () => {
       sessionId: 'session-a'
     })
   })
+
+  type UnscopedRouteState = {
+    activeSessionId: null | string
+    pinnedSessionHasLiveTurn?: boolean
+    unscopedStreamContested?: boolean
+    unscopedStreamSessionId: null | string
+  }
+
+  function applyUnscoped(eventType: string, state: UnscopedRouteState) {
+    const route = resolveGatewayEventSessionId({
+      activeSessionId: state.activeSessionId,
+      eventType,
+      explicitSessionId: '',
+      pinnedSessionHasLiveTurn: state.pinnedSessionHasLiveTurn,
+      unscopedStreamContested: state.unscopedStreamContested,
+      unscopedStreamSessionId: state.unscopedStreamSessionId
+    })
+
+    return {
+      route,
+      state: {
+        ...state,
+        unscopedStreamContested: route.nextUnscopedStreamContested ?? false,
+        unscopedStreamSessionId: route.nextUnscopedStreamSessionId
+      }
+    }
+  }
+
+  it('does not steal the unscoped stream pin onto a focused session that started while the pin is live (#108045)', () => {
+    let state: UnscopedRouteState = {
+      activeSessionId: 'session-a',
+      pinnedSessionHasLiveTurn: true,
+      unscopedStreamSessionId: null
+    }
+
+    ;({ state } = applyUnscoped('message.start', state))
+    expect(state.unscopedStreamSessionId).toBe('session-a')
+
+    state = { ...state, activeSessionId: 'session-b', pinnedSessionHasLiveTurn: true }
+
+    const startB = applyUnscoped('message.start', state)
+
+    expect(startB.route).toEqual({
+      drop: false,
+      nextUnscopedStreamContested: true,
+      nextUnscopedStreamSessionId: 'session-a',
+      pinned: false,
+      sessionId: 'session-b'
+    })
+
+    const delta = applyUnscoped('message.delta', startB.state)
+
+    expect(delta.route.drop).toBe(true)
+    expect(delta.route.sessionId).toBeNull()
+    expect(delta.route.sessionId).not.toBe('session-b')
+
+    const thinking = applyUnscoped('thinking.delta', delta.state)
+
+    expect(thinking.route.drop).toBe(true)
+    expect(thinking.route.sessionId).toBeNull()
+  })
+
+  it('does not steal the pin across two live unscoped starts (slot thrash)', () => {
+    let state: UnscopedRouteState = {
+      activeSessionId: 'session-a',
+      pinnedSessionHasLiveTurn: true,
+      unscopedStreamSessionId: null
+    }
+
+    ;({ state } = applyUnscoped('message.start', state))
+
+    state = { ...state, activeSessionId: 'session-b', pinnedSessionHasLiveTurn: true }
+
+    const startB = applyUnscoped('message.start', state)
+
+    expect(startB.route.sessionId).toBe('session-b')
+    expect(startB.route.nextUnscopedStreamSessionId).toBe('session-a')
+    expect(startB.route.nextUnscopedStreamContested).toBe(true)
+    expect(startB.route.drop).toBe(false)
+
+    const startC = applyUnscoped('message.start', { ...startB.state, activeSessionId: 'session-c' })
+
+    expect(startC.route.sessionId).toBe('session-c')
+    expect(startC.route.nextUnscopedStreamSessionId).toBe('session-a')
+    expect(startC.route.nextUnscopedStreamContested).toBe(true)
+
+    const delta = applyUnscoped('message.delta', startC.state)
+
+    expect(delta.route.drop).toBe(true)
+    expect(delta.route.sessionId).toBeNull()
+  })
+
+  it('drops an unscoped stream end while contested and clears the pin', () => {
+    let state: UnscopedRouteState = {
+      activeSessionId: 'session-a',
+      pinnedSessionHasLiveTurn: true,
+      unscopedStreamSessionId: null
+    }
+
+    ;({ state } = applyUnscoped('message.start', state))
+    state = { ...state, activeSessionId: 'session-b', pinnedSessionHasLiveTurn: true }
+
+    const startB = applyUnscoped('message.start', state)
+    const completed = applyUnscoped('message.complete', startB.state)
+
+    expect(completed.route.drop).toBe(true)
+    expect(completed.route.sessionId).toBeNull()
+    expect(completed.route.nextUnscopedStreamSessionId).toBeNull()
+    expect(completed.route.nextUnscopedStreamContested ?? false).toBe(false)
+
+    const errored = applyUnscoped('error', startB.state)
+
+    expect(errored.route.drop).toBe(true)
+    expect(errored.route.sessionId).toBeNull()
+    expect(errored.route.nextUnscopedStreamSessionId).toBeNull()
+    expect(errored.route.nextUnscopedStreamContested ?? false).toBe(false)
+  })
 })

@@ -564,9 +564,13 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # ``codex_reasoning_items`` — a genuine block with nothing to strip behaves as before.
     if _is_codex_masked_replay_rejection(c):
         return _v(_R.invalid_encrypted_content, **_ABORT_FALLBACK)
-    # Anthropic thinking-block 400s (signature mismatch after transcript
-    # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
-    if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):
+    # Anthropic / Kimi thinking-block 400s (signature mismatch after transcript
+    # mutation, or Kimi invalid reasoning_details type). Not gated on provider.
+    thinking_hit = (
+        ("thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS))
+        or ("reasoning_details" in msg and "invalid type" in msg)
+    )
+    if status == 400 and thinking_hit:
         return _v(_R.thinking_signature)
     # Anthropic long-context tier gate (429 "extra usage" + "long context").
     if status == 429 and "extra usage" in msg and "long context" in msg:

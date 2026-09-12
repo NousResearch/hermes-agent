@@ -745,7 +745,50 @@ class TestClassifyApiError:
 
 
 
-    # ── Provider-specific: Anthropic thinking signature ──
+    # ── Provider-specific: Anthropic / Kimi thinking signature ──
+
+    def test_anthropic_thinking_signature(self):
+        e = MockAPIError(
+            "thinking block has invalid signature",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_anthropic_thinking_blocks_cannot_be_modified(self):
+        e = MockAPIError(
+            "messages.73.content.10: `thinking` or `redacted_thinking` blocks "
+            "in the latest assistant message cannot be modified. These blocks "
+            "must remain as they were in the original response.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_kimi_reasoning_details_invalid_type_classified_as_thinking_signature(self):
+        """Kimi coding endpoint returns HTTP 400 when replaying reasoning blocks:
+        'the reasoning_details at position 1 entry 0 has an invalid type'.
+        This must be classified as thinking_signature so the conversation loop
+        can strip reasoning_details and retry."""
+        e = MockAPIError(
+            "the reasoning_details at position 1 entry 0 has an invalid type",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom:kimi-coding")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_400_reasoning_details_without_invalid_type_not_classified(self):
+        e = MockAPIError(
+            "the reasoning_details field is missing",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom:kimi-coding")
+        assert result.reason != FailoverReason.thinking_signature
+
 
 
 

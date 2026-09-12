@@ -20,6 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
   DisclosureCaret,
+  gatewayActivationEpoch,
   GlyphSpinner,
   host,
   Input,
@@ -1173,8 +1174,10 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     }
 
     const route = captureCanonicalGroupRoute()
+    const activationEpoch = gatewayActivationEpoch()
 
-    const sourceCurrent = () => route.connectionId === host.state.connectionId.get() &&
+    const sourceCurrent = () => gatewayActivationEpoch() === activationEpoch &&
+      route.connectionId === host.state.connectionId.get() &&
       route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
 
     const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')

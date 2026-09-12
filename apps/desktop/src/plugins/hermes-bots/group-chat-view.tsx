@@ -24,6 +24,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  gatewayActivationEpoch,
   host,
   Input,
   queryClient,
@@ -474,7 +475,8 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
-  const source = JSON.stringify([connectionId, profile, gateway])
+  const activationEpoch = gatewayActivationEpoch()
+  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
   const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
   const mode = capability?.source === source ? capability.mode : 'checking'
   const [error, setError] = useState('')
@@ -511,7 +513,8 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     <Button disabled={mode !== 'canonical' || busy} onClick={() => {
       const route = { connectionId: connectionId ?? '', profile }
 
-      const sourceCurrent = () => route.connectionId === host.state.connectionId.get() &&
+      const sourceCurrent = () => gatewayActivationEpoch() === activationEpoch &&
+        route.connectionId === host.state.connectionId.get() &&
         route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
 
       if (mode !== 'canonical' || !sourceCurrent()) {

@@ -336,6 +336,7 @@ export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
  *  and paint durable history. Bot Mode opts into one retry, so its effective
  *  ceiling is two bounded attempts rather than an unbounded wait. */
 export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
+
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
@@ -1740,6 +1741,7 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+export { gatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen
  *  (a roster poll's activity watermark, say) writes HERE rather than keeping

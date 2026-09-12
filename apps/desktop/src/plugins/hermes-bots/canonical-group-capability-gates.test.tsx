@@ -14,13 +14,14 @@ import type * as GroupChatParts from './group-chat-parts'
 import { GroupChatWorkspace } from './group-chat-view'
 import { translateBots } from './i18n-test-helper'
 
-const { request, notify, openWorkspace } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn() }))
+const { request, notify, openWorkspace, activation } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), activation: { epoch: 1 } }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
   const { en } = await import('@/i18n/en')
 
   return {
     ...sdk,
+    gatewayActivationEpoch: () => activation.epoch,
     host: {
       ...sdk.host, requestProfile: request, notify, openWorkspace,
       request: (method: string, params?: Record<string, unknown>) => request(null, method, params),
@@ -93,6 +94,7 @@ const refused = [
 ]
 
 beforeEach(() => {
+  activation.epoch = 1
   state.connectionId.set('local')
   state.profile.set('default')
   state.gateway.set('open')
@@ -341,4 +343,60 @@ it.each(['dialog', 'workspace'] as const)('publishes the single delayed %s resul
   } else {
     expect(openWorkspace).toHaveBeenCalledOnce()
   }
+})
+
+function reactivate(kind: 'aba' | 'same-route') {
+  if (kind === 'aba') {
+    activation.epoch++
+    state.profile.set('other')
+  }
+
+  activation.epoch++
+  state.profile.set('default')
+}
+
+it.each(['aba', 'same-route'] as const)('rejects a dialog capability after %s activation before mutation', async kind => {
+  let finish!: (value: unknown) => void
+  answer({ driver: true, persistent_process: true })
+  request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  const { onCreated } = await submitDialog()
+  await act(async () => { reactivate(kind); finish({ driver: true, persistent_process: true }) })
+  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
+  expect($canonicalGroupBindings.get()).toEqual({})
+  expect(onCreated).not.toHaveBeenCalled()
+})
+
+it.each(['aba', 'same-route'] as const)('rejects a workspace click using a pre-%s capability', async kind => {
+  answer({ driver: true, persistent_process: true })
+  await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
+  const create = screen.getByRole('button', { name: 'Start gateway group' })
+  await act(async () => { reactivate(kind); fireEvent.click(create) })
+  expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
+  expect($canonicalGroupBindings.get()).toEqual({})
+  expect(openWorkspace).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['dialog', 'aba'], ['dialog', 'same-route'], ['workspace', 'aba'], ['workspace', 'same-route']
+] as const)('does not publish a %s result across %s activation', async (caller, kind) => {
+  const pending = pendingCreation()
+  let dialog: Awaited<ReturnType<typeof submitDialog>> | undefined
+
+  if (caller === 'dialog') {
+    dialog = await submitDialog()
+  } else {
+    await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
+  }
+
+  expect(pending.serverRooms.size).toBe(1)
+  await act(async () => { reactivate(kind); pending.finish() })
+  expect($canonicalGroupBindings.get()).toEqual({})
+  expect(openWorkspace).not.toHaveBeenCalled()
+  expect(dialog?.onCreated ?? vi.fn()).not.toHaveBeenCalled()
+  expect(dialog?.onClose ?? vi.fn()).not.toHaveBeenCalled()
+  expect(pending.serverRooms.size).toBe(1)
+  const creates = request.mock.calls.filter(call => call[1] === 'groups.create')
+  expect(creates).toHaveLength(1)
+  expect(creates[0][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
 })

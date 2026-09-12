@@ -2473,7 +2473,7 @@ class TestLaunchctlBootstrapEioRetry:
 class TestLaunchdUnloadedJobStderrStaysOffTerminal:
     """#106273: against an UNLOADED job, ``launchctl bootout`` / ``kickstart -k`` exit 3 and print
     ``Could not find service ...`` / ``Boot-out failed: 3`` on fd 2. Those exits are the *handled*
-    case, so a real launchctl child (fake binary on PATH, real fd inheritance) must leave the
+    case, so a real fixture child (explicit fake executable, real fd inheritance) must leave the
     terminal's stderr empty while the CLI's own status lines print. ``capfd`` reads fd 2, so an
     inherited-stderr regression fires even though ``subprocess.run`` never touches ``sys.stderr``."""
 
@@ -2481,7 +2481,7 @@ class TestLaunchdUnloadedJobStderrStaysOffTerminal:
     def fake_launchctl(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        script = bin_dir / "launchctl"
+        script = bin_dir / "service-probe.sh"
         # bootout exits $FAKE_BOOTOUT_RC (default 3 = unloaded); `kickstart -k` is the unloaded 3;
         # bootstrap / plain kickstart / print succeed. Every invocation is logged for the caller.
         script.write_text(
@@ -2496,7 +2496,14 @@ class TestLaunchdUnloadedJobStderrStaysOffTerminal:
         )
         script.chmod(0o755)
         log = tmp_path / "calls.log"
-        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        guarded_run = gateway_cli.subprocess.run
+
+        def run_fixture(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "launchctl":
+                cmd = [str(script), *cmd[1:]]
+            return guarded_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", run_fixture)
         monkeypatch.setenv("FAKE_LAUNCHCTL_LOG", str(log))
         monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")

@@ -22,8 +22,23 @@ import signal
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import pytest
+
+
+# Synthetic audit only: collection must be protected before autouse fixtures.
+# Absence of the hook records a failing assertion later, never starts a process.
+try:
+    sys.audit("subprocess.Popen", "/bin/launchctl", ["launchctl", "print"], None, None)
+except RuntimeError as exc:
+    _COLLECTION_LAUNCHCTL_ERROR = str(exc)
+else:
+    _COLLECTION_LAUNCHCTL_ERROR = ""
+
+_HOME_AT_COLLECTION = os.environ.get("HOME")
+_USERPROFILE_AT_COLLECTION = os.environ.get("USERPROFILE")
+_PATH_HOME_AT_COLLECTION = Path.home()
 
 # A guaranteed-foreign PID: PID 1 (init).  Owned by root, not us, and
 # always exists. A sane guard refuses to signal it.
@@ -203,6 +218,93 @@ def test_subprocess_getstatusoutput_systemctl_blocked():
         subprocess.getstatusoutput("systemctl --user restart hermes-gateway")
 
 
+def test_launchctl_is_blocked_during_collection():
+    assert "blocked launchctl" in _COLLECTION_LAUNCHCTL_ERROR
+
+
+@pytest.mark.parametrize(
+    ("command", "kwargs"),
+    [
+        (["launchctl", "print", "gui/501/ai.hermes.gateway"], {}),
+        (["/bin/launchctl", "bootout", "gui/501/ai.hermes.gateway"], {}),
+        (["sudo", "launchctl", "print"], {}),
+        (["env", "launchctl", "print"], {}),
+        (["setsid", "launchctl", "print"], {}),
+        (["bash", "-c", "launchctl print"], {}),
+        ("bash -c 'echo $(launchctl print)'", {"shell": True}),
+        ("launchctl>/dev/null", {"shell": True}),
+        (("launchctl", "print"), {}),
+        ([b"launchctl", b"print"], {}),
+        (b"launchctl print", {"shell": True}),
+        (Path("/bin/launchctl"), {}),
+        ([Path("/bin/launchctl"), "print"], {}),
+        (["env", (b"launchctl", "print")], {}),
+        (["ignored-argv-zero"], {"executable": "/bin/launchctl"}),
+        (["ignored-argv-zero"], {"executable": b"/bin/launchctl"}),
+        (["ignored-argv-zero"], {"executable": Path("/bin/launchctl")}),
+    ],
+)
+def test_subprocess_run_launchctl_shapes_are_blocked_before_exec(
+    command, kwargs, monkeypatch
+):
+    escaped = []
+
+    def final_popen_trap(*args, **popen_kwargs):
+        escaped.append((args, popen_kwargs))
+        raise AssertionError("launchctl escaped the live-system guard")
+
+    # Safe RED: the final executor cannot reach launchctl even without a guard.
+    monkeypatch.setattr(subprocess, "Popen", final_popen_trap)
+    with pytest.raises(RuntimeError, match="blocked.*launchctl"):
+        subprocess.run(command, check=False, **kwargs)
+    assert escaped == []
+
+
+@pytest.mark.parametrize(
+    ("event", "args"),
+    [
+        ("subprocess.Popen", ("/bin/launchctl", ["ignored-argv-zero"], None, None)),
+        ("os.system", (b"launchctl print",)),
+        ("os.exec", (Path("/bin/launchctl"), ["ignored-argv-zero"], None)),
+        ("os.spawn", (0, b"/bin/launchctl", ["ignored-argv-zero"], None)),
+        ("os.posix_spawn", ("/bin/launchctl", ["ignored-argv-zero"], {})),
+    ],
+)
+@pytest.mark.live_system_guard_bypass
+def test_process_global_audit_guard_blocks_launchctl_events(event, args):
+    # Exercise the installed hook, not its helper. sys.audit never executes args.
+    with pytest.raises(RuntimeError, match="blocked launchctl"):
+        sys.audit(event, *args)
+
+
+@pytest.mark.parametrize("command", ["launchctl-helper", "mylaunchctl", "launchctl.py"])
+def test_launchctl_audit_guard_allows_unrelated_command_names(command):
+    sys.audit("subprocess.Popen", command, [command], None, None)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX executable PATH stub")
+def test_launchctl_path_resolves_only_to_per_test_stub(tmp_path, tmp_path_factory):
+    import shutil
+
+    resolved = Path(shutil.which("launchctl") or "")
+    # Check ownership before reading, so RED cannot even read the system binary.
+    assert resolved.is_relative_to(tmp_path_factory.getbasetemp())
+    assert not resolved.is_relative_to(tmp_path)
+    assert resolved.name == "launchctl"
+    assert os.access(resolved, os.X_OK)
+    assert resolved.read_text(encoding="utf-8") == (
+        "#!/bin/sh\n"
+        "echo 'pytest live-system guard: launchctl blocked' >&2\n"
+        "exit 126\n"
+    )
+
+
+def test_launchctl_protection_keeps_native_home_stable():
+    assert os.environ.get("HOME") == _HOME_AT_COLLECTION
+    assert os.environ.get("USERPROFILE") == _USERPROFILE_AT_COLLECTION
+    assert Path.home() == _PATH_HOME_AT_COLLECTION
+
+
 # ──────────────────── os.system / os.popen ────────────────────
 
 
@@ -327,10 +429,31 @@ def test_bypass_marker_disables_guard():
     """The bypass marker exists for tests that genuinely need real signal delivery
     (e.g. PTY tests SIGINTing their own child). Verify it works.
 
-    We use it harmlessly here by signaling our own PID 0 (own group) so we
-    don't actually kill anything — but the call goes through real os.kill.
+    We use it harmlessly here by probing our own PID with signal 0, so we
+    don't actually kill anything - but the call goes through real os.kill.
     """
-    # With bypass, the guard yields without installing the monkeypatch,
-    # so we get the real os.kill. Calling os.kill(os.getpid(), 0) just
-    # checks that the PID exists — harmless.
-    os.kill(os.getpid(), 0)  # No exception — guard is OFF.
+    # With bypass, os.kill remains real. Calling os.kill(os.getpid(), 0)
+    # only checks that our PID exists; launchctl protection stays active.
+    os.kill(os.getpid(), 0)  # No exception - signal guard is OFF.
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("kwargs", [{}, {"executable": Path("/bin/launchctl")}])
+def test_bypass_marker_never_allows_launchctl(monkeypatch, kwargs):
+    escaped = []
+
+    def final_popen_trap(*args, **popen_kwargs):
+        escaped.append((args, popen_kwargs))
+        raise AssertionError("launchctl escaped through the bypass marker")
+
+    monkeypatch.setattr(subprocess, "Popen", final_popen_trap)
+    command = ["ignored-argv-zero"] if kwargs else ["launchctl", "print"]
+    with pytest.raises(RuntimeError, match="blocked.*launchctl"):
+        subprocess.run(command, check=False, **kwargs)
+    assert escaped == []
+
+
+@pytest.mark.live_system_guard_bypass
+def test_bypass_marker_preserves_native_signal_primitive():
+    assert isinstance(os.kill, types.BuiltinFunctionType)
+    os.kill(os.getpid(), 0)

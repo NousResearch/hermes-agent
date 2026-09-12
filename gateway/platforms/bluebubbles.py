@@ -226,13 +226,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         app.router.add_post(self.webhook_path, self._handle_webhook)
         # The webhook auth value rides in the query string (BlueBubbles cannot send custom headers)
         # — keep it out of aiohttp access logs.
-        self._runner = web.AppRunner(app, access_log=None)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
-        await site.start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._runner = await bind_listener(
+            self, app, self.webhook_host, self.webhook_port, self.webhook_path, access_log=None)
         self._mark_connected()
-        logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
-                    self.webhook_path)
+        if self._runner is not None:
+            logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
+                        self.webhook_path)
         await self._register_webhook()  # the server only sends events to webhooks registered via its API
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
@@ -253,7 +254,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """External webhook URL for BlueBubbles registration (local binds → localhost)."""
+        """External webhook URL for BlueBubbles registration (local binds → localhost). In
+        shared-listener mode it is the default listener's ``/p/<profile>/`` URL."""
+        shared = getattr(self, "_shared_ingress_url", None)
+        if shared:
+            return shared
         host = "localhost" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 

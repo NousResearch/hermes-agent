@@ -461,15 +461,14 @@ class LineAdapter(BasePlatformAdapter):
         self._app.router.add_get(f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}", self._handle_media)
         # Plugin-registered routes must be wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(self._app)
-        self._runner = web.AppRunner(self._app)
+        from gateway.platforms.shared_ingress import bind_listener
         try:
-            await self._runner.setup()
             # SO_REUSEADDR: on macOS/BSD two sockets with it can silently split traffic →
             # disable; on Linux it only allows rebinding past TIME_WAIT → keep default.
-            self._site = web.TCPSite(
-                self._runner, self.webhook_host, self.webhook_port,
+            # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/line/webhook.
+            self._runner = await bind_listener(
+                self, self._app, self.webhook_host, self.webhook_port, self.webhook_path,
                 reuse_address=False if sys.platform == "darwin" else None)
-            await self._site.start()
         except OSError as exc:
             return self._fail(
                 "bind_failed",
@@ -477,12 +476,13 @@ class LineAdapter(BasePlatformAdapter):
                 f"{self.webhook_port}: {exc}",
                 retryable=True)
         self._mark_connected()
-        logger.info(
-            "LINE: webhook listening on %s:%s%s%s",
-            self.webhook_host or "* (all interfaces, IPv4+IPv6)",
-            self.webhook_port,
-            self.webhook_path,
-            f" (public: {self.public_base_url})" if self.public_base_url else "")
+        if self._runner is not None:
+            logger.info(
+                "LINE: webhook listening on %s:%s%s%s",
+                self.webhook_host or "* (all interfaces, IPv4+IPv6)",
+                self.webhook_port,
+                self.webhook_path,
+                f" (public: {self.public_base_url})" if self.public_base_url else "")
         return True
 
     async def disconnect(self) -> None:
@@ -765,6 +765,8 @@ class LineAdapter(BasePlatformAdapter):
     def _media_url(self, token: str, filename: str) -> str:
         if self.public_base_url:
             base = self.public_base_url
+        elif getattr(self, "_shared_ingress_base", None):
+            base = self._shared_ingress_base  # default listener's /p/<profile> prefix (multiplex secondary)
         else:
             # Wildcard/dual-stack binds have no fetchable hostname (the _missing_public_url
             # guard should have fired); fall back to localhost so the URL is well-formed.
@@ -777,7 +779,9 @@ class LineAdapter(BasePlatformAdapter):
 
     def _missing_public_url(self) -> bool:
         """True when no LINE_PUBLIC_URL is set and the bind host is wildcard/dual-stack ``None``."""
-        return not self.public_base_url and (self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS)
+        if self.public_base_url or getattr(self, "_shared_ingress_base", None):
+            return False
+        return self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS
 
     def _check_media_file(self, kind: str, file_path: str) -> Tuple[Optional[Path], Optional[SendResult]]:
         """Shared preflight for send_image_file/send_voice/send_video → ``(path, error)``."""

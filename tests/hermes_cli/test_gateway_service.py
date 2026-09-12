@@ -2775,8 +2775,13 @@ class TestTimeoutStopSecCoversCronFloor:
 
 class TestUnitAnchoredServiceIdentity:
     """The installed ``hermes-gateway.service`` owns the bare name: under ``sudo`` the naming basis moves
-    mid-command when ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's HERMES_HOME (#108674)."""
+    mid-command when ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's HERMES_HOME (#108674).
 
+    ``linux_only`` because ``_bare_unit_pinned_home()`` is Linux-gated on purpose: a systemd unit is not
+    an identity authority for launchd labels, Windows tasks, or s6 slots, which share the same resolver.
+    """
+
+    @pytest.mark.linux_only
     def test_service_name_survives_hermes_home_adoption_from_unit(self, tmp_path, monkeypatch):
         alice_home = tmp_path / "alice" / ".hermes"
         alice_home.mkdir(parents=True)
@@ -2793,6 +2798,7 @@ class TestUnitAnchoredServiceIdentity:
         monkeypatch.setenv("HERMES_HOME", str(alice_home))
         assert gateway_cli.get_service_name() == pre_name
 
+    @pytest.mark.linux_only
     def test_unit_pinned_home_owns_the_bare_name(self, tmp_path, monkeypatch):
         alice_home = tmp_path / "alice" / ".hermes"
         alice_home.mkdir(parents=True)
@@ -2808,6 +2814,7 @@ class TestUnitAnchoredServiceIdentity:
         assert gateway_cli.get_service_name() == gateway_cli._SERVICE_BASE
         assert gateway_cli.get_systemd_unit_path(system=True) == unit_path
 
+    @pytest.mark.linux_only
     def test_foreign_home_without_installed_unit_keeps_its_suffix(self, tmp_path, monkeypatch):
         unit_dir = tmp_path / "empty"
         unit_dir.mkdir()
@@ -2822,6 +2829,7 @@ class TestUnitAnchoredServiceIdentity:
         assert name != gateway_cli._SERVICE_BASE
         assert name.startswith(gateway_cli._SERVICE_BASE + "-")
 
+    @pytest.mark.linux_only
     def test_home_not_pinned_by_unit_keeps_its_suffix(self, tmp_path, monkeypatch):
         alice_home = tmp_path / "alice" / ".hermes"
         alice_home.mkdir(parents=True)
@@ -2840,3 +2848,73 @@ class TestUnitAnchoredServiceIdentity:
         name = gateway_cli.get_service_name()
         assert name != gateway_cli._SERVICE_BASE
         assert name.startswith(gateway_cli._SERVICE_BASE + "-")
+
+    @pytest.mark.linux_only
+    def test_bare_unit_pinning_a_named_profile_home_keeps_the_bare_name(self, tmp_path, monkeypatch):
+        """``sudo ... install --system`` names the unit from root's default but pins the invoking user's
+        remapped home, so the BARE unit legitimately carries a ``profiles/<name>`` home. The unit-pinned
+        check therefore has to win over the profile branch, which would answer ``-kimi`` for a unit that
+        was installed bare."""
+        profile_home = tmp_path / "alice" / ".hermes" / "profiles" / "kimi"
+        profile_home.mkdir(parents=True)
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        unit_path = unit_dir / f"{gateway_cli._SERVICE_BASE}.service"
+        unit_path.write_text(f'[Service]\nEnvironment="HERMES_HOME={profile_home}"\n', encoding="utf-8")
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        assert gateway_cli.get_service_name() == gateway_cli._SERVICE_BASE
+        # The profile branch, consulted against the home that owns the profile, would have answered
+        # with the readable suffix -- which is why the unit-pinned check has to be evaluated first.
+        assert gateway_cli._profile_name_from_home(profile_home, profile_home.parent.parent) == profile_home.name
+
+    @pytest.mark.linux_only
+    def test_real_unit_sync_keeps_the_name_it_validated(self, tmp_path, monkeypatch):
+        """Drive the production sync instead of simulating the adoption with setenv: the name resolved
+        before ``_sync_hermes_home_from_systemd_unit()`` must survive the mutation it performs."""
+        alice_home = tmp_path / "alice" / ".hermes"
+        alice_home.mkdir(parents=True)
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
+            f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        pre_sync_name = gateway_cli.get_service_name()
+        gateway_cli._sync_hermes_home_from_systemd_unit(system=True)
+
+        assert os.environ["HERMES_HOME"] == str(alice_home)  # the sync really ran
+        assert gateway_cli.get_service_name() == pre_sync_name
+
+    @pytest.mark.linux_only
+    def test_unreadable_unit_does_not_grant_the_bare_name(self, tmp_path, monkeypatch):
+        """A unit we cannot read must not hand its bare name to an unrelated home: the parser returns
+        None on OSError, so resolution falls through to the suffix branches."""
+        foreign_home = tmp_path / "elsewhere"
+        foreign_home.mkdir()
+        root_home = tmp_path / "root" / ".hermes"
+        root_home.mkdir(parents=True)
+        unit_dir = tmp_path / "systemd"
+        unit_dir.mkdir()
+        unit_path = unit_dir / f"{gateway_cli._SERVICE_BASE}.service"
+        unit_path.write_text(f'[Service]\nEnvironment="HERMES_HOME={foreign_home}"\n', encoding="utf-8")
+        real_read_text = Path.read_text
+
+        def deny_unit(self, *args, **kwargs):
+            if self == unit_path:
+                raise PermissionError(13, "Permission denied")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.setattr(Path, "read_text", deny_unit)
+        monkeypatch.setenv("HERMES_HOME", str(foreign_home))
+        assert gateway_cli.get_service_name().startswith(gateway_cli._SERVICE_BASE + "-")

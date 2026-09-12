@@ -1978,13 +1978,19 @@ def _native_service_homes() -> set[Path]:
 def _bare_unit_pinned_home() -> Path | None:
     """Resolved ``HERMES_HOME`` pinned by an installed ``hermes-gateway.service``, or None.
 
-    The installed unit is the authority on which home owns the BARE name: under ``sudo`` the naming
-    basis moves MID-COMMAND (sudo strips HERMES_HOME and sets HOME=/root, then
-    ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's own HERMES_HOME into ``os.environ``),
-    so a basis derived from the process would name one unit before the adoption and another after it.
-    Reading it from the unit is stable for every elevated identity, including ``sudo -i`` and cron
-    where SUDO_USER is absent.
+    Under ``sudo`` the process-derived naming basis moves MID-COMMAND: sudo strips HERMES_HOME and
+    sets HOME=/root, then ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's own HERMES_HOME
+    into ``os.environ``, so a process-derived basis names one unit before the adoption and another
+    after it. The installed unit is the only basis that holds still, and it holds for every elevated
+    identity — ``sudo -i`` and cron included, where SUDO_USER is absent.
+
+    Linux-gated because a systemd unit is not an identity authority for launchd labels, Windows
+    scheduled tasks, or s6 slots, which share ``_profile_suffix()``. ``is_linux()`` is a plain
+    ``sys.platform`` test; ``supports_systemd_services()`` would be wrong here, since it can shell out
+    to ``systemctl is-system-running`` on WSL/containers and this runs on every name resolution.
     """
+    if not is_linux():
+        return None
     pinned = _hermes_home_pinned_by_unit(_SYSTEM_UNIT_DIR / f"{_SERVICE_BASE}.service")
     if not pinned:
         return None
@@ -1999,12 +2005,16 @@ def _profile_suffix() -> str:
     ``<root>/profiles/<name>``, else a short hash of the path.
 
     Bare-name owners: this process's platform-native default (``~/.hermes``), under sudo the invoking
-    user's native default, and the home pinned by an installed ``hermes-gateway.service``. The bare name
-    is deliberately NOT tied to ``get_default_hermes_root()``: that helper treats any HERMES_HOME outside
-    ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself", which let a temp-home harness
-    resolve to the default profile's ``hermes-gateway`` unit and uninstall the production gateway. Service
-    names are host-wide identities; a home with no installed bare unit and no native default keeps its
-    own suffix.
+    user's native default, and the home pinned by an installed ``hermes-gateway.service``. The unit-pinned
+    check must precede the profile branch: ``sudo hermes gateway install --system`` resolves the BARE name
+    from root's default, then pins the invoking user's remapped home, so the bare unit legitimately carries
+    a ``<root>/profiles/<name>`` home and must keep answering with the bare name it was installed under.
+
+    The bare name is deliberately NOT tied to ``get_default_hermes_root()``: that helper treats any
+    HERMES_HOME outside ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself", which let a
+    temp-home harness resolve to the default profile's ``hermes-gateway`` unit and uninstall the
+    production gateway. Service names are host-wide identities; a home with no installed bare unit and
+    no native default keeps its own suffix.
     """
     import hashlib
     from hermes_constants import get_default_hermes_root

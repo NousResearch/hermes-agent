@@ -938,6 +938,10 @@ def parse_reasoning_effort(effort) -> dict | None:
     effort = str(effort).strip().lower()  # False -> "false" -> disabled; "" matches neither set
     if effort in {"none", "false", "disabled"}:
         return {"enabled": False}
+    if effort == "auto":
+        # Adaptive: resolved per user turn at request-build time (agent.reasoning_effort.
+        # resolve_auto_effort); never sent to a provider verbatim.
+        return {"enabled": True, "effort": "auto"}
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
     return None

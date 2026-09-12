@@ -954,7 +954,7 @@ def main(
         reasoning_config = {"effort": "none"}
         print("🧠 Reasoning: DISABLED (effort=none)")
     elif reasoning_effort:
-        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        valid_efforts = ["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
         if reasoning_effort not in valid_efforts:
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             raise SystemExit(1)

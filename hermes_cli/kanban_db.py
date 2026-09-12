@@ -107,6 +107,8 @@ def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     value = str(effort or "").strip().lower()
     if not value:
         return None
+    if value == "auto":
+        return "auto"  # adaptive: resolved per user turn at request-build time
     if value == "none" or value in VALID_REASONING_EFFORTS:
         return value
     allowed = ", ".join(("none", *VALID_REASONING_EFFORTS))

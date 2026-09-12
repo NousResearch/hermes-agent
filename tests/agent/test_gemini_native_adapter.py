@@ -316,10 +316,85 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
+def test_native_client_refreshes_explicit_bearer_provider_per_request():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded_headers = []
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded_headers.append(headers)
+            return DummyResponse(payload={
+                "candidates": [{
+                    "content": {"parts": [{"text": "hello"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 1,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 2,
+                },
+            })
+
+        def close(self):
+            return None
+
+    tokens = iter(["first-token", "second-token"])
+    client = GeminiNativeClient(
+        api_key="databricks",
+        base_url="https://workspace.example/ai-gateway/gemini/v1beta",
+        bearer_token_provider=lambda: next(tokens),
+        http_client=DummyHTTP(),
+    )
+
+    for _ in range(2):
+        client.chat.completions.create(
+            model="system.ai.gemini-current",
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+
+    assert [headers["Authorization"] for headers in recorded_headers] == [
+        "Bearer first-token", "Bearer second-token",
+    ]
+    assert all("x-goog-api-key" not in headers for headers in recorded_headers)
 
 
+def test_native_bearer_removes_conflicting_auth_headers_case_insensitively():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(
+        api_key="databricks",
+        bearer_token_provider=lambda: "fresh-token",
+        default_headers={
+            "authorization": "Bearer stale-token",
+            "X-Goog-Api-Key": "stale-google-key",
+            "x-api-key": "stale-api-key",
+            "X-Custom": "preserved",
+        },
+        http_client=SimpleNamespace(close=lambda: None),
+    )
+
+    headers = client._headers()
+
+    assert headers["Authorization"] == "Bearer fresh-token"
+    assert headers["X-Custom"] == "preserved"
+    assert sum(name.lower() == "authorization" for name in headers) == 1
+    assert not any(name.lower() in {"x-goog-api-key", "x-api-key", "api-key"} for name in headers)
 
 
+def test_native_bearer_rejects_empty_callable_output_without_leaking_value():
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(
+        api_key="databricks",
+        bearer_token_provider=lambda: "   ",
+        http_client=SimpleNamespace(close=lambda: None),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client._headers()
+
+    assert "Bearer" not in str(exc_info.value)
 
 
 def test_native_client_accepts_injected_http_client():

@@ -209,7 +209,9 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
     parent_runtime = agent._current_main_runtime()
     parent_api_mode = parent_runtime.get("api_mode") or None
     parent = {
-        "provider": agent.provider, "model": agent.model,
+        "provider": agent.provider,
+        "requested_provider": getattr(agent, "requested_provider", "") or agent.provider,
+        "model": agent.model,
         "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
         "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
         "credential_pool": getattr(agent, "_credential_pool", None),
@@ -232,7 +234,9 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             explicit_api_key=task_api_key, explicit_base_url=task_base_url,
         )
         return {
-            "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
+            "provider": rp.get("provider") or task_provider,
+            "requested_provider": rp.get("requested_provider") or task_provider,
+            "model": rp.get("model") or task_model,
             **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
             "request_overrides": dict(rp.get("request_overrides") or {}),
             "args": list(rp.get("args") or []), "routed": True,
@@ -829,6 +833,7 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     kwargs: Dict[str, Any] = {
         "model": rt.get("model") or agent.model, "max_iterations": max_iterations, "quiet_mode": True,
         "platform": agent.platform, "provider": rt.get("provider") or agent.provider,
+        "requested_provider": rt.get("requested_provider") or rt.get("provider") or agent.provider,
         "api_mode": rt.get("api_mode"), "base_url": rt.get("base_url") or None,
         "api_key": rt.get("api_key") or None, "credential_pool": rt.get("credential_pool"),
         "request_overrides": rt.get("request_overrides") or {}, "parent_session_id": agent.session_id,

@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _resolve_delegation_credentials,
 )
 from hermes_state import SessionDB
+from tools.delegate_tool_config import _resolve_child_runtime
 
 
 def _make_mock_parent(depth=0):
@@ -40,6 +41,7 @@ def _make_mock_parent(depth=0):
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key="***"
     parent.provider = "openrouter"
+    parent.requested_provider = parent.provider
     parent.api_mode = "chat_completions"
     parent.model = "anthropic/claude-sonnet-4"
     parent.platform = "cli"
@@ -295,6 +297,65 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_named_custom_child_inherits_requested_provider_identity(self):
+        parent = _make_mock_parent(depth=0)
+
+        def token_source():
+            raise AssertionError("credential source must remain opaque")
+
+        parent.model = "inventory-model"
+        parent.provider = "custom"
+        parent.requested_provider = "custom:databricks"
+        parent.base_url = "https://workspace.invalid/anthropic"
+        parent.api_mode = "anthropic_messages"
+        parent.api_key = token_source
+
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test named provider inheritance", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], parent.model)
+            self.assertEqual(kwargs["provider"], "custom")
+            self.assertEqual(kwargs["requested_provider"], "custom:databricks")
+            self.assertEqual(kwargs["base_url"], parent.base_url)
+            self.assertEqual(kwargs["api_mode"], parent.api_mode)
+            self.assertIs(kwargs["api_key"], token_source)
+
+    def test_pinned_acp_transport_replaces_parent_requested_provider_identity(self):
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.requested_provider = "custom:databricks"
+        parent._fallback_chain = None
+
+        with patch("shutil.which", return_value="/usr/bin/copilot"):
+            runtime = _resolve_child_runtime(
+                parent,
+                {},
+                parent.api_key,
+                model=None,
+                override_provider=None,
+                override_base_url=None,
+                override_api_key=None,
+                override_api_mode=None,
+                override_acp_command="copilot",
+                override_acp_args=["--stdio"],
+            )
+
+        self.assertEqual(runtime["provider"], "copilot-acp")
+        self.assertEqual(runtime["requested_provider"], "copilot-acp")
+        self.assertNotEqual(runtime["requested_provider"], parent.requested_provider)
+        self.assertEqual(runtime["acp_command"], "copilot")
+        self.assertEqual(runtime["acp_args"], ["--stdio"])
 
     def test_child_gets_dedicated_session_db_not_parents_handle(self):
         """#81267: children must not share the parent's SessionDB object.
@@ -1181,6 +1242,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             _, kwargs = MockAgent.call_args
             self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
             self.assertEqual(kwargs["provider"], "openrouter")
+            self.assertEqual(kwargs["requested_provider"], "openrouter")
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
             self.assertEqual(kwargs["api_mode"], "chat_completions")

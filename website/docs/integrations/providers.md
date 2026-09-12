@@ -52,6 +52,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Google Vertex AI** | `hermes model` → "Google Vertex AI" (provider: `vertex`; OAuth2 via service-account JSON or ADC, GCP billing) |
 | **OpenAI API (direct)** | `OPENAI_API_KEY` in `~/.hermes/.env` (provider: `openai-api`, optional `OPENAI_BASE_URL`) |
 | **Azure AI Foundry** | `hermes model` → "Azure AI Foundry" (provider: `azure-foundry`; uses Azure OpenAI / Foundry endpoint and key) |
+| **Databricks Unity Gateway** | `hermes model` → "Databricks Unity Gateway" (existing Databricks CLI U2M OAuth profile) |
 | **AWS Bedrock** | `hermes model` → "AWS Bedrock" (provider: `bedrock`; standard AWS credentials chain via boto3) |
 | **NVIDIA Build** | `NVIDIA_API_KEY` in `~/.hermes/.env` (provider: `nvidia`; NIM-hosted models on build.nvidia.com) |
 | **Ollama Cloud** | `hermes model` → "Ollama Cloud" (provider: `ollama-cloud`; cloud-hosted Ollama API) |
@@ -68,6 +69,25 @@ For the official API-key path, see the dedicated [Google Gemini guide](/guides/g
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
 :::
+
+
+### Databricks Unity Gateway
+
+Hermes uses an existing Databricks CLI user OAuth profile and selects the appropriate Unity Gateway API for each model service. Install and authenticate the Databricks CLI first, then run:
+
+```bash
+hermes model
+# → Databricks Unity Gateway
+# → select an OAuth profile and ready-to-use system.ai model service
+```
+
+Hermes stores the selected profile name as a literal credential-command argument. It retrieves short-lived tokens when needed; bearer tokens are not written to `config.yaml`.
+
+Before saving, setup validates only the selected service for Hermes tool compatibility with a forced-tool preflight. Incompatible selections return to the picker, while transient validation failures abort without saving. The in-chat `/model` picker shows the full discovered gateway catalog; selecting an unverified service runs the same preflight once and records only that successful compatibility receipt.
+
+GPT-5.6 Sol, Terra, and Luna use Unity Gateway's Responses route; Claude services use Anthropic Messages; Gemini services use the Gemini API; other discovered models use MLflow Chat Completions. Routing is recomputed whenever `/model` changes the effective model.
+
+Only ready-to-use `system.ai` model services declaring `mlflow/v1/chat/completions` are discovered. GPT-OSS 20B and 120B are temporarily excluded because their 25,000-token output ceiling is below Hermes' ordinary 65,536-token budget.
 
 
 ### Nous Portal

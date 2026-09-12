@@ -261,6 +261,38 @@ class TestStreamingAccumulator:
         assert "stream_options" not in call_kwargs
 
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_named_provider_profile_can_omit_stream_options(self, mock_close, mock_create):
+        from run_agent import AIAgent
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(content="OK", finish_reason="stop", model="gemini"),
+        ])
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://workspace.example/ai-gateway/mlflow/v1",
+            model="system.ai.gemini-test",
+            provider="custom",
+            requested_provider="custom:databricks",
+            api_mode="chat_completions",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "OK"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["stream"] is True
+        assert "stream_options" not in call_kwargs
+
+
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

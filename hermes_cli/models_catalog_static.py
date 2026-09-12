@@ -278,6 +278,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     # Azure Foundry models depend on the user's endpoint configuration.
     "azure-foundry": [],
+    # Databricks setup discovers Unity Gateway model services for the selected workspace.
+    "databricks": [],
     # Vertex's OpenAI-compatible endpoint has no /models route, so without this the /model picker
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
@@ -346,6 +348,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("opencode-go", "OpenCode Go", "OpenCode Go (Open models subscription)"),
     ("bedrock", "AWS Bedrock", "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ("azure-foundry", "Azure Foundry", "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
+    ("databricks", "Databricks Unity Gateway", "Databricks Unity Gateway (model services via Databricks CLI OAuth)"),
     ("ai-gateway", "Vercel AI Gateway", "Vercel AI Gateway (Multi-model aggregator)"),
     ("qwen-oauth", "Qwen OAuth (Portal)", "Qwen OAuth (Reuses local Qwen CLI login)"),
 )]

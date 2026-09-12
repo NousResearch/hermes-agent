@@ -22,6 +22,7 @@ from hermes_cli.model_setup_flows_common import (
 from hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
 from hermes_cli.model_setup_flows_azure import _model_flow_azure_foundry
 from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock
+from hermes_cli.model_setup_flows_databricks import _model_flow_databricks
 
 
 def _env_base_url(base_url_env: str) -> str:

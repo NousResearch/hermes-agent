@@ -77,6 +77,10 @@ class ProviderProfile:
     # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
+    # False when the endpoint rejects OpenAI's ``stream_options`` usage extension.
+    supports_stream_options: bool = True
+    # Optional parsed-event idle tolerance for OpenAI-compatible Responses routes.
+    responses_event_stale_timeout_seconds: float | None = None
 
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
@@ -212,6 +216,14 @@ class ProviderProfile:
         per-model.
         """
         return self.default_max_tokens
+
+    def resolve_api_mode(self, model: str | None, configured_mode: str) -> str:
+        """Return the wire transport for an effective model."""
+        return configured_mode
+
+    def resolve_base_url(self, model: str | None, configured_base_url: str) -> str:
+        """Return the inference base URL for an effective model."""
+        return configured_base_url
 
     def supported_reasoning_efforts(
         self, model: str | None

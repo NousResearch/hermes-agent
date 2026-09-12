@@ -137,7 +137,9 @@ def _switch_model_from(
     """``switch_model`` seeded with this CLI's live route."""
     from hermes_cli.model_switch import switch_model
     return switch_model(
-        raw_input=raw_input, current_provider=cli.provider or "", current_model=cli.model or "",
+        raw_input=raw_input,
+        current_provider=getattr(cli, "requested_provider", "") or cli.provider or "",
+        current_model=cli.model or "",
         current_base_url=cli.base_url or "", current_api_key=cli.api_key or "", is_global=is_global,
         explicit_provider=explicit_provider, user_providers=user_providers,
         custom_providers=custom_providers)
@@ -162,6 +164,21 @@ def _commit_model_switch(
     ``picker``: tolerate context-resolution errors and label the config write "(--global)"; the
     typed path additionally records the one-turn restore snapshot."""
     from cli import HermesCLI, _cprint
+    requested_provider = str(
+        getattr(result, "requested_provider", "")
+        or getattr(result, "target_provider", "")
+    ).strip().lower()
+    if requested_provider == "custom:databricks":
+        from hermes_cli.model_setup_flows_databricks import ensure_databricks_model_verified
+        _cprint("  Validating selected Databricks service for Hermes tools...")
+        verified, error = ensure_databricks_model_verified(
+            requested_provider=requested_provider,
+            model=result.new_model,
+            credential=result.api_key,
+        )
+        if not verified:
+            _cprint(f"  ✗ {error or 'Databricks model compatibility could not be verified.'}")
+            return
     old_model = cli.model
     snapshot = cli._snapshot_model_runtime() if one_turn else None
     if not cli._stage_and_swap_model(result, old_model):
@@ -224,8 +241,13 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
         _cprint("  /model --provider <slug>             switch provider")
         _cprint("  /model --refresh                     re-fetch live model lists")
         return
+    current_route = getattr(cli, "requested_provider", "") or cli.provider or ""
+    current_label = next(
+        (row.get("name") for row in providers if row.get("is_current") and row.get("name")),
+        get_label(current_route) if current_route else "unknown",
+    )
     cli._open_model_picker(
-        providers, cli.model or "unknown", get_label(cli.provider) if cli.provider else "unknown",
+        providers, cli.model or "unknown", current_label,
         user_provs=ctx.user_providers if ctx is not None else None,
         custom_provs=ctx.custom_providers if ctx is not None else None)
 
@@ -363,51 +385,57 @@ class CLIModelSwitchMixin:
 
         Skips when no model is recorded or the CLI got an explicit ``-m`` (user intent wins).
         A different stored provider gets its credentials re-resolved — the ambient ``api_key``
-        must not be sent to the session's endpoint; on failure the ambient credentials are kept
-        so the session still opens (the first turn surfaces the auth error).
+        must not be sent to the session's endpoint; on failure the ambient credentials are cleared
+        so the session opens without leaking them (the first turn surfaces the auth error).
         """
         from cli import logger
         if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
             return
-        route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
+        current_requested_provider = getattr(self, "requested_provider", "") or self.provider
+        route = stored_session_route(
+            session_meta,
+            current_model=self.model,
+            current_provider=current_requested_provider,
+        )
         if route is None:
             return
         stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
         self.model = stored_model
         if stored_provider:
-            self.provider = stored_provider
-            self.requested_provider = stored_provider
-            if stored_base_url:
-                self.base_url = stored_base_url
-            if stored_api_mode:
-                self.api_mode = stored_api_mode
-        if provider_changed:
             # Launch-time explicit overrides belong to the AMBIENT provider and would poison
             # _ensure_runtime_credentials for the restored one. api_key is never persisted to
             # the session DB — runtime provider resolution owns credentials.
             self._explicit_api_key = None
-            self._explicit_base_url = stored_base_url
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider)
-                if resolved.get("api_key"):
-                    self.api_key = resolved["api_key"]
-                    self._credential_pool = resolved.get("credential_pool")
-                if not stored_base_url and resolved.get("base_url"):
-                    self.base_url = resolved["base_url"]
-                if not stored_api_mode and resolved.get("api_mode"):
-                    self.api_mode = resolved["api_mode"]
+                resolved = resolve_runtime_provider(
+                    requested=stored_provider, target_model=stored_model)
+                self.provider = resolved.get("provider") or (
+                    "custom" if stored_provider.startswith("custom:") else stored_provider)
+                self.requested_provider = resolved.get("requested_provider") or stored_provider
+                resolved_api_key = resolved.get("api_key")
+                self.api_key = resolved_api_key if resolved_api_key is not None else ""
+                self._credential_pool = resolved.get("credential_pool")
+                self.base_url = resolved.get("base_url") or stored_base_url or ""
+                self.api_mode = resolved.get("api_mode") or stored_api_mode or ""
             except Exception:
-                logger.debug(
-                    "Credential re-resolution for resumed session provider "
-                    "%s failed; keeping ambient credentials",
-                    stored_provider, exc_info=True)
+                logger.debug("Credential re-resolution for resumed session provider failed")
+                if provider_changed:
+                    self.provider = stored_provider
+                    self.requested_provider = stored_provider
+                    self.api_key = ""
+                    self._credential_pool = None
+                    self.base_url = stored_base_url or ""
+                    self.api_mode = stored_api_mode or ""
+            self._explicit_base_url = self.base_url or None
         # Mid-chat /resume swaps the live agent; on startup --resume _init_agent picks up
         # self.model / self.provider.
         if self.agent is not None:
             try:
                 self.agent.switch_model(
-                    new_model=self.model, new_provider=self.provider, api_key=self.api_key or "",
+                    new_model=self.model, new_provider=self.provider,
+                    new_requested_provider=self.requested_provider,
+                    api_key=self.api_key if self.api_key is not None else "",
                     base_url=self.base_url or "", api_mode=self.api_mode or "")
             except Exception:
                 logger.debug("In-place agent model swap on resume failed", exc_info=True)
@@ -506,6 +534,7 @@ class CLIModelSwitchMixin:
             try:
                 agent.switch_model(
                     new_model=snapshot.get("model", ""), new_provider=snapshot.get("provider", ""),
+                    new_requested_provider=snapshot.get("requested_provider", ""),
                     api_key=snapshot.get("api_key", ""), base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
                     capabilities=snapshot.get("capabilities"))
@@ -573,8 +602,10 @@ class CLIModelSwitchMixin:
         from cli import _cprint
         _cli_snapshot = _runtime_fields(self)
         self.model = result.new_model
-        self.provider = result.target_provider
-        self.requested_provider = result.target_provider
+        runtime_provider = result.runtime_provider or result.target_provider
+        requested_provider = result.requested_provider or result.target_provider
+        self.provider = runtime_provider
+        self.requested_provider = requested_provider
         # Always overwrite explicit overrides so stale credentials from the previous provider
         # (e.g. Ollama api_key/base_url) don't leak into the next resolution.
         self._explicit_api_key = result.api_key
@@ -589,7 +620,8 @@ class CLIModelSwitchMixin:
         if self.agent is not None:
             try:
                 self.agent.switch_model(
-                    new_model=result.new_model, new_provider=result.target_provider,
+                    new_model=result.new_model, new_provider=runtime_provider,
+                    new_requested_provider=requested_provider,
                     api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
                     capabilities=getattr(result, "runtime_capabilities", None))
             except Exception as exc:
@@ -717,7 +749,8 @@ class CLIModelSwitchMixin:
         from hermes_cli.inventory import load_picker_context
         try:
             ctx = load_picker_context().with_overrides(
-                current_provider=self.provider or "", current_model=self.model or "",
+                current_provider=getattr(self, "requested_provider", "") or self.provider or "",
+                current_model=self.model or "",
                 current_base_url=self.base_url or "")
         except Exception:
             ctx = None

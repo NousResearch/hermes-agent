@@ -808,6 +808,12 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
             default_idx = len(ordered)
         ordered.append((key, label, members))
 
+    merged_custom_keys: set[str] = set()
+    setup_backed_custom = {
+        str(provider_info.get("provider_key") or "").strip().lower(): key
+        for key, provider_info in custom_provider_map.items()
+        if isinstance(provider_info, dict) and str(provider_info.get("provider_key") or "").strip()
+    }
     for row in group_providers(_visible_slugs):
         if row["kind"] == "group":
             gid = row["group_id"]
@@ -825,9 +831,20 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
                 if tier_row is None:
                     continue
                 label = tier_row["name"]
+            custom_key = setup_backed_custom.get(slug, "")
+            provider_info = custom_provider_map.get(custom_key)
+            if provider_info is not None:
+                saved_model = provider_info.get("model", "")
+                model_hint = f" — {saved_model}" if saved_model else ""
+                label = f"{provider_info['name']} ({_short_url(provider_info['base_url'])}){model_hint}"
+                _add(custom_key, label, [], active in {slug, custom_key})
+                merged_custom_keys.add(custom_key)
+                continue
             _add(slug, label, [], bool(active) and slug == active)
 
     for key, provider_info in custom_provider_map.items():
+        if key in merged_custom_keys:
+            continue
         saved_model = provider_info.get("model", "")
         model_hint = f" — {saved_model}" if saved_model else ""
         _add(key, f"{provider_info['name']} ({_short_url(provider_info['base_url'])}){model_hint}", [],

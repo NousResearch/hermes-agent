@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
-    ProviderDef, custom_provider_aliases, determine_api_mode, get_label, host_mandated_api_mode,
-    is_aggregator, resolve_provider_full)
+    ProviderDef, custom_provider_aliases, custom_provider_slug, determine_api_mode, get_label,
+    host_mandated_api_mode, is_aggregator, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -427,8 +427,10 @@ class ModelSwitchResult:
     success: bool
     new_model: str = ""
     target_provider: str = ""
+    runtime_provider: str = ""
+    requested_provider: str = ""
     provider_changed: bool = False
-    api_key: str = ""
+    api_key: Any = ""
     base_url: str = ""
     api_mode: str = ""
     request_overrides: Optional[dict] = None
@@ -825,8 +827,22 @@ async def resolve_display_context_length_async(model: str, provider: str, **kwar
 
 # --- Configured-provider detection for typed model names
 
+def _configured_entry_model_ids(entry: dict) -> list[str]:
+    """Verified and picker-catalog model IDs declared by one configured provider."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for key in ("models", "catalog_models", "model", "default_model"):
+        for model_id in _declared_model_ids(entry.get(key)):
+            normalized = model_id.lower()
+            if normalized not in seen:
+                seen.add(normalized)
+                ids.append(model_id)
+    return ids
+
+
 def _configured_provider_matches(
-    model_name: str, user_providers: Optional[dict], custom_providers: Optional[list]
+    model_name: str, user_providers: Optional[dict], custom_providers: Optional[list],
+    preferred_provider: str = "",
 ) -> dict[str, str]:
     """``{provider_slug: canonical_model_id}`` for every configured provider whose declared models
     (``models``, ``model``, ``default_model`` — exact, case-insensitive, never fuzzy) contain
@@ -840,19 +856,42 @@ def _configured_provider_matches(
         return {}
     target = model_name.strip().lower()
 
-    candidates: list[tuple[str, dict]] = []
+    custom_entries = _custom_entries(custom_providers)
+    projections = {
+        str(entry.get("provider_key") or "").strip().lower(): (
+            custom_provider_slug(str(entry.get("name") or ""), str(entry.get("provider_key") or "")),
+            _entry_aliases(entry),
+        )
+        for entry in custom_entries
+        if str(entry.get("provider_key") or "").strip()
+    }
+    candidates: list[tuple[str, dict, frozenset[str]]] = []
     if isinstance(user_providers, dict):
-        candidates += [(slug, cfg) for slug, cfg in user_providers.items()
-                       if isinstance(slug, str) and isinstance(cfg, dict)]
-    candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()]
+        for slug, cfg in user_providers.items():
+            if not isinstance(slug, str) or not isinstance(cfg, dict):
+                continue
+            projection = projections.get(slug.strip().lower())
+            execution_slug = projection[0] if projection else slug
+            aliases = projection[1] | {slug.strip().lower()} if projection else frozenset({slug.strip().lower()})
+            candidates.append((execution_slug, cfg, frozenset(aliases)))
+    candidates += [
+        (custom_provider_slug(str(entry["name"]), str(entry.get("provider_key") or "")), entry,
+         _entry_aliases(entry))
+        for entry in custom_entries
+        if isinstance(entry.get("name"), str) and entry["name"].strip()
+    ]
 
     matches: dict[str, str] = {}
-    for slug, cfg in candidates:
-        hit = next((mid for key in ("models", "model", "default_model")
-                    for mid in _declared_model_ids(cfg.get(key)) if mid.lower() == target), None)
+    match_aliases: dict[str, frozenset[str]] = {}
+    for slug, cfg, aliases in candidates:
+        hit = next((mid for mid in _configured_entry_model_ids(cfg) if mid.lower() == target), None)
         if hit:
             matches.setdefault(slug, hit)  # first declaration wins
+            match_aliases[slug] = match_aliases.get(slug, frozenset()) | aliases
+    preferred = preferred_provider.strip().lower()
+    preferred_matches = [slug for slug, aliases in match_aliases.items() if preferred and preferred in aliases]
+    if len(preferred_matches) == 1 and preferred_provider not in matches:
+        matches[preferred_provider] = matches.pop(preferred_matches[0])
     return matches
 
 
@@ -955,14 +994,21 @@ def _config_declares_model(
     """A model declared in the user's ``providers:``/``custom_providers:`` config is accepted even
     when the remote /v1/models does not list it (cloud/aliased models). Custom entries match by
     slug alias or by base_url."""
+    target = target_provider.strip().lower()
     if user_providers:
         from hermes_cli.config import is_provider_enabled
-        cfg = user_providers.get(target_provider)
-        if cfg is not None and is_provider_enabled(cfg) and new_model in _declared_model_ids(cfg.get("models", {})):
-            return True
+        for slug, cfg in user_providers.items():
+            if not isinstance(cfg, dict) or not is_provider_enabled(cfg):
+                continue
+            identities = {
+                str(slug).strip().lower(),
+                str(cfg.get("provider") or "").strip().lower(),
+            }
+            if target in identities and new_model in _configured_entry_model_ids(cfg):
+                return True
     for entry in _custom_entries(custom_providers):
         if (target_provider.lower() in _entry_aliases(entry) or entry.get("base_url", "") == base_url) and (
-            new_model == entry.get("model", "") or new_model in _declared_model_ids(entry.get("models", {}))
+            new_model in _configured_entry_model_ids(entry)
         ):
             return True
     return False
@@ -1044,9 +1090,11 @@ class _Switch:
     custom_providers: Optional[list]
     new_model: str = ""
     target_provider: str = ""
+    runtime_provider: str = ""
+    requested_provider: str = ""
     resolved_alias: str = ""
     provider_label: str = ""
-    api_key: str = ""
+    api_key: Any = ""
     base_url: str = ""
     api_mode: str = ""
     validation_headers: dict = field(default_factory=dict)
@@ -1071,6 +1119,8 @@ class _Switch:
         rt = resolve_runtime_provider(target_model=self.new_model, **kwargs)
         self.api_key, self.base_url = rt.get("api_key", ""), rt.get("base_url", "")
         self.api_mode = rt.get("api_mode", "")
+        self.runtime_provider = str(rt.get("provider") or self.target_provider)
+        self.requested_provider = str(rt.get("requested_provider") or self.target_provider)
         self.validation_headers = rt.get("extra_headers") or self.validation_headers
 
 
@@ -1155,7 +1205,8 @@ def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | boo
     detect_provider_for_model() guesses from static catalogs and before a soft-accepting current
     provider (openai-codex) can swallow it as an unknown hidden model. Returns a failure result,
     ``True`` when routed, else ``False``."""
-    cfg_matches = _configured_provider_matches(st.new_model, st.user_providers, st.custom_providers)
+    cfg_matches = _configured_provider_matches(
+        st.new_model, st.user_providers, st.custom_providers, st.current_provider)
     if not cfg_matches:
         return False
     if st.current_provider in cfg_matches:
@@ -1463,6 +1514,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         request_overrides = None
     return ModelSwitchResult(
         success=True, new_model=st.new_model, target_provider=st.target_provider,
+        runtime_provider=st.runtime_provider or st.target_provider,
+        requested_provider=st.requested_provider or st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
         provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
@@ -1473,7 +1526,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
 
 def switch_model(
     raw_input: str, current_provider: str, current_model: str, current_base_url: str = "",
-    current_api_key: str = "", is_global: bool = False, explicit_provider: str = "",
+    current_api_key: Any = "", is_global: bool = False, explicit_provider: str = "",
     user_providers: dict = None, custom_providers: list | None = None) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 

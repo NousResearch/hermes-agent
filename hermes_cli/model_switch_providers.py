@@ -480,6 +480,7 @@ def _absorb_entry_models(grp: dict, entry: dict, active_model: Any) -> None:
     if _models_config_is_allowlist(models_field, _entry_models_discovered(entry)):
         grp["has_explicit_models"] = True
     _extend_unique(grp["models"], _declared_model_ids(models_field))
+    _extend_unique(grp["models"], _declared_model_ids(entry.get("catalog_models")))
 
 
 def _extend_unique(target: list, items) -> None:
@@ -890,15 +891,20 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         api_url = _entry_base_url(ep_cfg, ("base_url", "api", "url"))
         inline_api_key, key_env, cred_identity = _entry_credentials(ep_cfg, "key_env", "api_key_env")
         headers = _extra_headers_from_config(ep_cfg)
-        group_key = (_norm_url(api_url), cred_identity, _entry_api_mode(ep_cfg), tuple(sorted(headers.items())))
+        configured_execution = coerce_provider_id(ep_cfg.get("provider"))
+        named_custom_execution = configured_execution if configured_execution.startswith("custom:") else ""
+        execution_slug = named_custom_execution or ep_name
+        group_key = (
+            _norm_url(api_url), cred_identity, _entry_api_mode(ep_cfg),
+            tuple(sorted(headers.items())), named_custom_execution.lower(),
+        )
 
         if group_key not in ep_groups:
             # slug = first ep_name encountered; probe key from the first member (inline api_key,
             # else key_env through the per-profile secret scope).
             ep_groups[group_key] = {
-                "slug": ep_name, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
-                "has_explicit_models": False,
-                "api_key": inline_api_key or _scoped_key_env(key_env),
+                "slug": execution_slug, "name": _group_display_name(display_name), "api_url": api_url, "models": [],
+                "has_explicit_models": False, "api_key": inline_api_key or _scoped_key_env(key_env),
                 "headers": headers, "api_mode": ep_cfg.get("api_mode"),
                 "discovery_allowed": bool(api_url) and _discover_flag(ep_cfg), "raw_names": [], "aliases": set()}
         grp = ep_groups[group_key]
@@ -908,7 +914,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         grp["aliases"].update(custom_provider_aliases(display_name, str(ep_name)))
 
     for grp in ep_groups.values():
-        ep_name, display_name, api_url = grp["slug"], grp["name"], grp["api_url"]
+        execution_slug, display_name, api_url = grp["slug"], grp["name"], grp["api_url"]
         models_list = list(grp["models"])
         # Official OpenAI rows often have base_url but no models: dict — avoid a misleading zero count.
         if not models_list and base_url_host_matches(str(api_url).strip().lower(), "api.openai.com"):
@@ -916,16 +922,16 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
 
         ep_url_norm = _norm_url(api_url)
         ep_aliases = {str(alias).lower() for alias in grp["aliases"]}
-        is_current = b.endpoint_is_current(ep_name, ep_aliases, ep_url_norm)
+        is_current = b.endpoint_is_current(execution_slug, ep_aliases, ep_url_norm)
         discovered, native_catalog_empty, _ = b.discover_endpoint(
             grp["api_key"], api_url,
-            ep_name if str(ep_name).strip().lower() in {"ollama", "custom:ollama"} else "custom",
+            execution_slug if str(execution_slug).strip().lower() in {"ollama", "custom:ollama"} else "custom",
             grp["has_explicit_models"], headers=grp["headers"] or None, api_mode=grp["api_mode"],
             discovery_allowed=grp["discovery_allowed"], is_current=is_current)
         if discovered is not None:
             models_list = discovered
 
-        b.add_endpoint_row(ep_name, display_name, api_url, models_list, is_current, native_catalog_empty)
+        b.add_endpoint_row(execution_slug, display_name, api_url, models_list, is_current, native_catalog_empty)
         b.seen_slugs.update(ep_aliases)
         # Record every raw member name so section 4 can match per-model custom_providers rows
         # even though the group label was collapsed.

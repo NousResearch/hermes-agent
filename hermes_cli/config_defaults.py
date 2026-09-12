@@ -1445,6 +1445,8 @@ DEFAULT_CONFIG = {
         # list_channels, channel_info, list_roles, member_info, search_members, fetch_messages,
         # list_pins, pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
+        # Destructive Discord guild leaves are fail-closed; configure numeric ID strings explicitly.
+        "leave_guild_ids": [],
         # DEPRECATED no-op (uploads are always cached; messaging auth is the gate). Kept so existing
         # configs don't error. Env: DISCORD_ALLOW_ANY_ATTACHMENT.
         "allow_any_attachment": False,

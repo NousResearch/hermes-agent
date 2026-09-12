@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 import urllib.error
@@ -59,11 +60,14 @@ def _discord_request(
     url = f"{DISCORD_API_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(
-        url, data=None if body is None else json.dumps(body).encode("utf-8"), method=method,
-        headers={
-            "Authorization": f"Bot {token}", "Content-Type": "application/json",
-            "User-Agent": "Hermes-Agent (https://github.com/NousResearch/hermes-agent)"})
+    request_body = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {
+        "Authorization": f"Bot {token}",
+        "User-Agent": "Hermes-Agent (https://github.com/NousResearch/hermes-agent)",
+    }
+    if request_body is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=request_body, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 204:
@@ -369,6 +373,504 @@ def _create_thread(
     return json.dumps({"success": True, "thread_id": thread["id"], "name": thread.get("name")})
 
 
+def _require_snowflake(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str) or not value.isascii()
+        or not value.isdigit() or int(value) <= 0
+    ):
+        raise ValueError(f"{field} must be a positive numeric Discord ID; provide a valid {field}.")
+    return value
+
+
+def _require_name(value: Any, field: str = "name") -> str:
+    if not isinstance(value, str) or not value.strip() or not 1 <= len(value) <= 100:
+        raise ValueError(f"{field} must contain 1 to 100 characters; provide a valid {field}.")
+    return value
+
+
+def _optional_int(value: Any, field: str, minimum: int, maximum: int) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(
+            f"{field} must be an integer from {minimum} to {maximum}; provide a valid {field}."
+        )
+    return value
+
+
+def _optional_bool(value: Any, field: str) -> Optional[bool]:
+    if value is not None and not isinstance(value, bool):
+        raise ValueError(f"{field} must be a boolean; provide true or false.")
+    return value
+
+
+def _validate_overwrites(value: Any) -> Optional[List[Dict[str, Any]]]:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError("permission_overwrites must be an array of overwrite objects; correct the input.")
+    if len(value) > 100:
+        raise ValueError("permission_overwrites accepts at most 100 entries; reduce the input.")
+    result = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, dict) or not {"id", "type", "allow", "deny"}.issubset(item):
+            raise ValueError(
+                "permission_overwrites entries require id, type, allow, and deny; correct the input."
+            )
+        if set(item) - {"id", "type", "allow", "deny"}:
+            raise ValueError("permission_overwrites entries contain unsupported fields; correct the input.")
+        target_id = _require_snowflake(item["id"], "permission_overwrites id")
+        target_type = item["type"]
+        if isinstance(target_type, bool) or target_type not in (0, 1):
+            raise ValueError("permission_overwrites type must be 0 (role) or 1 (member); correct the input.")
+        if (target_id, target_type) in seen:
+            raise ValueError("permission_overwrites contains a duplicate target; combine it into one entry.")
+        seen.add((target_id, target_type))
+        allow = _optional_int(item["allow"], "permission_overwrites allow", 0, (1 << 64) - 1)
+        deny = _optional_int(item["deny"], "permission_overwrites deny", 0, (1 << 64) - 1)
+        if allow is None or deny is None:
+            raise ValueError(
+                "permission_overwrites allow and deny must be non-negative integers; correct the input."
+            )
+        result.append({"id": target_id, "type": target_type, "allow": str(allow), "deny": str(deny)})
+    return result
+
+
+def _get_main_user_id() -> str:
+    configured = (get_secret("DISCORD_MAIN_USER_ID", "") or "").strip()
+    if configured:
+        try:
+            return _require_snowflake(configured, "DISCORD_MAIN_USER_ID")
+        except ValueError as exc:
+            raise ValueError(
+                "DISCORD_MAIN_USER_ID must be one numeric user ID; configure it before granting access."
+            ) from exc
+    allowed = (get_secret("DISCORD_ALLOWED_USERS", "") or "").strip()
+    entries = [entry.strip() for entry in allowed.split(",") if entry.strip()]
+    if len(entries) != 1 or entries[0] == "*" or not entries[0].isdigit():
+        raise ValueError(
+            "DISCORD_MAIN_USER_ID is not configured and DISCORD_ALLOWED_USERS is not exactly one "
+            "numeric user ID; configure DISCORD_MAIN_USER_ID before granting access."
+        )
+    return _require_snowflake(entries[0], "DISCORD_MAIN_USER_ID")
+
+
+def _grant_channel_access(
+    overwrites: Optional[List[Dict[str, Any]]], target_ids: List[str],
+) -> List[Dict[str, Any]]:
+    required = (1 << 4) | (1 << 10)  # MANAGE_CHANNELS | VIEW_CHANNEL
+    result = [dict(item) for item in (overwrites or [])]
+    for target_id in dict.fromkeys(target_ids):
+        existing = next(
+            (item for item in result if item["id"] == target_id and item["type"] == 1), None,
+        )
+        if existing is None:
+            result.append({"id": target_id, "type": 1, "allow": str(required), "deny": "0"})
+        else:
+            existing["allow"] = str(int(existing["allow"]) | required)
+            existing["deny"] = str(int(existing["deny"]) & ~required)
+    return result
+
+
+def _create_guild_channel(
+    token: str, guild_id: str, name: str, channel_type: int,
+    category_id: Optional[str] = None, topic: Optional[str] = None,
+    position: Optional[int] = None, nsfw: Optional[bool] = None,
+    rate_limit_per_user: Optional[int] = None,
+    permission_overwrites: Any = None, grant_main_user_access: bool = False,
+    **_kwargs: Any,
+) -> str:
+    guild_id = _require_snowflake(guild_id, "guild_id")
+    name = _require_name(name)
+    if channel_type == 4 and (
+        category_id or topic is not None or nsfw is not None
+        or rate_limit_per_user is not None or grant_main_user_access
+    ):
+        raise ValueError(
+            "create_category accepts only name, position, and permission_overwrites; remove unsupported fields."
+        )
+    if category_id:
+        category_id = _require_snowflake(category_id, "category_id")
+    else:
+        category_id = None
+    topic_limit = 4096 if channel_type == 15 else 1024
+    if topic is not None and (not isinstance(topic, str) or len(topic) > topic_limit):
+        raise ValueError(
+            f"topic must be a string of at most {topic_limit} characters for this channel type; "
+            "provide a valid topic."
+        )
+    position = _optional_int(position, "position", 0, (1 << 31) - 1)
+    nsfw = _optional_bool(nsfw, "nsfw")
+    rate_limit_per_user = _optional_int(
+        rate_limit_per_user, "rate_limit_per_user", 0, 21600,
+    )
+    overwrites = _validate_overwrites(permission_overwrites)
+    if not isinstance(grant_main_user_access, bool):
+        raise ValueError("grant_main_user_access must be a boolean; provide true or false.")
+    main_user_id = _get_main_user_id() if grant_main_user_access else None
+    expected_parent = category_id if channel_type != 4 else None
+    channels = _discord_request("GET", f"/guilds/{guild_id}/channels", token)
+    if expected_parent is not None and not any(
+        channel.get("id") == expected_parent and channel.get("type") == 4
+        for channel in channels
+    ):
+        raise ValueError(
+            "category_id must identify a category in this guild; use list_channels to choose "
+            "a category ID from the target guild."
+        )
+    same_name = [channel for channel in channels if channel.get("name") == name]
+    if grant_main_user_access:
+        assert main_user_id is not None
+        bot = _discord_request("GET", "/users/@me", token)
+        bot_id = _require_snowflake(bot.get("id"), "bot user ID")
+        overwrites = _grant_channel_access(overwrites, [main_user_id, bot_id])
+    requested: Dict[str, Any] = {
+        key: value for key, value in (
+            ("topic", topic), ("position", position), ("nsfw", nsfw),
+            ("rate_limit_per_user", rate_limit_per_user),
+        ) if value is not None
+    }
+    if overwrites is not None:
+        requested["permission_overwrites"] = overwrites
+
+    def _settings_match(channel: Dict[str, Any]) -> bool:
+        for key, expected in requested.items():
+            if key == "permission_overwrites":
+                try:
+                    actual = [{
+                        "id": _require_snowflake(row["id"], "permission overwrite ID"),
+                        "type": int(row["type"]), "allow": str(int(row.get("allow", 0))),
+                        "deny": str(int(row.get("deny", 0))),
+                    } for row in channel.get(key, [])]
+                    if any(
+                        row["type"] not in (0, 1) or int(row["allow"]) < 0 or int(row["deny"]) < 0
+                        for row in actual
+                    ):
+                        return False
+                except (KeyError, TypeError, ValueError):
+                    return False
+                if sorted(actual, key=lambda row: (row["type"], row["id"])) != sorted(
+                    expected, key=lambda row: (row["type"], row["id"]),
+                ):
+                    return False
+            elif channel.get(key) != expected:
+                return False
+        return True
+
+    compatible = [
+        channel for channel in same_name
+        if channel.get("type") == channel_type and channel.get("parent_id") == expected_parent
+        and _settings_match(channel)
+    ]
+    if len(compatible) == 1 and len(same_name) == 1:
+        channel = compatible[0]
+        created = False
+    elif same_name:
+        raise ValueError(
+            f"A Discord channel named '{name}' already exists with a different type or category "
+            "or requested settings; "
+            "choose another name or use the existing channel ID."
+        )
+    else:
+        body: Dict[str, Any] = {"name": name, "type": channel_type}
+        if expected_parent is not None:
+            body["parent_id"] = expected_parent
+        for key, value in (
+            ("topic", topic), ("position", position), ("nsfw", nsfw),
+            ("rate_limit_per_user", rate_limit_per_user),
+        ):
+            if value is not None:
+                body[key] = value
+        if overwrites is not None:
+            body["permission_overwrites"] = overwrites
+        channel = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+        created = True
+    return json.dumps({
+        "guild_id": guild_id, "channel_id": channel["id"], "name": channel.get("name", name),
+        "type": _channel_type_name(channel_type), "created": created,
+    })
+
+
+_create_category = functools.partial(_create_guild_channel, channel_type=4)
+_create_text_channel = functools.partial(_create_guild_channel, channel_type=0)
+_create_forum = functools.partial(_create_guild_channel, channel_type=15)
+
+
+def _edit_channel(token: str, channel_id: str, body: Dict[str, Any]) -> str:
+    channel_id = _require_snowflake(channel_id, "channel_id")
+    _discord_request("PATCH", f"/channels/{channel_id}", token, body=body)
+    return json.dumps({"channel_id": channel_id, "updated": True})
+
+
+def _rename_channel(token: str, channel_id: str, name: str, **_kwargs: Any) -> str:
+    return _edit_channel(token, channel_id, {"name": _require_name(name)})
+
+
+def _set_channel_topic(token: str, channel_id: str, topic: str, **_kwargs: Any) -> str:
+    channel_id = _require_snowflake(channel_id, "channel_id")
+    if not isinstance(topic, str) or len(topic) > 4096:
+        raise ValueError("topic must be a string of at most 4096 characters; provide a valid topic.")
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    channel_type = channel.get("type")
+    if channel_type not in (0, 5, 15):
+        raise ValueError(
+            "set_channel_topic supports text, announcement, and forum channels; "
+            "provide a supported channel_id."
+        )
+    topic_limit = 4096 if channel_type == 15 else 1024
+    if len(topic) > topic_limit:
+        raise ValueError(
+            f"topic must be at most {topic_limit} characters for this channel type; shorten it and retry."
+        )
+    return _edit_channel(token, channel_id, {"topic": topic})
+
+
+def _move_channel_to_category(
+    token: str, channel_id: str, category_id: str,
+    position: Optional[int] = None, **_kwargs: Any,
+) -> str:
+    channel_id = _require_snowflake(channel_id, "channel_id")
+    category_id = _require_snowflake(category_id, "category_id")
+    position = _optional_int(position, "position", 0, (1 << 31) - 1)
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    if channel.get("type") not in (0, 2, 5, 13, 15, 16) or not channel.get("guild_id"):
+        raise ValueError(
+            "channel_id must identify a movable guild channel; provide a text, voice, announcement, "
+            "stage, forum, or media channel ID."
+        )
+    category = _discord_request("GET", f"/channels/{category_id}", token)
+    if category.get("type") != 4 or category.get("guild_id") != channel.get("guild_id"):
+        raise ValueError(
+            "category_id must identify a category in the same guild as channel_id; "
+            "use list_channels to choose a category ID from that guild."
+        )
+    body: Dict[str, Any] = {"parent_id": category_id}
+    if position is not None:
+        body["position"] = position
+    return _edit_channel(token, channel_id, body)
+
+
+def _set_channel_lock(
+    token: str, channel_id: str, guild_id: str, locked: bool, **_kwargs: Any,
+) -> str:
+    channel_id = _require_snowflake(channel_id, "channel_id")
+    guild_id = _require_snowflake(guild_id, "guild_id")
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    if channel.get("guild_id") != guild_id:
+        raise ValueError(
+            "channel_id does not belong to guild_id; provide the channel's actual guild_id."
+        )
+    if channel.get("type") not in (0, 5, 15, 16):
+        raise ValueError(
+            "channel_id must identify a text, announcement, forum, or media channel for "
+            "SEND_MESSAGES locking; provide a supported channel ID."
+        )
+    overwrites = []
+    everyone = None
+    for raw in channel.get("permission_overwrites", []):
+        try:
+            item = {
+                "id": _require_snowflake(raw["id"], "permission overwrite ID"),
+                "type": int(raw["type"]), "allow": str(int(raw.get("allow", 0))),
+                "deny": str(int(raw.get("deny", 0))),
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "Discord returned malformed permission overwrites; inspect the channel before retrying."
+            ) from exc
+        if item["type"] not in (0, 1) or int(item["allow"]) < 0 or int(item["deny"]) < 0:
+            raise ValueError(
+                "Discord returned malformed permission overwrites; inspect the channel before retrying."
+            )
+        overwrites.append(item)
+        if item["id"] == guild_id and item["type"] == 0:
+            everyone = item
+    if everyone is None:
+        everyone = {"id": guild_id, "type": 0, "allow": "0", "deny": "0"}
+        overwrites.append(everyone)
+    send_messages = 1 << 11
+    if locked:
+        everyone["allow"] = str(int(everyone["allow"]) & ~send_messages)
+        everyone["deny"] = str(int(everyone["deny"]) | send_messages)
+    else:
+        everyone["deny"] = str(int(everyone["deny"]) & ~send_messages)
+    _discord_request(
+        "PUT", f"/channels/{channel_id}/permissions/{guild_id}", token,
+        body={
+            "type": 0, "allow": everyone["allow"], "deny": everyone["deny"],
+        },
+    )
+    return json.dumps({"channel_id": channel_id, "guild_id": guild_id, "locked": locked})
+
+
+_lock_channel = functools.partial(_set_channel_lock, locked=True)
+_unlock_channel = functools.partial(_set_channel_lock, locked=False)
+
+
+def _role_fields(
+    *, name: Any = None, color: Any = None, hoist: Any = None, mentionable: Any = None,
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {}
+    if name is not None:
+        body["name"] = _require_name(name)
+    color = _optional_int(color, "color", 0, 0xFFFFFF)
+    if color is not None:
+        body["color"] = color
+    for field, value in (("hoist", hoist), ("mentionable", mentionable)):
+        value = _optional_bool(value, field)
+        if value is not None:
+            body[field] = value
+    return body
+
+
+def _create_role(
+    token: str, guild_id: str, name: str, color: Optional[int] = None,
+    hoist: Optional[bool] = None, mentionable: Optional[bool] = None, **_kwargs: Any,
+) -> str:
+    guild_id = _require_snowflake(guild_id, "guild_id")
+    body = _role_fields(name=name, color=color, hoist=hoist, mentionable=mentionable)
+    roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
+    same_name = [role for role in roles if role.get("name") == name]
+    requested = {key: value for key, value in body.items() if key != "name"}
+    compatible = [
+        role for role in same_name
+        if role.get("managed") is False and str(role.get("permissions")) == "0"
+        and all(role.get(key) == value for key, value in requested.items())
+    ]
+    if len(compatible) == 1 and len(same_name) == 1:
+        role = compatible[0]
+        created = False
+    elif same_name:
+        raise ValueError(
+            f"A managed, privileged, ambiguous, or differently configured Discord role named "
+            f"'{name}' already exists; permissions are never modified by create_role. "
+            "choose another name or use the existing role ID."
+        )
+    else:
+        role = _discord_request("POST", f"/guilds/{guild_id}/roles", token, body=body)
+        created = True
+    return json.dumps({
+        "guild_id": guild_id, "role_id": role["id"], "name": role.get("name", name),
+        "created": created,
+    })
+
+
+def _update_role(
+    token: str, guild_id: str, role_id: str, name: Optional[str] = None,
+    color: Optional[int] = None, hoist: Optional[bool] = None,
+    mentionable: Optional[bool] = None, **_kwargs: Any,
+) -> str:
+    guild_id = _require_snowflake(guild_id, "guild_id")
+    role_id = _require_snowflake(role_id, "role_id")
+    body = _role_fields(name=name, color=color, hoist=hoist, mentionable=mentionable)
+    if not body:
+        raise ValueError(
+            "update_role requires at least one of name, color, hoist, or mentionable; provide a field."
+        )
+    _discord_request("PATCH", f"/guilds/{guild_id}/roles/{role_id}", token, body=body)
+    return json.dumps({"guild_id": guild_id, "role_id": role_id, "updated": True})
+
+
+_MAX_LEAVE_GUILD_IDS = 100
+_NEW_DESTRUCTIVE_ACTIONS = frozenset({"leave_guild"})
+
+
+def _load_leave_guild_ids() -> frozenset[str]:
+    """Load the explicit, fail-closed guild leave allowlist from YAML config."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        raise ValueError(
+            "discord.leave_guild_ids could not be loaded; configure an explicit YAML list before leaving a guild."
+        ) from exc
+    discord_cfg = cfg.get("discord")
+    if not isinstance(discord_cfg, dict) or "leave_guild_ids" not in discord_cfg:
+        return frozenset()
+    raw = discord_cfg["leave_guild_ids"]
+    if not isinstance(raw, list):
+        raise ValueError(
+            "discord.leave_guild_ids must be an explicit YAML list of numeric Discord ID strings."
+        )
+    if len(raw) > _MAX_LEAVE_GUILD_IDS:
+        raise ValueError(
+            f"discord.leave_guild_ids accepts at most {_MAX_LEAVE_GUILD_IDS} entries; reduce the list."
+        )
+    ids = []
+    for index, value in enumerate(raw):
+        try:
+            ids.append(_require_snowflake(value, f"discord.leave_guild_ids[{index}]"))
+        except ValueError as exc:
+            raise ValueError(
+                f"discord.leave_guild_ids[{index}] must be a numeric Discord ID string; correct the list."
+            ) from exc
+    if len(set(ids)) != len(ids):
+        raise ValueError("discord.leave_guild_ids must not contain duplicate guild IDs; remove duplicates.")
+    return frozenset(ids)
+
+
+def _leave_guild(
+    token: str, guild_id: str, expected_guild_name: str, **_kwargs: Any,
+) -> str:
+    guild_id = _require_snowflake(guild_id, "guild_id")
+    if guild_id not in _load_leave_guild_ids():
+        raise ValueError(
+            "guild_id is not authorized by discord.leave_guild_ids; add it to the explicit YAML list if intended."
+        )
+    expected_guild_name = _require_name(expected_guild_name, "expected_guild_name")
+    guild = None
+    after = None
+    for _page in range(100):
+        params = {"limit": "200"}
+        if after is not None:
+            params["after"] = after
+        guilds = _discord_request("GET", "/users/@me/guilds", token, params=params)
+        guild = next((item for item in guilds if item.get("id") == guild_id), None)
+        if guild is not None or len(guilds) < 200:
+            break
+        next_after = guilds[-1].get("id")
+        if not isinstance(next_after, str) or next_after == after:
+            raise ValueError(
+                "Discord guild pagination did not advance; inspect guild membership and retry."
+            )
+        after = next_after
+    else:
+        raise ValueError("Discord guild inventory exceeded the safety bound; narrow membership and retry.")
+    if guild is None:
+        return json.dumps({
+            "guild_id": guild_id, "name": expected_guild_name, "left": False,
+        })
+    actual_name = guild.get("name")
+    if actual_name != expected_guild_name:
+        raise ValueError(
+            "Discord guild identity did not match expected_guild_name; "
+            "retry only with the exact current guild name."
+        )
+    delete_path = f"/users/@me/guilds/{guild_id}"
+    try:
+        _discord_request("DELETE", delete_path, token)
+    except DiscordAPIError as error:
+        if error.status != 429:
+            raise
+        try:
+            retry_after = json.loads(error.body).get("retry_after")
+            if not isinstance(retry_after, (int, float)) or isinstance(retry_after, bool):
+                raise ValueError
+            retry_after = float(retry_after)
+        except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+            raise ValueError(
+                "Discord rate limit response did not contain a valid retry_after; retry later."
+            ) from None
+        if not math.isfinite(retry_after) or retry_after < 0 or retry_after > 5:
+            raise ValueError(
+                "Discord rate limit retry_after exceeded the 5 second safety bound; retry later."
+            )
+        time.sleep(retry_after)
+        _discord_request("DELETE", delete_path, token)
+    return json.dumps({"guild_id": guild_id, "name": actual_name, "left": True})
+
+
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
     def _action(token: str, **kw: Any) -> str:
@@ -407,7 +909,23 @@ _ACTION_MANIFEST = [
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
+    ("create_category", _create_category, "(guild_id, name)", "create an idempotent category"),
+    ("create_text_channel", _create_text_channel, "(guild_id, name)", "create an idempotent text channel"),
+    ("create_forum", _create_forum, "(guild_id, name)", "create an idempotent forum channel"),
+    ("rename_channel", _rename_channel, "(channel_id, name)", "rename a channel"),
+    ("set_channel_topic", _set_channel_topic, "(channel_id, topic)", "set a channel topic"),
+    ("move_channel_to_category", _move_channel_to_category, "(channel_id, category_id)", "move a channel"),
+    ("lock_channel", _lock_channel, "(channel_id, guild_id)", "deny @everyone SEND_MESSAGES"),
+    ("unlock_channel", _unlock_channel, "(channel_id, guild_id)", "clear @everyone SEND_MESSAGES deny"),
+    ("create_role", _create_role, "(guild_id, name)", "create an idempotent role without permissions"),
+    ("update_role", _update_role, "(guild_id, role_id)", "update safe role display fields"),
+    ("leave_guild", _leave_guild, "(guild_id, expected_guild_name)", "leave one approved guild by exact identity"),
 ]
+_NEW_ACTION_NAMES = frozenset({
+    "create_category", "create_text_channel", "create_forum", "rename_channel",
+    "set_channel_topic", "move_channel_to_category", "lock_channel", "unlock_channel",
+    "create_role", "update_role", "leave_guild",
+})
 _ACTIONS = {name: fn for name, fn, _sig, _desc in _ACTION_MANIFEST}
 _REQUIRED_PARAMS: Dict[str, List[str]] = {
     name: [p.strip() for p in sig.strip("()").split(",") if p.strip()]
@@ -477,6 +995,7 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "channel_id": {"type": "string", "description": "Discord channel ID."},
     "user_id": {"type": "string", "description": "Discord user ID."},
     "role_id": {"type": "string", "description": "Discord role ID."},
+    "category_id": {"type": "string", "description": "Optional parent category ID."},
     "message_id": {"type": "string", "description": "Discord message ID."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
     "name": {"type": "string", "description": "New thread name (create_thread)."},
@@ -493,7 +1012,42 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
         "enum": [60, 1440, 4320, 10080],
         "description": "Thread archive duration in minutes (create_thread, default 1440).",
     },
+    "topic": {"type": "string", "maxLength": 4096, "description": "Channel topic."},
+    "position": {"type": "integer", "minimum": 0, "description": "Channel position."},
+    "nsfw": {"type": "boolean", "description": "Whether a channel is age-restricted."},
+    "rate_limit_per_user": {
+        "type": "integer", "minimum": 0, "maximum": 21600,
+        "description": "Slowmode in seconds.",
+    },
+    "permission_overwrites": {
+        "type": "array", "maxItems": 100,
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"}, "type": {"type": "integer", "enum": [0, 1]},
+                "allow": {"type": "integer", "minimum": 0},
+                "deny": {"type": "integer", "minimum": 0},
+            },
+            "required": ["id", "type", "allow", "deny"], "additionalProperties": False,
+        },
+        "description": "Deterministic channel permission overwrites.",
+    },
+    "grant_main_user_access": {
+        "type": "boolean", "description": "Grant VIEW_CHANNEL and MANAGE_CHANNELS to the main user and bot.",
+    },
+    "color": {"type": "integer", "minimum": 0, "maximum": 16777215, "description": "Role RGB color."},
+    "hoist": {"type": "boolean", "description": "Display the role separately."},
+    "mentionable": {"type": "boolean", "description": "Allow role mentions."},
+    "expected_guild_name": {
+        "type": "string", "minLength": 1, "maxLength": 100,
+        "description": "Exact current guild name required by leave_guild.",
+    },
 }
+_ADMIN_ONLY_SCHEMA_PROPERTIES = frozenset({
+    "category_id", "topic", "position", "nsfw", "rate_limit_per_user",
+    "permission_overwrites", "grant_main_user_access", "color", "hoist",
+    "mentionable", "expected_guild_name",
+})
 
 _CONTENT_NOTE = (
     "\n\nNOTE: Bot does NOT have the MESSAGE_CONTENT privileged intent. "
@@ -518,12 +1072,16 @@ def _build_schema(
     if affected_actions and caps.get("detected") and caps.get("has_message_content") is False:
         content_note = _CONTENT_NOTE.format(names=" and ".join(sorted(affected_actions)))
     lead, guidance = _TOOL_DESCRIPTIONS.get(tool_name, _TOOL_DESCRIPTIONS["discord"])
+    properties = {
+        name: value for name, value in _SCHEMA_PROPERTIES.items()
+        if tool_name == "discord_admin" or name not in _ADMIN_ONLY_SCHEMA_PROPERTIES
+    }
     return {
         "name": tool_name,
         "description": f"{lead}\n\nAvailable actions:\n{manifest_block}\n\n{guidance}{content_note}",
         "parameters": {
             "type": "object",
-            "properties": {"action": {"type": "string", "enum": actions}, **_SCHEMA_PROPERTIES},
+            "properties": {"action": {"type": "string", "enum": actions}, **properties},
             "required": ["action"]}}
 
 
@@ -581,7 +1139,12 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "category_id": "", "name": None, "topic": None, "position": None, "nsfw": None,
+    "rate_limit_per_user": None, "permission_overwrites": None, "grant_main_user_access": False,
+    "color": None, "hoist": None, "mentionable": None,
+    "expected_guild_name": None,
+    "limit": 50, "before": "", "after": "",
+    "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:
@@ -605,10 +1168,26 @@ def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: 
         return tool_error(f"Missing required parameters for '{action}': {', '.join(missing)}")
     try:
         return action_fn(token=token, **kwargs)
+    except ValueError as e:
+        return tool_error(str(e))
     except DiscordAPIError as e:
+        if action in _NEW_ACTION_NAMES:
+            logger.warning(
+                "Discord API status %s in %s action '%s'", e.status, tool_label, action,
+            )
+            hint = _ACTION_403_HINT.get(action) if e.status == 403 else None
+            guidance = hint or "Verify Discord availability and the bot's permission for this action"
+            return tool_error(
+                f"Discord API {e.status} on '{action}'. {guidance}; correct the issue and retry."
+            )
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
         return tool_error(_enrich_403(action, e.body) if e.status == 403 else str(e))
     except Exception as e:
+        if action in _NEW_ACTION_NAMES:
+            logger.warning("Unexpected failure in %s action '%s'", tool_label, action)
+            return tool_error(
+                f"Unexpected failure in '{action}'; verify the inputs and retry without exposing credentials."
+            )
         logger.exception("Unexpected error in %s action '%s'", tool_label, action)
         return tool_error(f"Unexpected error: {e}")
 

@@ -28,9 +28,11 @@ vi.mock('./routes', () => ({
 }))
 
 const sidePaneGet = vi.fn(() => false)
+const chatAnchorGet = vi.fn<() => null | string>(() => null)
 
 vi.mock('@/components/pane-shell/tree/store', () => ({
-  focusedChatZoneIsSidePane: () => sidePaneGet()
+  focusedChatZoneIsSidePane: () => sidePaneGet(),
+  lastChatZoneSessionAnchor: () => chatAnchorGet()
 }))
 
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
@@ -99,6 +101,7 @@ describe('openSession', () => {
     reuseBlankDraftTile.mockReset()
     setSessionTileWorkspaceScope.mockReset()
     sidePaneGet.mockReturnValue(false)
+    chatAnchorGet.mockReturnValue(null)
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
   })
@@ -138,14 +141,27 @@ describe('openSession', () => {
     expect(openSessionTile).not.toHaveBeenCalled()
   })
 
-  it('focused opens a tab in the focused pane when a side pane has the attention', () => {
+  it('focused opens a tab BESIDE the zone the user last worked in', () => {
     sidePaneGet.mockReturnValue(true)
+    chatAnchorGet.mockReturnValue('session-tile:worked-in')
     focusOpenSession.mockReturnValue(null)
 
     openSession('s1', navigate, 'focused')
 
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    // Explicit anchor: openSessionTile's own fallback asks the hovered → focused
+    // → workspace ladder, which a real press on a session row sends to main.
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', 'session-tile:worked-in')
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('focused leaves the anchor to the ladder when no chat zone was touched', () => {
+    sidePaneGet.mockReturnValue(true)
+    chatAnchorGet.mockReturnValue(null)
+    focusOpenSession.mockReturnValue(null)
+
+    openSession('s1', navigate, 'focused')
+
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined)
   })
 
   it('focused degrades to the classic in-place resume when main is the target', () => {
@@ -154,6 +170,20 @@ describe('openSession', () => {
 
     openSession('s1', navigate, 'focused')
 
+    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('focused pulls the chat back when the row is main\u2019s own session and the workspace shows a page', () => {
+    sidePaneGet.mockReturnValue(true) // a side chat zone is where the user worked…
+    focusOpenSession.mockReturnValue('main') // …but the clicked row IS main's session
+    workspaceIsPageGet.mockReturnValue(true) // and main is showing a page
+    $selectedStoredSessionId.set('s1')
+
+    openSession('s1', navigate, 'focused')
+
+    // 'tab' would front the workspace tab and return, leaving the page up — the
+    // dead click this case exists to avoid.
     expect(navigate).toHaveBeenCalledWith('/c/s1')
     expect(openSessionTile).not.toHaveBeenCalled()
   })
@@ -169,7 +199,7 @@ describe('openSession', () => {
   it('tab opens a stacked session tile when not on screen', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'tab')
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined)
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -196,7 +226,7 @@ describe('openSession', () => {
     $selectedStoredSessionId.set('s0')
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'stack')
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined)
     expect(navigate).not.toHaveBeenCalled()
   })
 
@@ -223,7 +253,7 @@ describe('openSession', () => {
     $activeSessionId.set('runtime-a')
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'stack')
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined)
   })
 
   it('stack loads into main when it holds only a blank draft', () => {
@@ -244,7 +274,7 @@ describe('openSession', () => {
     focusOpenSession.mockReturnValue(null)
     openSession('s1', navigate, 'window')
     expect(openSessionInNewWindow).not.toHaveBeenCalled()
-    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center')
+    expect(openSessionTile).toHaveBeenCalledWith('s1', 'center', undefined)
   })
 
   it('no-ops on an empty id', () => {

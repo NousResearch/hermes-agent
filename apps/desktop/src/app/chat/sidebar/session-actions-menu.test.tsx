@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { lastChatZoneSessionAnchor } from '@/components/pane-shell/tree/store'
+import { $selectedStoredSessionId } from '@/store/session'
 import { openSessionTile } from '@/store/session-states'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -9,9 +11,11 @@ import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 afterEach(cleanup)
 
 const openSessionTileMock = vi.mocked(openSessionTile)
+const lastChatZoneSessionAnchorMock = vi.mocked(lastChatZoneSessionAnchor)
 
 beforeEach(() => {
   openSessionTileMock.mockClear()
+  lastChatZoneSessionAnchorMock.mockReturnValue(null)
 })
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
@@ -22,6 +26,7 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
   closeAllTreeTabs: vi.fn(),
   closeOtherTreeTabs: vi.fn(),
   closeTreeTabsToRight: vi.fn(),
+  lastChatZoneSessionAnchor: vi.fn(() => null),
   treeTabCloseTargets: vi.fn(() => null)
 }))
 vi.mock('@/hermes', () => ({
@@ -298,6 +303,7 @@ describe('SessionActionsMenu', () => {
   })
 
   it('offers 在分屏中打开 and docks the session on the chosen edge', async () => {
+    lastChatZoneSessionAnchorMock.mockReturnValue('session-tile:worked-in')
     renderMenu()
 
     const trigger = screen.getByRole('button', { name: 'Session actions' })
@@ -310,6 +316,46 @@ describe('SessionActionsMenu', () => {
 
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Right' }))
 
-    expect(openSessionTileMock).toHaveBeenCalledWith('s1', 'right')
+    // The anchor is the zone the user last worked in — not the ladder's answer,
+    // which a real right-click (pointer on the sidebar's own zone) would send to
+    // main.
+    expect(openSessionTileMock).toHaveBeenCalledWith('s1', 'right', 'session-tile:worked-in')
+  })
+
+  it('leaves the anchor to the ladder when no chat zone has been touched', async () => {
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const sub = await screen.findByRole('menuitem', { name: /open in split/i })
+    fireEvent.keyDown(sub, { key: 'ArrowRight' })
+
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Right' }))
+
+    expect(openSessionTileMock).toHaveBeenCalledWith('s1', 'right', undefined)
+  })
+
+  it('disables the split entry for the session that already owns main', async () => {
+    $selectedStoredSessionId.set('s1')
+
+    try {
+      renderMenu()
+
+      const trigger = screen.getByRole('button', { name: 'Session actions' })
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+
+      const sub = await screen.findByRole('menuitem', { name: /open in split/i })
+
+      // A main session cannot also be a tile, so the entry says so instead of
+      // silently doing nothing.
+      expect(sub.getAttribute('aria-disabled') === 'true' || sub.hasAttribute('data-disabled')).toBe(true)
+    } finally {
+      $selectedStoredSessionId.set(null)
+    }
   })
 })

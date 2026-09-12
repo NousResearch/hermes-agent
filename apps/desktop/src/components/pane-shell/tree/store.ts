@@ -395,11 +395,43 @@ export function registerLayoutResetHandler(fn: () => void): () => void {
  *  click lands on a non-focusable surface). Tracked by trackActiveTreeGroup. */
 export const $activeTreeGroup = atom<null | string>(null)
 
+/** The last zone the user WORKED IN that can host a chat strip — the sidebar,
+ *  files and terminal zones never move it. `$activeTreeGroup` above tracks the
+ *  ⌘W/⌘T target, and its ladder FALLS THROUGH to main when the pointer is on
+ *  chrome by design; "open this session where I'm working" cannot use that
+ *  answer, because the press on a session row itself lands on the sidebar's own
+ *  zone. In-memory, like the other trackers: a relaunch falls back to main. */
+export const $lastChatZoneGroup = atom<null | string>(null)
+
+/** Mirror an interacted zone into the chat-zone memory, but only when the zone
+ *  can host a chat strip: a pointerdown (or hover) on the sidebar / files /
+ *  terminal must leave the answer at "the chat zone I was working in". */
+function rememberChatZone(groupId: string) {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroup(tree, groupId) : null
+
+  if (group?.panes.some(isSessionStripPane) && $lastChatZoneGroup.get() !== groupId) {
+    $lastChatZoneGroup.set(groupId)
+  }
+}
+
 /** Record the interacted zone (pointerdown / focusin). Idempotent. */
 export function noteActiveTreeGroup(groupId: null | string) {
   if (groupId !== $activeTreeGroup.get()) {
     $activeTreeGroup.set(groupId)
   }
+
+  // Mirror it into the chat-zone memory — where an explicit null (main was just
+  // fronted) is the one signal that clears it back to main.
+  if (groupId === null) {
+    if ($lastChatZoneGroup.get() !== null) {
+      $lastChatZoneGroup.set(null)
+    }
+
+    return
+  }
+
+  rememberChatZone(groupId)
 }
 
 /** The zone the pointer is currently over, or null off every zone. Transient —
@@ -412,6 +444,14 @@ export const $hoveredTreeGroup = atom<null | string>(null)
 export function noteHoveredTreeGroup(groupId: null | string) {
   if (groupId !== $hoveredTreeGroup.get()) {
     $hoveredTreeGroup.set(groupId)
+  }
+
+  // Hovering a chat zone is the same "I'm working here" signal as clicking into
+  // it — it is what makes ⌘T / ⌘1…⌘9 land in the pane under the pointer. Leaving
+  // the panes must NOT clear the memory, though: the pointer crosses the sidebar
+  // on its way to a session row.
+  if (groupId !== null) {
+    rememberChatZone(groupId)
   }
 }
 
@@ -530,37 +570,65 @@ function focusedSessionGroup(): GroupNode | null {
   return tabTargetGroup(group => group.panes.some(isSessionStripPane))
 }
 
+/** The chat pane a new tab docks beside inside `group`: its active session
+ *  pane, else its first. Null when the zone hosts no chat strip. */
+function sessionStripAnchorOf(group: GroupNode): null | string {
+  const active = group.active
+
+  return active && isSessionStripPane(active) ? active : (group.panes.find(isSessionStripPane) ?? null)
+}
+
+/** The group the user last worked in that can host a chat strip, or null before
+ *  any chat zone was touched (and when the tree no longer holds it). */
+function lastChatZoneGroup(): GroupNode | null {
+  const tree = $layoutTree.get()
+  const groupId = $lastChatZoneGroup.get()
+
+  return tree && groupId ? findGroup(tree, groupId) : null
+}
+
 /** The pane a NEW session tab should dock beside (⌘T): the focused chat zone's
  *  active session pane, else its first. Null when no zone hosts a chat strip —
  *  the caller falls back to the workspace. */
 export function focusedSessionTabAnchor(): null | string {
   const group = focusedSessionGroup()
 
-  if (!group) {
-    return null
-  }
-
-  const active = group.active
-
-  return active && isSessionStripPane(active) ? active : (group.panes.find(isSessionStripPane) ?? null)
+  return group ? sessionStripAnchorOf(group) : null
 }
 
-/** True when the attention ladder (hovered → focused → workspace) lands on a
- *  chat zone OTHER than the one holding the main workspace tab — i.e. the user
- *  is working in a side pane. False for single-pane layouts, for a pointer
- *  parked on non-chat chrome, and when the ladder falls through to main, so a
- *  caller can read `false` as "main is still the target". */
+/** The pane a session opened from the LAST CHAT ZONE should dock beside — the
+ *  split-menu sibling of `focusedSessionTabAnchor`. Read off the zone memory
+ *  instead of the ladder, because a real right-click on a sidebar row lands the
+ *  pointer (and the `focusin`) on the sidebar's own zone, which the ladder
+ *  deliberately falls through to main: splitting from the row menu would then
+ *  dock beside main rather than beside the pane the user is working in. Null
+ *  before any chat zone was touched; callers fall back to
+ *  `focusedSessionTabAnchor()`. */
+export function lastChatZoneSessionAnchor(): null | string {
+  const group = lastChatZoneGroup()
+
+  return group ? sessionStripAnchorOf(group) : null
+}
+
+/** True when the chat zone the user last WORKED IN (see `$lastChatZoneGroup`)
+ *  is a SIDE zone — a chat zone other than the one holding the main workspace
+ *  tab. This is the question "does a session opened from the sidebar belong in a
+ *  pane or in main?", and it deliberately does NOT ask the hovered → focused →
+ *  workspace ladder: a press on a session row lands on the sidebar's own zone,
+ *  and the ladder's fall-through to main is exactly the answer that made the row
+ *  click a no-op for pane users. False for single-pane layouts, before any chat
+ *  zone has been touched, and whenever main was explicitly fronted. */
 export function focusedChatZoneIsSidePane(): boolean {
   const tree = $layoutTree.get()
-  const target = tree ? focusedSessionGroup() : null
+  const group = lastChatZoneGroup()
 
-  if (!tree || !target) {
+  if (!tree || !group) {
     return false
   }
 
   const main = findGroupOfPane(tree, 'workspace')
 
-  return main !== null && target.id !== main.id
+  return main !== null && group.id !== main.id
 }
 
 /** ⌘W: close the FOCUSED tile zone's active tab, unless it's the uncloseable

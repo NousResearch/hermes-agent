@@ -14,9 +14,9 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
-import { focusedChatZoneIsSidePane } from '@/components/pane-shell/tree/store'
+import { focusedChatZoneIsSidePane, lastChatZoneSessionAnchor } from '@/components/pane-shell/tree/store'
 import type { WorkspaceMode } from '@/contrib/types'
-import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $sessions, lineageAliases, markSessionRead } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
@@ -121,12 +121,28 @@ export function openSession(
   }
 
   // `focused` — a sidebar row click in a multi-pane workspace: land in the chat
-  // zone the user is actually working in (the same hovered → focused → workspace
-  // ladder ⌘T / ⌘1…⌘9 use). When that zone IS main's, or nothing in a side zone
-  // has the attention, this degrades to the classic 'in-place' resume, so
-  // single-pane layouts keep replacing main exactly as before.
+  // zone the user last worked in. When that zone is main's (or no chat zone has
+  // been touched), this degrades to the classic 'in-place' resume, so
+  // single-pane layouts keep replacing main exactly as before. A session that is
+  // ALREADY main's takes that path too: it is the one that pulls the chat back
+  // when the workspace is showing a page, whereas 'tab' would front the
+  // workspace tab and leave the page up (a dead click).
+  //
+  // The dock target is passed EXPLICITLY rather than left to `openSessionTile`'s
+  // fallback: that fallback asks the hovered → focused → workspace ladder, and a
+  // real press on a session row lands that ladder on the sidebar's own zone,
+  // which falls through to main — the row click would then dock into main again.
+  let focusedDockAnchor: string | undefined
+
   if (resolved === 'focused') {
-    resolved = focusedChatZoneIsSidePane() ? 'tab' : 'in-place'
+    const mainOwned = lineageAliases(storedSessionId, $sessions.get()).includes($selectedStoredSessionId.get() ?? '')
+    const inWorkingPane = focusedChatZoneIsSidePane() && !mainOwned
+
+    if (inWorkingPane) {
+      focusedDockAnchor = lastChatZoneSessionAnchor() ?? undefined
+    }
+
+    resolved = inWorkingPane ? 'tab' : 'in-place'
   }
 
   // A `stack` open arrives from outside the workspace, so unlike a sidebar
@@ -163,9 +179,9 @@ export function openSession(
     }
 
     if (botWorkspaceScope) {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
+      openSessionTile(storedSessionId, 'center', focusedDockAnchor, undefined, botWorkspaceScope)
     } else {
-      openSessionTile(storedSessionId, 'center')
+      openSessionTile(storedSessionId, 'center', focusedDockAnchor)
     }
 
     return

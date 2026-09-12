@@ -99,7 +99,11 @@ def ensure_dependency(dep: str, interactive: bool = True) -> bool:
             if interactive:
                 print("  PowerShell not found. Install PowerShell or run install.ps1 manually.")
             return False
-        cmd = [ps_bin, "-ExecutionPolicy", "Bypass", "-File", str(script), "-Ensure", dep, "-HermesHome", str(get_hermes_home())]
+        # -NoProfile: the user's profile must not run ahead of install.ps1 — one that
+        # blocks on input hangs this step with no output at all (#108735). Left
+        # interactive so install.ps1 can still prompt when the caller asked it to.
+        cmd = [ps_bin, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+               "-Ensure", dep, "-HermesHome", str(get_hermes_home())]
     else:
         cmd = ["bash", str(script), "--ensure", dep]
     run_env = {**hermes_subprocess_env(inherit_credentials=False), "IS_INTERACTIVE": "false"}

@@ -117,6 +117,9 @@ def test_ensure_dependency_uses_powershell_on_windows(tmp_path):
         ensure_dependency("node", interactive=False)
         cmd = mock_run.call_args[0][0]
         assert "powershell" in cmd[0].lower()
+        # The user's profile must not run ahead of install.ps1 — one that blocks
+        # on input hangs this step with no output at all (#108735).
+        assert "-NoProfile" in cmd
         assert "-Ensure" in cmd
         assert cmd[cmd.index("-Ensure") + 1] == "node"
         assert "-HermesHome" in cmd

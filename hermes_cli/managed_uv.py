@@ -1003,11 +1003,19 @@ def _install_uv_posix(env: dict[str, str]) -> None:
 
 
 def _install_uv_windows(env: dict[str, str]) -> None:
-    """Invoke the PowerShell installer."""
+    """Invoke the PowerShell installer.
+
+    ``-NoProfile``/``-NonInteractive`` are load-bearing, not hygiene: without them the
+    user's Windows PowerShell profile runs before the installer, and a profile that
+    blocks on stdin (e.g. the common "Windows PowerShell 5.1 hands off to an
+    interactive pwsh 7" snippet) hangs this child forever. Because the output is
+    captured, the caller only ever sees a silent stall — no error to act on (#108735).
+    """
     cmd = "irm https://astral.sh/uv/install.ps1 | iex"
     subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd], env=env, check=True,
-        capture_output=True)
+        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-Command", cmd],
+        env=env, check=True, capture_output=True)
 
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:

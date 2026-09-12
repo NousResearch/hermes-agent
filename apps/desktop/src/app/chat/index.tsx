@@ -32,10 +32,19 @@ import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $hydrationSyncProfile,
+  $newChatProfile,
+  $profiles,
+  resolveNewSessionProfile
+} from '@/store/profile'
+import { $projectTree, $projectTreeProfile, projectNameForCwd, projectTreeSupportsProfile } from '@/store/projects'
 import {
   $connection,
   $contextSuggestions,
+  $currentCwd,
   $freshDraftReady,
   $gatewayState,
   $introPersonality,
@@ -66,6 +75,7 @@ import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
+import { isFreshSessionDraft, NewSessionHeader } from './new-session-header'
 import { ProfileTag } from './profile-tag'
 import { isRouteSessionMismatch } from './route-session-state'
 import { useRuntimeMessageRepository } from './runtime-repository'
@@ -122,6 +132,25 @@ interface ChatHeaderProps {
   selectedSessionId: null | string
 }
 
+function NewSessionDraftHeader({ showProfileTag }: { showProfileTag: boolean }) {
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const currentCwd = useStore($currentCwd)
+  const newChatProfile = useStore($newChatProfile)
+  const projectTree = useStore($projectTree)
+  const projectTreeProfile = useStore($projectTreeProfile)
+  const profile = resolveNewSessionProfile(newChatProfile, activeGatewayProfile)
+  const projectTreeMatchesProfile = projectTreeSupportsProfile(projectTreeProfile, profile)
+
+  return (
+    <NewSessionHeader
+      cwd={currentCwd}
+      profile={profile}
+      projectName={projectTreeMatchesProfile ? projectNameForCwd(currentCwd, projectTree) : null}
+      showProfileTag={showProfileTag}
+    />
+  )
+}
+
 function ChatHeader({
   activeSessionId,
   isRoutedSessionView,
@@ -137,6 +166,7 @@ function ChatHeader({
     (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
+  const isFreshDraft = isFreshSessionDraft({ activeSessionId, isRoutedSessionView, selectedSessionId })
 
   // Which agent/persona owns this chat — glanceable in the header once a
   // second profile exists, so the open session's ownership is never ambiguous
@@ -153,10 +183,13 @@ function ChatHeader({
       : false
 
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
-  // are compact side panels — they drop the session-actions header + border
-  // entirely. A brand-new draft has nothing to pin/delete/rename either.
-  if (isAuxiliaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
+  // are compact side panels, so they drop the header and border entirely.
+  if (isAuxiliaryWindow()) {
     return null
+  }
+
+  if (isFreshDraft) {
+    return <NewSessionDraftHeader showProfileTag={profiles.length > 1} />
   }
 
   return (

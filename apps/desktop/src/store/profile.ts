@@ -262,6 +262,13 @@ export type AgentProfileRoute = SessionOwnerRoute
 // change before the first Send; the draft's owner must not change with it.
 export const $newChatRoute = atom<AgentProfileRoute | null>(null)
 
+export function resolveNewSessionProfile(
+  newChatProfile: string | null = $newChatProfile.get(),
+  activeGatewayProfile: string = $activeGatewayProfile.get()
+): string {
+  return newChatProfile ?? normalizeProfileKey(activeGatewayProfile)
+}
+
 // The registry source captured TOGETHER with a $newChatProfile intent
 // (selectProfile / newSessionInProfile / a connection switch / `/profile`).
 // A profile is not a machine-global name: "omar" picked while the remote

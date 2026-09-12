@@ -38,6 +38,10 @@ test('gitFor accepts an internally resolved git binary path containing spaces', 
   assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe'))
 })
 
+test('gitFor accepts internally resolved git paths with restricted non-space characters', () => {
+  assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Git(x86)\\cmd\\git.exe'))
+})
+
 test('gitFor runs git through a spaced binary path', async () => {
   if (process.platform !== 'win32') {
     return
@@ -56,6 +60,30 @@ test('gitFor runs git through a spaced binary path', async () => {
   const status = await gitFor(repo, gitBin).status()
 
   assert.equal(status.not_added.includes('changed.txt'), true)
+})
+
+test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
+  const unrelatedWarnings: unknown[][] = []
+  const originalWarn = console.warn
+
+  const recordingWarn = (...args: unknown[]) => {
+    unrelatedWarnings.push(args)
+  }
+
+  console.warn = recordingWarn
+
+  try {
+    for (let i = 0; i < 5; i += 1) {
+      gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe')
+    }
+
+    assert.equal(console.warn, recordingWarn)
+    console.warn('unrelated warning')
+  } finally {
+    console.warn = originalWarn
+  }
+
+  assert.deepEqual(unrelatedWarnings, [['unrelated warning']])
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {

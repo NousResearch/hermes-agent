@@ -18,6 +18,13 @@ const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
+// simple-git 3.x emits this exact message when a custom binary path contains a
+// restricted character (e.g. a space in `C:\Program Files\Git\...`) even after
+// allowUnsafeCustomBinary opted in — the flag only downgrades the throw to a
+// console.warn. Exported so gitFor and its tests share one source of truth.
+export const SIMPLE_GIT_UNSAFE_BINARY_WARN =
+  'Invalid value supplied for custom binary, restricted characters must be removed or supply the unsafe.allowUnsafeCustomBinary option'
+
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
 // to — aren't found. Augment PATH with the resolved gh dir + the common
@@ -46,18 +53,45 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
 function gitFor(cwd, gitBin) {
   // `gitBin` is resolved inside the Electron main process from known install
   // locations or PATH — never renderer/user input. simple-git's custom-binary
-  // validation rejects paths containing spaces (the default Windows install is
+  // validation rejects restricted characters (the default Windows install is
   // `C:\Program Files\Git\cmd\git.exe`), which silently broke the Review pane.
-  // For spaced paths, opt into simple-git's trusted-binary escape hatch instead
-  // of falling back to PATH (often absent in GUI-launched apps, and PATH lookup
-  // could resolve a repo-local git.exe).
-  return simpleGit({
-    baseDir: cwd,
-    binary: gitBin || 'git',
-    maxConcurrentProcesses: 4,
-    trimmed: false,
-    ...(gitBin && /\s/.test(gitBin) ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
-  })
+  // For an internally resolved path, opt into simple-git's trusted-binary escape
+  // hatch instead of falling back to PATH (often absent in GUI-launched apps,
+  // and PATH lookup could resolve a repo-local git.exe).
+  const unsafeBinary = Boolean(gitBin)
+
+  const makeGit = () =>
+    simpleGit({
+      baseDir: cwd,
+      binary: gitBin || 'git',
+      maxConcurrentProcesses: 4,
+      trimmed: false,
+      ...(unsafeBinary ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+    })
+
+  if (!unsafeBinary) {
+    return makeGit()
+  }
+
+  // With the escape hatch set, simple-git 3.x still console.warns about the
+  // restricted characters on every factory call — the flag only downgrades the
+  // throw to a warning. The binary here is a fileExists-checked system install,
+  // never user input, so that warning is pure console spam on Windows (where
+  // every standard git lives under a spaced "Program Files"). Filter exactly
+  // that message for the synchronous factory call only.
+  const originalWarn = console.warn
+
+  console.warn = (message?: unknown, ...rest: unknown[]) => {
+    if (typeof message !== 'string' || !message.startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)) {
+      originalWarn(message, ...rest)
+    }
+  }
+
+  try {
+    return makeGit()
+  } finally {
+    console.warn = originalWarn
+  }
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

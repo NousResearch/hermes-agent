@@ -68,15 +68,19 @@ def _make_gateway_approval_notifier(
                 if future is None:
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(future, timeout=15)
-                if outcome in {"sent", "ambiguous"}:
-                    # A timed-out send may already be visible; keep the waiter and NEVER duplicate it.
-                    return
-                logger.warning("Interactive approval failed, falling back to text")
             except Exception as exc:
+                outcome = "failed"
                 logger.warning(
                     "Button-based approval failed, falling back to text: %s",
                     exc,
                 )
+            if outcome in {"sent", "ambiguous"}:
+                # A timed-out send may already be visible; keep the waiter and NEVER duplicate it.
+                return
+            if outcome == "declined":
+                # A destination refusal applies to every delivery lane, including text.
+                raise RuntimeError("exec approval undeliverable: connector egress declined this destination")
+            logger.warning("Interactive approval failed, falling back to text")
 
         prefix = getattr(adapter, "typed_command_prefix", "/")
         message = _format_exec_approval_fallback(

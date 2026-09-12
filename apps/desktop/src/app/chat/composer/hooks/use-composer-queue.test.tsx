@@ -55,6 +55,30 @@ function renderQueueHook(overrides: { busy?: boolean; onCancel?: () => void; onS
 }
 
 describe('useComposerQueue park integration', () => {
+  it('never interrupts or replays a confirmed entry with an uncertain dispatch, including after reload', async () => {
+    const entry = enqueueQueuedPrompt(SESSION_KEY, {
+      attachments: [],
+      text: 'confirmed once',
+      confirmedExternal: true
+    })!
+    const { hook, onCancel, onSubmit } = renderQueueHook({ busy: true })
+    onSubmit.mockRejectedValue(new Error('lost acknowledgement'))
+    expect(hook.result.current.sendQueuedNow(entry.id)).toBe(false)
+    expect(onCancel).not.toHaveBeenCalled()
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0][1]).toMatchObject({ confirmedExternal: true, fromQueue: true })
+    const saved = window.localStorage.getItem('hermes.desktop.composerQueue.v1')!
+    expect(JSON.parse(saved)[SESSION_KEY][0].dispatchStarted).toBe(true)
+    hook.unmount()
+    $queuedPromptsBySession.set(JSON.parse(saved))
+    const restored = renderQueueHook()
+    await act(async () => {
+      await restored.hook.result.current.drainNextQueued()
+    })
+    expect(restored.onSubmit).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     $queuedPromptsBySession.set({})
@@ -125,6 +149,19 @@ describe('useComposerQueue park integration', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('releases only a proven pre-dispatch refusal so a confirmed entry can drain once idle', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'confirmed after busy', confirmedExternal: true })
+    const { hook, onSubmit } = renderQueueHook({ busy: true })
+    onSubmit.mockResolvedValueOnce(false)
+    await act(async () => {
+      expect(await hook.result.current.drainNextQueued()).toBe(false)
+    })
+    expect(getQueuedPrompts(SESSION_KEY)[0].dispatchStarted).toBe(false)
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0))
+    expect(onSubmit).toHaveBeenCalledTimes(2)
   })
 
   it('auto-drains an unparked queue once idle', async () => {

@@ -780,7 +780,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // the next turn untouched — without it, losing the settle race
           // (client saw idle, server still unwinding) redirects or interrupts
           // the live turn with text the user explicitly queued.
-          ...(options?.fromQueue && { queued: true }),
+          ...((options?.fromQueue || options?.confirmedExternal) && { queued: true }),
           ...(titlePreview && { title_preview: titlePreview })
         })
 
@@ -794,44 +794,63 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         try {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
-          const submitted = await withSessionNotFoundResume(
-            sessionId,
-            recoverStoredSessionId,
-            liveId =>
-              withSessionBusyRetry(() =>
-                requestGateway<PromptSubmitResult>(
-                  'prompt.submit',
-                  submitParams(liveId),
-                  PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-                )
-              ),
-            {
-              requestGateway,
-              driftReason: sessionDriftReason,
-              onRecovered: recoveredId => {
-                if (onRuntimeRecovered) {
-                  onRuntimeRecovered(recoveredId)
-                } else {
-                  // Publish stored-to-runtime ownership before retrying the
-                  // session-scoped request. The window router needs this
-                  // binding to keep a recovered remote runtime on the gateway
-                  // that owns its durable session.
-                  if (recoverStoredSessionId) {
-                    updateSessionState(recoveredId, state => state, recoverStoredSessionId)
-                  }
+          let submitted: { result: PromptSubmitResult | undefined; sessionId: string }
 
-                  if (targetIsCurrentView()) {
-                    activeSessionIdRef.current = recoveredId
-                    setActiveSessionId(recoveredId)
+          if (options?.confirmedExternal) {
+            // Native plugin submissions get exactly one delivery attempt: no
+            // busy retry and no session recovery replay, so a lost
+            // acknowledgement can never duplicate a confirmed prompt.
+            const result = await requestGateway<PromptSubmitResult>(
+              'prompt.submit',
+              submitParams(sessionId),
+              PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+            )
+
+            if (result?.status !== 'streaming' && result?.status !== 'queued') {
+              throw new Error('Native submission outcome unknown')
+            }
+            options.onExternalAccepted?.(result.status === 'queued')
+            submitted = { result, sessionId }
+          } else {
+            submitted = await withSessionNotFoundResume(
+              sessionId,
+              recoverStoredSessionId,
+              liveId =>
+                withSessionBusyRetry(() =>
+                  requestGateway<PromptSubmitResult>(
+                    'prompt.submit',
+                    submitParams(liveId),
+                    PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                  )
+                ),
+              {
+                requestGateway,
+                driftReason: sessionDriftReason,
+                onRecovered: recoveredId => {
+                  if (onRuntimeRecovered) {
+                    onRuntimeRecovered(recoveredId)
+                  } else {
+                    // Publish stored-to-runtime ownership before retrying the
+                    // session-scoped request. The window router needs this
+                    // binding to keep a recovered remote runtime on the gateway
+                    // that owns its durable session.
+                    if (recoverStoredSessionId) {
+                      updateSessionState(recoveredId, state => state, recoverStoredSessionId)
+                    }
+
+                    if (targetIsCurrentView()) {
+                      activeSessionIdRef.current = recoveredId
+                      setActiveSessionId(recoveredId)
+                    }
                   }
                 }
-              }
-            },
-            // A starved backend loop (#55578 symptom d) rejects the submit even
-            // though the stored session is fine — recover it like a dead id
-            // instead of erroring out and losing the session binding.
-            { alsoTimeout: true }
-          )
+              },
+              // A starved backend loop (#55578 symptom d) rejects the submit even
+              // though the stored session is fine — recover it like a dead id
+              // instead of erroring out and losing the session binding.
+              { alsoTimeout: true }
+            )
+          }
 
           const rowId = submitted.result?.user_row_id
 
@@ -880,6 +899,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
+        if (options?.confirmedExternal) {
+          // A lost acknowledgement cannot prove rejection. Do not recover,
+          // replay, restore a draft or release the live turn's busy state.
+          releaseSubmitLock()
+          throw err
+        }
+
         releaseBusy()
 
         // A queued drain that raced a not-yet-settled turn gets a transient

@@ -47,6 +47,11 @@ def _patch_repo(tmp_path, monkeypatch, *, with_installer: bool = True):
     desktop_pkg.parent.mkdir(parents=True)
     desktop_pkg.write_text('{"version":"0.0.1"}\n', encoding="utf-8")
 
+    package_lock = repo / "package-lock.json"
+    package_lock.write_text('{"packages":{"apps/desktop":{"name":"hermes","version":"0.0.1"}}}\n', encoding="utf-8")
+    uv_lock = repo / "uv.lock"
+    uv_lock.write_text('[[package]]\nname = "hermes-agent"\nversion = "0.0.1"\n', encoding="utf-8")
+
     installer_pkg = repo / "apps" / "bootstrap-installer" / "package.json"
     tauri_conf = (
         repo / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
@@ -65,6 +70,10 @@ def _patch_repo(tmp_path, monkeypatch, *, with_installer: bool = True):
     monkeypatch.setattr(release, "REPO_ROOT", repo)
     monkeypatch.setattr(release, "VERSION_FILE", init_py)
     monkeypatch.setattr(release, "PYPROJECT_FILE", pyproject)
+    monkeypatch.setattr(release, "DESKTOP_PKG_FILE", desktop_pkg)
+    monkeypatch.setattr(release, "PKG_LOCK_FILE", package_lock)
+    monkeypatch.setattr(release, "UV_LOCK_FILE", uv_lock)
+    monkeypatch.setattr(release, "git", lambda *args: "0")
     return {
         "repo": repo,
         "init_py": init_py,
@@ -118,10 +127,10 @@ def test_update_version_files_does_not_invent_version_keys(tmp_path, monkeypatch
     assert _json_version(paths["desktop_pkg"]) == "0.21.1"
 
 
-def test_version_files_to_stage_includes_installer_when_present(tmp_path, monkeypatch):
+def test_updated_files_include_installer_when_present(tmp_path, monkeypatch):
     paths = _patch_repo(tmp_path, monkeypatch)
 
-    staged = release.version_files_to_stage()
+    staged = release.update_version_files("0.21.1", "2026.9.10")
 
     assert str(paths["init_py"]) in staged
     assert str(paths["pyproject"]) in staged
@@ -131,10 +140,10 @@ def test_version_files_to_stage_includes_installer_when_present(tmp_path, monkey
     assert str(paths["cargo_toml"]) in staged
 
 
-def test_version_files_to_stage_omits_missing_installer(tmp_path, monkeypatch):
+def test_updated_files_omit_missing_installer(tmp_path, monkeypatch):
     paths = _patch_repo(tmp_path, monkeypatch, with_installer=False)
 
-    staged = release.version_files_to_stage()
+    staged = release.update_version_files("0.21.1", "2026.9.10")
 
     assert str(paths["installer_pkg"]) not in staged
     assert str(paths["tauri_conf"]) not in staged

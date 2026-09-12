@@ -485,21 +485,17 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         # Starts (or reuses) the side-env daemon; the URL comes from the side env's
         # own ProfileManager/get_url, never a hardcoded port.
-        # Fail-closed on key material: when this process holds no key (no secret
-        # scope on this thread) but the file does, a rewrite would destroy the
-        # only key copy the daemon subprocess can read. Skip the write AND the
-        # restart: bringing the daemon back up now would boot it keyless, which
-        # is the exact outage this guards against. The client kwargs above
-        # already carry whatever key WAS available.
         changed = _load_simple_env(_embedded_profile_env_path(cfg)) != _build_embedded_profile_env(cfg)
-        if changed and not _may_rewrite_profile_env(cfg):
-            logger.warning(
-                "Hindsight profile env for %r holds an LLM API key this process cannot see "
-                "(no secret scope); leaving the file untouched so the daemon keeps its key.",
-                profile)
-            changed = False
         if changed:
-            _materialize_embedded_profile_env(cfg)
+            if _may_rewrite_profile_env(cfg):
+                _materialize_embedded_profile_env(cfg)
+            else:
+                # A scopeless worker must neither erase a persisted key nor stop
+                # the daemon that still uses it. The side-env manager reuses it.
+                logger.warning(
+                    "Hindsight profile env for %r holds an LLM API key this process cannot see; "
+                    "leaving the file and running daemon untouched.", profile)
+                changed = False
         url = _start_sideenv_daemon(cfg, restart=changed)
         self._api_url = url
         _ensure_client_dependency()

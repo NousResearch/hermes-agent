@@ -13,6 +13,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from scripts.bundles import native
 
 
@@ -233,3 +235,36 @@ def test_native_dispatch_keeps_cache_across_failed_children(tmp_path, monkeypatc
     assert all(not home.exists() for home in attempts)
     assert not (tmp_path / "ambient-cache").exists()
     assert dict(os.environ) == original
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_native_dispatch_preserves_compiler_homes_inside_isolated_home(tmp_path, monkeypatch, explicit):
+    host_home = tmp_path / "host"
+    monkeypatch.setattr(Path, "home", lambda: host_home)
+    monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
+    homes = {}
+    for key, name in (("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")):
+        directory = (tmp_path / "custom" if explicit else host_home) / name
+        directory.mkdir(parents=True)
+        (directory / "fixture-state").write_text(key, encoding="utf-8")
+        homes[key] = str(directory)
+        if explicit:
+            monkeypatch.setenv(key, str(directory))
+        else:
+            monkeypatch.delenv(key, raising=False)
+    before = dict(os.environ)
+    run = subprocess.run
+
+    def child(command, *, cwd, env):
+        assert env["HOME"] != str(host_home)
+        assert env["USERPROFILE"] == env["HOME"]
+        assert {key: env.get(key) for key in homes} == homes
+        return run([sys.executable, "-c",
+                    "import os; from pathlib import Path; "
+                    "assert all((Path(os.environ[k]) / 'fixture-state').read_text() == k "
+                    "for k in ('CARGO_HOME', 'RUSTUP_HOME'))"],
+                   cwd=cwd, env=env, check=True)
+
+    monkeypatch.setattr(native.subprocess, "run", child)
+    assert native.stage_native(SimpleNamespace(out=tmp_path / "out", ref="HEAD")) == 0
+    assert dict(os.environ) == before

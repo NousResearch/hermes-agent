@@ -271,6 +271,7 @@ import {
 } from './managed-ssh-update'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
+import { fetchLocalMedia } from './media-range'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
@@ -280,8 +281,6 @@ import {
   resolveOauthRestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
-import { fetchLocalMedia } from './media-range'
-import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
@@ -819,7 +818,7 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
 // One launch decision must reach both the renderer and every backend spawn.
 const GUEST_ONBOARDING: boolean = guestOnboardingEnabled()
-const SKIP_INTRO = skipIntroEnabled()
+const SKIP_INTRO: boolean = skipIntroEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -1270,12 +1269,11 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
-function registerMediaProtocol() {
-  const handler = createMediaProtocolHandler({
-    ensureRemoteBearer: baseUrl => ensureNativeAccessToken(baseUrl).catch(() => null),
-    // Answer local files ourselves: Electron's file:// loader ignores Range and
-    // returns the whole body as 200 without Accept-Ranges, which makes <video>
-    // unseekable (seekable=[0,0]).
+function registerMediaProtocol(): void {
+  const handler: ReturnType<typeof createMediaProtocolHandler> = createMediaProtocolHandler({
+    ensureRemoteBearer: (baseUrl: string): Promise<string | null> =>
+      ensureNativeAccessToken(baseUrl).catch((): null => null),
+    // Electron's file:// loader ignores Range, which prevents video seeking.
     fetchLocal: fetchLocalMedia,
     fetchRemote: (url, headers, method) =>
       electronNet.fetch(url, {

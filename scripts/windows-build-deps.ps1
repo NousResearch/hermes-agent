@@ -88,19 +88,29 @@ function Initialize-HermesArm64BuildTools {
         if (-not $clangPath) { throw 'The Clang compiler is still missing after Visual Studio setup.' }
     }
     Write-Host "ARM64 C++ build tools found: $vs"
-    $devCmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
-    # The batch file configures SDK, compiler, and linker paths only for this setup process.
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $env:ComSpec
-    $startInfo.Arguments = "/d /s /c `"`"$devCmd`" -no_logo -arch=arm64 -host_arch=arm64 >nul && set`""
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $true
-    $process = [System.Diagnostics.Process]::Start($startInfo)
-    $lines = $process.StandardOutput.ReadToEnd() -split "`r?`n"
-    $process.WaitForExit()
-    if ($process.ExitCode -ne 0) { throw 'Could not initialize the ARM64 Visual Studio developer environment' }
-    foreach ($line in $lines) {
-        if ($line -match '^([^=]+)=(.*)$') { Set-Item -LiteralPath "env:$($matches[1])" -Value $matches[2] }
+    # CI, desktop builds and native staging can inherit the same developer
+    # environment. VsDevCmd prepends its paths again on every call, eventually
+    # overflowing cmd.exe's line limit. Reuse only a matching, usable environment.
+    $vsReady = $env:VSINSTALLDIR -and $env:VSINSTALLDIR.TrimEnd('\') -eq $vs.TrimEnd('\') -and
+        $env:VSCMD_ARG_HOST_ARCH -eq 'arm64' -and $env:VSCMD_ARG_TGT_ARCH -eq 'arm64' -and
+        $env:INCLUDE -and $env:LIB -and (Get-Command cl.exe -ErrorAction SilentlyContinue)
+    if (-not $vsReady) {
+        $devCmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+        # Keep cmd's outer quotes intact on Windows PowerShell 5 as well as pwsh.
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $env:ComSpec
+        $startInfo.Arguments = "/d /s /c `"`"$devCmd`" -no_logo -arch=arm64 -host_arch=arm64 >nul && set`""
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        try {
+            $lines = $process.StandardOutput.ReadToEnd() -split "`r?`n"
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) { throw 'Could not initialize the ARM64 Visual Studio developer environment' }
+        } finally { $process.Dispose() }
+        foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$') { Set-Item -LiteralPath "env:$($matches[1])" -Value $matches[2] }
+        }
     }
     if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { throw 'ARM64 C++ compiler is unavailable after environment setup' }
 
@@ -111,7 +121,7 @@ function Initialize-HermesArm64BuildTools {
     $env:CARGO_HOME = [IO.Path]::GetFullPath($env:CARGO_HOME)
     $env:RUSTUP_HOME = [IO.Path]::GetFullPath($env:RUSTUP_HOME)
     $cargoBin = Join-Path $env:CARGO_HOME 'bin'
-    $env:PATH = "$cargoBin;$env:PATH"
+    if ($cargoBin -notin ($env:PATH -split ';')) { $env:PATH = "$cargoBin;$env:PATH" }
     $rustup = Get-Command rustup.exe -ErrorAction SilentlyContinue
     if (-not $rustup) {
         $installer = Join-Path $buildRoot 'rustup-init.exe'

@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { $localRuntimeJobs, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
@@ -116,11 +116,23 @@ function renderPane() {
 // The fresh-machine states these tests exercise now lead with the
 // quickstart card; the full pane (runtime rows, model list, browser)
 // is one 'Let me choose' click away. Render and click through.
-async function renderFullPane() {
-  const result = renderPane()
-  const configure = await screen.findByRole('button', { name: /let me choose/i })
+async function renderFullPane(): Promise<ReturnType<typeof renderPane>> {
+  const result: ReturnType<typeof renderPane> = renderPane()
 
-  fireEvent.click(configure)
+  // Wait for status to load: the pane either shows the setup card (click
+  // through to the full pane) or, when an active runtime/model job routes
+  // straight to the full pane, the runtime section directly.
+  await waitFor((): void => {
+    expect(
+      Boolean(screen.queryByRole('button', { name: /let me choose/i })) || screen.queryAllByText(/this machine/i).length > 0
+    ).toBe(true)
+  })
+
+  const configure: HTMLElement | null = screen.queryByRole('button', { name: /let me choose/i })
+
+  if (configure) {
+    fireEvent.click(configure)
+  }
 
   return result
 }
@@ -423,8 +435,8 @@ describe('quickstart', () => {
 })
 
 describe('BrowseSection', () => {
-  it('keeps manual spill selection and HF browsing available without an automatic recommendation', async () => {
-    const stagedId = 'Spilled-Model-Q4_K_M'
+  it('keeps manual spill selection and HF browsing available without an automatic recommendation', async (): Promise<void> => {
+    const stagedId: string = 'Spilled-Model-Q4_K_M'
     mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
     mocked.getLocalCatalog.mockResolvedValue({ models: [SPILLED_MODEL] })
     renderPane()
@@ -436,10 +448,10 @@ describe('BrowseSection', () => {
 
     // Attach the browser-only scroll method to the real search container,
     // so a missing or misdirected click handler cannot satisfy the assertion.
-    const search = screen.getByPlaceholderText(/search models/i)
-    const browse = search.closest('#local-model-browse')
+    const search: HTMLElement = screen.getByPlaceholderText(/search models/i)
+    const browse: Element | null = search.closest('#local-model-browse')
     expect(browse).not.toBeNull()
-    const scroll = vi.fn()
+    const scroll: Mock<(options?: boolean | ScrollIntoViewOptions) => void> = vi.fn()
     Object.defineProperty(browse, 'scrollIntoView', { configurable: true, value: scroll })
     fireEvent.click(screen.getByRole('button', { name: /browse models/i }))
     expect(scroll).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
@@ -457,10 +469,14 @@ describe('BrowseSection', () => {
       models: [{ ...SPILLED_MODEL, downloaded: true, downloaded_model_id: stagedId }]
     })
     fireEvent.click(screen.getByRole('button', { name: /download ·/i }))
-    await waitFor(() => expect(mocked.downloadLocalModel).toHaveBeenCalledWith(SPILLED_MODEL.id))
+    await waitFor((): void => {
+      expect(mocked.downloadLocalModel).toHaveBeenCalledWith(SPILLED_MODEL.id)
+    })
     mocked.activateLocalModel.mockResolvedValue({ job_id: 'explicit-spill' })
     fireEvent.click(await screen.findByRole('button', { name: /^use$/i }))
-    await waitFor(() => expect(mocked.activateLocalModel).toHaveBeenCalledWith(stagedId))
+    await waitFor((): void => {
+      expect(mocked.activateLocalModel).toHaveBeenCalledWith(stagedId)
+    })
     expect(mocked.quickstartLocalModels).not.toHaveBeenCalled()
   })
 

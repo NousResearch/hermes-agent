@@ -2401,7 +2401,7 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
     )
     UV_LOCK_FILE.write_text(uv_text, encoding="utf-8")
 
-    return [
+    updated = [
         str(VERSION_FILE),
         str(PYPROJECT_FILE),
         str(DESKTOP_PKG_FILE),
@@ -2422,6 +2422,7 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
             count=1,
         )
         installer_pkg.write_text(pkg_text, encoding="utf-8")
+        updated.append(str(installer_pkg))
 
     installer_tauri = (
         REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
@@ -2435,6 +2436,7 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
             count=1,
         )
         installer_tauri.write_text(pkg_text, encoding="utf-8")
+        updated.append(str(installer_tauri))
 
     installer_cargo = (
         REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml"
@@ -2449,19 +2451,9 @@ def update_version_files(semver: str, calver_date: str) -> list[str]:
             flags=re.MULTILINE,
         )
         installer_cargo.write_text(cargo_text, encoding="utf-8")
+        updated.append(str(installer_cargo))
 
-
-def version_files_to_stage() -> list[str]:
-    """Return version-bearing files that exist and should be `git add`ed after a bump."""
-    candidates = [
-        VERSION_FILE,
-        PYPROJECT_FILE,
-        REPO_ROOT / "apps" / "desktop" / "package.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "package.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json",
-        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml",
-    ]
-    return [str(path) for path in candidates if path.exists()]
+    return updated
 
 
 def resolve_author(name: str, email: str) -> str:
@@ -3068,7 +3060,6 @@ def main():
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
             # Commit version bump
-            add_files = version_files_to_stage()
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")

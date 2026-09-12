@@ -976,7 +976,7 @@ class CheckpointManager:
         project a checkpoint belongs to.
         """
         store = _store_path()
-        if not _store_has_head(store):
+        if not (store / "HEAD").exists():
             return []
         results: List[Dict] = []
         for meta in _list_projects(store):
@@ -1870,6 +1870,7 @@ def _prune_checkpoints(
     size_after = _dir_size_bytes(base)
     delta = size_before - size_after
     result["bytes_freed"] = max(result["bytes_freed"], delta)
+
     return result
 
 

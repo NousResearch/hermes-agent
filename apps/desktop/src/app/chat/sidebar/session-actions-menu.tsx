@@ -25,7 +25,7 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
-import { runSessionRetitle } from '@/app/chat/actions/retitle-session'
+import { runSessionRetitle, sessionRetitleMatchesSelection } from '@/app/chat/actions/retitle-session'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
@@ -296,12 +296,12 @@ function useSessionActions({
       }
     }),
     spec({
-      disabled: !sessionId || sessionId !== $selectedStoredSessionId.get(),
+      disabled: !sessionRetitleMatchesSelection(sessionId),
       icon: 'sparkle',
       label: r.regenerateTitle,
       onSelect: async () => {
         triggerHaptic('selection')
-        await runSessionRetitle({ sessionId, profile })
+        await runSessionRetitle({ sessionId })
       }
     }),
     spec({

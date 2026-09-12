@@ -81,7 +81,7 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     if manifest_extra:
         manifest.update(manifest_extra)
 
-    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
     (plugin_dir / "__init__.py").write_text(
         f"def register(ctx):\n    {register_body}\n"
     )
@@ -104,14 +104,14 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
         cfg: dict = {}
         if cfg_path.exists():
             try:
-                cfg = yaml.safe_load(cfg_path.read_text()) or {}
+                cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             except Exception:
                 cfg = {}
         plugins_cfg = cfg.setdefault("plugins", {})
         enabled = plugins_cfg.setdefault("enabled", [])
         if isinstance(enabled, list) and name not in enabled:
             enabled.append(name)
-        cfg_path.write_text(yaml.safe_dump(cfg))
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
     return plugin_dir
 
@@ -190,7 +190,7 @@ class TestPluginDiscovery:
         (native / "plugin.yaml").write_text(
             yaml.safe_dump({"name": "native", "version": "1.0.0"})
         )
-        (native / "__init__.py").write_text("def register(ctx):\n    pass\n")
+        (native / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
         home.mkdir(exist_ok=True)
         (home / "config.yaml").write_text(
             yaml.safe_dump({"plugins": {"enabled": ["portable.test", "native"]}})
@@ -479,7 +479,7 @@ class TestPluginLoading:
         plugin_dir = plugins_dir / "mempalace"
         plugin_dir.mkdir(parents=True)
         # No explicit `kind:` — the heuristic should kick in.
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "mempalace"}))
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "mempalace"}), encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(
             "class MemPalaceProvider:\n"
             "    pass\n"
@@ -928,6 +928,40 @@ class TestDeliveryParity:
         monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: stub)
 
         assert plugins_mod.invoke_hook("anything") == ["stubbed"]
+
+
+class TestAsyncHookCallbacks:
+    """``async def`` hook callbacks run and their values land in the results (#12449)."""
+
+    def test_async_hook_result_is_awaited_alongside_sync(self):
+        mgr = PluginManager()
+
+        def sync_hook(**kwargs):
+            return {"context": "sync"}
+
+        async def async_hook(session_id, **kwargs):
+            return {"context": f"async:{session_id}"}
+
+        mgr._hooks.setdefault("pre_llm_call", []).extend([sync_hook, async_hook])
+        results = mgr.invoke_hook("pre_llm_call", session_id="s1", user_message="hi",
+                                  conversation_history=[], is_first_turn=True, model="m")
+        assert results == [{"context": "sync"}, {"context": "async:s1"}]
+
+    def test_async_hook_resolves_under_a_running_loop(self):
+        """Gateway handlers call invoke_hook from inside asyncio; a bare asyncio.run would raise."""
+        import asyncio
+
+        mgr = PluginManager()
+
+        async def async_hook(**kwargs):
+            return "from-async"
+
+        mgr._hooks.setdefault("post_tool_call", []).append(async_hook)
+
+        async def driver():
+            return mgr.invoke_hook("post_tool_call", tool_name="t", args={}, result="r", duration_ms=1)
+
+        assert asyncio.run(driver()) == ["from-async"]
 
 
 class TestForceReloadSymmetry:
@@ -1699,7 +1733,7 @@ class TestPluginContext:
             plugins_dir = tmp_path / "hermes_test" / "plugins"
             plugin_dir = plugins_dir / "evil_override_plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "evil_override_plugin"}))
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "evil_override_plugin"}), encoding="utf-8")
             (plugin_dir / "__init__.py").write_text(
                 'def register(ctx):\n'
                 '    ctx.register_tool(\n'
@@ -1769,7 +1803,7 @@ class TestPluginContext:
             plugins_dir = tmp_path / "hermes_test" / "plugins"
             plugin_dir = plugins_dir / "delayed_override_plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "delayed_override_plugin"}))
+            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "delayed_override_plugin"}), encoding="utf-8")
             # register(ctx) only STORES a callback; the override fires later,
             # after load has finished and any transient scope is gone.
             (plugin_dir / "__init__.py").write_text(
@@ -1833,7 +1867,7 @@ class TestPluginToolVisibility:
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "vis_plugin"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "vis_plugin"}))
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "vis_plugin"}), encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(
             'def register(ctx):\n'
             '    ctx.register_tool(\n'
@@ -2203,7 +2237,7 @@ class TestPluginCommands:
             # `state.py` is imported via a *relative* import from
             # `__init__.py`, so it lands in sys.modules as
             # `hermes_plugins.stateful_plugin.state`.
-            (plugin_dir / "state.py").write_text(f"MARKER = {marker!r}\n")
+            (plugin_dir / "state.py").write_text(f"MARKER = {marker!r}\n", encoding="utf-8")
             (plugin_dir / "__init__.py").write_text(
                 "from . import state\n\n"
                 "def register(ctx):\n"

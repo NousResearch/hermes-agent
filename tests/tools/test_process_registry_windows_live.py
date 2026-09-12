@@ -14,7 +14,7 @@ thread) — no mocked spawn.
 from __future__ import annotations
 
 import os
-from pathlib import Path
+import re
 import shlex
 import sys
 import time
@@ -123,11 +123,12 @@ class TestWindowsSpawnParity:
             "time.sleep(120)\n",
             encoding="utf-8",
         )
-        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(script)))}"
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
         session = registry.spawn_local(command, use_pty=True)
         output = _wait_output(session, "PTY_TREE_PIDS=")
-        payload = output.split("PTY_TREE_PIDS=", 1)[1].splitlines()[0].strip()
-        owned = [psutil.Process(int(pid)) for pid in payload.split(",")]
+        match = re.search(r"PTY_TREE_PIDS=(\d+),(\d+)", output)
+        assert match is not None, output
+        owned = [psutil.Process(int(pid)) for pid in match.groups()]
 
         result = registry.kill_process(session.id)
 

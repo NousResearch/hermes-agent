@@ -99,6 +99,8 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         f"via {result.provider_label or result.target_provider}. "
         f"{'This override applies to the next turn only. ' if one_turn else ''}"
         f"Adjust your self-identification accordingly.]")
+    if result.provider_switch_warning:
+        _cprint(f"\033[1;31m  🚨 {result.provider_switch_warning}\033[0m")
     _cprint(f"  ✓ Model switched: {_display_new}")
     _cprint(f"    Provider: {result.provider_label or result.target_provider}")
 

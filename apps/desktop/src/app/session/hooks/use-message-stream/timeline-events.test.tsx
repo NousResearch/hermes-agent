@@ -74,6 +74,45 @@ describe('live transcript timeline events', () => {
     expect(system?.parts[0].timestamp).toBe(401.625)
   })
 
+  it.each([SID, 'background-session'])('keeps a full model-switch warning in its owning session %s', sessionId => {
+    event('message.start', 450)
+    if (sessionId !== SID) {
+      act(() => stream.handleEvent({ session_id: sessionId, type: 'message.start', payload: { timestamp: 450 } }))
+    }
+    const focusedBefore = stream.state(SID)
+    const before = stream.state(sessionId)
+    const text = '  PROVIDER AUTOMATICALLY CHANGED: openai-codex -> openrouter. Additional costs may apply.\n\n' +
+      'Catalog validation notice. Keep <b>literal markup</b> and \u001b[31mcontrol text\u001b[0m.\n'
+    expect(before.busy).toBe(true)
+
+    act(() => stream.handleEvent({
+      session_id: sessionId,
+      type: 'status.update',
+      payload: { kind: 'model-switch-warning', text, timestamp: 451.625 }
+    }))
+
+    const after = stream.state(sessionId)
+    const system = after.messages.at(-1)
+    expect(after.messages).toHaveLength(before.messages.length + 1)
+    expect(system).toMatchObject({
+      role: 'system',
+      parts: [{ type: 'text', text: `warning: ${text}`, timestamp: 451.625 }],
+      timestamp: 451.625
+    })
+    expect({ ...after, messages: before.messages }).toEqual(before)
+    expect(after.messages.slice(0, -1)).toEqual(before.messages)
+    if (sessionId !== SID) {
+      expect(stream.state(SID)).toEqual(focusedBefore)
+    }
+
+    act(() => stream.handleEvent({
+      session_id: sessionId,
+      type: 'status.update',
+      payload: { kind: 'progress', text: 'Working...', timestamp: 452 }
+    }))
+    expect(stream.state(sessionId)).toEqual(after)
+  })
+
   it('uses session.info time when it is the only stop boundary', () => {
     event('message.start', 500)
     event('tool.start', 501, { args: {}, name: 'terminal', tool_id: 'call-3' })

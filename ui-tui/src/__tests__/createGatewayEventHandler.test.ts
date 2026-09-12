@@ -208,6 +208,41 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual(todos)
   })
 
+  it('appends the full model-switch warning immediately without changing the active turn', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.system.sys.mockImplementation((text: string) => appended.push({ role: 'system', text }))
+    patchUiState({ sid: 'focused' })
+    const onEvent = createGatewayEventHandler(ctx)
+    onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
+    onEvent({
+      session_id: 'focused',
+      payload: { request_id: 'approval', command: 'test' },
+      type: 'approval.request'
+    } as any)
+    const busyState = getUiState()
+    const busyTurn = getTurnState()
+    const busyOverlay = getOverlayState()
+    const text = 'PROVIDER AUTOMATICALLY CHANGED: openai-codex -> openrouter. Additional costs may apply.\n\n' +
+      'Catalog validation notice. Keep <b>literal markup</b> and \u001b[31mcontrol text\u001b[0m.\n'
+    expect(busyState.busy).toBe(true)
+
+    onEvent({ session_id: 'other', payload: { kind: 'model-switch-warning', text }, type: 'status.update' })
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+    onEvent({ session_id: 'focused', payload: { kind: 'model-switch-warning', text }, type: 'status.update' })
+
+    expect(ctx.system.sys).toHaveBeenCalledExactlyOnceWith(`warning: ${text}`)
+    expect(appended).toEqual([{ role: 'system', text: `warning: ${text}` }])
+    expect(getUiState()).toEqual(busyState)
+    expect(getTurnState()).toEqual(busyTurn)
+    expect(getOverlayState()).toEqual(busyOverlay)
+
+    onEvent({ session_id: 'focused', payload: { kind: 'progress', text: 'Working...' }, type: 'status.update' })
+    expect(getUiState().status).toBe('Working...')
+    expect(getUiState().busy).toBe(true)
+    expect(ctx.system.sys).toHaveBeenCalledTimes(1)
+  })
+
   it('prints compaction progress status into the transcript', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

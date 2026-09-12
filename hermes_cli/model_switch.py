@@ -440,6 +440,7 @@ class ModelSwitchResult:
     runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    provider_switch_warning: str = ""
 
 
 @dataclass(frozen=True)
@@ -1042,6 +1043,7 @@ class _Switch:
     explicit_provider: str
     user_providers: Optional[dict]
     custom_providers: Optional[list]
+    provider_was_explicit: bool = False  # caller intent, before config routing promotes explicit_provider
     new_model: str = ""
     target_provider: str = ""
     resolved_alias: str = ""
@@ -1452,6 +1454,19 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
 
+    provider_switch_warning = ""
+    if st.provider_changed and not st.provider_was_explicit:
+        previous_def = resolve_provider_full(st.current_provider, st.user_providers, st.custom_providers)
+        target_def = resolve_provider_full(st.target_provider, st.user_providers, st.custom_providers)
+        previous_id = previous_def.id if previous_def else st.current_provider
+        target_id = target_def.id if target_def else st.target_provider
+        if previous_id != target_id:
+            provider_switch_warning = (
+                f"PROVIDER AUTOMATICALLY CHANGED: {previous_id} -> {target_id}. "
+                "No --provider argument was supplied. This change may incur "
+                "additional costs. Specify --provider explicitly to choose your provider."
+            )
+
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.
     request_overrides = None
@@ -1465,6 +1480,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         success=True, new_model=st.new_model, target_provider=st.target_provider,
         provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
+        provider_switch_warning=provider_switch_warning,
         provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
             k: v for k, v in runtime_capabilities.items() if isinstance(k, str) and isinstance(v, bool)},
@@ -1485,6 +1501,7 @@ def switch_model(
         raw_input=raw_input, current_provider=current_provider, current_model=current_model,
         current_base_url=current_base_url, current_api_key=current_api_key, is_global=is_global,
         explicit_provider=explicit_provider, user_providers=user_providers, custom_providers=custom_providers,
+        provider_was_explicit=bool(explicit_provider),
         new_model=raw_input.strip(), target_provider=current_provider)
     route = _route_explicit_provider if explicit_provider else _route_from_model_input
     for step in (route, _resolve_switch_credentials, _validate_switch):

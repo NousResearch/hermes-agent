@@ -199,3 +199,71 @@ class TestApplyTokenToClient:
 
     def test_returns_false_when_shape_unknown(self):
         assert oauth.apply_token_to_client(object(), "hch-at-new") is False
+
+
+class TestPersistReadFailure:
+    """One unreadable or corrupt honcho.json must never become a single-host store, and a refresh must
+    fail BEFORE the single-use exchange when the result could not be persisted."""
+
+    @staticmethod
+    def _seed_two_hosts(path: Path) -> bytes:
+        _write(path, {
+            "hosts": {
+                "keep.example": _host_block(refresh="hch-rt-keep"),
+                "rotate.example": _host_block(refresh="hch-rt-rot"),
+            },
+            "defaults": {"workspace": "w1"},
+        })
+        return path.read_bytes()
+
+    def _break(self, monkeypatch, path: Path, how: str) -> type:
+        """Make ``path`` unreadable (PermissionError) or corrupt (truncated JSON); returns the expected error."""
+        if how == "corrupt":
+            path.write_text(path.read_text(encoding="utf-8")[:-5], encoding="utf-8")
+            return ValueError
+        real = Path.read_text
+
+        def boom(self, *a, **kw):
+            if self.name == path.name:
+                raise PermissionError(13, "Permission denied")
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        return OSError
+
+    @pytest.mark.parametrize("how", ["unreadable", "corrupt"])
+    def test_writers_raise_and_leave_the_store_untouched(self, tmp_path, monkeypatch, how):
+        path = tmp_path / "honcho.json"
+        self._seed_two_hosts(path)
+        exc = self._break(monkeypatch, path, how)
+        before = path.read_bytes()
+        cred = OAuthCredential.from_host_block(_host_block(refresh="hch-rt-new"))
+        grant = {"access_token": "hch-at-new", "refresh_token": "hch-rt-new", "expires_in": 3600}
+        with pytest.raises(exc):
+            oauth._persist_credential(path, "rotate.example", cred)
+        with pytest.raises(exc):
+            oauth.install_grant(path, "new.example", grant, client_id="c", token_endpoint="e")
+        assert path.read_bytes() == before
+
+    @pytest.mark.parametrize("how", ["unreadable", "corrupt"])
+    def test_rotate_refuses_before_spending_the_refresh_token(self, tmp_path, monkeypatch, how):
+        path = tmp_path / "honcho.json"
+        self._seed_two_hosts(path)
+        self._break(monkeypatch, path, how)
+        before = path.read_bytes()
+        cred = OAuthCredential.from_host_block(_host_block(refresh="hch-rt-rot"))
+        key = (str(path), "rotate.example")
+        oauth._refresh_failure_at.pop(key, None)
+        monkeypatch.setattr(oauth, "_exchange_with_retry",
+                            lambda *a, **k: pytest.fail("exchange ran against a store that cannot be persisted"))
+        assert oauth._rotate_and_persist(path, "rotate.example", key, cred, now=1.0) is None
+        assert key in oauth._refresh_failure_at
+        oauth._refresh_failure_at.pop(key, None)
+        assert path.read_bytes() == before
+
+    def test_missing_store_bootstraps_empty_and_a_bom_is_not_corruption(self, tmp_path):
+        assert oauth._read_config_strict(tmp_path / "honcho.json") == {}
+        path = tmp_path / "honcho.json"
+        path.write_text(json.dumps({"hosts": {"keep.example": _host_block()}}), encoding="utf-8-sig")
+        assert "keep.example" in oauth._read_config(path).get("hosts", {})
+        assert "keep.example" in oauth._read_config_strict(path).get("hosts", {})

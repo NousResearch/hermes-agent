@@ -173,11 +173,17 @@ def _profile_create(args):
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
         # Auto-clone Honcho config for the new profile (only with clone operations)
         try:
-            from plugins.memory.honcho.cli import clone_honcho_for_profile
-            if clone_honcho_for_profile(name):
-                print(f"Honcho config cloned (peer: {name})")
+            from plugins.memory.honcho.cli import ConfigWriteRefused, clone_honcho_for_profile
         except Exception:
-            pass  # Honcho plugin not installed or not configured
+            clone_honcho_for_profile = None  # Honcho plugin not installed
+        if clone_honcho_for_profile is not None:
+            try:
+                if clone_honcho_for_profile(name):
+                    print(f"Honcho config cloned (peer: {name})")
+            except ConfigWriteRefused as e:
+                print(f"Honcho config not cloned: {e}")
+            except Exception:
+                pass  # Honcho not configured
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
         result = seed_profile_skills(profile_dir)

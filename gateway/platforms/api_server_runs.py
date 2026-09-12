@@ -98,7 +98,8 @@ def _initialize_run_state(self, *, store_factory) -> None:
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     return [
-        ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
+        ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs", self._handle_list_runs),
+        ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
@@ -706,6 +707,51 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
     if status is None:
         return run_id, None, agent, task, _run_not_found(_openai_error, run_id)
     return run_id, status, agent, task, None
+
+
+_RUN_LIST_FIELDS = (
+    "object", "run_id", "status", "created_at", "updated_at",
+    "session_id", "model", "last_event",
+)
+_RUN_LIST_APPROVAL_FIELDS = ("approval_id", "summary", "choices", "run_id")
+
+
+async def _handle_list_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
+    """GET /v1/runs — pollable run statuses for the caller's scope, newest first.
+
+    Lets external UIs discover their own runs — including waiting_for_approval
+    ones — without knowing run ids up front (#87509, #99553). Same ownership
+    rule as GET /v1/runs/{run_id}: unstamped state is nobody's, not
+    everybody's. Approval payloads are trimmed to what a remote approver
+    needs. In-memory only; entries vanish when the gateway restarts.
+    """
+    auth_err = self._check_auth(request)
+    if auth_err:
+        return auth_err
+    entries = []
+    for run_id, status in list(self._run_statuses.items()):
+        if not isinstance(status, dict):
+            continue
+        if not self._request_owns_run(request, run_id):
+            continue
+        entry = {field: status[field] for field in _RUN_LIST_FIELDS if field in status}
+        approval = status.get("approval")
+        if isinstance(approval, dict):
+            trimmed = {
+                field: approval[field]
+                for field in _RUN_LIST_APPROVAL_FIELDS
+                if field in approval
+            }
+            if trimmed:
+                entry["approval"] = trimmed
+        entries.append(entry)
+    entries.sort(key=lambda entry: entry.get("updated_at") or 0.0, reverse=True)
+    try:
+        limit = int(request.query.get("limit", "50"))
+    except ValueError:
+        limit = 50
+    limit = max(1, min(limit, 200))
+    return web.json_response({"object": "list", "data": entries[:limit]})
 
 
 async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.Response":

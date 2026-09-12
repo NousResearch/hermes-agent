@@ -14,7 +14,7 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { displayRequest, type DisplayStatus } from './screen-connection'
+import { displayRequest, type DisplayStatus, isEventForBotScreen } from './screen-connection'
 import type { RosterRow } from './types'
 
 const LOG_KEEP = 200
@@ -38,18 +38,18 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
 
   useEffect(() => {
     const offLog = host.onEvent('display.install.log', (event: RpcEvent) => {
-      const payload = event.payload as { profile_key?: string; line?: string } | undefined
+      const payload = event.payload as { line?: string } | undefined
 
-      if (payload?.profile_key === status.profile_key && typeof payload.line === 'string') {
+      if (isEventForBotScreen(bot, event, status.profile_key) && typeof payload?.line === 'string') {
         const line = payload.line
         setLog(prev => (prev.length >= LOG_KEEP ? [...prev.slice(1), line] : [...prev, line]))
       }
     })
 
     const offDone = host.onEvent('display.install.done', (event: RpcEvent) => {
-      const payload = event.payload as { profile_key?: string; code?: number; status?: DisplayStatus } | undefined
+      const payload = event.payload as { code?: number; status?: DisplayStatus } | undefined
 
-      if (payload?.profile_key !== status.profile_key) {
+      if (!payload || !isEventForBotScreen(bot, event, status.profile_key)) {
         return
       }
 
@@ -66,7 +66,7 @@ export function ScreenInstallCard({ bot, status, onInstalled }: ScreenInstallCar
       offLog()
       offDone()
     }
-  }, [onInstalled, status.profile_key, t.screen.installCancelled, t.screen.installFailed])
+  }, [bot, onInstalled, status.profile_key, t.screen.installCancelled, t.screen.installFailed])
 
   const install = useCallback(async () => {
     setPhase('running')

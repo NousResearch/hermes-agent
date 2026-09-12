@@ -472,11 +472,13 @@ def _run_job_script(
                 # reader threads on non-UTF-8 Windows (#45099).
                 "encoding": "utf-8",
                 "errors": "replace"}
-        # The process env is the LAUNCH profile's. For a job owned by a routed profile, drop that
-        # profile's .env residue from the base first (no-op for the launch profile's own jobs), then
-        # overlay the installed scope BEFORE sanitizing, so the routed profile's own .env + vault
-        # values pass the same scrub / passthrough rules as any other (#114209 declared names
-        # included); the parent process is never mutated.
+        # A routed profile's script (desktop multi-profile ticker, multiplex gateway) must see ITS
+        # profile's .env + vault values — the process env holds the launch profile's. Drop the
+        # launch profile's dotenv-owned residue first (a name only the launch .env defines must
+        # come through UNSET, not with the launch value — the scrub only knows classified secrets),
+        # then overlay the installed scope, then sanitize, so routed values pass the same scrub /
+        # passthrough rules as any other (#114209 declared names included). No-op outside multiplex
+        # or for the launch profile's own fires; the parent process is never mutated.
         from agent.secret_scope import current_secret_scope
         from tools.environments.local import strip_launch_profile_env
         base = strip_launch_profile_env(dict(os.environ))

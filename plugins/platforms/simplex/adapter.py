@@ -2,7 +2,7 @@
 or ``docker run -p 5225:5225 simplexchat/simplex-chat-cli -p 5225``); JSON commands out, events in.
 
 Env: SIMPLEX_WS_URL (required; default ws://127.0.0.1:5225) · SIMPLEX_ALLOWED_USERS (numeric
-contactIds — stable across renames, see ``/contacts`` — or display names) · SIMPLEX_ALLOW_ALL_USERS ·
+contactIds — stable across renames, see ``/contacts``) · SIMPLEX_ALLOW_ALL_USERS ·
 SIMPLEX_AUTO_ACCEPT ('false' disables contact-request auto-accept; default true) ·
 SIMPLEX_GROUP_ALLOWED (group IDs or '*'; omit to ignore groups) · SIMPLEX_HOME_CHANNEL[_NAME] ·
 HERMES_SIMPLEX_TEXT_BATCH_DELAY (quiet seconds, default 0.8, merging rapid-fire inbound text).
@@ -652,7 +652,7 @@ async def _standalone_send(
 
 _SETUP_PROMPTS = (
     ("SIMPLEX_WS_URL", "Daemon WebSocket URL (default ws://127.0.0.1:5225)"),
-    ("SIMPLEX_ALLOWED_USERS", "Allowed contactIds or display names (comma-separated; blank=skip)"),
+    ("SIMPLEX_ALLOWED_USERS", "Allowed contactIds (comma-separated; blank=skip)"),
     ("SIMPLEX_GROUP_ALLOWED", "Allowed group IDs (comma-separated, or '*' for any; blank=disable groups)"),
     ("SIMPLEX_AUTO_ACCEPT", "Auto-accept incoming contact requests? (true/false, default true)"),
     ("SIMPLEX_HOME_CHANNEL", "Home channel contact/group ID (or empty)"))

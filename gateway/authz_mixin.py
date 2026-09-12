@@ -190,9 +190,9 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
             check_ids.add(normalized_user_id)
 
     platform_value = source.platform.value if source.platform is not None else None
-    # SimpleX: user_id is the numeric contactId but the UI only shows display names.
-    if platform_value == "simplex" and source.user_name:
-        check_ids.add(source.user_name)
+    # SimpleX: SIMPLEX_ALLOWED_USERS matches only the stable numeric contactId (user_id).
+    # The display name (user_name) is attacker-controlled — any contact can adopt another
+    # contact's display name, so matching it would bypass the allowlist (#44729).
     # Buzz: allowlist may hold npub or hex; inbound pubkeys are hex.
     if platform_value == "buzz":
         # Buzz (Nostr-based): BUZZ_ALLOWED_USERS accepts npub or hex, but inbound event pubkeys are always

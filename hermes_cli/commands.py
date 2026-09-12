@@ -382,11 +382,20 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
 
 def is_gateway_known_command(name: str | None) -> bool:
     """True if ``name`` is a built-in or plugin gateway slash command (plugins looked
-    up lazily); decides whether the gateway emits ``command:<name>`` hooks."""
+    up lazily); decides whether the gateway emits ``command:<name>`` hooks.
+
+    Plugin names are matched underscore/hyphen tolerant (mirrors
+    ``get_plugin_command_handler``): the gateway normalizes typed commands one way
+    while plugins may register the other spelling.
+    """
     if not name:
         return False
-    return name in GATEWAY_KNOWN_COMMANDS or any(
-        plugin_name == name for plugin_name, _d, _h in _iter_plugin_command_entries())
+    if name in GATEWAY_KNOWN_COMMANDS:
+        return True
+    variants = {name, name.replace("_", "-"), name.replace("-", "_")}
+    return any(
+        plugin_name in variants
+        for plugin_name, _d, _h in _iter_plugin_command_entries())
 
 
 # Commands with explicit mid-run handling (busy_policy != "reject"). Kept

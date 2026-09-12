@@ -1127,3 +1127,24 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+def test_is_gateway_known_command_plugin_name_underscore_hyphen_tolerant(monkeypatch):
+    """Gateway plugin-name matching resolves both spellings: the gateway
+    hyphen-normalizes typed commands while plugins may register underscores
+    (Discord accepts them natively) — mirrors get_plugin_command_handler."""
+    from hermes_cli import plugins as _plugins_mod
+    from hermes_cli.commands import is_gateway_known_command
+
+    monkeypatch.setattr(_plugins_mod, "get_plugin_commands", lambda: {
+        "ollama_usage": {
+            "handler": lambda _a: "ok", "description": "Usage",
+            "args_hint": "", "plugin": "p",
+        }
+    })
+
+    assert is_gateway_known_command("ollama_usage")
+    assert is_gateway_known_command("ollama-usage"), (
+        "hyphen-normalized typed form must match an underscore-registered plugin command"
+    )
+    assert not is_gateway_known_command("unrelated_command")

@@ -208,3 +208,30 @@ class TestParseRetryAfterSeconds:
                 raise RuntimeError("boom")
 
         assert parse_retry_after_seconds(Explosive()) is None
+
+
+def _zai_error(model: str, body_code: str, message: str, base_url: str = "https://api.z.ai/api/coding/paas/v4"):
+    return SimpleNamespace(status_code=429, body={"error": {"code": body_code, "message": message}}), base_url, model
+
+
+def test_zai_overload_detection_follows_the_model_family():
+    """The Coding Plan rotates models under one endpoint (5.2 → 5.3 → 5.3-flash).
+
+    A pinned version silently drops every overload onto the generic fail-fast path,
+    which benches the only credential instead of riding out a transient overload.
+    """
+    for model in ("glm-5.2", "glm-5.3", "glm-5.3-flash"):
+        err, base_url, model_name = _zai_error(model, "1305", "The service may be temporarily overloaded, please try again later")
+        assert is_zai_coding_overload_error(base_url=base_url, model=model_name, error=err), model
+
+
+def test_zai_overload_detection_stays_narrow():
+    """Ordinary quota 429s (1113 "Insufficient balance") and the standard endpoint
+    must keep failing fast — the long backoff is only for the overload shape."""
+    overload_text = "The service may be temporarily overloaded, please try again later"
+    err, base_url, model = _zai_error("glm-5.3-flash", "1113", "Insufficient balance or no resource package. Please recharge.")
+    assert not is_zai_coding_overload_error(base_url=base_url, model=model, error=err)
+    err, base_url, model = _zai_error("glm-5.3-flash", "1305", overload_text)
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/paas/v4", model=model, error=err
+    )

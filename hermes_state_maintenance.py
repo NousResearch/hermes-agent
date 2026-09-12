@@ -246,7 +246,8 @@ class SessionMaintenanceMixin:
         latest message / ``started_at``); may archive unended sessions.  ``archived = 0`` makes
         repeats no-ops; only lineage tips (``end_reason <> 'compression'``) are candidates — a
         stale tip archives its chain via :meth:`set_session_archived`, so an old compressed-away
-        root with a recent continuation is never matched."""
+        root with a recent continuation is never matched. The hidden exact-title canonical Bot
+        Chat is registry-owned and therefore excluded from this automatic sweep."""
         if idle_days is None or idle_days < 0:
             return 0
         cutoff = time.time() - float(idle_days) * 86400.0
@@ -257,9 +258,11 @@ class SessionMaintenanceMixin:
             WHERE s.archived = 0
               AND COALESCE(s.end_reason, '') <> 'compression'
               {pin_clause}
+              AND NOT (COALESCE(s.hidden, 0) = 1
+                       AND COALESCE(s.title, '') = ?)
               AND {_sql_session_last_active("s")} < ?
             ORDER BY s.started_at ASC
-            """, (cutoff,))
+            """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:
             self.set_session_archived(row[0], True)
         return len(rows)

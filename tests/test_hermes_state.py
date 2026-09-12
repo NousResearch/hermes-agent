@@ -4766,8 +4766,25 @@ class TestSessionPinAndStaleArchive:
         assert db.archive_stale_sessions(3, exclude_pinned=False) == 1
         assert db.get_session("keep")["archived"] == 1
 
+    def test_stale_archive_spares_canonical_hidden_bot_chat(self, db):
+        self._make_idle(db, "canonical", days_idle=10, source="desktop")
+        db.set_session_title("canonical", db.CANONICAL_BOT_CHAT_TITLE)
+        db.set_session_hidden("canonical", True)
 
+        assert db.archive_stale_sessions(3) == 0
+        assert db.get_session("canonical")["archived"] == 0
+        assert db.get_session_by_title(db.CANONICAL_BOT_CHAT_TITLE)["id"] == "canonical"
 
+    def test_stale_archive_keeps_noncanonical_rows_eligible(self, db):
+        self._make_idle(db, "hidden-other", days_idle=10, source="desktop")
+        db.set_session_title("hidden-other", "Another Chat")
+        db.set_session_hidden("hidden-other", True)
+        self._make_idle(db, "visible-bot-chat", days_idle=10, source="desktop")
+        db.set_session_title("visible-bot-chat", db.CANONICAL_BOT_CHAT_TITLE)
+
+        assert db.archive_stale_sessions(3) == 2
+        assert db.get_session("hidden-other")["archived"] == 1
+        assert db.get_session("visible-bot-chat")["archived"] == 1
 
     # ── throttled wrapper ─────────────────────────────────────────────────
 

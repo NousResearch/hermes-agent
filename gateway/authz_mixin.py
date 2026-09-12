@@ -23,7 +23,7 @@ from gateway.whatsapp_identity import (
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
 
-_GROUP_CHAT_TYPES = frozenset({"group", "forum", "channel"})
+_GROUP_CHAT_TYPES = frozenset({"group", "forum", "channel", "thread"})
 _GROUP_FORUM_TYPES = frozenset({"group", "forum"})
 _TRUTHY = frozenset({"true", "1", "yes"})
 _BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()

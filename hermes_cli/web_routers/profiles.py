@@ -98,21 +98,133 @@ def _profile_setup_command(name: str) -> str:
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
-def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_in: Optional[Path] = None) -> None:
-    """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped)
-    through the same validated /model shape as ``POST /api/model/set``.
+# Only routing/schema fields cross the profile boundary. ``extra_headers`` and ``key_cmd`` can
+# carry credentials, while ``extra_body`` is an arbitrary payload; each remains profile-local.
+_PROFILE_PROVIDER_COPY_FIELDS = frozenset({
+    "api", "api_key_env", "api_mode", "base_url", "capabilities", "context_length",
+    "default_model", "discover_models", "enabled", "key_env", "model", "models",
+    "models_discovered", "name", "rate_limit_delay", "request_timeout_seconds",
+    "ssl_ca_cert", "ssl_verify", "stale_timeout_seconds", "transport", "url",
+})
+_PROFILE_PROVIDER_TEMPLATE_KEY_FIELDS = frozenset({"apiKey", "api_key"})
 
-    ``validate_in`` is the home whose ``providers:``/``.env``/catalog vouch for the pick (default:
-    ``profile_dir`` itself). Profile-create passes the dashboard's own home: the picker that offered
-    the model read THAT catalog, and a just-created profile has no credentials yet, so validating
-    in the empty profile rejected every non-env provider (anthropic, ollama, custom)."""
+
+def _profile_copy_template(value: Any) -> bool:
+    text = value.strip() if isinstance(value, str) else ""
+    return bool(text.startswith("${") and text.endswith("}") and len(text) > 3)
+
+
+def _sanitize_profile_provider_entry(entry: dict) -> dict:
+    """Copy canonical routing metadata without carrying profile-local literal credentials."""
+    from hermes_cli.config_providers import _CAMEL_ALIASES
+
+    clean = {
+        key: copy.deepcopy(value)
+        for key, value in entry.items()
+        if key in _PROFILE_PROVIDER_COPY_FIELDS
+    }
+    # Canonical snake_case wins when both spellings exist, matching config normalization.
+    for alias, canonical in _CAMEL_ALIASES.items():
+        if canonical in clean or canonical not in _PROFILE_PROVIDER_COPY_FIELDS:
+            continue
+        if alias in entry:
+            clean[canonical] = copy.deepcopy(entry[alias])
+    for key in _PROFILE_PROVIDER_TEMPLATE_KEY_FIELDS:
+        if _profile_copy_template(entry.get(key)):
+            clean["api_key"] = entry[key].strip()
+    return clean
+
+
+def _source_config_map_provider_entry(provider: str) -> Optional[Tuple[str, dict]]:
+    """Stored key + safe ``providers.<key>`` entry from the current source profile.
+
+    MUST run before the target ``HERMES_HOME`` scope. Named-custom identities may arrive as the
+    raw key, display name, or durable ``custom:<key>`` slug, so match the same aliases as runtime.
+    ``None`` means the request names a built-in/plugin provider or has no source entry."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import read_raw_config
+    from hermes_cli.config_providers import coerce_provider_id
+    from hermes_cli.providers import custom_provider_aliases, get_provider, normalize_provider
+
+    requested = coerce_provider_id(provider)
+    if not requested:
+        return None
+
+    def _is_builtin() -> bool:
+        canonical = normalize_provider(requested)
+        return (
+            requested in {"auto", "custom", "local", "moa", "openrouter"}
+            or canonical in {"auto", "custom", "local", "moa", "openrouter"}
+            or requested in PROVIDER_REGISTRY
+            or canonical in PROVIDER_REGISTRY
+            or get_provider(requested, allow_network=False) is not None
+        )
+    try:
+        raw = read_raw_config() or {}
+    except Exception:
+        if _is_builtin():
+            return None
+        _log.exception("Could not read source config while assigning provider %r", provider)
+        raise
+    providers = raw.get("providers")
+    if isinstance(providers, dict):
+        wanted = requested.lower().replace(" ", "-")
+        for stored, entry in providers.items():
+            stored_key = coerce_provider_id(stored)
+            if not stored_key or not isinstance(entry, dict):
+                continue
+            aliases = custom_provider_aliases(str(entry.get("name") or stored_key), stored_key)
+            if wanted in aliases:
+                return stored_key, _sanitize_profile_provider_entry(entry)
+    if _is_builtin():
+        return None
+    raise ValueError(f"Custom provider {provider!r} is missing from the source providers map")
+
+
+def _carry_config_map_provider_entry(cfg: dict, stored_key: str, src_entry: dict) -> None:
+    """Write the carried config-map provider entry into ``cfg["providers"]``.
+
+    Idempotent and non-destructive: a pre-existing target entry for the same
+    provider is preserved (the operator may have customized it); the carried entry
+    only fills the gap when the target lacks one — the exact failure in #10643.
+    """
+    from hermes_cli.config_providers import find_provider_entry
+
+    providers = cfg.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+    existing_key, existing = find_provider_entry(providers, stored_key)
+    if existing_key is not None and isinstance(existing, dict):
+        return  # target already defines this provider — do not overwrite
+    providers[stored_key] = src_entry
+    cfg["providers"] = providers
+
+
+def _write_profile_model(
+    profile_dir: Path,
+    provider: str,
+    model: str,
+    validate_in: Optional[Path] = None,
+) -> None:
+    """Validate a model in its source catalog and write it into ``profile_dir``.
+
+    A config-map provider also carries its allowlisted, non-secret routing definition from the
+    source profile. ``validate_in`` is the home whose catalog offered the pick; profile creation
+    uses the dashboard home because the new profile has no credentials or provider map yet.
+    """
     from hermes_cli.config import load_config, save_config
-    with _hermes_home_scope(validate_in or profile_dir):
+
+    source_home = validate_in or profile_dir
+    with _hermes_home_scope(source_home):
         provider, model = _normalize_main_model_assignment(provider, model)
         result = _validated_main_model_selection(load_config(), provider, model)
+        source_provider = _source_config_map_provider_entry(provider)
     with _hermes_home_scope(profile_dir):
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
+        if source_provider is not None:
+            stored_key, src_provider_entry = source_provider
+            _carry_config_map_provider_entry(cfg, stored_key, src_provider_entry)
         save_config(cfg)
 
 

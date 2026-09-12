@@ -272,6 +272,10 @@ def _(rid, params: dict) -> dict:
     the call blocks up to ``SETUP_READY_WAIT_SECONDS`` for it, so a client's first poll lands after
     the free-tier identity exists (or has been refused) rather than racing the mint. If the record
     is still missing after the wait, or a named profile is asked about, today's live probe answers.
+    A record that says ``False`` is re-checked live before being trusted: the bootstrap can inventory
+    providers on a background thread ahead of ``config.yaml`` finishing its own load, which would
+    otherwise cache a false negative for the life of the process (a record that already says
+    ``True`` is never re-probed, so the answer can only move false->true here, never flap).
     The record's fields ride along additively (``ready``, ``free_tier``, ``other_providers``)."""
     try:
         from hermes_cli.main import _has_any_provider_configured
@@ -282,7 +286,9 @@ def _(rid, params: dict) -> dict:
             if record is None:
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
                         **scoped}
-            return {"provider_configured": record.provider_configured, "ready": True,
+            configured = record.provider_configured or bool(
+                _has_any_provider_configured(strict_profile_scope=bool(profile)))
+            return {"provider_configured": configured, "ready": True,
                     "free_tier": record.free_tier, "other_providers": record.other_providers,
                     "inference_provider": record.inference_provider, **scoped}
         return _readiness_check(rid, params, probe)

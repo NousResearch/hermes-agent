@@ -9002,6 +9002,26 @@ def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypat
         fb.reset_for_tests()
 
 
+def test_setup_status_rechecks_a_false_bootstrap_record(monkeypatch):
+    """A boot-time record cached before ``config.yaml`` finished loading can wrongly say
+    ``provider_configured=False`` forever (the free-tier bootstrap runs on a background thread and
+    can race config load). A live probe that now finds a configured provider must override that
+    stale negative rather than being trusted permanently."""
+    from hermes_cli import free_tier_bootstrap as fb
+    fb.reset_for_tests()
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    with fb._lock:
+        fb._started = True
+        fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+                                    has_identity=False, other_providers=False)
+        fb._done.set()
+    try:
+        resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
+        assert resp["result"]["provider_configured"] is True
+    finally:
+        fb.reset_for_tests()
+
+
 def test_probe_credentials_emits_exact_empty_key_warning():
     agent = types.SimpleNamespace(api_key="", provider="openrouter")
 

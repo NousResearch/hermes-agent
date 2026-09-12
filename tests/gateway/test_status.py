@@ -374,6 +374,34 @@ class TestGatewayRuntimeStatus:
                 == 139
             ), cmdline
 
+    def test_runtime_status_running_pid_tolerates_clock_adjusted_start_time(self, monkeypatch):
+        """macOS regression: psutil's ``create_time()`` carries a whole-second clock-update
+        correction computed against a ``boot_time()`` snapshot taken per process, so the gateway's
+        own record and a later reader legitimately disagree by seconds.  Exact equality read that as
+        a recycled PID: the desktop badge said "Messaging gateway stopped" while the gateway was up
+        and polling Telegram.
+
+        The same guard must still refuse a record whose start time is genuinely stale.
+        """
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 178923524513,
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
+
+        # One second off the writer's fingerprint: the same process object.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 178923524413)
+        assert status.get_runtime_status_running_pid(payload) == 139
+
+        # Minutes off: the PID really was recycled.
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 178923524513 - 6000)
+        assert status.get_runtime_status_running_pid(payload) is None
+
 
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the
@@ -482,6 +510,21 @@ class TestTerminatePid:
             status.terminate_pid(123, force=True, expected_start_time=456)
 
         assert calls == []
+
+    def test_force_kill_tolerates_clock_adjusted_start_time(self, monkeypatch):
+        """Sibling of the liveness guard: a caller-supplied fingerprint that differs only by the
+        macOS clock-update correction names the same process, so the kill must proceed; a genuinely
+        different start time still refuses."""
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        monkeypatch.setattr(status.subprocess, "run",
+                            lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1100)
+
+        status.terminate_pid(123, force=True, expected_start_time=1000)  # 1s drift, same process
+
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 7000)
+        with pytest.raises(OSError, match="process identity changed"):
+            status.terminate_pid(123, force=True, expected_start_time=1000)
 
 
 class TestScopedLocks:
@@ -1496,13 +1539,16 @@ def test_strict_gateway_identity_raises_on_malformed_active_metadata(
 def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
     pid_path = tmp_path / "gateway.pid"
     lock_path = tmp_path / "gateway.lock"
+    # Fingerprints are centiseconds, and the delta is what separates a recycled PID from the
+    # clock-update noise psutil adds on macOS (_START_TIME_TOLERANCE_CS): a reuse is minutes
+    # away, so the fixture must not sit inside the tolerance window.
     record = {"pid": 123, "start_time": 10.0, "kind": "hermes-gateway"}
     pid_path.write_text(json.dumps(record), encoding="utf-8")
     lock_path.write_text(json.dumps(record), encoding="utf-8")
     monkeypatch.setattr(status, "_get_gateway_lock_path", lambda _path=None: lock_path)
     monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path=None: True)
     monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
-    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 20.0)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 100_000.0)
 
     with pytest.raises(RuntimeError, match="identity changed"):
         status.get_running_pid_identity_strict(pid_path)

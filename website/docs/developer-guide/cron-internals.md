@@ -63,6 +63,20 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 }
 ```
 
+### `last_status` literals
+
+`last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every
+renderer (`hermes cron list`/`doctor`, the `cronjob` tool, the web dashboard
+badge, the Desktop routine inspector) maps each literal explicitly — a consumer
+must never test `== "ok"` for "the user got their result":
+
+| Literal | Meaning | Detail field |
+|---------|---------|--------------|
+| `ok` | Agent run succeeded and (if targeted) delivery was confirmed | — |
+| `error` | Agent run failed | `last_error` |
+| `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
+| `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
+
 ### Job Lifecycle States
 
 | State | Meaning |
@@ -99,6 +113,47 @@ tick()
   5. Write updated jobs back to jobs.json
   6. Release scheduler lock
 ```
+
+### Missed-occurrence contract (restart gaps)
+
+Recurring jobs are **at-most-once per occurrence, and every occurrence is
+accounted for**: it either runs (one execution row carrying its
+`scheduled_instant`), or its skip is logged with a reason. An occurrence is never
+dropped silently. The mechanics, in the order the due scan applies them
+(`cron/jobs.py::_evaluate_due_job`):
+
+1. **Pre-dispatch advance is provisional.** `tick()` advances `next_run_at` past
+   the due occurrence *before* dispatch so a crash mid-run cannot re-fire it on
+   every restart. Because that leaves a window — advanced, but no fire claim yet
+   (interpreter finalizing, executor refusing work, `SIGKILL`) — the due scan
+   stamps `pending_slot = {scheduled_at, at, by}` on the record in the same
+   save. `claim_job_for_fire` (the point after which side effects may exist)
+   and `mark_job_run` clear it; an explicit `schedule` / `next_run_at` /
+   `enabled` / `state` rewrite (edit, pause, resume, run-now) drops it.
+2. **Restore once.** A later scan that finds a `pending_slot` whose owner is
+   provably gone (this process and the job is not in its running set; another
+   process past the 300 s fire-claim lease or with a dead pid) puts
+   `scheduled_at` back as `next_run_at`, drops the stamp, and logs a WARNING
+   (`cron/occurrences.py::unclaimed_pending_slot`). This happens at most once
+   per lost occurrence — the restored instant then meets the ordinary rules
+   below like any other overdue slot, so there is never a replay of N slots.
+3. **Already fired → never twice.** `completed_occurrence()` consults the
+   executions ledger for a `completed` row with that exact `scheduled_instant`
+   before anything is due; a slot that ran before the restart advances without
+   firing. `failed` / `unknown` rows do not count as completion.
+4. **Late within grace → fire late.** Grace = half the period clamped to
+   `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
+   `last_dispatch.kind = late`.
+5. **Past grace → collapse the backlog, fire once** (`kind = catch_up`), or skip
+   with a logged reason when the operator set `cron.catch_up_missed: false`
+   (planned downtime). One-shots past their 120 s grace are retired with a
+   diagnostic, never resurrected.
+6. **Paused / disabled / terminal jobs never catch up**; the due scan drops them
+   before any of the above, and pause/resume clears any pending slot.
+
+The same store fields drive every topology: a standalone `hermes -p X gateway
+run` and a profile served by the default multiplexer (`_start_multiplex` ticks
+each home under `_profile_cron_scope`) evaluate the identical record.
 
 ### Gateway Integration
 
@@ -217,6 +272,16 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
+On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
+`agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
+rescans the live tree before signalling descendants and their parent, including
+children in separate sessions with no inherited output pipes. This closes the
+fork-after-snapshot race. The stop wait is bounded; discovery or permission
+failures still use best-effort group cleanup, not a sandbox guarantee. Any target
+stopped by cleanup is resumed if termination fails; already-stopped targets keep
+their original state. Explicit graceful signals do not suspend their recipients.
+Windows continues to use `taskkill /F /T`.
+
 ### Provider Recovery
 
 `run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:
@@ -262,7 +327,7 @@ Platforms in the first group have explicit, validated target syntax — named ch
 
 For **Telegram topics**, use `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`). For **Slack threads**, the third segment is the parent message's `thread_ts` (e.g., `slack:C0123ABCD45:1700000000.000100`), so it only applies when replying under an existing message.
 
-**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter: the scheduler delivers by running `hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>` — the same lane Bot Mode agent-to-agent messages use — so the output arrives as a real inbound turn in the profile's canonical Bot Chat and the bot runs a full agent turn on it (alternation-safe by construction; this is the chat command lane, not a transcript mirror). The bare token targets the job's own profile; the named form is validated against `~/.hermes/profiles/` at create time and again at fire time, and never resolves across machines. Bot-chat targets are excluded from the `all` routing token and from delivery preflight (no gateway credentials involved). The per-delivery subprocess timeout is `cron.bot_chat_delivery_timeout_seconds` (default 600).
+**Bot Chat** (`bot-chat`, `bot-chat:<profile>`) is a machine-local pseudo-platform, not a gateway adapter. A mailbox-capable canonical live owner receives durable admission immediately (idle or busy); only that owner executes the incoming turn. `scheduler_delivery._deliver_to_bot_chat` resolves the target with `get_profile_dir` or the job's current `get_hermes_home`, derives the receipt ID from the source home, job ID, durable `execution_id`, and target home, and checks the receipt before discovering an owner. An existing receipt never permits CLI fallback. Without a mailbox owner it retains `hermes [-p <profile>] chat --in ~ -c "Bot Chat" --create-if-missing -Q --query-file <tmp>` and normal ownership fencing. Both lanes deliver a real inbound turn, not a transcript mirror. Queued/claimed receipts populate `last_delivery_queued` with receipt IDs. The delivery aggregator excludes admission notices from genuine errors and records execution `delivery_outcome=queued`; successful jobs use `last_status=delivery_queued`. Genuine errors on mixed targets take precedence as failed while retaining queued receipt metadata. The target profile’s durable receipt is authoritative for terminal completion. Queued is the historical admission outcome, not proof of delivery. Historical cron status does not automatically track later receipt completion. Bot-chat targets are excluded from `all` and credential preflight. Bot-chat-only external workers bypass the gateway delivery queue; mixed external-worker targets retain gateway handoff. `cron.bot_chat_delivery_timeout_seconds` (default 600) bounds only the legacy subprocess lane.
 
 ### Response Wrapping
 

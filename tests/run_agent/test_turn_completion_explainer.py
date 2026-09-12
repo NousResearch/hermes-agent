@@ -13,10 +13,11 @@ These tests exercise:
      retries and verifies the explanation reaches ``final_response``.
 
 All assertions work under the mocked OpenAI SDK used elsewhere in this
-suite (we patch ``run_agent.OpenAI`` and drive ``agent.client``), so they
+suite (we patch ``agent.process_bootstrap.OpenAI`` and drive ``agent.client``), so they
 pass identically in CI and locally.
 """
 
+import hermes_state_errors
 import os
 import uuid
 from types import SimpleNamespace
@@ -36,10 +37,10 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
 
 def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent:
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=config or {}),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -154,6 +155,70 @@ def test_explanation_persistence_corrupt_cause_never_says_free_space():
     assert "full disk" not in lower
 
 
+def test_explanation_persistence_corrupt_backups_dir_follows_hermes_home(monkeypatch, tmp_path):
+    """Step 3 must name the backups dir under the ACTIVE home, not ~/.hermes (#104250).
+
+    Pre-update backups live at ``<hermes_root>/backups`` (``hermes_cli/backup.py``), so a
+    custom-HERMES_HOME deployment told to restore from ``~/.hermes/backups/`` is misdirected
+    mid data-loss incident: that directory may not exist at all, or may hold an unrelated
+    install's backups.
+    """
+    custom_home = tmp_path / "custom-hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(custom_home / "profiles" / "research"))
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "corrupt"
+    )
+    assert f"{custom_home / 'backups'}" in out
+    assert "~/.hermes/backups" not in out
+    assert "{backups_dir}" not in out
+
+
+def test_explanation_persistence_fts_index_never_advises_recovery():
+    """#97794: an FTS-scoped failure must never send the user down the recover /
+    restore-backup path on a healthy file, and must not claim the transcript was lost."""
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "fts_index"
+    )
+    lower = out.lower()
+    assert out.strip() != ""
+    assert "sessions recover" not in lower
+    assert ".recover" not in lower
+    # Negative advice ("do not ... restore a backup") is fine; instructions are not.
+    assert "recovery options" not in lower
+    assert "restore from a backup" not in lower and "backups/" not in lower
+    assert "would have been lost" not in lower
+    assert "free" not in lower  # never disk-space advice
+    assert "hermes doctor" in lower
+    assert "search index" in lower and "not damaged" in lower
+    assert "send your message again" in lower  # the handle stays live
+
+
+def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "replaced"
+    )
+    lower = out.lower()
+    assert "replaced" in lower
+    assert "doctor --fix" in lower or "in-place" in lower
+    assert "free some space" not in lower
+    assert "full disk" not in lower
+
+
+def test_deleted_wal_cause_is_enumerated_and_points_to_retired_capture():
+    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "deleted_wal"
+    ).lower()
+    assert "deleted_wal" in PERSISTENCE_ERROR_CAUSES
+    assert "retired-wal-*/manifest.json" in out
+    assert "manifest.main.mode" in out
+    assert "sessions recover" in out and "--inspect-only" in out
+    assert "header_only" in out and "does not contain a copied state.db" in out
+    assert "check the logs for whether" in out
+    assert "restore the intended state.db" not in out
+
+
 def test_explanation_persistence_unknown_cause_is_neutral():
     """None/'unknown' cause must not claim disk-full — point at diagnostics."""
     for cause in (None, "unknown"):
@@ -238,7 +303,7 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
 
 
 def test_classify_persistence_error_reuses_disk_full_markers():
-    """The disk bucket delegates to hermes_state.is_disk_full_error, so
+    """The disk bucket delegates to hermes_state_errors.is_disk_full_error, so
     every marker that helper recognizes (ENOSPC, 'not enough space', ...)
     must classify as 'disk' — the two classifiers can never drift apart."""
     import errno
@@ -259,10 +324,8 @@ def test_classify_persistence_error_compression_busy_is_distinct():
     storage damage — but its message contains neither 'locked' nor 'busy',
     so it must classify by exception type (and by phrase for RPC-wrapped
     strings). This is the exact failure mode of issue #81227."""
-    from hermes_state import (
-        CompressionSessionBusyError,
-        SessionCompressionInProgressError,
-    )
+    from hermes_state import SessionCompressionInProgressError
+    from hermes_state_errors import CompressionSessionBusyError
     from hermes_state import classify_persistence_error
 
     assert classify_persistence_error(
@@ -283,7 +346,8 @@ def test_classify_persistence_error_compression_busy_is_distinct():
 
 
 def test_classify_persistence_error_turn_lease_lost_is_distinct():
-    from hermes_state import SessionTurnLeaseLostError, classify_persistence_error
+    from hermes_state import classify_persistence_error
+    from hermes_state_errors import SessionTurnLeaseLostError
 
     assert classify_persistence_error(
         SessionTurnLeaseLostError(
@@ -298,19 +362,80 @@ def test_classify_persistence_error_turn_lease_lost_is_distinct():
 def test_persistence_error_causes_tuple_matches_classifier():
     """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
     return (consumers like cron suppression iterate it)."""
-    from hermes_state import PERSISTENCE_ERROR_CAUSES, classify_persistence_error
+    from hermes_state import classify_persistence_error
+    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
 
     probes = (
         "database is locked",
         "Session 'abc' is being compressed by another writer",
         "Session turn lease lost; refusing transcript write for 'abc'",
         "database disk image is malformed",
+        'fts5: corrupt structure record for table "messages_fts"',
+        "FATAL: state.db was replaced underneath the gateway",
+        "FATAL: a live process holds a deleted state.db-wal or state.db-shm inode.",
         "database or disk is full",
         "something else entirely",
         None,
     )
     for probe in probes:
         assert classify_persistence_error(probe) in PERSISTENCE_ERROR_CAUSES
+
+
+def test_classify_persistence_error_fts_provenance_order():
+    """Result code first, prose only without one — the #96038 rule the write-repair gate
+    already enforces, now shared with the classifier so there is one definition of
+    "provably FTS-only" (#97794 review)."""
+    import sqlite3
+
+    from hermes_state import SessionDB, classify_persistence_error
+    from hermes_state_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
+
+    def _err(text, code=None, cls=sqlite3.DatabaseError):
+        exc = cls(text)
+        if code is not None:
+            exc.sqlite_errorcode = code
+        return exc
+
+    # Tier 1 — a known result code decides. SQLITE_CORRUPT_VTAB is FTS-scoped even with the
+    # generic text older SQLite builds emit; bare SQLITE_CORRUPT / SQLITE_NOTADB are unscoped.
+    vtab = _err("database disk image is malformed", SQLITE_CORRUPT_VTAB)
+    assert classify_persistence_error(vtab) == "fts_index"
+    assert SessionDB._is_fts_write_corruption_error(vtab)  # same verdict as the write gate
+    assert classify_persistence_error(
+        _err("database disk image is malformed", sqlite3.SQLITE_CORRUPT)
+    ) == "corrupt"
+    assert classify_persistence_error(
+        _err("file is not a database", sqlite3.SQLITE_NOTADB)
+    ) == "corrupt"
+    # A contradictory known code outranks FTS-looking prose (the #96038 regression shape).
+    contradictory = _err(
+        'fts5: corrupt structure record for table "messages_fts"',
+        sqlite3.SQLITE_CONSTRAINT_TRIGGER,
+        sqlite3.IntegrityError,
+    )
+    assert not is_fts_scoped_corruption_error(contradictory)
+    assert classify_persistence_error(contradictory) != "fts_index"
+    assert not SessionDB._is_fts_write_corruption_error(contradictory)
+
+    # Tier 2 — no code (Python < 3.11, RPC-wrapped strings): the report must name a
+    # messages_fts* object. Both shapes from #97794's evidence logs qualify.
+    assert classify_persistence_error(
+        _err('fts5: corrupt structure record for table "messages_fts"')
+    ) == "fts_index"
+    assert classify_persistence_error(
+        'fts5: corruption found reading blob 2061584302081 from table "messages_fts"'
+    ) == "fts_index"
+    assert classify_persistence_error(
+        'fts5: corrupt structure record for table "messages_fts_trigram"'
+    ) == "fts_index"
+    assert classify_persistence_error(
+        "malformed inverted index for FTS5 table main.messages_fts"
+    ) == "fts_index"
+    # Generic markers without provenance stay conservative; fts5 text without corruption,
+    # or an FTS name without a corruption marker, is not corruption at all.
+    assert classify_persistence_error("database disk image is malformed") == "corrupt"
+    assert classify_persistence_error('fts5: syntax error near "x"') == "unknown"
+    assert classify_persistence_error("no such table: messages_fts") == "unknown"
 
 
 # --------------------------------------------------------------------------
@@ -426,3 +551,8 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
     assert result["response_previewed"] is False
 
 
+def test_classify_persistence_error_quarantined_handle_is_corrupt() -> None:
+    """A quarantined SessionDB raises the typed error; it stays in the corrupt bucket."""
+    from hermes_state import StateDbCorruptError, classify_persistence_error
+
+    assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"

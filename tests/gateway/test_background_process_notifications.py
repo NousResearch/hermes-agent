@@ -23,6 +23,15 @@ from gateway.run import GatewayRunner, _parse_session_key
 # Helpers
 # ---------------------------------------------------------------------------
 
+class AdmittingHandler(AsyncMock):
+    """Fake transport whose successful insertion issues the production receipt."""
+
+    async def _execute_mock_call(self, event, *args, **kwargs):
+        result = await super()._execute_mock_call(event, *args, **kwargs)
+        event._gateway_accepted = True
+        return result
+
+
 class _FakeRegistry:
     """Return pre-canned sessions, then None once exhausted."""
 
@@ -51,7 +60,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
-    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AdmittingHandler())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
 
@@ -511,6 +520,73 @@ def test_parse_session_key_with_extra_parts():
     assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
 
 
+def test_parse_session_key_named_profile():
+    """A named-profile namespace parses and is reported as ``profile``."""
+    result = _parse_session_key("agent:work:telegram:dm:123")
+    assert result == {
+        "profile": "work",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+    }
+
+
+def test_parse_session_key_named_profile_thread_id():
+    """Thread-slot handling is identical for named-profile keys."""
+    result = _parse_session_key("agent:work:telegram:thread:100:42")
+    assert result == {
+        "profile": "work",
+        "platform": "telegram",
+        "chat_type": "thread",
+        "chat_id": "100",
+        "thread_id": "42",
+    }
+
+
+def test_parse_session_key_named_profile_group_suffix_omitted():
+    """Group-suffix (user_id) stays omitted for named-profile keys too."""
+    result = _parse_session_key("agent:work:discord:group:chan1:user9")
+    assert result == {
+        "profile": "work",
+        "platform": "discord",
+        "chat_type": "group",
+        "chat_id": "chan1",
+    }
+
+
+def test_parse_session_key_main_shape_unchanged():
+    """``main`` keys keep their historical dict shape exactly (no ``profile`` key)."""
+    result = _parse_session_key("agent:main:telegram:dm:123:42")
+    assert result == {
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "thread_id": "42",
+    }
+
+
+def test_parse_session_key_rejects_invalid_namespace():
+    """A namespace slot that cannot be a profile id still parses to None."""
+    assert _parse_session_key("agent:Bad_NS:telegram:dm:123") is None
+    assert _parse_session_key("agent:main:telegram:dm") is None
+    assert _parse_session_key("raw-session-id") is None
+
+
+def test_build_process_event_source_named_profile_key(monkeypatch, tmp_path):
+    """A synthetic event keyed by a named-profile session resolves platform/chat and keeps
+    the profile, instead of being unresolvable and dropped with a warning."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    source = runner._build_process_event_source({
+        "session_id": "proc_watch",
+        "session_key": "agent:work:telegram:dm:123",
+    })
+    assert source is not None
+    assert source.platform is Platform.TELEGRAM
+    assert source.chat_id == "123"
+    assert source.chat_type == "dm"
+    assert source.profile == "work"
+
+
 # ---------------------------------------------------------------------------
 # api_server (stateless) wake routing — gateway/wake.py self-post path
 # ---------------------------------------------------------------------------
@@ -524,7 +600,7 @@ async def test_inject_watch_notification_raw_session_key_self_posts(monkeypatch,
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AsyncMock(),
+        handle_message=AdmittingHandler(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
@@ -557,7 +633,7 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     runner = _build_runner(monkeypatch, tmp_path, "all")
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
-        handle_message=AsyncMock(),
+        handle_message=AdmittingHandler(),
         _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
     )
     runner.adapters[Platform.API_SERVER] = api_adapter
@@ -578,6 +654,86 @@ async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp
     result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
     assert result is True
     assert posts == ["raw-origin-sid"]
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_persists_delivery_not_self_post(
+    monkeypatch, tmp_path,
+):
+    """#85957: an async_delegation completion targeting a stateless api_server
+    session must be persisted as a durable DELIVERY row — never self-POSTed
+    to /v1/chat/completions as a new role=user prompt (which starts an
+    unauthorized agent turn after the client-owned parent turn ended)."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AdmittingHandler(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    import gateway.wake as wake_mod
+
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append(session_id)
+
+    persisted = []
+
+    async def fake_persist(adapter, *, text, session_id, evt=None):
+        persisted.append({"text": text, "session_id": session_id, "evt": evt})
+
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fake_persist)
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_85957",
+        "session_key": "raw-hq-session-id",  # no agent:main:... structure
+        "origin_session_id": "raw-hq-session-id",
+        "status": "completed",
+    }
+    result = await runner._inject_watch_notification(
+        "[ASYNC DELEGATION BATCH COMPLETE — deleg_85957]", evt,
+    )
+
+    assert result is True
+    assert posts == []  # the self-POST user-turn wake must NOT fire
+    api_adapter.handle_message.assert_not_awaited()
+    assert len(persisted) == 1
+    assert persisted[0]["session_id"] == "raw-hq-session-id"
+    assert persisted[0]["evt"]["delegation_id"] == "deleg_85957"
+
+
+@pytest.mark.asyncio
+async def test_async_delegation_apiserver_persist_failure_is_retryable(
+    monkeypatch, tmp_path,
+):
+    """A failed delivery persist returns False so the durable claim is
+    released and the completion retried — never silently lost."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AdmittingHandler(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    import gateway.wake as wake_mod
+
+    async def fail_persist(adapter, *, text, session_id, evt=None):
+        raise RuntimeError("state.db unavailable")
+
+    monkeypatch.setattr(wake_mod, "persist_delegation_delivery", fail_persist)
+
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": "deleg_fail",
+        "session_key": "raw-sid",
+    }
+    result = await runner._inject_watch_notification("[BATCH COMPLETE]", evt)
+    assert result is False
 
 
 def test_gateway_drain_retains_and_formats_overflow_events():

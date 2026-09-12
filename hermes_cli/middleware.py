@@ -1,8 +1,7 @@
 """Hermes middleware contract helpers.
 
-Observer hooks report what happened. Middleware can change what happens by
-rewriting a request or wrapping the actual execution callback. Keep the small
-contract helpers here so agent-loop call sites and plugins share one vocabulary.
+Observer hooks report what happened. Middleware can change what happens by rewriting a request or
+wrapping the actual execution callback. Agent-loop call sites and plugins share this vocabulary.
 """
 
 from __future__ import annotations
@@ -22,15 +21,8 @@ TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
 
-# Back-compat aliases for older PoC branches that used API terminology.
-API_REQUEST_MIDDLEWARE = LLM_REQUEST_MIDDLEWARE
-API_EXECUTION_MIDDLEWARE = LLM_EXECUTION_MIDDLEWARE
-
 VALID_MIDDLEWARE: set[str] = {
-    TOOL_REQUEST_MIDDLEWARE,
-    TOOL_EXECUTION_MIDDLEWARE,
-    LLM_REQUEST_MIDDLEWARE,
-    LLM_EXECUTION_MIDDLEWARE,
+    TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
 }
 
 
@@ -58,75 +50,60 @@ def middleware_payload(**kwargs: Any) -> Dict[str, Any]:
 def _safe_copy(payload: Any) -> Any:
     """Deep-copy a request payload, tolerating non-deepcopyable members.
 
-    Request payloads are normally plain JSON-shaped dicts, but an LLM request
-    can occasionally carry non-deepcopyable objects (clients, callbacks, file
-    handles). A hard ``deepcopy`` failure there would otherwise abort the whole
-    request-middleware pass. Fall back to a shallow ``dict`` copy so middleware
-    still runs and the original nested objects are shared by reference rather
-    than corrupting the live payload.
+    An LLM request can carry clients/callbacks/file handles; a hard ``deepcopy`` failure would
+    otherwise abort the whole request-middleware pass.
     """
     try:
         return deepcopy(payload)
     except Exception as exc:  # pragma: no cover - exercised via fallback test
         logger.debug("deepcopy failed for request payload (%s); using shallow copy", exc)
-        if isinstance(payload, dict):
-            return dict(payload)
-        return payload
+        return dict(payload) if isinstance(payload, dict) else payload
 
 
-def apply_llm_request_middleware(
-    request: Dict[str, Any],
-    **context: Any,
+def _apply_request_chain(
+    kind: str, payload_key: str, trace: List[Dict[str, Any]], original: Any, **kwargs: Any
 ) -> RequestMiddlewareResult:
-    """Apply registered LLM request middleware.
+    """Feed ``kwargs[payload_key]`` through every ``kind`` middleware; each may return ``{payload_key: {...}}``."""
+    from hermes_cli.plugins import invoke_middleware
 
-    Middleware may return ``{"request": {...}}`` to replace the effective
-    provider kwargs before Hermes sends them.
-    """
-    if not _has_middleware(LLM_REQUEST_MIDDLEWARE):
-        return RequestMiddlewareResult(
-            payload=request,
-            original_payload=request,
-            changed=False,
-            trace=[],
-        )
-
-    original_request = _safe_copy(request)
-    current_request = _safe_copy(original_request)
-    trace: List[Dict[str, Any]] = []
-
-    for result in _invoke_middleware(
-        LLM_REQUEST_MIDDLEWARE,
-        request=current_request,
-        original_request=original_request,
-        **context,
-    ):
+    current = kwargs[payload_key]
+    for result in invoke_middleware(kind, **middleware_payload(**kwargs)):
         if not isinstance(result, dict):
             continue
-        next_request = result.get("request")
-        if not isinstance(next_request, dict):
+        next_payload = result.get(payload_key)
+        if not isinstance(next_payload, dict):
             continue
-        current_request = _safe_copy(next_request)
-        trace.append(_trace_entry(result))
-
+        current = _safe_copy(next_payload)
+        entry = {
+            key: value
+            for key in ("source", "reason", "name")
+            if isinstance(value := result.get(key), str) and value
+        }
+        trace.append(entry or {"source": "plugin"})
     return RequestMiddlewareResult(
-        payload=current_request,
-        original_payload=original_request,
-        changed=bool(trace),
-        trace=trace,
+        payload=current, original_payload=original, changed=bool(trace), trace=trace,
+    )
+
+
+def apply_llm_request_middleware(request: Dict[str, Any], **context: Any) -> RequestMiddlewareResult:
+    """Apply registered LLM request middleware; ``{"request": {...}}`` replaces the provider kwargs."""
+    from hermes_cli.plugins import has_middleware
+
+    if not has_middleware(LLM_REQUEST_MIDDLEWARE):
+        return RequestMiddlewareResult(payload=request, original_payload=request)
+
+    original_request = _safe_copy(request)
+    return _apply_request_chain(
+        LLM_REQUEST_MIDDLEWARE, "request", [], original_request,
+        request=_safe_copy(original_request), original_request=original_request, **context,
     )
 
 
 def apply_tool_request_middleware(
-    tool_name: str,
-    args: Dict[str, Any],
-    **context: Any,
+    tool_name: str, args: Dict[str, Any], **context: Any
 ) -> RequestMiddlewareResult:
-    """Apply registered tool request middleware.
-
-    Middleware may return ``{"args": {...}}`` to replace the effective tool
-    arguments before hooks, guardrails, approvals, and execution see them.
-    """
+    """Apply registered tool request middleware; ``{"args": {...}}`` replaces the effective tool
+    arguments before hooks, guardrails, approvals, and execution see them."""
     original_args = _safe_copy(args)
     current_args = _safe_copy(original_args)
     trace: List[Dict[str, Any]] = []
@@ -137,132 +114,57 @@ def apply_tool_request_middleware(
         from agent import relay_runtime
 
         relay_args = relay_runtime.apply_tool_request_intercepts(
-            session_id=session_id,
-            tool_name=tool_name,
-            args=current_args,
-        )
+            session_id=session_id, tool_name=tool_name, args=current_args)
         if relay_args != current_args:
             current_args = _safe_copy(relay_args)
             trace.append({"source": "nemo_relay"})
 
-    if not _has_middleware(TOOL_REQUEST_MIDDLEWARE):
+    from hermes_cli.plugins import has_middleware
+
+    if not has_middleware(TOOL_REQUEST_MIDDLEWARE):
         return RequestMiddlewareResult(
-            payload=args if not trace else current_args,
-            original_payload=args,
-            changed=bool(trace),
-            trace=trace,
+            payload=args if not trace else current_args, original_payload=args,
+            changed=bool(trace), trace=trace,
         )
-
-    for result in _invoke_middleware(
-        TOOL_REQUEST_MIDDLEWARE,
-        tool_name=tool_name,
-        args=current_args,
-        original_args=original_args,
-        **context,
-    ):
-        if not isinstance(result, dict):
-            continue
-        next_args = result.get("args")
-        if not isinstance(next_args, dict):
-            continue
-        current_args = _safe_copy(next_args)
-        trace.append(_trace_entry(result))
-
-    return RequestMiddlewareResult(
-        payload=current_args,
-        original_payload=original_args,
-        changed=bool(trace),
-        trace=trace,
+    return _apply_request_chain(
+        TOOL_REQUEST_MIDDLEWARE, "args", trace, original_args,
+        tool_name=tool_name, args=current_args, original_args=original_args, **context,
     )
-
-
-def apply_api_request_middleware(
-    request: Dict[str, Any],
-    **context: Any,
-) -> RequestMiddlewareResult:
-    """Compatibility wrapper for older ``api_request`` naming."""
-    return apply_llm_request_middleware(request, **context)
 
 
 def run_llm_execution_middleware(
-    request: Dict[str, Any],
-    next_call: Callable[[Dict[str, Any]], Any],
-    **context: Any,
-) -> Any:
+    request: Dict[str, Any], next_call: Callable[[Dict[str, Any]], Any], **context: Any) -> Any:
     """Run provider execution through registered LLM execution middleware."""
-    callbacks = _get_middleware_callbacks(LLM_EXECUTION_MIDDLEWARE)
-    if not callbacks:
-        return next_call(request)
     return _run_execution_chain(
-        LLM_EXECUTION_MIDDLEWARE,
-        callbacks,
-        next_call,
-        request=request,
-        original_request=context.pop("original_request", request),
-        **context,
-    )
+        LLM_EXECUTION_MIDDLEWARE, next_call,
+        request=request, original_request=context.pop("original_request", request), **context)
 
 
 def run_tool_execution_middleware(
-    tool_name: str,
-    args: Dict[str, Any],
-    next_call: Callable[[Dict[str, Any]], Any],
-    **context: Any,
+    tool_name: str, args: Dict[str, Any], next_call: Callable[[Dict[str, Any]], Any], **context: Any,
 ) -> Any:
     """Run tool execution through registered tool execution middleware."""
-    callbacks = _get_middleware_callbacks(TOOL_EXECUTION_MIDDLEWARE)
-    if not callbacks:
-        return next_call(args)
     return _run_execution_chain(
-        TOOL_EXECUTION_MIDDLEWARE,
-        callbacks,
-        next_call,
-        tool_name=tool_name,
-        args=args,
-        original_args=context.pop("original_args", args),
-        **context,
-    )
+        TOOL_EXECUTION_MIDDLEWARE, next_call,
+        tool_name=tool_name, args=args, original_args=context.pop("original_args", args), **context)
 
 
-def run_api_execution_middleware(
-    request: Dict[str, Any],
-    next_call: Callable[[Dict[str, Any]], Any],
-    **context: Any,
-) -> Any:
-    """Compatibility wrapper for older ``api_execution`` naming."""
-    return run_llm_execution_middleware(request, next_call, **context)
+class _DownstreamExecutionError(Exception):
+    """Marks an exception raised BELOW a middleware frame so the frame's own failure handling
+    (skip-and-continue) doesn't swallow it."""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(str(original))
+        self.original = original
 
 
-def _invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
-    from hermes_cli.plugins import invoke_middleware
-
-    return invoke_middleware(kind, **middleware_payload(**kwargs))
-
-
-def _has_middleware(kind: str) -> bool:
-    from hermes_cli.plugins import has_middleware
-
-    return has_middleware(kind)
-
-
-def _get_middleware_callbacks(kind: str) -> List[Callable]:
+def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwargs: Any) -> Any:
     from hermes_cli.plugins import get_plugin_manager
 
-    return list(get_plugin_manager()._middleware.get(kind, []))
-
-
-def _run_execution_chain(
-    kind: str,
-    callbacks: List[Callable],
-    terminal_call: Callable[[Any], Any],
-    **kwargs: Any,
-) -> Any:
     payload_key = "request" if "request" in kwargs else "args"
-
-    class _DownstreamExecutionError(Exception):
-        def __init__(self, original: BaseException) -> None:
-            super().__init__(str(original))
-            self.original = original
+    callbacks = list(get_plugin_manager()._middleware.get(kind, []))
+    if not callbacks:
+        return terminal_call(kwargs[payload_key])
 
     def call_at(index: int, payload: Any) -> Any:
         if index >= len(callbacks):
@@ -275,10 +177,8 @@ def _run_execution_chain(
 
         def next_call(next_payload: Any = None) -> Any:
             nonlocal next_called, next_succeeded, next_result
-            # ``next_call`` is single-use per middleware frame. Calling it more
-            # than once would re-run the downstream provider/tool, so a second
-            # invocation is a contract violation rather than a retry. Surface it
-            # instead of silently executing the terminal call twice.
+            # Single-use per frame: a second call would re-run the downstream provider/tool, so it
+            # is a contract violation, not a retry.
             if next_called:
                 raise RuntimeError(
                     f"Middleware '{kind}' callback "
@@ -303,10 +203,7 @@ def _run_execution_chain(
         except Exception as exc:
             logger.warning(
                 "Middleware '%s' callback %s raised: %s",
-                kind,
-                getattr(callback, "__name__", repr(callback)),
-                exc,
-            )
+                kind, getattr(callback, "__name__", repr(callback)), exc)
             if next_succeeded:
                 return next_result
             if next_called:
@@ -316,12 +213,27 @@ def _run_execution_chain(
     return call_at(0, kwargs[payload_key])
 
 
-def _trace_entry(result: Dict[str, Any]) -> Dict[str, Any]:
-    entry: Dict[str, Any] = {}
-    for key in ("source", "reason", "name"):
-        value = result.get(key)
-        if isinstance(value, str) and value:
-            entry[key] = value
-    if not entry:
-        entry["source"] = "plugin"
-    return entry
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+
+API_EXECUTION_MIDDLEWARE = LLM_EXECUTION_MIDDLEWARE
+
+API_REQUEST_MIDDLEWARE = LLM_REQUEST_MIDDLEWARE
+
+def apply_api_request_middleware(
+    request: Dict[str, Any],
+    **context: Any,
+) -> RequestMiddlewareResult:
+    """Compatibility wrapper for older ``api_request`` naming."""
+    return apply_llm_request_middleware(request, **context)
+
+def run_api_execution_middleware(
+    request: Dict[str, Any],
+    next_call: Callable[[Dict[str, Any]], Any],
+    **context: Any,
+) -> Any:
+    """Compatibility wrapper for older ``api_execution`` naming."""
+    return run_llm_execution_middleware(request, next_call, **context)
+# ---- END PLUGIN-COMPAT ----

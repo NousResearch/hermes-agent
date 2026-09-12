@@ -13,13 +13,14 @@ interrupting. The gateway runner must:
 from __future__ import annotations
 
 from datetime import datetime
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -107,13 +108,44 @@ async def test_steer_calls_agent_steer_and_does_not_interrupt():
     assert result is not None
     assert "steer" in result.lower() or "queued" in result.lower()
     # The agent's steer() was called with the payload (prefix stripped)
-    running_agent.steer.assert_called_once_with("also check auth.log")
+    running_agent.steer.assert_called_once()
+    injected = running_agent.steer.call_args.args[0]
+    assert injected.endswith("\n\nalso check auth.log")
+    assert '"chat_id": "c1"' in injected
     # Critically: interrupt was NOT called
     running_agent.interrupt.assert_not_called()
     # And no user-text queueing happened — the steer doesn't go into
     # _pending_messages (that would be turn-boundary /queue semantics).
     assert runner._pending_messages == {}
     assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("elapsed", [float("nan"), True, "not-a-number"])
+async def test_steer_reaches_ancient_turn_via_fresh_timestamp_fallback(
+    monkeypatch, elapsed
+):
+    runner, _adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    running_agent.get_activity_summary.return_value = {
+        "seconds_since_activity": elapsed,
+        "last_activity_at": time.time() - 3,
+        "last_activity_desc": "receiving stream response",
+    }
+    runner._running_agents[sk] = running_agent
+    runner._running_agents_ts[sk] = time.time() - 31_471
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
+
+    result = await runner._handle_message(_make_event("/steer pause safely"))
+
+    running_agent.steer.assert_called_once()
+    injected = running_agent.steer.call_args.args[0]
+    assert injected.endswith("\n\npause safely")
+    assert '"chat_id": "c1"' in injected
+    assert runner._running_agents[sk] is running_agent
+    assert result is not None
 
 
 @pytest.mark.asyncio

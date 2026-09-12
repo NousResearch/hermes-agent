@@ -16738,6 +16738,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     server._sessions["sid-a"] = _session(
         agent=types.SimpleNamespace(model="model-a"),
         history=[{"role": "user", "content": "find docs"}],
+        lazy=True,
         session_key="key-a",
         created_at=10.0,
         last_active=20.0,
@@ -16782,6 +16783,110 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     assert rows["sid-b"]["status"] == "working"
     assert rows["sid-b"]["title"] == "Implement"
     assert rows["sid-b"]["preview"] == "writing code"
+
+
+def test_lazy_child_watch_resume_marks_preflush_record(monkeypatch):
+    """The relay-before-first-flush resume path carries an explicit watch marker.
+
+    ``lazy`` itself is no longer specific enough: ordinary drafts and deferred
+    builds use it too.  Only the ``found = {}`` child-run branch must mark the
+    live record for session.active_list to withhold it.
+    """
+    captured = {}
+
+    class _DB:
+        def get_session(self, _target):
+            return None
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def reopen_session(self, _target):
+            return None
+
+        def get_messages_as_conversation(self, _target, **_kwargs):
+            return []
+
+    def capture_claim(_sid, _target, record, _lease):
+        captured["record"] = record
+        return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_child_run_active", lambda _target: True)
+    monkeypatch.setattr(server, "_claim_or_reuse_live", capture_claim)
+
+    response = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "fresh-child", "lazy": True}}
+    )
+
+    assert "error" not in response, response
+    assert captured["record"]["_delegate_child_watch"] is True
+
+
+def test_session_active_list_excludes_delegate_child_watch(monkeypatch):
+    """A durable delegate child is visible only when that watch window is focused."""
+    root_sid, child_sid = "root-runtime", "child-runtime"
+    root_key, child_key = "root-key", "child-key"
+
+    class _DB:
+        def get_session_title(self, _key):
+            return ""
+
+        def delegate_child_session_ids(self, ids):
+            return {child_key} & set(ids)
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    server._sessions[root_sid] = _session(session_key=root_key)
+    server._sessions[child_sid] = _session(session_key=child_key)
+    try:
+        parent_view = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {"current_session_id": root_sid}}
+        )
+        child_view = server.handle_request(
+            {"id": "2", "method": "session.active_list", "params": {"current_session_id": child_sid}}
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert [row["id"] for row in parent_view["result"]["sessions"]] == [root_sid]
+    assert [row["id"] for row in child_view["result"]["sessions"]] == [root_sid, child_sid]
+
+
+def test_session_active_list_excludes_preflush_delegate_child_watch(monkeypatch):
+    """The relay-before-first-flush window uses the explicit live watch marker."""
+    root_sid, child_sid = "root-runtime", "child-runtime"
+    root_key, child_key = "root-key", "child-key"
+
+    class _DB:
+        def get_session_title(self, _key):
+            return ""
+
+        def delegate_child_session_ids(self, _ids):
+            return set()
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    server._sessions[root_sid] = _session(session_key=root_key)
+    child = _session(session_key=child_key)
+    child["_delegate_child_watch"] = True
+    server._sessions[child_sid] = child
+    try:
+        parent_view = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {"current_session_id": root_sid}}
+        )
+        child_view = server.handle_request(
+            {"id": "2", "method": "session.active_list", "params": {"current_session_id": child_sid}}
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert [row["id"] for row in parent_view["result"]["sessions"]] == [root_sid]
+    assert [row["id"] for row in child_view["result"]["sessions"]] == [root_sid, child_sid]
 
 
 def test_session_active_list_excludes_finalized_sessions(monkeypatch):

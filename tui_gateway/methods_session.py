@@ -716,6 +716,19 @@ def _resume_lazy(ctx: _Resume) -> dict:
     except Exception as e:
         return _err(ctx.rid, 5000, f"resume failed: {e}")
     record = ctx.record(source, cwd, history, lazy=True, todo_state=_todo_state_from_history(history))
+    # ``_resume_locate`` sets ``found = {}`` only for a freshly-started delegate child whose relay arrived
+    # before its first DB flush.  In that interval the durable _delegate_from lookup cannot identify the
+    # watch record, so retain an explicit in-memory marker for session.active_list.  A normal lazy resume
+    # must not be hidden: current mainline also uses ``lazy`` for ordinary drafts and deferred builds.
+    delegate_watch = not bool(ctx.found)
+    if not delegate_watch:
+        try:
+            lookup = getattr(ctx.db, "delegate_child_session_ids", None)
+            delegate_watch = bool(lookup and ctx.target in lookup([ctx.target]))
+        except Exception:
+            logger.debug("delegate-child watch classification failed for %s", ctx.target, exc_info=True)
+    if delegate_watch:
+        record["_delegate_child_watch"] = True
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
     # A child mid-run emits no session events — liveness comes from the relay registry.
@@ -911,6 +924,41 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"cwd": resolved, "branch": branch, "git_repo_root": root})
 
 
+def _delegate_child_live_keys(snapshot: list[tuple[str, dict]]) -> set[str]:
+    """Stored and pre-flush delegate-child keys among live TUI sessions.
+
+    The persistent ``_delegate_from`` marker classifies normal watch resumes.
+    The explicit in-memory marker covers the short relay-before-first-flush
+    window, and profile grouping keeps remote-profile rows out of the launch
+    profile's state.db lookup.
+    """
+    delegate_keys: set[str] = set()
+    keys_by_profile: dict[str | None, set[str]] = {}
+    for sid, session in snapshot:
+        key = _session_lookup_key(session, fallback=sid)
+        if not key:
+            continue
+        if session.get("_delegate_child_watch"):
+            delegate_keys.add(key)
+            continue
+        profile_home = session.get("profile_home") or None
+        keys_by_profile.setdefault(profile_home, set()).add(key)
+
+    for profile_home, keys in keys_by_profile.items():
+        db, owns_db = None, False
+        try:
+            db, owns_db = _profile_session_db(profile_home)
+            lookup = getattr(db, "delegate_child_session_ids", None)
+            if callable(lookup):
+                delegate_keys.update(lookup(list(keys)))
+        except Exception:
+            logger.exception("session.active_list: delegate-child filter failed")
+        finally:
+            if owns_db and db is not None:
+                _release_db(db)
+    return delegate_keys
+
+
 @method("session.active_list")
 def _(rid, params: dict) -> dict:
     """Live TUI sessions in this process (not a DB browser)."""
@@ -920,8 +968,16 @@ def _(rid, params: dict) -> dict:
     current = str(params.get("current_session_id") or "")
     # ``_finalized`` sessions linger until the reaper pops them (they inflated the footer). Do NOT filter on
     # the WS-detached sentinel: detached is attachable until grace-reap, and ``hermes --tui`` rides stdio.
+    # Delegate-child watch windows can render when explicitly focused, but must not enter the sibling list:
+    # switcher and close-fallback auto-activation otherwise route a parent's follow-up into the child.
     # Keep insertion order (focused must not jump).
-    rows = [_session_live_item(sid, session, current) for sid, session in snapshot if not session.get("_finalized")]
+    delegate_keys = _delegate_child_live_keys(snapshot)
+    rows = [
+        _session_live_item(sid, session, current)
+        for sid, session in snapshot
+        if not session.get("_finalized")
+        and (sid == current or _session_lookup_key(session, fallback=sid) not in delegate_keys)
+    ]
     return _ok(rid, {"sessions": rows})
 
 

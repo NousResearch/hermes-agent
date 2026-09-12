@@ -101,6 +101,15 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_delete.add_argument("session_id", help="Session ID to delete")
     add_yes_flag(sessions_delete, "Skip confirmation")
 
+    sessions_clear = sessions_subparsers.add_parser(
+        "clear", help="Clear a session's message history while preserving title and settings")
+    sessions_clear.add_argument("session_id", help="Session ID (or prefix) to clear")
+    sessions_clear.add_argument("--last", type=int, metavar="N",
+        help="Keep the newest N messages, deleting older turns")
+    sessions_clear.add_argument("--before", metavar="TIME",
+        help="Delete messages created before TIME (duration like '2d'/'5h', or ISO timestamp)")
+    add_yes_flag(sessions_clear, "Skip confirmation")
+
     sessions_prune = sessions_subparsers.add_parser(
         "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
     _add_session_filter_args(

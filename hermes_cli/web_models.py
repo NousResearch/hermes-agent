@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, SecretStr, StrictBool, field_validator
 
@@ -254,6 +254,17 @@ class SessionOwnerBackfill(BaseModel):
     """POST /api/sessions/owner-backfill (legacy migration). ``profile`` scopes WHICH state.db is
     stamped; the stamped value is always that store's own serving-profile identity — the caller
     cannot inject an arbitrary owner."""
+    profile: Optional[str] = None
+
+class SessionClear(BaseModel):
+    """Body for POST /api/sessions/{session_id}/clear."""
+    profile: Optional[str] = None
+    keep_last_n: Optional[int] = None
+    before_timestamp: Optional[Union[str, float]] = None
+
+class SessionMessagesDelete(BaseModel):
+    """Body for POST /api/sessions/{session_id}/messages/bulk-delete."""
+    message_ids: List[int]
     profile: Optional[str] = None
 
 class SessionPrune(BaseModel):

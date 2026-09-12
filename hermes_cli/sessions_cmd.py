@@ -543,6 +543,47 @@ def _cmd_delete(db, args):
     print(f"Deleted session '{resolved_session_id}'.")
 
 
+def _cmd_clear(db, args):
+    resolved_session_id = db.resolve_session_id(args.session_id)
+    if not resolved_session_id:
+        return _not_found(args.session_id)
+    session = db.get_session(resolved_session_id)
+    _pinned_note = " (this session is PINNED)" if (session or {}).get("pinned") else ""
+
+    keep_last_n = getattr(args, "last", None)
+    before_arg = getattr(args, "before", None)
+    before_ts = None
+    if before_arg:
+        from hermes_cli.session_filters import parse_point_in_time
+        before_ts = parse_point_in_time(before_arg)
+        if before_ts is None:
+            print(f"Error: Invalid time format '{before_arg}'. Use a duration like '2d'/'5h' or an ISO timestamp.")
+            return 1
+
+    detail = ""
+    if keep_last_n is not None and keep_last_n > 0:
+        detail = f" (keeping last {keep_last_n} messages)"
+    elif before_ts is not None:
+        detail = f" (messages before {before_arg})"
+
+    if not args.yes:
+        if not _confirm_prompt(f"Clear transcript for session '{resolved_session_id}'{_pinned_note}{detail}? [y/N] "):
+            print("Cancelled.")
+            return
+    elif _pinned_note:
+        print(f"Warning: clearing a pinned session '{resolved_session_id}'.")
+
+    if not db.clear_session_messages(
+        resolved_session_id,
+        keep_last_n=keep_last_n,
+        before_timestamp=before_ts,
+        sessions_dir=_sessions_dir(),
+    ):
+        return _not_found(args.session_id)
+
+    print(f"Cleared transcript for session '{resolved_session_id}'{detail}.")
+
+
 #: Age floor for `prune --never-active`; generous: a young never-active row may be a chat nobody replied to yet.
 _NEVER_ACTIVE_DEFAULT_DAYS = 30.0
 
@@ -938,7 +979,7 @@ def _cmd_stats(db, args):
 
 _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
 _DB_HANDLERS = {
-    "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
+    "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "clear": _cmd_clear, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,

@@ -24,11 +24,12 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { renameSession } from '@/hermes'
+import { clearSession, renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
+import { ClearTranscriptDialog, type ClearTranscriptOptions } from './clear-transcript-dialog'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
@@ -107,6 +108,7 @@ interface SessionActions {
   onToggleUnread?: () => void
   onBranch?: () => void
   onArchive?: () => void
+  onClearTranscript?: () => void
   onDelete?: () => void
   /** Close this surface (a tile tab) — omitted where nothing closes (sidebar
    *  rows, the main tab). */
@@ -191,6 +193,7 @@ function useSessionActions({
   onToggleUnread,
   onBranch,
   onArchive,
+  onClearTranscript,
   onDelete,
   onClose,
   onHideTabBar,
@@ -208,10 +211,13 @@ function useSessionActions({
   // action leaves the restore alone (it's the correct behavior for them). Mirrors
   // the project menu's appearance-popover guard.
   const suppressCloseFocusRef = useRef(false)
+  const [clearOpen, setClearOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const isRemote = useStore($connection)?.mode === 'remote'
+  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  const hasMessages = (session?.message_count ?? 0) > 0
   // The row's finished-unread dot is cleared by opening the session (main or
   // tile) — this menu item is the explicit escape hatch for the rest.
   const isUnread = useStore($unreadFinishedSessionIds).includes(sessionId)
@@ -438,6 +444,15 @@ function useSessionActions({
         onArchive?.()
       }
     }),
+    spec({
+      disabled: !sessionId || !hasMessages,
+      icon: 'clear-all',
+      label: 'Clear transcript',
+      onSelect: () => {
+        triggerHaptic('warning')
+        setClearOpen(true)
+      }
+    }),
     {
       className: 'text-destructive focus:text-destructive',
       disabled: !onDelete,
@@ -538,6 +553,42 @@ function useSessionActions({
     }
   }
 
+  const handleClearTranscript = async (options?: ClearTranscriptOptions) => {
+    if (onClearTranscript) {
+      onClearTranscript()
+      return
+    }
+
+    if (!sessionId) {
+      return
+    }
+
+    try {
+      await clearSession(sessionId, options, profile)
+      if (!options?.keep_last_n && !options?.before_timestamp) {
+        setSessions(prev =>
+          prev.map(s =>
+            s.id === sessionId
+              ? { ...s, message_count: 0, input_tokens: 0, output_tokens: 0 }
+              : s
+          )
+        )
+      }
+      notify({ durationMs: 2_000, kind: 'success', message: 'Transcript cleared' })
+    } catch (err) {
+      notifyError(err, 'Failed to clear transcript')
+    }
+  }
+
+  const clearDialog = (
+    <ClearTranscriptDialog
+      onConfirm={handleClearTranscript}
+      onOpenChange={setClearOpen}
+      open={clearOpen}
+      sessionTitle={title}
+    />
+  )
+
   const deleteDialog = (
     <DeleteSessionDialog
       onConfirm={() => {
@@ -549,7 +600,7 @@ function useSessionActions({
     />
   )
 
-  return { deleteDialog, onCloseAutoFocus, renameDialog, renderItems }
+  return { clearDialog, deleteDialog, onCloseAutoFocus, renameDialog, renderItems }
 }
 
 interface DeleteSessionDialogProps {
@@ -590,7 +641,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { clearDialog, deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -605,6 +656,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         {children}
       </ActionsMenu>
       {renameDialog}
+      {clearDialog}
       {deleteDialog}
     </>
   )
@@ -616,7 +668,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { clearDialog, deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -629,6 +681,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
         {children}
       </ActionsContextMenu>
       {renameDialog}
+      {clearDialog}
       {deleteDialog}
     </>
   )

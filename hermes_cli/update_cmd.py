@@ -97,8 +97,9 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
-    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _STALE_PURGE_PREFIXES,
-    _STALE_PURGE_PROTECTED, _UPDATE_RUNTIME_RELOAD_MODULES, _clear_stale_sqlite_sidecars,
+    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+    _STALE_PURGE_EXCLUDED_TOP_LEVEL, _STALE_PURGE_PREFIXES, _STALE_PURGE_PROTECTED,
+    _UPDATE_RUNTIME_RELOAD_MODULES, _clear_stale_sqlite_sidecars,
     _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
@@ -106,7 +107,8 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
     _print_verified_update_completion, _purge_stale_hermes_modules, _read_project_version,
     _reload_process_scan_modules, _reload_updated_runtime_modules,
     _resolve_pre_update_backup_mode, _restore_state_db_from_snapshot,
-    _run_post_update_maintenance, _run_pre_update_backup, _sweep_bytecode_after_update,
+    _run_post_update_maintenance, _run_pre_update_backup, _stale_purge_prefixes,
+    _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
 logger = logging.getLogger(__name__)

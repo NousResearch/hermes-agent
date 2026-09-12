@@ -293,3 +293,10 @@ def test_dispatch_timeout_cancels_future(live_path):
         with pytest.raises(RuntimeError, match="may still be in flight"):
             mt._run(probe())
     assert future.cancelled()
+
+    future = TimedOutFuture()
+    with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=schedule):
+        result = invoke("send_reaction", event_id="$event", emoji="✅")
+    assert not result.get("success")
+    assert "may still be in flight" in result["error"]
+    assert future.cancelled()

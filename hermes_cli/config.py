@@ -2135,13 +2135,17 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
     return lkg_copy
 
 
-def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
+def _merge_managed_overlay(expanded: Dict[str, Any], *, strict: bool = False) -> Tuple[Dict[str, Any], Any]:
     """Apply the managed-scope overlay; returns ``(merged, managed_config_or_falsy)``.
     Managed wins at the leaf and is applied AFTER user expansion so a user ``${VAR}`` cannot shadow
     a managed literal: managed values expand only against the process environment. This
     deliberately inverts the usual env-over-config precedence for the keys the managed layer pins
     (docs/design/managed-scope.md §4.1)."""
-    managed_config = managed_scope.load_managed_config()
+    if strict:
+        managed_dir = managed_scope.get_managed_dir()
+        managed_config = require_readable_config_before_write(managed_dir / "config.yaml") if managed_dir else {}
+    else:
+        managed_config = managed_scope.load_managed_config()
     if not managed_config:
         return expanded, managed_config
     # Same canonicalization as the user config BEFORE merging (parity with
@@ -2201,7 +2205,7 @@ def _load_config_impl(*, want_deepcopy: bool, strict: bool = False) -> Dict[str,
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _canonicalize_config(config)
-        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized), strict=strict)
         if strict:
             return expanded
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)

@@ -1,6 +1,14 @@
 """Shared Matrix tool policy; YAML wins over profile-scoped legacy env gates."""
-from agent.secret_scope import get_secret
+from agent.secret_scope import (
+    UnscopedSecretError, current_secret_scope, get_secret, is_multiplex_active,
+)
 from hermes_cli.config import load_config_readonly
+
+
+def require_profile_scope() -> None:
+    # YAML-only actions must honor the same boundary as legacy get_secret reads.
+    if is_multiplex_active() and current_secret_scope() is None:
+        raise UnscopedSecretError("Matrix tools require an active profile scope while multiplexing")
 
 
 def tools_config() -> dict:
@@ -8,6 +16,7 @@ def tools_config() -> dict:
     # Strict validation prevents malformed input from enabling legacy env gates.
     # Matrix tool action defaults remain in gate(), not merged DEFAULT_CONFIG.
     try:
+        require_profile_scope()
         config = load_config_readonly(strict=True)
     except (OSError, ValueError, RuntimeError) as exc:
         raise ValueError("Cannot read Matrix tool policy; check config.yaml") from exc

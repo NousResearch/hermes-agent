@@ -126,6 +126,33 @@ def test_matrix_adapter_uses_secondary_profile_map():
     assert adapter is secondary_adapter
 
 
+def test_presence_requires_multiplex_scope_even_without_policy_gates(monkeypatch):
+    import json
+    from agent import secret_scope
+    from gateway.config import Platform
+    from tools.registry import registry
+
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    runner = SimpleNamespace(adapters={Platform.MATRIX: object()})
+    monkeypatch.setattr(mt, "get_session_env", lambda key, default="": {
+        "HERMES_SESSION_PLATFORM": "matrix", "HERMES_SESSION_PROFILE": "default",
+    }.get(key, default))
+    token = secret_scope.set_secret_scope(None)
+    try:
+        with patch("gateway.run._gateway_runner_ref", return_value=runner):
+            result = json.loads(registry.get_entry("matrix").handler({"action": "set_presence"}))
+            assert "profile scope" in result["error"]
+            scoped_token = secret_scope.set_secret_scope({})
+            try:
+                adapter, error = mt._matrix_adapter()
+                assert adapter is runner.adapters[Platform.MATRIX]
+                assert not error
+            finally:
+                secret_scope.reset_secret_scope(scoped_token)
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+
 def test_matrix_adapter_secondary_missing_does_not_fall_back_to_default():
     from gateway.config import Platform
 

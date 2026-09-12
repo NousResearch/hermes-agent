@@ -30,6 +30,10 @@ _ADMIN_ACTIONS = {
 }
 
 
+class MatrixDispatchTimeout(RuntimeError):
+    """The server may have accepted a write before local dispatch timed out."""
+
+
 def check_matrix_tool_requirements() -> bool:
     """Check credentials only; process-cached checks must not gate session surfaces.
 
@@ -83,7 +87,9 @@ def _matrix_adapter() -> Tuple[Any, str]:
     try:
         from gateway.config import Platform
         from gateway.run import _gateway_runner_ref
+        from plugins.platforms.matrix.tool_policy import require_profile_scope
 
+        require_profile_scope()
         runner = _gateway_runner_ref()
         if not runner:
             return None, "Matrix gateway is not running."
@@ -121,12 +127,14 @@ def _current_room_id(room_id: str = "") -> str:
 
 def _allowed_rooms() -> Set[str]:
     tools = _matrix_tools_cfg()
-    raw = tools.get("allowed_rooms")
-    if raw is None:
-        raw = get_secret("MATRIX_ALLOWED_ROOMS", "")
+    raw = tools["allowed_rooms"] if "allowed_rooms" in tools else get_secret("MATRIX_ALLOWED_ROOMS", "")
     if isinstance(raw, (list, tuple, set)):
-        return {str(r).strip() for r in raw if str(r).strip()}
-    return {room.strip() for room in str(raw or "").split(",") if room.strip()}
+        if not all(isinstance(room, str) for room in raw):
+            raise ValueError("matrix.tools.allowed_rooms must contain only room ID strings")
+        return {room.strip() for room in raw if room.strip()}
+    if not isinstance(raw, str):
+        raise ValueError("matrix.tools.allowed_rooms must be a list or comma-separated string")
+    return {room.strip() for room in raw.split(",") if room.strip()}
 
 
 def _authorize_room_id(
@@ -214,7 +222,7 @@ def _run(coro):
         return future.result(timeout=120)
     except FuturesTimeoutError as exc:
         future.cancel()
-        raise RuntimeError(
+        raise MatrixDispatchTimeout(
             "Matrix tool dispatch timed out after 120s; the action may still be in flight") from exc
 
 
@@ -470,6 +478,8 @@ def _make_handler(actions: Dict[str, str], tool_name: str):
         payload = {k: args.get(k, v) for k, v in _HANDLER_DEFAULTS.items()}
         try:
             return _run_matrix_action(payload.pop("action"), actions, tool_name, **payload)
+        except MatrixDispatchTimeout as exc:
+            return tool_error(str(exc))
         except Exception:
             return tool_error("Matrix action failed; check the gateway connection and Matrix tool policy.")
 

@@ -133,6 +133,30 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
+    def test_script_receives_explicit_job_environment(self, cron_env):
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "occurrence.py"
+        script.write_text(
+            "import os\n"
+            "print(os.environ['HERMES_CRON_JOB_ID'])\n"
+            "print(os.environ['HERMES_CRON_OCCURRENCE_AT'])\n"
+        )
+
+        success, output = _run_job_script(
+            "occurrence.py",
+            job_env={
+                "HERMES_CRON_JOB_ID": "job-123",
+                "HERMES_CRON_OCCURRENCE_AT": "2026-08-03T10:15:00+00:00",
+            },
+        )
+
+        assert success is True
+        assert output.splitlines() == [
+            "job-123",
+            "2026-08-03T10:15:00+00:00",
+        ]
+
     @pytest.mark.windows_only
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
         # Windows-only: the fake ``sys.platform`` could not reproduce the

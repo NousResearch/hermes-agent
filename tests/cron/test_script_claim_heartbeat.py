@@ -136,7 +136,7 @@ def test_no_agent_forwards_cancel_event_to_script_runner(monkeypatch):
     cancel = threading.Event()
     observed = []
 
-    def _script_runner(job, script_path, workdir=None, cancel_event=None):
+    def _script_runner(job, script_path, workdir=None, cancel_event=None, job_env=None):
         observed.append(cancel_event)
         return True, ""
 

@@ -34,7 +34,7 @@ def prefetch_sync(provider, query: str) -> str:
             if provider._init_thread is not None:
                 provider._init_thread.join(timeout=max(0.0, deadline - time.monotonic()))
             if not provider._session_ready():
-                return provider._pop_auth_notice()
+                return provider._pop_auth_notice() or provider._pop_peer_notice()
         manager = provider._manager
         if (generation is not provider._recall_generation or session != provider._session_key
                 or turn != provider._turn_count or time.monotonic() >= deadline):
@@ -92,7 +92,7 @@ def prefetch_sync(provider, query: str) -> str:
             except Exception as exc:
                 logger.debug("Honcho synchronous recall failed: %s", exc)
 
-        worker = spawn_context_thread(retrieve, name="honcho-recall-sync")
+        worker = spawn_context_thread(retrieve, name="honcho-recall-sync", owner=provider)
         provider._recall_sync_thread = worker
         worker.start()
         worker.join(timeout=max(0.0, deadline - time.monotonic()))

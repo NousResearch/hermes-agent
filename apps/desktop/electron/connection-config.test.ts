@@ -26,6 +26,7 @@ import {
   cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  dispatchApiRequestForSelectedConnection,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   isGatewayAuthRejection,
@@ -53,6 +54,45 @@ import {
   translateSelfProfileQuery,
   withTransientRetries
 } from './connection-config'
+
+test('remote-primary config PUT stays pinned and local routing remains the no-selection control', async () => {
+  const remote = { baseUrl: 'https://remote.example', sharedRemote: true }
+  const requested: string[] = []
+  let localResolutions = 0
+  const remoteFailure = new Error('remote write failed')
+  const deps = {
+    dispatchProfile: async request => {
+      localResolutions += 1
+
+      return `local:${request.path}`
+    },
+    dispatchRegistry: async (request, connectionId) => {
+      assert.equal(connectionId, 'remote-primary')
+      requested.push(`${remote.baseUrl}${request.path}`)
+      throw remoteFailure
+    }
+  }
+
+  await assert.rejects(
+    dispatchApiRequestForSelectedConnection(
+      { body: { config: { model: 'remote/model' } }, method: 'PUT', path: '/api/config' },
+      { remotePrimaryConnectionId: 'remote-primary' },
+      deps
+    ),
+    remoteFailure
+  )
+  assert.deepEqual(requested, ['https://remote.example/api/config'])
+  assert.equal(localResolutions, 0)
+
+  await assert.doesNotReject(
+    dispatchApiRequestForSelectedConnection(
+      { body: { config: { model: 'local/model' } }, method: 'PUT', path: '/api/config' },
+      { remotePrimaryConnectionId: null },
+      deps
+    )
+  )
+  assert.equal(localResolutions, 1)
+})
 
 // --- connectionScopeKey / normAuthMode ---
 

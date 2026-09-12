@@ -109,6 +109,7 @@ import {
   cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  dispatchApiRequestForSelectedConnection,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
   isGatewayAuthRejection,
@@ -10978,13 +10979,19 @@ function globalRemoteActive() {
 // True when the v2 registry PRIMARY names a non-local connection. Mirrors the
 // registry fallback rung in resolveDesktopRemoteRoute.
 function registryPrimaryIsRemote() {
+  return Boolean(remoteRegistryPrimaryConnectionId())
+}
+
+function remoteRegistryPrimaryConnectionId() {
   try {
     const registry = readDesktopConnectionsRegistry()
     const entry = registry.connections.find(c => c.id === registry.primary)
 
-    return Boolean(entry && (entry.kind === 'remote' || entry.kind === 'cloud' || entry.kind === 'ssh'))
+    return entry && (entry.kind === 'remote' || entry.kind === 'cloud' || entry.kind === 'ssh')
+      ? registry.primary
+      : null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -16748,7 +16755,14 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   }
 
   if (!mutatingProfile) {
-    return handleHermesApiRequest(request)
+    return dispatchApiRequestForSelectedConnection(
+      request,
+      { remotePrimaryConnectionId: remoteRegistryPrimaryConnectionId() },
+      {
+        dispatchProfile: handleHermesApiRequest,
+        dispatchRegistry: dispatchRegistryApiRequest
+      }
+    )
   }
 
   const releaseProfileDeletion = profileDeletionGate.acquire(mutatingProfile)

@@ -905,6 +905,48 @@ function apiRequestRegistryConnectionId(request): null | string {
   return id
 }
 
+export interface SelectedConnectionApiDispatchOptions {
+  /** Exact registry identity of the selected primary when it is remote. */
+  remotePrimaryConnectionId?: null | string
+}
+
+export interface SelectedConnectionApiDispatchDeps<T = unknown> {
+  dispatchProfile: (request: any) => Promise<T>
+  dispatchRegistry: (request: any, connectionId: string) => Promise<T>
+}
+
+/**
+ * Dispatch a renderer API request without letting an untagged config request
+ * drift off the selected remote primary during a connection handoff.
+ *
+ * Explicit connection pins remain authoritative. Other untagged traffic keeps
+ * the legacy profile route; only config endpoints inherit a remote registry
+ * primary because their reads and authoritative writes must stay on one host.
+ */
+async function dispatchApiRequestForSelectedConnection<T>(
+  request,
+  options: SelectedConnectionApiDispatchOptions,
+  deps: SelectedConnectionApiDispatchDeps<T>
+): Promise<T> {
+  const explicitConnectionId = apiRequestRegistryConnectionId(request)
+  const rawPath = String(request?.path || '')
+  let pathname = ''
+
+  try {
+    pathname = new URL(rawPath, 'https://example.invalid').pathname
+  } catch {
+    // Malformed paths retain the existing profile dispatcher and its error.
+  }
+
+  const remotePrimaryConnectionId =
+    pathname === '/api/config' || pathname.startsWith('/api/config/')
+      ? String(options.remotePrimaryConnectionId || '').trim()
+      : ''
+  const connectionId = explicitConnectionId || remotePrimaryConnectionId
+
+  return connectionId ? deps.dispatchRegistry(request, connectionId) : deps.dispatchProfile(request)
+}
+
 export interface ProfileApiRequestRoute {
   /** Profile passed to ensureBackend; null selects the primary backend. */
   backendProfile: null | string
@@ -1051,6 +1093,7 @@ export {
   cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  dispatchApiRequestForSelectedConnection,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,

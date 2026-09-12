@@ -69,6 +69,8 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = Non
             category = dg.guess_category(p) if p.exists() else None
         except (OSError, RuntimeError, ValueError):
             continue
+        if category is None and dg.register_system_temp_root(p):
+            category = dg.guess_category(p)
         if category is not None:
             with _lock:
                 tracked = dg.track(str(p), category, silent=True)
@@ -108,7 +110,8 @@ Subcommands:
 
 Categories: temp | test | research | download | chrome-profile | cron-output | other
 
-Automatic deletion is limited to Hermes-owned cache/cron roots and /tmp/hermes-*.
+Automatic deletion is limited to Hermes-owned cache/cron roots and process-registered
+hermes-* roots directly beneath the platform temporary directory.
 Arbitrary workspace files are never classified as disposable by filename.
 """
 

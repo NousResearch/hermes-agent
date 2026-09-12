@@ -12,6 +12,7 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 _LARGE_FILE_BYTES = 500 * 1024 * 1024
+_REGISTERED_SYSTEM_TEMP_ROOTS: Dict[str, Tuple[int, int]] = {}
 
 
 def _state_file(name: str) -> Path:
@@ -31,15 +33,19 @@ def _state_file(name: str) -> Path:
 
 
 def is_safe_path(path: Path) -> bool:
-    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*`` (rejects /mnt/c etc.)."""
+    """Accept paths inside the profile or a process-registered Hermes temp root."""
     try:
+        lexical = _absolute_without_symlinks(path)
         resolved = path.resolve()
-    except OSError:
+        lexical_home = _absolute_without_symlinks(get_hermes_home())
+        resolved_home = get_hermes_home().resolve()
+    except (OSError, RuntimeError, ValueError):
         return False
-    with contextlib.suppress(ValueError, OSError):
-        resolved.relative_to(get_hermes_home().resolve())
+    if _is_descendant(lexical, lexical_home):
+        return _is_descendant(resolved, resolved_home)
+    if _is_descendant(resolved, resolved_home):
         return True
-    return _system_temp_owner_root(resolved) is not None
+    return _system_temp_owner_root(path) is not None
 
 
 def _log(message: str) -> None:
@@ -100,35 +106,118 @@ _MANAGED_HERMES_ROOTS = {
 
 def _managed_hermes_roots() -> Dict[Path, str]:
     home = get_hermes_home().resolve()
-    return {home.joinpath(*parts).resolve(): category
-            for parts, category in _MANAGED_HERMES_ROOTS.items()}
+    roots = {}
+    for parts, category in _MANAGED_HERMES_ROOTS.items():
+        root = home.joinpath(*parts)
+        try:
+            # The owned boundary itself and each existing ancestor beneath HOME
+            # must be real directories, never a symlink to external storage.
+            if root.resolve(strict=False) != root:
+                continue
+        except (OSError, RuntimeError):
+            continue
+        roots[root] = category
+    return roots
 
 
-def _system_temp_owner_root(path: Path) -> Optional[Path]:
-    """Return the ``hermes-*`` owner root containing *path*, including macOS /tmp aliases."""
+def _absolute_without_symlinks(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def _is_descendant(path: Path, root: Path) -> bool:
+    with contextlib.suppress(ValueError):
+        return bool(path.relative_to(root).parts)
+    return False
+
+
+def _temp_roots() -> Set[Tuple[Path, Path]]:
     roots = set()
     for candidate in (Path(tempfile.gettempdir()), Path("/tmp")):
         with contextlib.suppress(OSError):
-            roots.add(candidate.resolve())
-    for root in roots:
-        with contextlib.suppress(ValueError):
-            rel = path.resolve().relative_to(root)
-            if rel.parts and rel.parts[0].startswith("hermes-"):
-                return root / rel.parts[0]
+            lexical = _absolute_without_symlinks(candidate)
+            resolved = candidate.resolve()
+            roots.add((lexical, resolved))
+            roots.add((resolved, resolved))
+    return roots
+
+
+def _candidate_system_temp_owner_root(path: Path) -> Optional[Path]:
+    """Find a real direct ``hermes-*`` child of a platform temp directory."""
+    try:
+        lexical = _absolute_without_symlinks(path)
+        resolved = path.resolve()
+        lexical_home = _absolute_without_symlinks(get_hermes_home())
+        resolved_home = get_hermes_home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    # A lexical path that starts inside HOME but resolves outside is a symlink
+    # escape, not a system-temp candidate.
+    if _is_descendant(lexical, lexical_home):
+        return None
+    for lexical_temp, resolved_temp in _temp_roots():
+        with contextlib.suppress(ValueError, OSError):
+            rel = lexical.relative_to(lexical_temp)
+            if len(rel.parts) < 2 or not rel.parts[0].startswith("hermes-"):
+                continue
+            lexical_owner = lexical_temp / rel.parts[0]
+            if lexical_owner.is_symlink() or not lexical_owner.is_dir():
+                continue
+            owner = lexical_owner.resolve()
+            owner_rel = owner.relative_to(resolved_temp)
+            if len(owner_rel.parts) != 1 or not _is_descendant(resolved, owner):
+                continue
+            # A test/profile HOME may itself be named hermes-*; never grant its
+            # outer directory ownership over sibling paths.
+            if resolved_home == owner or _is_descendant(resolved_home, owner):
+                continue
+            return owner
     return None
+
+
+def register_system_temp_root(path: Path) -> bool:
+    """Register a temp root observed in this process from an explicit file track."""
+    owner = _candidate_system_temp_owner_root(path)
+    if owner is None:
+        return False
+    try:
+        stat = owner.stat()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    _REGISTERED_SYSTEM_TEMP_ROOTS[str(owner)] = (stat.st_dev, stat.st_ino)
+    return True
+
+
+def _system_temp_owner_root(path: Path) -> Optional[Path]:
+    """Return *path*'s still-identical temp root when this process registered it."""
+    owner = _candidate_system_temp_owner_root(path)
+    if owner is None:
+        return None
+    expected = _REGISTERED_SYSTEM_TEMP_ROOTS.get(str(owner))
+    if expected is None:
+        return None
+    try:
+        current = owner.stat()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return owner if (current.st_dev, current.st_ino) == expected else None
 
 
 def _managed_category(path: Path) -> Optional[str]:
     try:
+        lexical = _absolute_without_symlinks(path)
         resolved = path.resolve()
-    except OSError:
+        lexical_home = _absolute_without_symlinks(get_hermes_home())
+        resolved_home = get_hermes_home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if _is_descendant(lexical, lexical_home) and not _is_descendant(resolved, resolved_home):
         return None
     for root, category in _managed_hermes_roots().items():
         with contextlib.suppress(ValueError):
             if resolved.relative_to(root).parts:
                 return category
     with contextlib.suppress(ValueError):
-        resolved.relative_to(get_hermes_home().resolve())
+        resolved.relative_to(resolved_home)
         return None
     owner = _system_temp_owner_root(resolved)
     return "test" if owner is not None and resolved != owner else None
@@ -137,7 +226,7 @@ def _managed_category(path: Path) -> Optional[str]:
 def _managed_sweep_root(path: Path) -> Optional[Path]:
     try:
         resolved = path.resolve()
-    except OSError:
+    except (OSError, RuntimeError, ValueError):
         return None
     for root in _managed_hermes_roots():
         with contextlib.suppress(ValueError):
@@ -181,7 +270,10 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
     try:
-        path = Path(path_str).resolve()
+        lexical_path = Path(path_str).expanduser()
+        if category == "test" and guess_category(lexical_path) is None:
+            register_system_temp_root(lexical_path)
+        path = lexical_path.resolve()
         exists = path.exists()
     except (OSError, RuntimeError, ValueError):
         _log(f"SKIP: invalid path {path_str!r}")

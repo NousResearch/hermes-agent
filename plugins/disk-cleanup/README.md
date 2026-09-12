@@ -1,9 +1,10 @@
 # disk-cleanup
 
-Tracks and cleans ephemeral files in roots Hermes explicitly owns: platform
-temporary directories named `hermes-*`, generated media caches, and cron run
-output. It never treats a filename such as `test_*` or `tmp_*` as proof that a
-file is disposable.
+Tracks and cleans ephemeral files in roots Hermes explicitly owns:
+process-registered `hermes-*` directories directly beneath the platform temp
+directory, generated media caches, and cron run output. A directory name alone
+does not establish ownership, and neither does a filename such as `test_*` or
+`tmp_*`.
 
 Originally contributed by [@LVT382009](https://github.com/LVT382009) as a
 skill in PR #12212.  Ported to the plugin system so the behaviour runs
@@ -47,11 +48,14 @@ Deletion rules:
 - Arbitrary workspace and durable Hermes files survive regardless of filename
 - One turn ending cannot delete files tracked by another active turn
 - Malformed or stale tracking entries are skipped fail-closed
+- System temp roots must be observed and registered in the current process;
+  registration is bound to the root's filesystem identity, so a replaced root
+  and records left by an earlier process are skipped
 - Backup/restore is scoped to `tracked.json` — the plugin never touches
   agent logs
 - Atomic writes: `.tmp` → backup → rename
 
 The owned roots are `$HERMES_HOME/cache/vision/temp_vision_images/`,
 `$HERMES_HOME/cache/video/temp_video_files/`, `$HERMES_HOME/cron/output/`
-(plus the legacy `cronjobs/output/` alias), and platform temp directories whose
-top-level name starts with `hermes-`.
+(plus the legacy `cronjobs/output/` alias), and process-registered platform temp
+directories whose top-level name starts with `hermes-`.

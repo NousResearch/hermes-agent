@@ -129,11 +129,33 @@ class TestGuessCategory:
         assert summary["deleted"] == 0
         assert all(path.exists() for path in sentinels)
 
-    def test_owned_system_temp_file(self, _managed_tmp_root):
+    def test_system_temp_root_requires_process_registration(self, _managed_tmp_root):
         dg = _load_lib()
         p = _managed_tmp_root / "anything.log"
         p.write_text("x", encoding="utf-8")
+        assert dg.guess_category(p) is None
+        assert dg.is_safe_path(p) is False
+        assert dg.register_system_temp_root(p) is True
         assert dg.guess_category(p) == "test"
+        assert dg.is_safe_path(p) is True
+
+    def test_replaced_system_temp_root_loses_registration(self, _managed_tmp_root):
+        dg = _load_lib()
+        original_file = _managed_tmp_root / "original.log"
+        original_file.write_text("x", encoding="utf-8")
+        assert dg.register_system_temp_root(original_file) is True
+
+        displaced = _managed_tmp_root.with_name(f"{_managed_tmp_root.name}-displaced")
+        _managed_tmp_root.rename(displaced)
+        _managed_tmp_root.mkdir()
+        replacement_file = _managed_tmp_root / "replacement.log"
+        replacement_file.write_text("durable", encoding="utf-8")
+        try:
+            assert dg.guess_category(replacement_file) is None
+            assert dg.is_safe_path(replacement_file) is False
+        finally:
+            shutil.rmtree(_managed_tmp_root)
+            displaced.rename(_managed_tmp_root)
 
     def test_owned_cache_file(self, _isolate_env):
         dg = _load_lib()
@@ -141,6 +163,41 @@ class TestGuessCategory:
         p.parent.mkdir(parents=True)
         p.write_text("x", encoding="utf-8")
         assert dg.guess_category(p) == "temp"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation requires privileges")
+    @pytest.mark.parametrize("escape_at_root", [True, False])
+    def test_managed_cache_symlink_escape_is_never_deleted(
+        self, _isolate_env, escape_at_root
+    ):
+        dg = _load_lib()
+        managed = _isolate_env / "cache" / "vision" / "temp_vision_images"
+        external = _isolate_env.parent / f"external-cache-{escape_at_root}"
+        external.mkdir()
+        victim = external / "victim.txt"
+        victim.write_text("durable", encoding="utf-8")
+        if escape_at_root:
+            managed.parent.mkdir(parents=True)
+            managed.symlink_to(external, target_is_directory=True)
+            tracked_path = victim.resolve()
+        else:
+            managed.mkdir(parents=True)
+            (managed / "escape").symlink_to(external, target_is_directory=True)
+            tracked_path = managed / "escape" / victim.name
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(tracked_path),
+            "category": "temp",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": victim.stat().st_size,
+        }]), encoding="utf-8")
+
+        auto, _prompt = dg.dry_run()
+        summary = dg.quick()
+        assert auto == []
+        assert summary["deleted"] == 0
+        assert victim.read_text(encoding="utf-8") == "durable"
 
     def test_skips_protected_top_level(self, _isolate_env):
         dg = _load_lib()

@@ -621,6 +621,21 @@ class TestManualBackendRespawn:
         out = capsys.readouterr().out
         assert "✗ failed to restart" in out
 
+    def test_respawn_failure_returns_original_dashboard_argv(self, tmp_path, monkeypatch):
+        """A failed dashboard spawn reports the original argv without the appended
+        ``--no-open`` — callers match these entries against the killed pid's live
+        cmdline, so a modified argv would never match and the respawn failure would
+        read as success in the update receipt. See #109290."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        with patch.object(live.subprocess, "Popen", side_effect=OSError("no such file")):
+            failed = live._respawn_dashboard_processes([
+                ["hermes", "dashboard", "--port", "8300"],
+            ])
+
+        assert failed == [["hermes", "dashboard", "--port", "8300"]]
+
 
 class TestFilterDashboardRespawnCandidates:
     """Unit tests for respawn filtering / dedupe / orphan skip (#78821)."""

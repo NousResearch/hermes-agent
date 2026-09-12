@@ -252,17 +252,21 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
     for command in commands:
+        spawn_argv = command
         try:
             # Keep restarted dashboards headless; reopening a browser after a
             # background update is noisy and fails in SSH/headless sessions.
             if "dashboard" in command and "--no-open" not in command:
-                command = [*command, "--no-open"]
+                spawn_argv = [*command, "--no-open"]
             with open(log_path, "ab") as log_f:
                 subprocess.Popen(
-                    command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
+                    spawn_argv, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
                     start_new_session=True, close_fds=True)
-            respawned.append(command)
+            respawned.append(spawn_argv)
         except (OSError, ValueError) as exc:
+            # Report the caller's original argv, not the spawn argv with --no-open
+            # appended: callers match these entries against the killed pid's live
+            # cmdline to reconcile the update receipt (#109290).
             failed.append((command, str(exc)))
 
     for command in respawned:

@@ -342,6 +342,7 @@ class _MatrixApprovalPrompt:
         self.summary_task: object | None = None
         self.presentation_lock = asyncio.Lock()
         self.terminal_visible = False
+        self.terminal_failure_notified = False
         self.terminal_choice: str | None = None
         self.terminal_actor = ""
 
@@ -2632,7 +2633,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Terminal card compaction after resolve/expire.
 
         Core resolution and UI terminalization are separate. The registry entry
-        is retained until a terminal m.replace or visible failure notice succeeds.
+        is retained until a terminal m.replace succeeds.
         Each attempt is bounded; failed delivery remains retryable.
         """
         task = getattr(prompt, "summary_task", None)
@@ -2701,25 +2702,24 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                 if attempt < max_attempts:
                     await asyncio.sleep(min(0.5 * attempt, 2.0))
-            # Forget only after the user can see the terminal delivery failure.
+            # A separate notice cannot replace the authoritative card. Keep
+            # retrying the replacement without flooding the room with notices.
             logger.error(
                 "Matrix: terminal approval edit exhausted retries for %s: %s",
                 target_event_id,
                 last_error,
             )
+            if prompt.terminal_failure_notified:
+                return
             try:
-                visible = await self._send_invalid_reaction_feedback(
+                prompt.terminal_failure_notified = await self._send_invalid_reaction_feedback(
                     room_id,
                     target_event_id,
                     f"Approval outcome: {choice}. Updating the Matrix card failed. "
                     "This prompt is no longer actionable.",
                 )
             except Exception:
-                visible = False
-            if visible:
-                prompt.terminal_visible = True
-                prompt.state = "terminal_notice_delivered"
-                self._forget_matrix_approval_prompt(target_event_id, prompt)
+                prompt.terminal_failure_notified = False
 
 
     def _schedule_approval_resolution_watch(self, prompt: "_MatrixApprovalPrompt") -> None:
@@ -2802,19 +2802,25 @@ class MatrixAdapter(BasePlatformAdapter):
         target_event_id: str,
         prompt: "_MatrixApprovalPrompt",
     ) -> None:
+        from tools.approval import consume_gateway_approval_outcome
+
         prompt.resolved = True
         if prompt.terminal_choice is None:
-            prompt.terminal_choice = "expired"
-        self._cancel_approval_summary_task(prompt)
+            # Typed consent may have won before the deadline while the watcher
+            # was asleep. Expiry must not overwrite that exact core decision.
+            prompt.terminal_choice = consume_gateway_approval_outcome(
+                prompt.session_key, prompt.approval_id,
+            ) or "expired"
         await self._redact_bot_approval_reactions(room_id, prompt)
         await self._finalize_matrix_approval_prompt(
-            room_id, target_event_id, prompt, choice="expired", actor="",
+            room_id, target_event_id, prompt, choice=prompt.terminal_choice, actor=prompt.terminal_actor,
         )
-        await self._send_invalid_reaction_feedback(
-            room_id,
-            target_event_id,
-            "This approval prompt has expired. Run the command again if you still want to approve it.",
-        )
+        if prompt.terminal_choice == "expired":
+            await self._send_invalid_reaction_feedback(
+                room_id,
+                target_event_id,
+                "This approval prompt has expired. Run the command again if you still want to approve it.",
+            )
 
     async def _expire_matrix_model_picker_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
         prompt.resolved = True

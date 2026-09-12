@@ -174,32 +174,40 @@ def prepare_iteration(
             )
         )
 
+    previous_messages = messages
     messages = [msg for msg in messages if not _is_scaffold_ghost(msg)]
+    from agent.agent_runtime_helpers import preserve_current_turn_user_idx
+
+    preserve_current_turn_user_idx(agent, previous_messages, messages)
+    typed_current_turn_idx = getattr(agent, "_persist_user_message_idx", None)
+    if (
+        isinstance(typed_current_turn_idx, int)
+        and 0 <= typed_current_turn_idx < len(messages)
+    ):
+        current_turn_user_idx = typed_current_turn_idx
+    elif user_message is not None:
+        current_turn_user_idx = _reanchor(agent, messages, user_message)
 
     # Repair malformed role alternation (tool→user / user→user tails): providers
     # return empty content on them and the empty-retry loop spins. The _with_cursor
     # variant also recomputes the SessionDB flush cursor after compaction.
     from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
     repaired_seq = repair_message_sequence_with_cursor(agent, messages)
+    typed_current_turn_idx = getattr(agent, "_persist_user_message_idx", None)
+    if (
+        isinstance(typed_current_turn_idx, int)
+        and 0 <= typed_current_turn_idx < len(messages)
+    ):
+        current_turn_user_idx = typed_current_turn_idx
+    elif user_message is not None:
+        current_turn_user_idx = _reanchor(agent, messages, user_message)
     if repaired_seq > 0:
         request_logger.info(
             "Repaired %s message-alternation violations before request (session=%s)",
             repaired_seq,
             agent.session_id or "-",
         )
-        # The merge shrank the list, so the index recorded at turn start can point past this
-        # turn's user row: prefetch would inject into a historical row and index-settling hosts
-        # (hermes-webui) would write the current turn to the FRONT of the context. Re-anchor as
-        # the compression-restart path does (last verbatim row wins, never a historical copy);
-        # without the text the index cannot be re-derived and is left detectably stale.
-        if user_message is not None:
-            _reanchored_idx = _reanchor(agent, messages, user_message)
-            if _reanchored_idx != current_turn_user_idx:
-                request_logger.info(
-                    "Re-anchored current_turn_user_idx %s -> %s after alternation repair (session=%s)",
-                    current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
-                )
-                current_turn_user_idx = _reanchored_idx
+
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
         current_turn_user_idx=current_turn_user_idx,

@@ -519,26 +519,30 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
     return pruned, repairs
 
 
+def _users_can_merge(prev: Any, msg: Any) -> bool:
+    """Whether ``msg`` can be folded into the preceding user row."""
+    from agent.context_compressor import split_user_originated_turn
+
+    return bool(
+        isinstance(prev, dict)
+        and prev.get("role") == "user"
+        and isinstance(msg, dict)
+        and msg.get("role") == "user"
+        and split_user_originated_turn(prev)[0] is None
+        and prev.get("display_kind") != STEER_DISPLAY_KIND
+        and isinstance(prev.get("content", ""), str)
+        and isinstance(msg.get("content", ""), str)
+    )
+
+
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
-    from agent.context_compressor import split_user_originated_turn
 
     repairs = 0
     merged: List[Dict] = []
     for msg in messages:
         prev = merged[-1] if merged and isinstance(merged[-1], dict) else None
-        if (
-            prev is not None and prev.get("role") == "user"
-            and isinstance(msg, dict) and msg.get("role") == "user"
-            # A summary carrier followed by a new user row is a deliberate durable shape after
-            # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
-            and split_user_originated_turn(prev)[0] is None
-            # A /steer row that ended the previous run is already persisted; merging the next
-            # prompt into it would rewrite it in place and re-break replay parity.
-            and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list) content alone.
-            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
-        ):
+        if prev is not None and _users_can_merge(prev, msg):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             prev["content"] = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
@@ -568,14 +572,55 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     if not messages:
         return 0
     repairs = 0
+    current_turn_message = None
+    current_turn_owner = None
+    current_turn_idx = getattr(agent, "_persist_user_message_idx", None)
+    if isinstance(current_turn_idx, int) and 0 <= current_turn_idx < len(messages):
+        current_turn_message = messages[current_turn_idx]
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
+        if repair_pass is _merge_consecutive_users and current_turn_message is not None:
+            current_idx = next(
+                (i for i, message in enumerate(current) if message is current_turn_message),
+                -1,
+            )
+            current_turn_owner = current_turn_message
+            while current_idx > 0 and _users_can_merge(
+                current[current_idx - 1], current[current_idx]
+            ):
+                current_idx -= 1
+                current_turn_owner = current[current_idx]
         current, made = repair_pass(current)
         repairs += made
     if repairs > 0:
         # Rewrite in place so persistence/return value/DB flush see the repaired sequence.
         messages[:] = current
+    if current_turn_message is not None:
+        owner = current_turn_message
+        if not any(message is current_turn_message for message in messages):
+            owner = current_turn_owner
+        agent._persist_user_message_idx = next(
+            (index for index, message in enumerate(messages) if message is owner),
+            -1,
+        )
     return repairs
+
+
+def preserve_current_turn_user_idx(
+    agent, previous_messages: List[Dict], messages: List[Dict]
+) -> None:
+    """Carry typed current-turn ownership across an identity-preserving rebuild."""
+    current_turn_idx = getattr(agent, "_persist_user_message_idx", None)
+    if not (
+        isinstance(current_turn_idx, int)
+        and 0 <= current_turn_idx < len(previous_messages)
+    ):
+        return
+    current_turn_message = previous_messages[current_turn_idx]
+    agent._persist_user_message_idx = next(
+        (index for index, message in enumerate(messages) if message is current_turn_message),
+        -1,
+    )
 
 
 def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
@@ -3252,6 +3297,7 @@ def force_close_tcp_sockets(client: Any) -> int:
 
 __all__ = [
     "convert_to_trajectory_format", "sanitize_tool_call_arguments", "repair_message_sequence",
+    "preserve_current_turn_user_idx",
     "strip_think_blocks", "recover_with_credential_pool", "try_recover_primary_transport",
     "drop_thinking_only_and_merge_users", "restore_primary_runtime", "extract_reasoning",
     "dump_api_request_debug", "prompt_caching_disabled_from_config", "blank_cache_policy_stub",

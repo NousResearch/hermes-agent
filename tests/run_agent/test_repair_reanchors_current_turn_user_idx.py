@@ -43,3 +43,28 @@ def test_prepare_iteration_reanchors_after_the_repair_merges_rows(tmp_path, monk
         assert agent._persist_user_message_idx == prep.current_turn_user_idx
     finally:
         agent._session_db.close()
+
+
+def test_prepare_iteration_rejects_invalid_typed_current_turn_index(tmp_path, monkeypatch):
+    from agent.turn_context import _reset_per_turn_agent_state
+    from agent.turn_iteration_prep import prepare_iteration
+
+    agent = _agent(tmp_path, monkeypatch)
+    try:
+        _reset_per_turn_agent_state(agent)
+        messages = [
+            {"role": "user", "content": "same question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "same question"},
+        ]
+        agent._persist_user_message_idx = -1
+
+        prep = prepare_iteration(
+            agent, messages=messages, api_call_count=1,
+            user_message="same question", current_turn_user_idx=-1,
+        )
+
+        assert prep.current_turn_user_idx == 2
+        assert agent._persist_user_message_idx == 2
+    finally:
+        agent._session_db.close()

@@ -4132,6 +4132,69 @@ class TestRunConversation:
             for m in replayed
         )
 
+    def test_ghost_filter_and_user_merge_keep_current_turn_wire_injection(self, agent):
+        self._setup_agent(agent)
+        scaffold = "[This response was interrupted by a user correction.]"
+        user_message = "repeat this request"
+        history = [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": scaffold, "api_content": scaffold, "display_kind": "hidden"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "unfinished redirect"},
+        ]
+        agent._gateway_turn_context_notes = "[CURRENT TURN NOTE]"
+        requests = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(user_message, conversation_history=history)
+
+        assert result["completed"] is True
+        current_rows = [
+            message for message in requests[0]["messages"]
+            if message.get("role") == "user"
+            and "unfinished redirect" in str(message.get("content", ""))
+        ]
+        assert len(current_rows) == 1
+        assert user_message in current_rows[0]["content"]
+        assert "[CURRENT TURN NOTE]" in current_rows[0]["content"]
+
+    def test_ghost_filter_without_repair_keeps_current_turn_wire_injection(self, agent):
+        self._setup_agent(agent)
+        scaffold = "[This response was interrupted by a user correction.]"
+        history = [
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": scaffold, "api_content": scaffold, "display_kind": "hidden"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+        agent._gateway_turn_context_notes = "[CURRENT TURN NOTE]"
+        requests = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("current ask", conversation_history=history)
+
+        assert result["completed"] is True
+        current = requests[0]["messages"][-1]
+        assert current["role"] == "user"
+        assert current["content"] == "current ask\n\n[CURRENT TURN NOTE]"
+
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"

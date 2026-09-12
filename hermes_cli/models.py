@@ -1229,24 +1229,34 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     return get_codex_model_ids(access_token=access_token)
 
 
-def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    if normalized == "copilot-acp":
-        try:
-            from agent.copilot_acp_client import CopilotACPClient
-            from hermes_cli.auth import resolve_external_process_provider_credentials
+_COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min, same as the GitHub catalog memo; SWR disk cache handles the rest
+_copilot_acp_session_memo: Optional[tuple[float, Optional[list[str]]]] = None
 
-            credentials = resolve_external_process_provider_credentials("copilot-acp")
-            if str(credentials.get("base_url") or "").startswith("acp://"):
-                live = CopilotACPClient(
-                    api_key=credentials.get("api_key"),
-                    base_url=credentials.get("base_url"),
-                    command=credentials.get("command"),
-                    args=credentials.get("args"),
-                ).list_models()
-                if live:
-                    return live
-        except Exception:
-            pass
+
+def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
+    """Enabled models from a signed-in ``copilot --acp`` session, memoized for a few minutes —
+    successes AND failures. Model-switch validation (``models_validate._static_catalog``) reads
+    this uncached on every ``/model`` switch, and each miss is a CLI spawn + handshake (up to the
+    probe timeout), so without the memo every switch paid a subprocess."""
+    global _copilot_acp_session_memo
+    now = time.monotonic()
+    memo = _copilot_acp_session_memo
+    if not force_refresh and memo is not None and now - memo[0] < _COPILOT_ACP_SESSION_MEMO_TTL:
+        return memo[1]
+    from providers import get_provider_profile
+
+    try:
+        live = get_provider_profile("copilot-acp").fetch_models() or None
+    except Exception:
+        logger.debug("copilot-acp session model discovery failed", exc_info=True)
+        live = None
+    _copilot_acp_session_memo = (now, live)
+    return live
+
+
+def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
+        return live
     try:
         live = _fetch_github_models(_resolve_copilot_catalog_api_key())
         if live:

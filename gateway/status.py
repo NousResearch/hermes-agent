@@ -1014,14 +1014,17 @@ def resolve_gateway_liveness(
             running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
         )
     # (4) A named profile served by the live default multiplexer: no identity files of its own, but
-    # the multiplexer IS its gateway (mirrors `hermes -p X status` / `gateway list`).
-    if scoped:
-        served = guarded(multiplexer_liveness_for_profile, profile_dir)
-        if served is not None:
-            mux_pid, mux_runtime = served
-            return GatewayLiveness(
-                running=True, pid=mux_pid, source="multiplexer", health_body=health_body, runtime=mux_runtime
-            )
+    # the multiplexer IS its gateway (mirrors `hermes -p X status` / `gateway list`). Unscoped, the
+    # question is about the process's OWN home — which is a named profile inside a pooled
+    # `hermes --profile X serve` (the Desktop's per-profile backend answers its REST without
+    # `?profile=`), so it takes the same rung instead of reporting the served profile stopped.
+    own_home = profile_dir if scoped else _get_process_hermes_home()
+    served = guarded(multiplexer_liveness_for_profile, own_home)
+    if served is not None:
+        mux_pid, mux_runtime = served
+        return GatewayLiveness(
+            running=True, pid=mux_pid, source="multiplexer", health_body=health_body, runtime=mux_runtime
+        )
     return GatewayLiveness(
         running=False, pid=None, source="none", health_body=health_body, probe_error=probe_error
     )

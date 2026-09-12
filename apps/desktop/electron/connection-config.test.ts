@@ -803,6 +803,26 @@ test('resolveProfileApiRequest scopes complete safe families according to their 
   )
 })
 
+test('resolveProfileApiRequest keeps gateway lifecycle verbs on the primary with the profile scope', () => {
+  // A local sub-profile's gateway verbs must reach a backend that (a) receives
+  // `?profile=X` so the handler can answer "served by the multiplexer" (409 /
+  // restart the multiplexer) and (b) is the backend the gateway-restart status
+  // poll asks. A pooled `--profile X serve` gets neither: unscoped, it spawned a
+  // `-p X gateway restart` that exited 78 while the primary-routed poll read
+  // "no such action" as success.
+  for (const verb of ['restart', 'start', 'stop']) {
+    assert.deepEqual(
+      resolveProfileApiRequest('iris', `/api/gateway/${verb}`, { requestMethod: 'POST' }),
+      { backendProfile: null, requestPath: `/api/gateway/${verb}?profile=iris` }
+    )
+  }
+
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/actions/gateway-restart/status?lines=200', { requestMethod: 'GET' }),
+    { backendProfile: null, requestPath: '/api/actions/gateway-restart/status?lines=200&profile=iris' }
+  )
+})
+
 test('resolveProfileApiRequest routes action-status polls with the action-spawning routes', () => {
   // /api/actions/{name}/status must land on the SAME backend as the endpoints
   // that spawn actions (skills hub install/uninstall/update, mcp catalog

@@ -2694,6 +2694,28 @@ def _handle_create(args: dict, **kw) -> str:
             "assignee is required — name the profile that should execute this "
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
+    # Mint-time routing lint (platform fix-C1, t_bc08efc3): a title that names
+    # an owner marker/lane verb, paired with a role-routed assignee from a
+    # DIFFERENT lane, is a misroute-to-a-real-person — the exact defect that
+    # dispatched rodge/axel on bob-lane cards. Hard-fail instead of creating it.
+    # A caller covering a legitimate cross-lane case (deploy→bob, triage→jobsy)
+    # opts out explicitly with assignee_override=true.
+    _override, _ov_err = _parse_bool_arg(args, "assignee_override")
+    if _ov_err:
+        return tool_error(_ov_err)
+    if not _override:
+        from hermes_cli.kanban_role_map import assignee_lane_mismatch
+
+        _mismatch = assignee_lane_mismatch(str(title).strip(), assignee)
+        if _mismatch is not None:
+            _title_lane, _expected = _mismatch
+            return tool_error(
+                f"kanban_create: title {str(title).strip()!r} implies the "
+                f"{_title_lane!r} lane (owner {_expected!r}), but assignee "
+                f"{assignee!r} routes to a different lane — card NOT created. "
+                f"Set assignee={_expected!r} to match the title, or pass "
+                f"assignee_override=true to explicitly allow this cross-lane case."
+            )
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -3521,6 +3543,17 @@ KANBAN_CREATE_SCHEMA = {
                     "(e.g. 'researcher-a', 'reviewer', 'writer'). "
                     "Required — tasks without an assignee are never "
                     "dispatched."
+                ),
+            },
+            "assignee_override": {
+                "type": "boolean",
+                "description": (
+                    "OPT-IN to bypass the mint-time assignee lane lint. "
+                    "When the title names an owner/lane (e.g. '[Bob]', 'Implement', "
+                    "'Review', 'Verify') the create refuses an assignee that routes "
+                    "to a different lane. Pass assignee_override=true only for a "
+                    "legitimate cross-lane case (deploy→bob, triage→jobsy). "
+                    "Defaults to false."
                 ),
             },
             "body": {

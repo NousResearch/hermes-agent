@@ -3046,6 +3046,7 @@ export const ar = defineLocale({
     secretSendFailed: 'فشل إرسال السر',
     sudoTitle: 'مطلوب sudo',
     sudoDesc: 'أدخل كلمة المرور لمتابعة الأمر.',
+    sudoInstallDesc: 'يحتاج Hermes إلى كلمة مرور sudo لتثبيت حزم Bot Screen (TigerVNC + Xfce) على مضيف البوابة. تُرسل إلى ذلك المضيف فقط.',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',
     secretDesc: 'أدخل القيمة المطلوبة لمتابعة المهمة.',

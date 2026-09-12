@@ -23,9 +23,13 @@ hosted-agent products).
 - The gateway host runs Linux. macOS and Windows hosts already have a real
   display; the pane is not offered there.
 - TigerVNC's `Xvnc` and the Xfce core components are installed on the host.
-  Hermes Desktop and `hermes computer-use screen status` print the exact
-  package-manager line when they are missing; `hermes computer-use screen
-  install` runs it for you:
+  Nothing installs them silently: `hermes update` and fresh installs leave every
+  machine as it is. When they are missing the Screen pane in Hermes Desktop shows
+  **Install on host** — one click runs the package manager on the gateway host
+  (it asks for that host's sudo password in a masked card; the password goes to
+  that host only and is never stored) and streams the log. From a shell,
+  `hermes computer-use screen status` prints the exact line and
+  `hermes computer-use screen install` runs it:
 
   | Distro | Packages |
   |---|---|
@@ -39,7 +43,17 @@ hosted-agent products).
 
 ## Using it
 
-1. In Hermes Desktop open **Bots**, right-click a bot, choose **Open Screen**.
+Every bot's computer is one click away in three places of Hermes Desktop:
+
+- **Bots → a bot → Scheduled Jobs**: the **Screen** box at the top of the pane
+  (above the routines) shows whether the screen is running and who holds
+  control; click it to open.
+- **Bots → right-click a bot → Open Screen**.
+- **Sessions sidebar**, grouped by gateway / profile: the same **Screen** box
+  sits under each profile's header, so a profile's machine is reachable from
+  its conversations too.
+
+1. Open the Screen with any of the entries above.
    The first time, click **Start screen** (or leave `bot_desktop.auto_start` on,
    the default: the screen starts on the bot's first `computer_use` call when the
    host has no display). A headed browser opens on the screen once it is running.
@@ -111,8 +125,9 @@ Xauthority, launcher log, per-profile xfconf).
 
 ## Troubleshooting
 
-- **"Screen packages missing"** — run the printed install line on the gateway
-  host (not on the machine running Hermes Desktop).
+- **"Screen packages missing"** — click **Install on host** in the pane, or run
+  the printed install line on the gateway host (not on the machine running
+  Hermes Desktop). The pane refuses a second install while one is running.
 - **Screen starts then stops** — read `<HERMES_HOME>/bot-desktop/launcher.log`.
 - **Typing produces wrong characters** — the screen uses a US keymap so RFB
   keysyms and cua-driver agree; change it with `setxkbmap` on that `DISPLAY`

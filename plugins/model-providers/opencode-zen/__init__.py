@@ -87,7 +87,15 @@ class OpenCodeGoProfile(ProviderProfile):
                 return {}, {}
             return _thinking_toggle_extras(reasoning_config, re_.KIMI_K2_EFFORTS)
         if _is_deepseek_thinking_model(model):
-            return _thinking_toggle_extras(reasoning_config, re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES)
+            # DeepSeek tool-call replays on the Go relay carry reasoning_content echo-back
+            # (model-substring echo rule), and the relay 400s when that echo co-occurs with
+            # any reasoning_effort — keep the explicit off switch, otherwise server default.
+            if (
+                isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            ):
+                return {"thinking": {"type": "disabled"}}, {}
+            return {}, {}
         return {}, {}
 
 

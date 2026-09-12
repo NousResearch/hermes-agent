@@ -170,17 +170,78 @@ class TestOpenCodeGoKimiReasoning:
 
 
 class TestOpenCodeGoDeepSeekThinking:
-    """DeepSeek V4 models use DeepSeek-style thinking controls on OpenCode Go."""
+    """DeepSeek V4 thinking on the Go relay must not pair reasoning_effort with the
+    reasoning_content echo-back the relay rejects (HTTP 400 on the combination)."""
 
-
-    def test_xhigh_and_max_normalize_to_max(self, opencode_go_profile):
-        for effort in ("xhigh", "max"):
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "deepseek-v4-flash",
+            "deepseek/deepseek-v4-pro",
+            "deepseek-reasoner",
+        ],
+    )
+    def test_no_reasoning_effort_on_the_wire(self, opencode_go_profile, model):
+        for effort in ("low", "medium", "high", "xhigh", "max"):
             extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort},
-                model="deepseek/deepseek-v4-pro",
+                model=model,
             )
             assert extra_body == {}
-            assert top_level == {"reasoning_effort": "max"}
+            assert top_level == {}, (model, effort)
+
+    def test_unset_preserves_server_default(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config=None,
+            model="deepseek-v4-flash",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_disabled_still_emits_thinking_disabled(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="deepseek-v4-flash",
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
+    def test_transport_replay_has_no_reasoning_effort(self, opencode_go_profile):
+        """Regression for the relay 400: a DeepSeek tool-call replay (reasoning_content
+        echo-back in history) plus any reasoning_effort value is rejected by the Go
+        relay — the transport must no longer produce that combination."""
+        from agent.message_sanitization import matches_reasoning_echo_family
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        base_url = "https://opencode.ai/zen/go/v1"
+        messages = [
+            {"role": "user", "content": "ping"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": " ",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        ]
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4-flash",
+            messages=messages,
+            tools=None,
+            provider_profile=opencode_go_profile,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url=base_url,
+        )
+        assert matches_reasoning_echo_family(
+            "deepseek", "opencode-go", "deepseek-v4-flash", base_url
+        ), "deepseek via opencode-go must be an echo family (repro preconditions)"
+        assert "reasoning_effort" not in kwargs
 
     @pytest.mark.parametrize("model", ["deepseek-flash", "deepseek/deepseek-flash"])
     def test_version_less_canonical_id_gets_the_controls(self, opencode_go_profile, model):
@@ -268,7 +329,7 @@ class TestOpenCodeGoFullKwargsIntegration:
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
 
-    def test_deepseek_thinking_reaches_extra_body_and_top_level(
+    def test_deepseek_thinking_sends_no_effort_at_transport_level(
         self, opencode_go_profile
     ):
         from agent.transports.chat_completions import ChatCompletionsTransport
@@ -282,5 +343,5 @@ class TestOpenCodeGoFullKwargsIntegration:
             base_url="https://opencode.ai/zen/go/v1",
         )
         assert "extra_body" not in kwargs
-        assert kwargs["reasoning_effort"] == "high"
+        assert "reasoning_effort" not in kwargs
 

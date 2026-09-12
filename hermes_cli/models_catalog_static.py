@@ -518,6 +518,14 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # and rotate them often, so their stale curated entries must not pollute the top.
 _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "meta-ai"})
 
+# Providers whose curated _PROVIDER_MODELS entry is a hand-picked MEMBERSHIP filter (which models
+# to allow) rather than a deliberate ORDER. Contrast zai/kimi-coding/minimax/vertex/bedrock, whose
+# curated lists are visibly version-descending (newest first) — reordering those would destroy
+# real signal. HuggingFace's curated list has no such structure (it reads as models added over
+# time, not ranked), so the picker sorts its ENTIRE merged result, curated head included, instead
+# of only the live-only tail appended after the curated head (the rule for everyone else).
+_FULLY_ALPHABETIZE_PICKER_PROVIDERS: frozenset[str] = frozenset({"huggingface"})
+
 
 # Models supporting OpenAI Priority Processing (service_tier="priority"; see
 # openai.com/api-priority-processing). Pattern-based: any OpenAI flagship (gpt-*, o1*, o3*, o4*).

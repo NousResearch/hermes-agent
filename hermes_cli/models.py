@@ -37,6 +37,7 @@ from hermes_cli.models_catalog_static import (
     _AZURE_FOUNDRY_RESPONSES_PREFIXES,
     _BORROWED_MODEL_PROVIDERS,
     _COPILOT_MODEL_ALIASES,
+    _FULLY_ALPHABETIZE_PICKER_PROVIDERS,
     _KEYLESS_STABLE_CACHE_PROVIDERS,
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
@@ -1379,7 +1380,10 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     # DeepInfra's generic /models mixes chat, image, video, speech and embedding models; the tagged
     # catalog helper is the only safe source for the chat picker, including its empty/failure result.
     "deepinfra": lambda normalized, force_refresh: _fetch_deepinfra_models(force_refresh=force_refresh) or [],
-    "ollama-cloud": lambda normalized, force_refresh: fetch_ollama_cloud_models(force_refresh=force_refresh) or None,
+    # Ollama Cloud has no curated _PROVIDER_MODELS entry — same alphabetize-when-no-hand-picked-order
+    # rule as every other live-only catalog (see _merge_picker_models) instead of raw API order.
+    "ollama-cloud": lambda normalized, force_refresh: _merge_picker_models(
+        normalized, [], fetch_ollama_cloud_models(force_refresh=force_refresh) or []) or None,
     "openai": _openai_catalog,
     "openai-api": _openai_catalog,
     "custom": _custom_catalog,
@@ -1406,10 +1410,34 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
+    return _merge_picker_models(normalized, curated, live)
+
+
+def _merge_picker_models(normalized: str, curated: list[str], live: list[str]) -> list[str]:
+    """Merge a provider's curated and live-fetched model lists into picker order.
+
+    ``curated`` keeps its hand-picked order and leads (``_LIVE_FIRST_PICKER_PROVIDERS`` lead with
+    ``live`` instead). Whatever the live endpoint returns BEYOND that list has no ordering signal —
+    it is raw ``/v1/models`` order, which for a large catalog (HuggingFace's ~130-model tail) reads
+    as shuffled and makes a specific model hard to find — so that tail is alphabetized. With no
+    curated list at all the live catalog is the whole picker and is alphabetized outright.
+    ``_FULLY_ALPHABETIZE_PICKER_PROVIDERS`` sort the entire result, curated head included, because
+    their curated entry is a membership filter rather than a ranking.
+    """
+    if not live:
+        return list(curated)
     if not curated:
-        return live
-    primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
-    return _merge_unique(primary, secondary, key=_model_dedup_key)
+        return sorted(live, key=str.lower)
+    live_first = normalized in _LIVE_FIRST_PICKER_PROVIDERS
+    primary, secondary = (live, curated) if live_first else (curated, live)
+    seen = {_model_dedup_key(m) for m in primary}
+    extra = _merge_unique([], [m for m in secondary if _model_dedup_key(m) not in seen], key=_model_dedup_key)
+    if not live_first:
+        extra.sort(key=str.lower)
+    merged = list(primary) + extra
+    if normalized in _FULLY_ALPHABETIZE_PICKER_PROVIDERS:
+        merged.sort(key=str.lower)
+    return merged
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:

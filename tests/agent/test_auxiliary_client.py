@@ -2748,9 +2748,10 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 
-    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
+    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch, tmp_path):
         stale_client = MagicMock()
-        cache_key = ("anthropic", False, None, None, None)
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("anthropic", async_mode=False)
 
         monkeypatch.setenv("ANTHROPIC_TOKEN", "")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
@@ -2758,6 +2759,7 @@ class TestAuxiliaryAuthRefreshRetry:
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),
+            patch("agent.anthropic_credentials.claude_code_credentials_path", return_value=tmp_path / ".credentials.json"),
             # Anthropic credential sourcing lives in agent/anthropic_credentials.py;
             # patch it at that definition site so both the direct call here and
             # the re-read inside ``_refresh_oauth_token`` see the same stub.
@@ -2791,7 +2793,8 @@ class TestAuxiliaryAuthRefreshRetry:
         through to the final `return False` and the stale client (and its
         dead token) stayed cached until process restart."""
         stale_client = MagicMock()
-        cache_key = ("vertex", False, None, None, None)
+        from agent.auxiliary_client import _client_cache_key
+        cache_key = _client_cache_key("vertex", async_mode=False)
 
         with (
             patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "google/gemini-3-flash-preview", None)}),

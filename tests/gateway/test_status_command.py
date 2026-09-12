@@ -13,6 +13,17 @@ from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
+@pytest.fixture(autouse=True)
+def status_metadata_lookup(monkeypatch):
+    """Only the metadata I/O boundary is stubbed; /status dispatch stays real."""
+    from agent.model_metadata import get_model_context_length_async
+
+    lookup = AsyncMock(return_value=None)
+    lookup.real_lookup = get_model_context_length_async
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length_async", lookup)
+    return lookup
+
+
 def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
     return SessionSource(
         platform=platform,
@@ -104,7 +115,8 @@ async def test_status_command_reads_token_totals_from_session_db():
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_live_agent_model_and_context():
+@pytest.mark.parametrize("resident", ["live", "cached"])
+async def test_status_command_includes_live_agent_model_and_context(resident, status_metadata_lookup):
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -132,17 +144,21 @@ async def test_status_command_includes_live_agent_model_and_context():
         ),
         interrupt=MagicMock(),
     )
-    runner._running_agents[build_session_key(_make_source())] = running_agent
+    if resident == "live":
+        runner._running_agents[session_entry.session_key] = running_agent
+    else:
+        runner._agent_cache[session_entry.session_key] = (running_agent, "signature")
 
     result = await runner._handle_message(_make_event("/status"))
 
     assert "**Model:** `openai/gpt-test` (openai)" in result
     assert "**Context:** 12,345 / 100,000 (12%)" in result
     assert "**Lifetime tokens billed:** 1,250" in result
+    status_metadata_lookup.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
+async def test_status_command_uses_dominant_persisted_model_route(tmp_path, monkeypatch, status_metadata_lookup):
     """Persisted status must not combine a model and provider from different calls."""
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
@@ -154,6 +170,12 @@ async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
     )
     runner = _make_runner(session_entry)
     db = SessionDB(db_path=tmp_path / "state.db")
+    session_entry.last_prompt_tokens = 12_345
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {
+        "model": {"default": "config-model", "provider": "custom-config",
+                  "base_url": "https://config.invalid/v1"},
+    })
+    status_metadata_lookup.return_value = 100_000
     runner._session_db = AsyncSessionDB(db)
     try:
         db.create_session("sess-1", "telegram", model="z-ai/glm-5.2")
@@ -185,8 +207,181 @@ async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
 
         assert "**Model:** `z-ai/glm-5.2` (nvidia)" in result
         assert "**Model:** `z-ai/glm-5.2` (nous)" not in result
+        assert "**Context:** 12,345 / 100,000 (12%)" in result
+        assert "**Lifetime tokens billed:** 540" in result
+        status_metadata_lookup.assert_awaited_once_with(
+            "z-ai/glm-5.2", provider="nvidia",
+            base_url="https://integrate.api.nvidia.com/v1/", api_key="",
+            config_context_length=None, custom_providers=None,
+        )
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_source", ["live", "cached", "row", "pending", "config"])
+@pytest.mark.parametrize("route_url", ["https://selected.invalid/v1", ""])
+@pytest.mark.parametrize("configured_context", [None, 80_000])
+async def test_status_metadata_uses_selected_route(
+    monkeypatch, status_metadata_lookup, route_source, route_url, configured_context,
+):
+    """Carry the selected route together even when its endpoint is deliberately blank."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+    from hermes_cli.config import get_compatible_custom_providers
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()), session_id="sess-metadata",
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.TELEGRAM, chat_type="dm", last_prompt_tokens=12_345,
+    )
+    runner = _make_runner(session_entry)
+    config = {
+        "model": {"default": "config-model", "provider": "custom-config",
+                  "base_url": "https://unrelated.invalid/v1",
+                  "context_length": configured_context, "api_key": "unused-test-key"},
+        "custom_providers": [
+            {"name": "custom-selected", "base_url": "https://selected.invalid/v1",
+             "models": [{"id": "selected-model", "context_length": 100_000}]},
+            {"name": "custom-config", "base_url": "https://unrelated.invalid/v1"},
+        ],
+    }
+    row = {"model": "row-model", "billing_provider": "custom-row",
+           "billing_base_url": "https://row.invalid/v1", "input_tokens": 1_000,
+           "output_tokens": 250, "reasoning_tokens": 50}
+    runner._session_db._db.get_session.return_value = row
+    runner._session_db._db.get_dominant_session_model_route.return_value = {}
+    expected_model, expected_provider = "selected-model", "custom-selected"
+    if route_source in {"live", "cached"}:
+        resident = SimpleNamespace(
+            model=expected_model, provider=expected_provider, base_url=route_url,
+            context_compressor=SimpleNamespace(last_prompt_tokens=12_345, context_length=0),
+            interrupt=MagicMock(),
+        )
+        runner._session_db._db.get_dominant_session_model_route.return_value = {
+            "model": "persisted-model", "billing_provider": "custom-persisted",
+            "billing_base_url": "https://persisted.invalid/v1",
+        }
+        if route_source == "live":
+            runner._running_agents[session_entry.session_key] = resident
+        else:
+            runner._agent_cache[session_entry.session_key] = (resident, "signature")
+    elif route_source in {"row", "pending"}:
+        row.update(model=expected_model, billing_provider=expected_provider,
+                   billing_base_url=route_url)
+        if route_source == "pending":
+            runner._running_agents[session_entry.session_key] = _AGENT_PENDING_SENTINEL
+    else:
+        row.update(model="", billing_provider="", billing_base_url="")
+        config["model"]["base_url"] = route_url
+        expected_model, expected_provider = "config-model", "custom-config"
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: config)
+    status_metadata_lookup.side_effect = lambda *args, **kwargs: kwargs["config_context_length"] or 100_000
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert isinstance(result, str)
+    assert f"**Model:** `{expected_model}` ({expected_provider})" in result
+    expected_total = configured_context or 100_000
+    expected_pct = round(12_345 / expected_total * 100)
+    assert f"**Context:** 12,345 / {expected_total:,} ({expected_pct}%)" in result
+    assert "**Lifetime tokens billed:** 1,300" in result
+    status_metadata_lookup.assert_awaited_once_with(
+        expected_model, provider=expected_provider, base_url=route_url, api_key="",
+        config_context_length=configured_context, custom_providers=get_compatible_custom_providers(config),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema", ["legacy", "providers"])
+async def test_status_context_uses_provider_config_without_network(
+    tmp_path, monkeypatch, status_metadata_lookup, schema,
+):
+    """Read real config and resolve the selected capacity before any network probe."""
+    from functools import partial
+    import json
+    from gateway.run import _load_gateway_config
+
+    provider_entry = {
+        "name": "custom-selected", "base_url": "https://selected.invalid/v1",
+        "models": {"selected-model": {"context_length": 100_000}},
+    }
+    config: dict = {"model": {"default": "selected-model", "provider": "custom-selected"}}
+    if schema == "legacy":
+        config["custom_providers"] = [provider_entry]
+    else:
+        config["providers"] = {"custom-selected": provider_entry}
+    config_path = tmp_path / "config.yaml"
+    config_bytes = json.dumps(config)
+    config_path.write_text(config_bytes)
+    monkeypatch.setattr("gateway.run._load_gateway_config", partial(_load_gateway_config, config_path))
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length_async", status_metadata_lookup.real_lookup)
+    network = MagicMock(side_effect=AssertionError("configured capacity must not probe the network"))
+    monkeypatch.setattr("requests.sessions.Session.request", network)
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()), session_id="sess-provider-config",
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.TELEGRAM, chat_type="dm", last_prompt_tokens=12_345,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_dominant_session_model_route.return_value = {}
+    runner._session_db._db.get_session.return_value = {
+        "model": "selected-model", "billing_provider": "custom-selected",
+        "billing_base_url": "https://selected.invalid/v1", "input_tokens": 1_000,
+    }
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert isinstance(result, str)
+    assert "**Context:** 12,345 / 100,000 (12%)" in result
+    assert "**Lifetime tokens billed:** 1,000" in result
+    network.assert_not_called()
+    assert config_path.read_text() == config_bytes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", [None, True, False, 0, -1, "100000", 100_000.0, "exception", "timeout"])
+async def test_status_metadata_failure_keeps_used_tokens(monkeypatch, status_metadata_lookup, outcome):
+    """Invalid metadata or a timed-out lookup must leave status and billing readable."""
+    import asyncio
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()), session_id="sess-metadata-failure",
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.TELEGRAM, chat_type="dm", last_prompt_tokens=12_345,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "model": "selected-model", "billing_provider": "custom-selected",
+        "input_tokens": 1_000, "reasoning_tokens": 50,
+    }
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {}})
+    cancelled = asyncio.Event()
+
+    async def hanging_lookup(*args, **kwargs):
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    if outcome == "timeout":
+        status_metadata_lookup.side_effect = hanging_lookup
+    elif outcome == "exception":
+        status_metadata_lookup.side_effect = RuntimeError("metadata unavailable")
+    else:
+        status_metadata_lookup.return_value = outcome
+    real_wait_for = asyncio.wait_for
+    with patch("gateway.slash_commands_status.asyncio.wait_for", wraps=real_wait_for) as bounded:
+        result = await real_wait_for(runner._handle_message(_make_event("/status")), timeout=6.0)
+
+    assert isinstance(result, str)
+    assert "**Model:** `selected-model` (custom-selected)" in result
+    assert "**Context:** ~12,345 tokens" in result
+    assert "**Lifetime tokens billed:** 1,050" in result
+    status_metadata_lookup.assert_awaited_once()
+    assert any(call.kwargs.get("timeout") == 3.0 for call in bounded.call_args_list)
+    if outcome == "timeout":
+        assert cancelled.is_set()
 
 
 @pytest.mark.asyncio

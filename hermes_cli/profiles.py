@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -565,6 +566,7 @@ def _served_by_running_multiplexer(profile_name: str) -> bool:
 # signature changes (skill add/remove) or after a short TTL (deep edits).
 _SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
 _SKILL_COUNT_TTL_SECONDS = 30.0
+_SKILL_COUNT_SCAN_LOCK = threading.Lock()
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:
@@ -594,13 +596,21 @@ def _count_skills(profile_dir: Path) -> int:
         return 0
     key = str(skills_dir)
     signature = _skills_dir_signature(skills_dir)
-    now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+    if cached is not None and cached[0] == signature and (time.time() - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
         return cached[2]
-    count = sum(1 for md in skills_dir.rglob("SKILL.md") if not is_excluded_skill_path(md))
-    _SKILL_COUNT_CACHE[key] = (signature, now, count)
-    return count
+    # HTTP and RPC callers share this cache. Concurrent recursive scans amplify
+    # filesystem/GIL contention even when they traverse different profiles.
+    with _SKILL_COUNT_SCAN_LOCK:
+        signature = _skills_dir_signature(skills_dir)
+        now = time.time()
+        cached = _SKILL_COUNT_CACHE.get(key)
+        if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+            return cached[2]
+        count = sum(1 for md in skills_dir.rglob("SKILL.md") if not is_excluded_skill_path(md))
+        # A slow scan must not publish an already-expired cache entry.
+        _SKILL_COUNT_CACHE[key] = (signature, time.time(), count)
+        return count
 
 
 # profile.yaml — per-profile metadata (description, role, etc.)

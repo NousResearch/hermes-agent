@@ -27,6 +27,26 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     assert calls == []
 
 
+def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypatch, capsys):
+    """An exit-2 refusal tells the user where every refused flag went; the safe-mode
+    refusal prints a command they can run as-is."""
+    from hermes_cli import gateway_chat
+    monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
+    assert gateway_chat.launch_from_args(argparse.Namespace(yolo=True, run_budget=30.0)) == 2
+    err = capsys.readouterr().err
+    assert "--yolo: use" in err and "approvals.mode" in err
+    assert "--run-budget: use" in err and "run_budget_seconds" in err
+    for name in gateway_chat._UNSUPPORTED:
+        assert name in gateway_chat._RELOCATED, f"{name} refused without saying where it went"
+    assert gateway_chat.launch_from_args(argparse.Namespace(safe_mode=True, query="x")) == 1
+    err = capsys.readouterr().err
+    example = next(line.split("Example: ", 1)[1] for line in err.splitlines() if "Example: " in line)
+    import shlex
+    from hermes_cli._parser import build_top_level_parser
+    parsed = build_top_level_parser()[0].parse_args(shlex.split(example)[1:])
+    assert parsed.safe_mode and parsed.model and parsed.provider and parsed.query
+
+
 @pytest.mark.asyncio
 async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch, tmp_path):
     from contextlib import asynccontextmanager

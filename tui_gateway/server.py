@@ -1219,6 +1219,14 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
         # Live conversation id for subprocess HERMES_SESSION_ID: an explicitly empty contextvar is authoritative
         # (no os.environ fallback), so never leave it "" — agent's durable session_id, then session_key.
         session_id = session_key
+        # The session's profile name, derived from its bound profile home. This is the
+        # missing axis for the desktop/serve path: without it HERMES_SESSION_PROFILE stays
+        # unset, _current_session_profile() returns "", and _resolve_container_task_id
+        # collapses persistent-Docker sessions of DIFFERENT profiles onto the shared
+        # "default" env slot — so a session of one profile silently reuses another profile's
+        # docker container (and its /workspace volume). Mirrors gateway.run._set_session_env,
+        # which passes profile= the same way.
+        profile = ""
         if sess is not None:
             source = _session_source(sess)
             session_id = getattr(sess.get("agent"), "session_id", None) or session_key
@@ -1226,11 +1234,13 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
             if _methods_browser_control._is_authenticated_identity(identity):
                 browser_control_principal = _methods_browser_control._principal_digest(identity)
                 browser_control_transport_family = _methods_browser_control._CLOUD_TRANSPORT_FAMILY
+            if (profile_home := sess.get("profile_home")):
+                profile = Path(profile_home).name
         return set_session_vars(
             session_key=session_key, session_id=session_id, source=source,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family, cwd=resolved,
-            ui_session_id=ui_session_id, cron_session="")
+            profile=profile, ui_session_id=ui_session_id, cron_session="")
     return []
 
 

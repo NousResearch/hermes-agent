@@ -172,3 +172,81 @@ def test_purge_keeps_plan_record_class_identity():
     cli_main._purge_stale_hermes_modules()
     from hermes_cli.update_inventory import RuntimeRecord as after
     assert after is before
+
+
+def test_purge_prefixes_cover_checkout_top_level_modules():
+    # The static tuple listed 5 packages and no top-level module, so `utils`,
+    # `hermes_constants` and friends stayed cached through every update.
+    prefixes = update_cmd._stale_purge_prefixes()
+    for name in ("utils", "hermes_constants", "hermes_bootstrap", "plugins", "providers"):
+        assert name in prefixes, f"{name} is not covered by the purge"
+    for name in ("hermes_cli", "gateway", "tools", "tui_gateway", "agent"):
+        assert name in prefixes
+
+
+def test_stale_top_level_utils_scenario_end_to_end():
+    """The 2026-09-12 field failure: `hermes update` from a pre-`base_url_origin`
+    checkout kept the old top-level `utils` cached, and the restart phase's import of
+    `hermes_cli.gateway` died on `from utils import base_url_origin`."""
+    stale = types.ModuleType("utils")
+    real = sys.modules.get("utils")
+    sys.modules["utils"] = stale
+    try:
+        try:
+            from utils import base_url_origin  # noqa: F401
+            raised = False
+        except ImportError:
+            raised = True
+        assert raised, "precondition: stale utils must lack base_url_origin"
+
+        cli_main._purge_stale_hermes_modules()
+
+        from utils import base_url_origin  # noqa: F401
+    finally:
+        sys.modules.pop("utils", None)
+        if real is not None:
+            sys.modules["utils"] = real
+
+
+def test_purge_protects_hermes_logging():
+    # A second copy of hermes_logging starts a second QueueListener over the same log
+    # files while the first keeps running: its listener/handler state is module-global.
+    real = sys.modules.get("hermes_logging")
+    sentinel = _fake_module("hermes_logging")
+    sys.modules["hermes_logging"] = sentinel
+    try:
+        cli_main._purge_stale_hermes_modules()
+        assert sys.modules.get("hermes_logging") is sentinel
+    finally:
+        sys.modules.pop("hermes_logging", None)
+        if real is not None:
+            sys.modules["hermes_logging"] = real
+
+
+def test_purge_spares_the_tests_package():
+    # pytest resolves fixtures through the identity of already-imported test modules.
+    sentinel = _fake_module("tests.hermes_cli._purge_probe")
+    sys.modules["tests.hermes_cli._purge_probe"] = sentinel
+    try:
+        cli_main._purge_stale_hermes_modules()
+        assert sys.modules.get("tests.hermes_cli._purge_probe") is sentinel
+    finally:
+        sys.modules.pop("tests.hermes_cli._purge_probe", None)
+
+
+def test_purge_prefixes_follow_project_root(tmp_path, monkeypatch):
+    # The scan must read main.PROJECT_ROOT, not this module's own __file__: tests and the
+    # installer both relocate the checkout, and a divergent root silently purges nothing.
+    (tmp_path / "zzz_probe.py").write_text("", encoding="utf-8")
+    (tmp_path / "zzz_pkg").mkdir()
+    (tmp_path / "zzz_pkg" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+
+    prefixes = update_cmd._stale_purge_prefixes()
+    assert {"zzz_probe", "zzz_pkg"} <= prefixes
+    assert set(update_cmd._STALE_PURGE_PREFIXES) <= prefixes
+
+
+def test_purge_prefixes_fall_back_when_root_unreadable(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path / "does-not-exist")
+    assert update_cmd._stale_purge_prefixes() == frozenset(update_cmd._STALE_PURGE_PREFIXES)

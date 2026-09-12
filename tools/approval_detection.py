@@ -454,9 +454,9 @@ _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
 def _home_prefix_fold_regex(path: str, include_bare: bool = False):
     """Compile a regex matching *path* as an absolute directory prefix.
     Components match with either separator so native Windows, forward-slash, and mixed forms all
-    fold; the caller normalizes the tail's backslashes to ``/``. A non-empty tail is required, so a
-    bare home is never folded. Returns ``None`` for an unset/degenerate path (fewer than two
-    components: ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
+    fold; the caller normalizes the tail's backslashes to ``/``. Callers may opt into folding the
+    bare path as well. Returns ``None`` for an unset/degenerate path (fewer than two components:
+    ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
     components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
     if len(components) < 2:
         return None
@@ -1192,6 +1192,7 @@ def _shell_command_segment(command: str, start: int) -> str:
 _HERMES_HOME_DESTRUCTION_DESCRIPTION = "destructive operation on Hermes data directory"
 _HERMES_HOME_ROOTS = ("~/.hermes", "$hermes_home", "${hermes_home}", "$home/.hermes", "${home}/.hermes")
 _HERMES_DESTRUCTIVE_SQL_RE = re.compile(r"\b(?:delete\s+from|drop\s+(?:table|database))\b", re.IGNORECASE)
+_HERMES_DESTRUCTIVE_NAMES = frozenset({"rm", "mv", "truncate", "shred", "unlink", "tee", "cp", "sqlite3"})
 _HERMES_OPTIONS_WITH_ARG = {
     "mv": {"-S", "--suffix", "-t", "--target-directory"},
     "cp": {"-S", "--suffix", "-t", "--target-directory"},
@@ -1244,10 +1245,9 @@ def _detect_hermes_home_destruction(command: str) -> bool:
     """Hard-block destructive verbs only when they target Hermes-managed state."""
     if _has_hermes_redirect(command):
         return True
-    destructive_names = {"rm", "mv", "truncate", "shred", "unlink", "tee", "cp", "sqlite3"}
     for word_start, _, word in _iter_shell_command_word_spans(command):
         name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
-        if name not in destructive_names:
+        if name not in _HERMES_DESTRUCTIVE_NAMES:
             continue
         try:
             argv = shlex.split(_shell_command_segment(command, word_start), posix=True)

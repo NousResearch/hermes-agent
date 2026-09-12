@@ -246,13 +246,18 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
 
 
 def _resolve_conversation_history(
-    self, body: dict, raw_input: Any, *, _openai_error
-) -> "tuple[List[Dict[str, str]], Any, Any, web.Response | None]":
+    self, body: dict, input_messages: List[Dict[str, Any]], *, _api_server, _openai_error
+) -> "tuple[List[Dict[str, Any]], Any, Any, web.Response | None]":
     """Return ``(history, instructions, stored_session_id, error)``; precedence:
-    ``conversation_history`` > ``previous_response_id`` chain > all-but-last ``input`` messages."""
+    ``conversation_history`` > ``previous_response_id`` chain > all-but-last ``input`` messages.
+
+    ``input_messages`` is the caller's already role/content-normalized ``input`` (see
+    ``_handle_runs``), so multimodal content blocks (images) survive into history instead
+    of being flattened to text or stringified.
+    """
     instructions = body.get("instructions")
     previous_response_id = body.get("previous_response_id")
-    conversation_history: List[Dict[str, str]] = []
+    conversation_history: List[Dict[str, Any]] = []
     raw_history = body.get("conversation_history")
     if raw_history:
         if not isinstance(raw_history, list):
@@ -263,7 +268,12 @@ def _resolve_conversation_history(
                 return [], instructions, None, _json_error(
                     _openai_error, f"conversation_history[{i}] must have 'role' and 'content' fields",
                     status=400)
-            conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+            try:
+                entry_content = _api_server._normalize_multimodal_content(entry["content"])
+            except ValueError as exc:
+                return [], instructions, None, _api_server._multimodal_validation_error(
+                    exc, param=f"conversation_history[{i}].content")
+            conversation_history.append({"role": str(entry["role"]), "content": entry_content})
         if previous_response_id:
             logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
     stored_session_id = None
@@ -274,14 +284,8 @@ def _resolve_conversation_history(
             stored_session_id = stored.get("session_id")
             if instructions is None:
                 instructions = stored.get("instructions")
-    if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
-        for msg in raw_input[:-1]:
-            if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                content = msg["content"]
-                if isinstance(content, list):  # flatten multi-part content blocks to text
-                    content = " ".join(p.get("text", "") for p in content
-                                       if isinstance(p, dict) and p.get("type") == "text")
-                conversation_history.append({"role": msg["role"], "content": str(content)})
+    if not conversation_history and len(input_messages) > 1:
+        conversation_history.extend(input_messages[:-1])
     return conversation_history, instructions, stored_session_id, None
 
 
@@ -405,20 +409,34 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()).hexdigest()
     raw_input = body.get("input")
-    if not raw_input:
+    if raw_input is None:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
+    input_messages: List[Dict[str, Any]] = []
     if isinstance(raw_input, str):
-        user_message = raw_input
+        input_messages = [{"role": "user", "content": raw_input}]
+    elif isinstance(raw_input, list):
+        for idx, item in enumerate(raw_input):
+            if isinstance(item, str):
+                input_messages.append({"role": "user", "content": item})
+            elif isinstance(item, dict):
+                role = item.get("role", "user")
+                try:
+                    content = _api_server._normalize_multimodal_content(item.get("content", ""))
+                except ValueError as exc:
+                    return _api_server._multimodal_validation_error(exc, param=f"input[{idx}].content")
+                input_messages.append({"role": str(role), "content": content})
     else:
-        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
-    if not user_message:
+        return _json_error(_openai_error, "'input' must be a string or array", status=400)
+    user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+    if not _api_server._content_has_visible_payload(user_message):
         return _json_error(_openai_error, "No user message found in input", status=400)
     try:
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:
         return _json_error(_openai_error, str(exc), code="invalid_author", status=400)
     conversation_history, instructions, stored_session_id, history_err = (
-        _resolve_conversation_history(self, body, raw_input, _openai_error=_openai_error))
+        _resolve_conversation_history(
+            self, body, input_messages, _api_server=_api_server, _openai_error=_openai_error))
     if history_err is not None:
         return history_err
     previous_response_id = body.get("previous_response_id")

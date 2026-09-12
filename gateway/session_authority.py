@@ -47,6 +47,9 @@ class SessionAuthority:
         self.events = {}
         self.native_waiters = set()
         self.pending_results = {}
+        # Stops accepted for a running generation whose agent does not exist yet
+        # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
+        self.pending_stops = {}
 
     def authorize(self, actor, ref, capability):
         if actor.profile_id != self.profile_id or ref.profile_id != self.profile_id:
@@ -321,10 +324,22 @@ class SessionAuthority:
         handle = self._handle(ref)
         if handle.execution_generation != generation:
             raise RuntimeStoreError('stale_generation')
-        agent = self.agent(ref)
-        if agent is not None and handle.execution_state == 'running':
-            agent.interrupt()
+        if handle.execution_state == 'running':
+            agent = self.agent(ref)
+            if agent is not None:
+                agent.interrupt()
+            else:
+                # Accepted for this exact claim; the turn must not construct its agent
+                # afterwards and run the work as if no Stop had arrived.
+                self.pending_stops[ref.session_id] = generation
         return self._handle(ref)
+
+    def adopt_agent(self, session_id, generation, agent):
+        """The turn installs its agent for the running claim; a Stop latched while there
+        was no agent to deliver it to fires now, never against a later generation."""
+        if self.pending_stops.get(session_id) == generation:
+            del self.pending_stops[session_id]
+            agent.interrupt()
 
     def check_approval_generation(self, session_id, generation):
         handle = self._handle(SessionRef(self.profile_id, session_id))
@@ -450,6 +465,7 @@ class SessionAuthority:
                 live.event_stream.publish(ref.session_id, {
                     'text': response, 'content': response, 'admission_id': admission_id,
                     'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+            self.pending_stops.pop(ref.session_id, None)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(response)

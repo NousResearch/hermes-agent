@@ -132,3 +132,64 @@ async def test_hosted_head_cancelled_during_preclaim_does_not_let_successor_skip
     assert validated == ['hosted:A', 'hosted:B']
     statuses = {r['request_id']: r['status'] for r in list_session_admissions(db, session_id='s', pending_only=False)}
     assert statuses == {'hosted:A': 'terminal', 'hosted:B': 'queued'}
+
+
+def _wire_turn_agent(authority, generation, agent):
+    """Run the real per-turn agent wiring with this authority as the turn's approval owner."""
+    from gateway.run_turn_runner import TurnRunner
+    ctx = SimpleNamespace(
+        progress_callback=None, native_tool_start_callback=None, voice_ack_callback=None,
+        _voice_ack_guild=[None], _native_slack_task_cards=False, native_tool_complete_callback=None,
+        _step_callback_sync=None, _hooks_ref=SimpleNamespace(loaded_hooks=[]), _status_callback_sync=None,
+        _event_callback_sync=None, _status_adapter=None, session_key='route', user_config={},
+        _thinking_enabled=False, agent_holder=[None], tools_holder=[None], process_task_id=None,
+        process_baseline=None, run_generation=0)
+    holder = SimpleNamespace(
+        _ctx=ctx, _approval_owner=(authority, 's', generation),
+        _runner=SimpleNamespace(_service_tier=None, _consume_pending_turn_sidecar_notes=lambda key: []),
+        _make_bg_review_callbacks=lambda: (lambda message: None, lambda: None),
+        _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,
+        _clarify_callback_sync=lambda *a, **k: None, _notice_callback_sync=lambda *a, **k: None,
+        _attach_session_title_callback=lambda agent, ctx: None,
+        combined_tool_start_callback=None, combined_tool_complete_callback=None)
+    TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
+
+
+@pytest.mark.asyncio
+async def test_stop_before_the_turn_agent_exists_reaches_the_agent_once_it_is_wired(tmp_path, monkeypatch):
+    from gateway import session_finite
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    cache = {}
+    authority.runner._cached_agent_for = cache.get
+    agent = SimpleNamespace(interrupted=0)
+    agent.interrupt = lambda *a, **k: setattr(agent, 'interrupted', agent.interrupted + 1)
+    stopped = asyncio.Event()
+
+    async def execute(authority, ref, row):
+        # First turn: the claim is committed and message.start published, but agent
+        # construction has not finished. Stop arrives in exactly this window.
+        await asyncio.wait_for(stopped.wait(), 5)
+        cache['route'] = agent
+        _wire_turn_agent(authority, row['generation'], agent)
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+
+    with db:
+        await _submit(authority, 'first')
+        task = authority.sessions['s'].task
+        while authority._handle(REF).execution_state != 'running':
+            await asyncio.sleep(0)
+        handle = await authority.interrupt(ACTOR, REF, authority._handle(REF).execution_generation)
+        assert handle.execution_state == 'running'
+        stopped.set()
+        await asyncio.wait_for(task, 5)
+    assert agent.interrupted == 1, 'a Stop accepted for the running generation must reach its agent'
+
+    # The latch belongs to that exact generation: the next turn's agent is not interrupted.
+    agent.interrupted = 0
+    with db:
+        await _submit(authority, 'second')
+        stopped.set()
+        await asyncio.wait_for(authority.sessions['s'].task, 5)
+    assert agent.interrupted == 0

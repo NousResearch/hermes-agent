@@ -269,6 +269,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
         ctx.agent_holder[0] = agent  # interrupt support
+        if self._approval_owner is not None:
+            authority, owner_id, generation = self._approval_owner
+            authority.adopt_agent(owner_id, generation, agent)
         # The titler fires from the turn prologue, so attach the rename lane before the run.
         self._attach_session_title_callback(agent, ctx)
         # Publish turn ownership for /stop, /new, disconnect and shutdown interrupts; older session

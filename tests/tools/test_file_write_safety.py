@@ -23,6 +23,69 @@ class TestStaticDenyList:
         assert _is_write_denied("/etc/shadow") is True
 
 
+class TestHermesAuthWriteDenial:
+    """Hermes credential stores are denied by exact path, not basename."""
+
+    @pytest.fixture
+    def hermes_paths(self, tmp_path: Path, monkeypatch):
+        user_home = tmp_path / "user"
+        root = user_home / ".hermes"
+        profile = root / "profiles" / "research"
+        profile.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: user_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        return root, profile
+
+    def test_only_active_and_default_auth_json_are_denied(
+        self, hermes_paths, tmp_path: Path
+    ):
+        root, profile = hermes_paths
+
+        assert _is_write_denied(str(profile / "auth.json")) is True
+        assert _is_write_denied(str(root / "auth.json")) is True
+        assert _is_write_denied(str(profile / "nested" / "auth.json")) is False
+        assert _is_write_denied(str(tmp_path / "project" / "auth.json")) is False
+
+    def test_registered_write_and_patch_handlers_deny_auth_json(
+        self, hermes_paths, tmp_path: Path, monkeypatch
+    ):
+        import json
+
+        import tools.file_tools as file_tools
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+        from tools.registry import registry
+
+        _, profile = hermes_paths
+        active_auth = profile / "auth.json"
+        active_original = '{"token": "active-original"}\n'
+        active_auth.write_text(active_original, encoding="utf-8")
+
+        env = LocalEnvironment(cwd=str(tmp_path))
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+        monkeypatch.setattr(file_tools, "_get_file_ops", lambda task_id="default": ops)
+
+        write_entry = registry.get_entry("write_file")
+        patch_entry = registry.get_entry("patch")
+        assert write_entry is not None
+        assert patch_entry is not None
+
+        write_result = json.loads(write_entry.handler({
+            "path": str(active_auth),
+            "content": '{"token": "active-replaced"}\n',
+        }))
+        patch_result = json.loads(patch_entry.handler({
+            "mode": "replace",
+            "path": str(active_auth),
+            "old_string": "active-original",
+            "new_string": "active-replaced",
+        }))
+
+        assert "protected system/credential file" in write_result.get("error", "")
+        assert "protected system/credential file" in patch_result.get("error", "")
+        assert active_auth.read_text(encoding="utf-8") == active_original
+
+
 class TestSshConfigApprovalGate:
     """~/.ssh/config is approval-gated, not hard-denied (private keys stay denied)."""
 

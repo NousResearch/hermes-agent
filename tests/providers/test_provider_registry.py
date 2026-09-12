@@ -64,3 +64,52 @@ def test_list_providers_dedupes_aliases_in_cached_snapshot():
 
     assert providers.get_provider_profile("moonshot") is profile
     assert providers.list_providers() == [profile]
+
+
+def test_installed_provider_wins_over_same_named_user_dir(tmp_path, monkeypatch):
+    """Step 2b (flat installed dir) must override step 2 (model-providers dir)
+    on directory-name collision: both derive one module name each, so both
+    import and register, and last-writer-wins keeps the later step."""
+    import sys
+
+    home = tmp_path / "hermes"
+    mp_dir = home / "plugins" / "model-providers" / "dup"
+    flat_dir = home / "plugins" / "dup"
+    mp_dir.mkdir(parents=True)
+    flat_dir.mkdir(parents=True)
+    (mp_dir / "__init__.py").write_text(
+        "from providers.base import ProviderProfile\n"
+        "import providers\n"
+        'providers.register_provider(ProviderProfile(name="dup", aliases=("from-mp-dir",)))\n',
+        encoding="utf-8",
+    )
+    (flat_dir / "__init__.py").write_text(
+        "from providers.base import ProviderProfile\n"
+        "import providers\n"
+        'providers.register_provider(ProviderProfile(name="dup", aliases=("from-flat-dir",)))\n',
+        encoding="utf-8",
+    )
+    (flat_dir / "plugin.yaml").write_text("kind: model-provider\n", encoding="utf-8")
+
+    recorded = []
+    real_register = providers.register_provider
+
+    def _recording_register(profile):
+        recorded.append(profile)
+        return real_register(profile)
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(providers, "_BUNDLED_PLUGINS_DIR", tmp_path / "empty-bundled")
+    (tmp_path / "empty-bundled").mkdir()
+    monkeypatch.setattr(providers, "register_provider", _recording_register)
+    providers._discovered = False
+    try:
+        providers._discover_providers()
+    finally:
+        for mod in [m for m in sys.modules if m.startswith("_hermes_user_provider_")]:
+            del sys.modules[mod]
+
+    assert [p.aliases for p in recorded if p.name == "dup"] == [
+        ("from-mp-dir",), ("from-flat-dir",),
+    ]
+    assert providers.get_provider_profile("dup").aliases == ("from-flat-dir",)

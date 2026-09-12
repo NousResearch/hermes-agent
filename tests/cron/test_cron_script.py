@@ -451,6 +451,7 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "some_script.py").write_text("print('ok')\n")
         create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
@@ -471,6 +472,7 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "data_collector.py").write_text("print('ok')\n")
         cronjob(
             action="create",
             schedule="every 1h",

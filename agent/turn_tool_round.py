@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.turn_preflight import compress_after_tool_results
-from agent.turn_tool_validation import validate_tool_calls
+from agent.turn_tool_validation import invalid_json_error_content, validate_tool_calls
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -88,10 +88,15 @@ def run_tool_round(
     )
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
-    # matching result) while only valid ones dispatch.
+    # matching result) while only valid ones dispatch. Two flavours share one path:
+    # unknown tool names, and valid-name calls whose arguments are not valid JSON (#84698).
     _invalid_batch_calls = [
         tc for tc in assistant_message.tool_calls if tc.function.name not in agent.valid_tool_names
     ] if _tvv.mixed_invalid_batch else []
+    _invalid_json_calls = [
+        tc for tc in assistant_message.tool_calls
+        if coalesce_tool_call_id(tc) in _tvv.invalid_json_by_id
+    ]
 
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
@@ -99,7 +104,7 @@ def run_tool_round(
     append_message(messages, assistant_msg)
 
     # Mixed batch: error-result invalid calls and drop them from execution.
-    if _invalid_batch_calls:
+    if _invalid_batch_calls or _invalid_json_calls:
         for tc in _invalid_batch_calls:
             append_message(messages, {
                 "role": "tool",
@@ -109,8 +114,18 @@ def run_tool_round(
                     tc.function.name, agent.valid_tool_names
                 ),
             })
+        for tc in _invalid_json_calls:
+            append_message(messages, {
+                "role": "tool",
+                "name": tc.function.name,
+                "tool_call_id": coalesce_tool_call_id(tc),
+                "content": invalid_json_error_content(
+                    _tvv.invalid_json_by_id[coalesce_tool_call_id(tc)]
+                ),
+            })
+        _dropped = {coalesce_tool_call_id(tc) for tc in _invalid_batch_calls + _invalid_json_calls}
         assistant_message.tool_calls = [
-            tc for tc in assistant_message.tool_calls if tc.function.name in agent.valid_tool_names
+            tc for tc in assistant_message.tool_calls if coalesce_tool_call_id(tc) not in _dropped
         ]
 
     # Persist the tool-call turn before any tool side effects so resume sees the executed

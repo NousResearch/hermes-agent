@@ -736,13 +736,17 @@ async def get_logs(
         if comp_prefixes is None:
             raise HTTPException(status_code=400, detail=f"Unknown component: {component}. "
                                 f"Available: {', '.join(sorted(COMPONENT_PREFIXES))}")
-    result = _read_tail(
-        log_path, min(lines, 500) if not search else 2000,
-        has_filters=bool(min_level or comp_prefixes or search),
-        min_level=min_level, component_prefixes=comp_prefixes)
-    # _read_tail doesn't support free-text search, so post-filter (case-insensitive
-    # substring) here and trim to the requested line count afterward.
-    if search:
-        needle = search.lower()
-        result = [l for l in result if needle in l.lower()][-min(lines, 500):]
+    def _load_logs():
+        result = _read_tail(
+            log_path, min(lines, 500) if not search else 2000,
+            has_filters=bool(min_level or comp_prefixes or search),
+            min_level=min_level, component_prefixes=comp_prefixes)
+        # _read_tail doesn't support free-text search, so post-filter (case-insensitive
+        # substring) here and trim to the requested line count afterward.
+        if search:
+            needle = search.lower()
+            result = [line for line in result if needle in line.lower()][-min(lines, 500):]
+        return result
+
+    result = await asyncio.to_thread(_load_logs)
     return {"file": file, "lines": result}

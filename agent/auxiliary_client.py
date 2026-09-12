@@ -4089,6 +4089,17 @@ def _try_main_fallback_chain(
     task: Optional[str], failed_provider: str = "", reason: str = "error", *,
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
+    client, model, provider, _entry = _select_main_fallback_entry(
+        task, failed_provider, reason, failed_model=failed_model,
+        failed_base_url=failed_base_url, failure_scope=failure_scope,
+    )
+    return client, model, provider
+
+
+def _select_main_fallback_entry(
+    task: Optional[str], failed_provider: str = "", reason: str = "error", *,
+    failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+) -> Tuple[Optional[Any], Optional[str], str, Optional[Dict[str, Any]]]:
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
     ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
@@ -4098,9 +4109,9 @@ def _try_main_fallback_chain(
         chain = get_fallback_chain(load_config_readonly())
     except Exception as exc:
         logger.debug("Auxiliary %s: could not load main fallback chain: %s", task or "call", exc)
-        return None, None, ""
+        return None, None, "", None
     if not chain:
-        return None, None, ""
+        return None, None, "", None
     skip = _failed_backend_skip(
         failed_provider, failed_model, failed_base_url=failed_base_url, failure_scope=failure_scope)
     tried: List[str] = []
@@ -4136,11 +4147,11 @@ def _try_main_fallback_chain(
                 continue
             logger.info("Auxiliary %s: %s on %s — main fallback chain to %s (%s)",
                         task or "call", reason, failed_provider or "auto", label, resolved_model or fb_model)
-            return fb_client, resolved_model or fb_model, fb_provider
+            return fb_client, resolved_model or fb_model, fb_provider, entry
         tried.append(label)
     if tried:
         logger.debug("Auxiliary %s: main fallback chain exhausted (tried: %s)", task or "call", ", ".join(tried))
-    return None, None, ""
+    return None, None, "", None
 
 
 def _warn_stale_openai_base_url(runtime_provider: str) -> None:

@@ -772,13 +772,47 @@ def _record_stall_interrupted_backoff(
 
 
 def resolve_compression_fallback_route() -> Optional[dict]:
-    """Return the first usable ``auxiliary.compression.fallback_chain`` entry.
+    """Return a task fallback route, or an eligible inherited main route for auto.
     The aux client applies the chain only from its exception handler, so a silent stall never reaches it; this
     pins the route onto one bounded retry instead. Only the first complete entry: if it errors, the aux
     client's own exception path walks the rest. ``None`` when none is usable (skip compression)."""
     try:
         from agent.auxiliary_client import _fallback_entry_api_key, _get_auxiliary_task_config
-        chain = _get_auxiliary_task_config("compression").get("fallback_chain")
+        task_config = _get_auxiliary_task_config("compression")
+        chain = task_config.get("fallback_chain")
+        # Explicit task routes retain precedence. Auto tasks without one use
+        # the same eligibility policy as the auxiliary client's error path.
+        has_task_route = isinstance(chain, list) and any(
+            isinstance(entry, dict)
+            and str(entry.get("provider") or "").strip()
+            and str(entry.get("model") or "").strip()
+            for entry in chain
+        )
+        inherited = False
+        if not has_task_route and str(task_config.get("provider") or "auto").strip().lower() == "auto":
+            from agent.auxiliary_client import (
+                _fallback_destination_from_entry,
+                _select_main_fallback_entry,
+                _read_main_provider,
+                _read_main_model,
+                _custom_health_base_url,
+            )
+
+            client, model, _provider, entry = _select_main_fallback_entry(
+                "compression", _read_main_provider(), reason="summary stalled",
+                failed_model=task_config.get("model") or _read_main_model(),
+                failed_base_url=_custom_health_base_url(
+                    _read_main_provider(), task_config.get("base_url")
+                ),
+            )
+            if entry is not None:
+                destination = _fallback_destination_from_entry(entry, client, model)
+                chain = [dict(
+                    entry, model=model, base_url=destination.base_url,
+                    api_mode=destination.api_mode,
+                    api_key=_fallback_entry_api_key(entry) or getattr(client, "api_key", None),
+                )]
+                inherited = True
     except Exception:
         logger.debug("compression fallback_chain lookup failed", exc_info=True)
         return None
@@ -801,7 +835,8 @@ def resolve_compression_fallback_route() -> Optional[dict]:
         from agent.auxiliary_client import _coerce_positive_timeout
         timeout = _coerce_positive_timeout(entry.get("timeout"))
         return {
-            "label": f"fallback_chain[{index}]({provider})",
+            "label": (f"main fallback ({provider})" if inherited
+                      else f"fallback_chain[{index}]({provider})"),
             "provider": provider,
             "model": model,
             "base_url": str(entry.get("base_url") or "").strip() or None,

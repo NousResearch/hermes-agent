@@ -44,6 +44,7 @@ hermes skills uninstall <skill-name>
 |-------|-------------|
 | [**evm**](/docs/user-guide/skills/optional/blockchain/blockchain-evm) | Read-only EVM client: wallets, tokens, gas across 8 chains. |
 | [**hyperliquid**](/docs/user-guide/skills/optional/blockchain/blockchain-hyperliquid) | Hyperliquid market data, account history, trade review. |
+| [**pr-lens**](/docs/user-guide/skills/optional/software-development/software-development-pr-lens) | Draw code changes as animated architecture/data-flow SVGs. |
 | [**solana**](/docs/user-guide/skills/optional/blockchain/blockchain-solana) | Query Solana wallets, tokens, txs, and NFTs in USD. |
 
 ## communication

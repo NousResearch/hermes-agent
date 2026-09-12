@@ -337,3 +337,89 @@ def test_prose_names_repo_is_word_bounded(tmp_path):
     assert kbd._prose_names_repo(None, "SAMS-APP deploy notes", repo)
     assert not kbd._prose_names_repo("fix sams-app-old now", None, repo)
     assert not kbd._prose_names_repo("see x.sams-app for detail", None, repo)
+
+
+# ---------------------------------------------------------------------------
+# Two path shapes the prose anchor used to miss (card t_7ad7badc):
+#   A. the token names an *existing file* — the commonest card shape
+#      ("edit <repo>/.gitignore"); `git -C <file>` fails, so the card fell
+#      through to the board default and anchored a worktree on a sibling repo.
+#   B. the token is markdown inline code — the closing backtick was captured
+#      into the path, so the repo path in the body resolved to nothing.
+# ---------------------------------------------------------------------------
+
+
+def test_prose_path_naming_an_existing_file_anchors_its_repo(kanban_home, tmp_path):
+    """Invariant: a path token naming a file that exists resolves through the
+    file's directory to the repo that holds it, and beats the board default."""
+    ws = tmp_path / "workspace"
+    plant = _make_git_repo(ws, "gamified-plant")
+    sams = _make_git_repo(ws, "sams-app")
+    (Path(plant) / ".gitignore").write_text("node_modules\n")
+    kb.create_board("file-probe", default_workdir=sams)
+    conn = kbc.connect(board="file-probe")
+    try:
+        tid = _mk(
+            conn,
+            body=f"Apply the same .worktrees/ ignore rule to {plant}/.gitignore",
+        )
+        task = kb.get_task(conn, tid)
+
+        upgraded = kbd._maybe_upgrade_repo_scratch(conn, task, board="file-probe")
+
+        assert Path(upgraded.workspace_path).resolve() == Path(plant).resolve()
+        payloads = _payloads(conn, tid, "workspace_upgraded_to_worktree")
+        assert payloads[0]["anchor_source"] == kbd.ANCHOR_SOURCE_PROSE
+        assert payloads[0]["repo"] == str(Path(plant).resolve())
+        # The prose itself named the repo — the board default never decided.
+        assert _payloads(conn, tid, "workspace_anchor_fallback") == []
+    finally:
+        conn.close()
+
+
+def test_prose_path_naming_a_file_that_does_not_exist_still_anchors(kanban_home, tmp_path):
+    """Regression: a path the card is about to *create* resolves through its
+    nearest existing ancestor to the same repo, as it always did."""
+    repo = _make_git_repo(tmp_path)
+    anchor = kbd._card_repo_anchor("t", f"create {repo}/src/main.py", board=None)
+    assert anchor is not None
+    assert anchor.source == kbd.ANCHOR_SOURCE_PROSE
+    assert Path(anchor.repo).resolve() == Path(repo).resolve()
+
+
+def test_backtick_wrapped_prose_path_anchors_its_repo(kanban_home, tmp_path):
+    """Invariant: markdown inline code must not capture its closing backtick.
+    t_c7131f54 was warned as "card body references no resolvable git repo"
+    while the repo path sat in the body wrapped in backticks."""
+    repo = _make_git_repo(tmp_path)
+    anchor = kbd._card_repo_anchor(
+        "t", f"- Repo = `{repo}`, has origin but no worktrees", board=None,
+    )
+    assert anchor is not None
+    assert anchor.source == kbd.ANCHOR_SOURCE_PROSE
+    assert Path(anchor.repo).resolve() == Path(repo).resolve()
+    assert anchor.prose_path == str(repo)
+
+
+def test_backtick_wrapped_path_beats_the_board_default(kanban_home, tmp_path):
+    """End-to-end: a backtick-wrapped path naming a sibling repo wins over the
+    board default, and is not reported as an unconfirmed guess."""
+    ws = tmp_path / "workspace"
+    sams = _make_git_repo(ws, "sams-app")
+    littlepanda = _make_git_repo(ws, "littlepanda")
+    kb.create_board("sams-probe", default_workdir=sams)
+    conn = kbc.connect(board="sams-probe")
+    try:
+        tid = _mk(conn, body=f"- Repo = `{littlepanda}`, has origin but no worktrees")
+        task = kb.get_task(conn, tid)
+
+        upgraded = kbd._maybe_upgrade_repo_scratch(conn, task, board="sams-probe")
+
+        assert Path(upgraded.workspace_path).resolve() == Path(littlepanda).resolve()
+        payloads = _payloads(conn, tid, "workspace_upgraded_to_worktree")
+        assert payloads[0]["anchor_source"] == kbd.ANCHOR_SOURCE_PROSE
+        assert payloads[0]["repo"] == str(Path(littlepanda).resolve())
+        assert _payloads(conn, tid, "workspace_anchor_fallback") == []
+    finally:
+        conn.close()
+

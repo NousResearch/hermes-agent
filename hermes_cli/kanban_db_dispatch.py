@@ -242,8 +242,11 @@ def _sibling_repo_named_in_prose(
     return None
 
 
-# A path token in card prose: words beginning with /, ~/, or $HOME/.
-_REPO_PATH_PATTERN = re.compile(r"""(?:^|[\s(=\\"'`])(?P<path>(?:~/|/|\$HOME(?:/|$))[^\s,;)"']+)""")
+# A path token in card prose: words beginning with /, ~/, or $HOME/. The body
+# stops at whitespace, `,;)"'`, and the backtick — markdown inline code
+# (`` `/repo/path` ``) would otherwise capture its own closing delimiter and the
+# token becomes a path that does not exist (measured: t_c7131f54).
+_REPO_PATH_PATTERN = re.compile(r"""(?:^|[\s(=\\"'`])(?P<path>(?:~/|/|\$HOME(?:/|$))[^\s,;)"'`]+)""")
 
 
 def _card_repo_anchor(
@@ -267,15 +270,19 @@ def _card_repo_anchor(
         expanded = os.path.expandvars(os.path.expanduser(raw))
         if not os.path.isabs(expanded):
             continue
-        # Strip trailing punctuation git would reject (",", ";", ")", "]", "}", ".").
-        while expanded and expanded[-1] in ',.;:)]}"':
+        # Strip trailing punctuation git would reject (",", ";", ")", "]", "}", ".", "`").
+        while expanded and expanded[-1] in ',.;:)]}"`':
             expanded = expanded[:-1]
         if not expanded:
             continue
-        # `git -C` needs an existing directory; walk up to the nearest existing
-        # ancestor when the token points at a not-yet-created file inside a repo.
+        # `git -C` needs an existing *directory* — walk up to the nearest one.
+        # A token naming a not-yet-created file resolves through the repo that
+        # would hold it, and a token naming an existing *file* (the commonest
+        # card shape: "edit <repo>/.gitignore") must resolve the same way:
+        # `git -C <file>` fails, and the card would otherwise fall through to
+        # the board default and anchor a worktree on the wrong repo.
         p = Path(expanded)
-        while not p.exists() and p != p.parent:
+        while p != p.parent and not p.is_dir():
             p = p.parent
         top = _kbw._git_toplevel(p)
         if top is not None:

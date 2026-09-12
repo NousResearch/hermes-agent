@@ -148,6 +148,24 @@ def _read_index_cache(key: str) -> Optional[Any]:
     return _read_json_if_fresh(_index_cache_dir() / f"{key}.json", INDEX_CACHE_TTL)
 
 
+def _index_cache_key_for_tap(repo: str, path: str = "skills/") -> str:
+    """Cache key used by GitHubSource._list_skills_in_repo for one tap."""
+    return f"{repo}_{path}".replace("/", "_").replace(" ", "_")
+
+
+def invalidate_index_cache_for_tap(repo: str, path: str = "skills/") -> bool:
+    """Delete the index-cache JSON for one tap. Safe if the file is missing."""
+    cache_path = _index_cache_dir() / f"{_index_cache_key_for_tap(repo, path)}.json"
+    try:
+        cache_path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        logger.debug("Could not invalidate tap index cache %s: %s", cache_path, e)
+        return False
+
+
 def _write_index_cache(key: str, data: Any) -> None:
     index_cache_dir = _index_cache_dir()
     index_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -269,15 +287,48 @@ class TapsManager(_JsonStateFile):
             return False
         taps.append({"repo": repo, "path": path})
         self.save(taps)
+        invalidate_index_cache_for_tap(repo, path)
         return True
 
     def remove(self, repo: str) -> bool:
         """Remove a tap by repo name. Returns False if not found."""
         taps = self.load()
-        new_taps = [t for t in taps if t["repo"] != repo]
-        if len(new_taps) == len(taps):
+        removed = [t for t in taps if t["repo"] == repo]
+        if not removed:
             return False
-        self.save(new_taps)
+        self.save([t for t in taps if t["repo"] != repo])
+        for tap in removed:
+            invalidate_index_cache_for_tap(tap["repo"], tap.get("path", "skills/"))
+        return True
+
+    def refresh_tap(self, repo: Optional[str] = None) -> bool:
+        """Invalidate (and best-effort warm) index-cache for configured custom taps.
+
+        ``repo=None`` / ``""`` refreshes every configured custom tap. A repo that
+        is not in taps.json returns False and does not invent a tap. Network
+        errors during warm are fail-open: the cache stays invalidated (miss)
+        rather than writing an empty poison cache.
+        """
+        if repo == "":
+            repo = None
+        taps = self.load()
+        if repo is not None:
+            taps = [t for t in taps if t.get("repo") == repo]
+            if not taps:
+                return False
+        for tap in taps:
+            invalidate_index_cache_for_tap(tap.get("repo", ""), tap.get("path", "skills/"))
+        try:
+            from tools.skills_hub_github import GitHubAuth, GitHubSource
+
+            src = GitHubSource(auth=GitHubAuth(), extra_taps=taps)
+            for tap in taps:
+                try:
+                    src._list_skills_in_repo(tap.get("repo", ""), tap.get("path", "skills/"))
+                except Exception as e:
+                    logger.debug("Tap refresh warm failed for %s: %s", tap.get("repo"), e)
+        except Exception as e:
+            logger.debug("Tap refresh warm setup failed: %s", e)
         return True
 
     list_taps = load

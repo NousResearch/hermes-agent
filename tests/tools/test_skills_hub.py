@@ -647,6 +647,143 @@ class TestTapsManager:
         assert mgr.remove("owner/repo") is True
         assert mgr.load() == []
 
+
+# ---------------------------------------------------------------------------
+# Custom-tap index-cache refresh (stale .hub/index-cache/<tap>_<path>.json)
+# ---------------------------------------------------------------------------
+
+
+def _tap_cache_key(repo: str, path: str = "skills/") -> str:
+    return f"{repo}_{path}".replace("/", "_").replace(" ", "_")
+
+
+def _tap_meta_dict(name: str, repo: str, path: str = "skills/") -> dict:
+    skill_path = f"{path.rstrip('/')}/{name}"
+    return {
+        "name": name,
+        "description": f"cached {name}",
+        "source": "github",
+        "identifier": f"{repo}/{skill_path}",
+        "trust_level": "community",
+        "repo": repo,
+        "path": skill_path,
+        "tags": [],
+        "extra": {},
+    }
+
+
+class TestTapIndexCacheRefresh:
+    """Stale tap index-cache has no refresh path; remove+add must invalidate."""
+
+    REPO_A = "owner/tap-a"
+    REPO_B = "owner/tap-b"
+    PATH = "skills/"
+
+    def _hub(self, tmp_path, monkeypatch):
+        import tools.skills_hub as hub
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        cache_dir = hub_dir / "index-cache"
+        cache_dir.mkdir(parents=True)
+        monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
+        monkeypatch.setattr(hub, "HUB_DIR", hub_dir)
+        monkeypatch.setattr(hub, "TAPS_FILE", hub_dir / "taps.json")
+        monkeypatch.setattr(hub, "INDEX_CACHE_DIR", cache_dir)
+        return hub, cache_dir
+
+    def _write_cache(self, cache_dir, repo, names, path="skills/"):
+        key = _tap_cache_key(repo, path)
+        cache_file = cache_dir / f"{key}.json"
+        cache_file.write_text(
+            json.dumps([_tap_meta_dict(n, repo, path) for n in names]),
+            encoding="utf-8",
+        )
+        return cache_file
+
+    def _list_names(self, repo, path="skills/"):
+        src = GitHubSource(auth=MagicMock(), extra_taps=[{"repo": repo, "path": path}])
+        live = SkillMeta(
+            name="new-skill",
+            description="live new-skill",
+            source="github",
+            identifier=f"{repo}/{path.rstrip('/')}/new-skill",
+            trust_level="community",
+        )
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"type": "dir", "name": "new-skill"}]
+        with patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "inspect", return_value=live), \
+             patch.object(src, "_github_get", return_value=resp):
+            return {s.name for s in src._list_skills_in_repo(repo, path)}
+
+    def test_stale_cache_hides_live_skill(self, tmp_path, monkeypatch):
+        """Cache hit serves only stale entries even when live listing has new-skill."""
+        hub, cache_dir = self._hub(tmp_path, monkeypatch)
+        mgr = hub.TapsManager()
+        mgr.add(self.REPO_A)
+        self._write_cache(cache_dir, self.REPO_A, ["old-skill"])
+
+        names = self._list_names(self.REPO_A)
+        assert names == {"old-skill"}
+        assert "new-skill" not in names
+
+    def test_remove_then_add_invalidates_cache(self, tmp_path, monkeypatch):
+        hub, cache_dir = self._hub(tmp_path, monkeypatch)
+        mgr = hub.TapsManager()
+        mgr.add(self.REPO_A)
+        cache_file = self._write_cache(cache_dir, self.REPO_A, ["old-skill"])
+        assert cache_file.exists()
+
+        assert mgr.remove(self.REPO_A) is True
+        assert not cache_file.exists()
+        mgr.add(self.REPO_A)
+        assert not cache_file.exists()
+
+        names = self._list_names(self.REPO_A)
+        assert "new-skill" in names
+
+    def test_refresh_invalidates_and_list_sees_new_skill(self, tmp_path, monkeypatch):
+        hub, cache_dir = self._hub(tmp_path, monkeypatch)
+        mgr = hub.TapsManager()
+        mgr.add(self.REPO_A)
+        cache_file = self._write_cache(cache_dir, self.REPO_A, ["old-skill"])
+        assert self._list_names(self.REPO_A) == {"old-skill"}
+
+        # Warm is fail-open: network error after invalidate must not rewrite cache.
+        with patch.object(GitHubSource, "_list_skills_in_repo", side_effect=RuntimeError("gh down")):
+            assert mgr.refresh_tap(self.REPO_A) is True
+        assert not cache_file.exists()
+
+        names = self._list_names(self.REPO_A)
+        assert "new-skill" in names
+
+    def test_refresh_tap_a_does_not_delete_tap_b_cache(self, tmp_path, monkeypatch):
+        hub, cache_dir = self._hub(tmp_path, monkeypatch)
+        mgr = hub.TapsManager()
+        mgr.add(self.REPO_A)
+        mgr.add(self.REPO_B)
+        cache_a = self._write_cache(cache_dir, self.REPO_A, ["old-a"])
+        cache_b = self._write_cache(cache_dir, self.REPO_B, ["old-b"])
+
+        with patch.object(GitHubSource, "_list_skills_in_repo", side_effect=RuntimeError("gh down")):
+            assert mgr.refresh_tap(self.REPO_A) is True
+        assert not cache_a.exists()
+        assert cache_b.exists()
+
+    def test_refresh_unknown_repo_returns_false(self, tmp_path, monkeypatch):
+        hub, cache_dir = self._hub(tmp_path, monkeypatch)
+        mgr = hub.TapsManager()
+        mgr.add(self.REPO_A)
+        cache_a = self._write_cache(cache_dir, self.REPO_A, ["old-skill"])
+
+        assert mgr.refresh_tap("nobody/unknown") is False
+        assert cache_a.exists()
+
+    def test_invalidate_missing_cache_is_safe(self, tmp_path, monkeypatch):
+        hub, _cache_dir = self._hub(tmp_path, monkeypatch)
+        hub.invalidate_index_cache_for_tap(self.REPO_A)
+
 # ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md
 # ---------------------------------------------------------------------------

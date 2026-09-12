@@ -1094,6 +1094,14 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
                           t.get("path", "skills/"))
         c.print(table)
         c.print()
+    elif action == "refresh":
+        if not mgr.refresh_tap(repo or None):
+            _print_error(c, f"Tap not found: {repo}")
+            return
+        if repo:
+            c.print(f"[bold green]Refreshed tap:[/] {repo}\n")
+        else:
+            c.print("[bold green]Refreshed[/] index cache for all custom taps\n")
     elif action in _TAP_OPS:
         method, ok_line, fail_line = _TAP_OPS[action]
         if not repo:
@@ -1101,7 +1109,7 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
             return
         c.print((ok_line if getattr(mgr, method)(repo) else fail_line).format(repo=repo))
     else:
-        c.print(f"[bold red]Unknown tap action:[/] {action}. Use: list, add, remove\n")
+        c.print(f"[bold red]Unknown tap action:[/] {action}. Use: list, add, remove, refresh\n")
 
 
 def _read_frontmatter(skill_md: str) -> dict:
@@ -1301,7 +1309,7 @@ def _snapshot_cli(args) -> None:
 def _tap_cli(args) -> None:
     tap_action = getattr(args, "tap_action", None)
     if not tap_action:
-        _console.print("Usage: hermes skills tap [list|add|remove]\n")
+        _console.print("Usage: hermes skills tap [list|add|remove|refresh]\n")
         return
     do_tap(tap_action, repo=getattr(args, "repo", "") or getattr(args, "name", ""))
 
@@ -1492,5 +1500,5 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
-        "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
+        "  [cyan]tap[/] list|add|remove|refresh Manage skill sources\n",
         title="/skills"))

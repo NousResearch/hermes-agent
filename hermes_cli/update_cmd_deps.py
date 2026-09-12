@@ -37,6 +37,34 @@ def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool
     return result.returncode == 0 and not result.stdout.strip()
 
 
+def _sync_locked_uv_environment(uv_bin, project_root: Path, env, *, group: str) -> bool:
+    """Best-effort locked sync for an existing uv-created project venv."""
+    venv = project_root / "venv"
+    lockfile = project_root / "uv.lock"
+    try:
+        config = (venv / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if not uv_bin or not lockfile.is_file() or not any(
+        line.partition("=")[0].strip() == "uv" for line in config.splitlines()
+    ):
+        return False
+
+    sync_env = dict(env or {})
+    sync_env.pop("UV_NO_CONFIG", None)
+    sync_env["UV_PROJECT_ENVIRONMENT"] = str(venv)
+    try:
+        result = subprocess.run(
+            [uv_bin, "sync", "--extra", group, "--locked"],
+            cwd=project_root, env=sync_env, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        logger.debug("locked uv sync failed (rc=%d); preserving legacy verification", result.returncode)
+        return False
+    return True
+
+
 # Modules imported on every startup. Unlike _UPDATE_CRITICAL_FILES (only parsed) these are
 # *imported*, catching cross-module breakage (a name pulled from a sibling no longer exists).
 _UPDATE_CRITICAL_MODULES = "hermes_cli.main", "run_agent", "model_tools", "toolsets"
@@ -1001,6 +1029,9 @@ def _sync_python_dependencies_after_pull(
         install_group = "termux-all"
         uv_note = "uv + " if uv_bin else ""
         print(f"  → Termux detected: using {uv_note}curated termux-all optional profile...")
+    if deps_current and not is_termux:
+        _sync_locked_uv_environment(
+            uv_bin, Path(_m().PROJECT_ROOT), lazy_env, group=install_group)
     if deps_current:
         # Verification normally runs inside the skipped install; run it here so a wrong skip
         # self-heals (both verifiers reinstall what they find missing).

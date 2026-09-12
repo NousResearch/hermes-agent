@@ -161,6 +161,28 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
                                     for t in templates[backend]])
 
 
+_BACKEND_LADDER = {"cuda": "vulkan", "vulkan": "cpu"}
+
+
+def resolve_assets_ladder(tag: str, backend: str, os_name: str | None = None,
+                          arch: str | None = None) -> tuple[AssetPlan, str]:
+    """Resolve (tag, backend), stepping down the cuda -> vulkan -> cpu
+    ladder when the release ships no artifact for it (e.g. Linux CUDA).
+
+    Returns the plan plus the backend that actually resolved, so callers
+    record what got installed. Only auto-detected backends should ride the
+    ladder — an explicit choice deserves the honest BinaryResolutionError.
+    """
+    while True:
+        try:
+            return resolve_assets(tag, backend, os_name=os_name, arch=arch), backend
+        except BinaryResolutionError:
+            nxt = _BACKEND_LADDER.get(backend)
+            if nxt is None:
+                raise
+            backend = nxt
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:

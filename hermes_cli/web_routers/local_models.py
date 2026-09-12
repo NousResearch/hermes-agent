@@ -206,20 +206,25 @@ def _set_runtime_enabled(enabled: bool) -> dict:
     return config
 
 
-def _runtime_target(requested: str | None = None) -> "tuple[str, str]":
-    """(tag, backend) the runtime routes act on: configured tag or release default; ``auto`` -> detected GPU vendor."""
+def _runtime_target(requested: str | None = None) -> "tuple[str, bool, str]":
+    """(tag, auto, backend) the runtime routes act on: configured tag or release default; ``auto`` -> detected GPU vendor."""
     section = _runtime_section()
     tag = section.get("tag") or binaries.default_tag()
     backend = requested or section.get("backend", "auto")
-    if backend == "auto":
+    auto = backend == "auto"
+    if auto:
         backend = binaries.select_backend(bootstrap._detect_gpu_vendor())
-    return tag, backend
+    return tag, auto, backend
 
 
-def _resolve_assets_or_400(tag: str, backend: str):
-    """Resolve first so an impossible combination fails the POST, not the job."""
+def _resolve_assets_or_400(tag: str, backend: str, auto: bool = False):
+    """Resolve first so an impossible combination fails the POST, not the job. Returns (plan, backend):
+    an auto-detected backend rides the cuda -> vulkan -> cpu ladder (Linux NVIDIA auto-picks cuda but
+    no prebuilt ships) and reports what actually resolved; an explicit choice keeps the honest error."""
     with _http_error(400):
-        return binaries.resolve_assets(tag, backend)
+        if auto:
+            return binaries.resolve_assets_ladder(tag, backend)
+        return binaries.resolve_assets(tag, backend), backend
 
 
 def _engine_too_old(min_engine: str) -> bool:
@@ -641,8 +646,8 @@ def _restart_on_new_tag(job: Dict[str, Any], tag: str, previous: list) -> bool:
 
 @router.post("/api/local-models/runtime/install")
 async def local_models_runtime_install(body: RuntimeInstallBody):
-    tag, backend = _runtime_target(body.backend)
-    plan = _resolve_assets_or_400(tag, backend)
+    tag, auto, backend = _runtime_target(body.backend)
+    plan, backend = _resolve_assets_or_400(tag, backend, auto)
     job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
 
     def _run():
@@ -737,10 +742,13 @@ async def local_models_quickstart(body: QuickstartBody):
     Preflight rejects (no automatic recommendation or no servable choice) fail the POST
     synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
     entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
-    tag, backend = _runtime_target()
+    tag, auto, backend = _runtime_target()
     need_runtime = not binaries.installed_tags()
     if need_runtime:
-        _resolve_assets_or_400(tag, backend)
+        # Same preflight as /runtime/install — an auto-detected backend rides the ladder so
+        # "Set up for me" lands on vulkan instead of a 400 toast (Linux NVIDIA auto-picks cuda
+        # but no prebuilt ships); an explicit choice keeps the resolver's honest error.
+        _, backend = _resolve_assets_or_400(tag, backend, auto)
     need_download = variant.model_id not in bootstrap.staged_model_ids()
     download_plan = _download_plan(entry, variant) if need_download else []
     download_bytes = sum(p[2] for p in download_plan)

@@ -74,6 +74,27 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
 )
 
 
+# Per-profile backend singleton: a second ``serve``/``dashboard`` for the same
+# profile refuses to start with ONE machine-readable stdout sentinel plus a
+# distinct exit code — same convention as the port-conflict sentinel in
+# web_server_lifecycle (75 == BSD EX_TEMPFAIL, the repo's transient-condition
+# code). Desktop's spawn watches stdout for sentinels, so wrappers can grep it.
+BACKEND_PROFILE_ALREADY_RUNNING_EXIT_CODE = 75
+_PROFILE_ALREADY_RUNNING_SENTINEL = "BACKEND_PROFILE_ALREADY_RUNNING"
+
+
+def _report_profile_already_running() -> None:
+    """Print the machine sentinel + a human hint for the singleton refusal."""
+    _write_machine_sentinel_line(_PROFILE_ALREADY_RUNNING_SENTINEL)
+    print(
+        "  Another 'hermes serve' / 'hermes dashboard' backend is already running "
+        "for this profile (serve.lock is held). Stop the other process first — two "
+        "backends writing the same state.db corrupted it. "
+        "HERMES_SERVE_ALLOW_DUPLICATE=1 bypasses this guard.",
+        flush=True,
+    )
+
+
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
@@ -1384,6 +1405,22 @@ def start_server(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
+    # Per-profile singleton: Hermes Desktop's startHermes() re-spawn path once
+    # started a second backend for the same profile without stopping the first;
+    # both wrote the same WAL-mode state.db concurrently and corrupted it. The
+    # port-bind probe below cannot catch this — desktop spawns pass ``--port 0``.
+    # Refuse the newcomer, never auto-kill the peer (same convention as the
+    # gateway runtime lock). HERMES_SERVE_ALLOW_DUPLICATE=1 is the escape hatch.
+    if os.environ.get("HERMES_SERVE_ALLOW_DUPLICATE") != "1":
+        import atexit
+
+        from gateway.status import acquire_backend_serve_lock, release_backend_serve_lock
+
+        if not acquire_backend_serve_lock():
+            _report_profile_already_running()
+            raise SystemExit(BACKEND_PROFILE_ALREADY_RUNNING_EXIT_CODE)
+        atexit.register(release_backend_serve_lock)
+
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 

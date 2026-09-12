@@ -35,6 +35,8 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+_SERVE_LOCK_FILENAME = "serve.lock"
+_serve_lock_handle = None
 # Windows byte-range locks are mandatory for other readers: lock a byte well past
 # the JSON payload so status/PID readers can read while another process holds it.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
@@ -712,6 +714,59 @@ def owns_gateway_runtime_lock() -> bool:
     """True when THIS process holds the runtime lock. ``is_gateway_runtime_lock_active`` answers
     "does anyone?"; re-probing our own flock succeeds on POSIX, so only the handle discriminates."""
     return _gateway_lock_handle is not None
+
+
+def _get_serve_lock_path() -> Path:
+    return _get_process_hermes_home() / _SERVE_LOCK_FILENAME
+
+
+def acquire_backend_serve_lock() -> bool:
+    """Claim the per-profile backend-serve lock; the OS releases it if the process dies.
+
+    Same refuse-to-start convention as :func:`acquire_gateway_runtime_lock`: non-blocking,
+    never kills the current holder. Two ``serve``/``dashboard`` backends on one profile
+    both write the same WAL-mode state.db — a Hermes Desktop re-spawn bug did exactly
+    that and corrupted it. The port-bind probe cannot catch it: desktop spawns pass
+    ``--port 0``.
+    """
+    global _serve_lock_handle
+    if _serve_lock_handle is not None:
+        return True
+    path = _get_serve_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        handle = open(path, "a+", encoding="utf-8")
+    except PermissionError:
+        # Stale root-owned lock (see acquire_gateway_runtime_lock): retry with a fresh file.
+        try:
+            path.unlink()
+            handle = open(path, "a+", encoding="utf-8")
+        except OSError:
+            return False
+    if not _try_acquire_file_lock(handle):
+        handle.close()
+        return False
+    handle.seek(0)
+    handle.truncate()
+    record = _build_pid_record()
+    record["kind"] = "hermes-serve"
+    json.dump(record, handle)
+    handle.flush()
+    with contextlib.suppress(OSError):
+        os.fsync(handle.fileno())
+    _serve_lock_handle = handle
+    return True
+
+
+def release_backend_serve_lock() -> None:
+    """Release the backend-serve lock when owned by this process."""
+    global _serve_lock_handle
+    handle, _serve_lock_handle = _serve_lock_handle, None
+    if handle is None:
+        return
+    _release_file_lock(handle)
+    with contextlib.suppress(OSError):
+        handle.close()
 
 
 def _probe_lock_file(handle) -> bool:

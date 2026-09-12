@@ -489,6 +489,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
     remote_schemas = remote_schemas_for(names, current_tool_defs, connector_describe)
+    session_names = frozenset(_tool_def_names(current_tool_defs))
 
     tools: Dict[str, Dict[str, Any]] = {}
     not_found: List[str] = []
@@ -504,12 +505,21 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
                            "parameters": remote_fn.get("parameters", {})}
         elif is_connector_name(name):
             not_found.append(name)
-        elif _registry_entry(name) is not None and not is_deferrable_tool_name(
-            name, load_config_readonly().effective_defer_tools):
-            # Registered but bridge/core/GUI-surface: a real name, wrong door.
+        elif name in session_names:
+            # Present in THIS session's function list (a non-deferrable surface):
+            # the direct-call guidance is accurate here.
             errors[name] = (
                 f"'{name}' is not a deferrable tool. If you see it in the tools list "
                 "already, call it directly; otherwise check the spelling against tool_search.")
+        elif _registry_entry(name) is not None and not is_deferrable_tool_name(
+            name, load_config_readonly().effective_defer_tools):
+            # Registered globally but absent from this session's assembled list —
+            # usually a disabled toolset (platform_toolsets / agent.disabled_toolsets),
+            # not a lookup miss. Direct-call guidance would start a failed-retry loop:
+            # the tool is not in the model's function list this turn (#108663).
+            errors[name] = (
+                f"'{name}' is a known tool, but its toolset isn't enabled for this "
+                "session/platform, so it isn't callable this turn.")
         else:
             not_found.append(name)
     result: Dict[str, Any] = {"tools": tools}
@@ -530,13 +540,20 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
-def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+def resolve_underlying_call(args: Dict[str, Any], *, current_tool_defs: Optional[List[Dict[str, Any]]] = None,
+                            ) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
     * the dispatcher in ``model_tools.handle_function_call``,
     * the display layer (so the activity feed shows the underlying tool),
     * the trajectory recorder.
+
+    When ``current_tool_defs`` is provided (the dispatcher's session-scoped
+    assembly), a globally-registered tool absent from that list gets a
+    "toolset isn't enabled" error instead of the direct-call guidance — the
+    direct-call advice loops when the tool is not in the model's function
+    list this turn (#108663).
 
     A connector-only batch resolves
     to ``(CONNECTOR_BATCH_SENTINEL, {"calls": [...]}, None)``: the batch is
@@ -560,6 +577,12 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
+        if (current_tool_defs is not None and name not in set(_tool_def_names(current_tool_defs))
+                and _registry_entry(name) is not None):
+            return None, {}, (
+                f"'{name}' is a known tool, but its toolset isn't enabled for this "
+                "session/platform, so it isn't callable this turn."
+            )
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
             "list already, call it directly instead of via tool_call."

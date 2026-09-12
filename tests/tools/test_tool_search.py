@@ -930,3 +930,50 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+class TestSessionScopeGuidance:
+    """#108663: the 'call it directly' guidance must only fire when the tool is
+    actually in THIS session's function list; a globally-registered tool whose
+    toolset is disabled for the session gets the not-enabled message instead,
+    or the model retries a call that can never succeed."""
+
+    def test_describe_disabled_toolset_gets_not_enabled_message(self):
+        import json as _json
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        result = _json.loads(dispatch_tool_describe(
+            {"names": ["terminal"]},
+            current_tool_defs=[_td("some_other_tool")],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        assert "not_found" not in result
+        assert "toolset isn't enabled for this session" in result["errors"]["terminal"]
+
+    def test_describe_tool_in_session_list_keeps_direct_call_message(self):
+        import json as _json
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        result = _json.loads(dispatch_tool_describe(
+            {"names": ["terminal"]},
+            current_tool_defs=[_td("terminal")],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        assert "not a deferrable tool" in result["errors"]["terminal"]
+        assert "toolset isn't enabled" not in result["errors"]["terminal"]
+
+    def test_unwrap_disabled_toolset_gets_not_enabled_message(self):
+        from tools.tool_search import resolve_underlying_call
+
+        _, _, err = resolve_underlying_call(
+            {"name": "terminal", "arguments": {}}, current_tool_defs=[_td("some_other_tool")])
+        assert err is not None
+        assert "toolset isn't enabled for this session" in err
+
+    def test_unwrap_in_session_list_keeps_direct_call_message(self):
+        from tools.tool_search import resolve_underlying_call
+
+        _, _, err = resolve_underlying_call(
+            {"name": "terminal", "arguments": {}}, current_tool_defs=[_td("terminal")])
+        assert err is not None
+        assert "not a deferrable" in err

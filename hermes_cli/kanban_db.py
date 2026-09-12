@@ -92,8 +92,8 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
-# Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
-# Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
+# Same-reason block -> promotion/unblock -> re-block cycles before routing to ``triage``.
+# Counts block recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
@@ -711,9 +711,9 @@ class Task:
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
     session_id: Optional[str] = None         # originating HERMES_SESSION_ID; NULL from CLI/dashboard
-    # VALID_BLOCK_KINDS or None (legacy); kept across unblock so a same-kind re-block reads as a loop.
+    # VALID_BLOCK_KINDS or None (legacy); kept across retries so a same-kind re-block reads as a loop.
     block_kind: Optional[str] = None
-    block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
+    block_recurrences: int = 0               # block-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
 
     @classmethod
@@ -935,12 +935,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to ``blocked`` for a human. Preserved across unblock so a re-block for
     -- the SAME kind can be recognised as a loop.
     block_kind           TEXT,
-    -- Unblock-loop counter. Incremented each time a task is re-blocked for the
-    -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
-    -- successful completion — NOT on unblock (resetting on unblock is exactly
-    -- the amnesia that let the loop run unbounded).
+    -- Block-loop counter. Incremented when a task is re-blocked for the same
+    -- reason after an unblock, and for parent-satisfied dependency blocks that
+    -- auto-promote. When it reaches BLOCK_RECURRENCE_LIMIT the task is routed
+    -- to ``triage`` so a cron or dispatcher can't spin it forever. Reset to 0
+    -- only on successful completion — NOT on unblock/promotion.
     block_recurrences    INTEGER NOT NULL DEFAULT 0
 );
 
@@ -2922,6 +2921,7 @@ def block_task(
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
+            parents_satisfied=(kind == "dependency" and _parents_satisfied(conn, task_id)),
         )
         sql = f"""
                 UPDATE tasks
@@ -2954,21 +2954,18 @@ def block_task(
 
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
-    prev_kind: Optional[str], prev_recurrences: int,
+    prev_kind: Optional[str], prev_recurrences: int, parents_satisfied: bool,
 ) -> tuple[str, str, str, tuple, dict]:
     """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
 
-    ``dependency`` never enters the human ``blocked`` bucket: it waits in
-    ``todo`` for ``recompute_ready``, so a cron never sees a dependency-wait
-    as something to "unblock". Every other kind counts unblock-loop
-    recurrences: block_task only fires from running/ready (AFTER an unblock
-    returned the task to the pool), so a stored ``block_kind`` equal to the
-    incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). At
+    ``dependency`` with an unfinished parent waits in ``todo`` without using
+    retry budget. When every parent is already terminal (including a chain
+    head), each dependency block is an automatic block -> promote recurrence.
+    Those cycles and every other kind share the durable recurrence cap. At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
-    if kind == "dependency":
+    if kind == "dependency" and not parents_satisfied:
         return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
@@ -2976,6 +2973,8 @@ def _route_block(
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
+    if kind == "dependency":
+        return "todo", "dependency_wait", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
 
 

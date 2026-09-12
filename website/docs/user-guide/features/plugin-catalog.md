@@ -93,6 +93,16 @@ hermes plugins install touchdesigner
 hermes plugins enable td
 ```
 
+Portable packages can also carry a stdio MCP server. The `snyk` entry pins the
+Snyk CLI (`npx -y snyk@<version> mcp`) and bundles the `snyk-security-scan`
+skill, so one install gives Hermes code, dependency, container and IaC scanning
+plus the workflow for using it; the catalog name and manifest name match:
+
+```bash
+hermes plugins install snyk
+hermes plugins enable snyk
+```
+
 ### Updating a catalog install
 
 `hermes plugins update <name>` never runs `git pull` for catalog installs —

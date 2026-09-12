@@ -1,0 +1,34 @@
+name: hermes-telegram-ux
+repo: https://github.com/pler1y/hermes-telegram-ux
+sha: 6f58572dc319efafbc7b4659e1c39d3d46315341
+description: Immediate Telegram feedback, editable task progress, mid-task instructions
+  and natural controls.
+maintainer: pler1y
+tier: community
+requires_hermes: '>=0.21.0,<0.22.0'
+docs_url: https://github.com/pler1y/hermes-telegram-ux/blob/6f58572dc319efafbc7b4659e1c39d3d46315341/docs/NATIVE-INSTALL.md
+platforms:
+- linux
+- macos
+capabilities:
+  provides_tools:
+  - interaction_update
+  - interaction_actions
+  provides_hooks:
+  - pre_api_request
+  - post_api_request
+  - api_request_error
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_reset
+  - pre_gateway_dispatch
+  - pre_approval_request
+  - post_approval_response
+  - subagent_start
+  - subagent_stop
+  - post_llm_call
+  provides_middleware:
+  - llm_request
+  - tool_request
+  requires_env: []

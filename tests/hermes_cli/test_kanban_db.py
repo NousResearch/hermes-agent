@@ -454,6 +454,81 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
 
 
 
+def _run_kanban_cli(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(home)
+    env["HERMES_KANBAN_HOME"] = str(home)
+    env["PYTHONPATH"] = str(Path(__file__).parents[2]) + os.pathsep + env.get("PYTHONPATH", "")
+    return subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "kanban", *args],
+        cwd=Path(__file__).parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def test_cli_archive_operator_hold_refusal_message_and_state(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="held task")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', block_kind = 'operator_hold' WHERE id = ?",
+            (tid,),
+        )
+        conn.commit()
+
+    result = _run_kanban_cli(kanban_home, "archive", tid)
+
+    assert result.returncode != 0
+    assert f"cannot archive {tid}: task is operator-held (unblock first)" in result.stderr
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_kind == "operator_hold"
+
+
+def test_cli_archive_operator_hold_batch_isolates_refusal(kanban_home):
+    with kbc.connect() as conn:
+        held = kb.create_task(conn, title="held task")
+        other = kb.create_task(conn, title="ordinary task")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', block_kind = 'operator_hold' WHERE id = ?",
+            (held,),
+        )
+        conn.commit()
+
+    result = _run_kanban_cli(kanban_home, "archive", held, other)
+
+    assert result.returncode != 0
+    assert f"cannot archive {held}: task is operator-held (unblock first)" in result.stderr
+    assert f"Archived {other}" in result.stdout
+    with kbc.connect() as conn:
+        held_task = kb.get_task(conn, held)
+        other_task = kb.get_task(conn, other)
+        assert held_task is not None
+        assert other_task is not None
+        assert held_task.status == "blocked"
+        assert held_task.block_kind == "operator_hold"
+        assert other_task.status == "archived"
+
+
+def test_cli_archive_ordinary_card_positive_control(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="ordinary task")
+
+    result = _run_kanban_cli(kanban_home, "archive", tid)
+
+    assert result.returncode == 0
+    assert f"Archived {tid}" in result.stdout
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "archived"
+
+
 def test_archive_task_refuses_operator_held_task(kanban_home):
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="held task")

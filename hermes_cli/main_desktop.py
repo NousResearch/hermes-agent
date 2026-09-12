@@ -212,12 +212,17 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
             os.rename(live_root, previous)
-        try:
-            os.rename(staged_root, live_root)
-        except OSError:
-            if moved_aside:
-                os.rename(previous, live_root)  # restore; live app back as it was
-            raise
+        for attempt in range(3):
+            try:
+                os.rename(staged_root, live_root)
+                break
+            except OSError:
+                if attempt < 2:
+                    _time_mod.sleep(1)
+                else:
+                    if moved_aside:
+                        os.rename(previous, live_root)  # restore; live app back as it was
+                    raise
         if moved_aside:
             shutil.rmtree(previous, ignore_errors=True)
     except (OSError, ValueError) as exc:

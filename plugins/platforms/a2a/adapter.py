@@ -33,7 +33,7 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
-_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 60  # seconds: pending task considered orphaned / watchdog period
+_MIN_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 60  # seconds: orphan grace floor / watchdog period
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
@@ -67,6 +67,11 @@ def _reply_timeout() -> float:
         return max(1.0, float(os.getenv("A2A_REPLY_TIMEOUT", "300")))
     except (ValueError, TypeError):
         return 300.0
+
+
+def _orphan_timeout() -> float:
+    """Orphan grace must never expire before a configured reply window."""
+    return max(float(_MIN_ORPHAN_TIMEOUT), _reply_timeout())
 
 
 def _default_agent_name() -> str:
@@ -334,11 +339,20 @@ class A2AAdapter(BasePlatformAdapter):
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
-                    logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
-                    protocol.metrics.tasks_failed += 1
+                self._fail_orphans_once()
             except Exception:
                 logger.debug("A2A: watchdog error", exc_info=True)
+
+    def _fail_orphans_once(self) -> list[str]:
+        """Fail stale tasks that no HTTP/SSE request is still waiting for."""
+        with self._pending_lock:
+            live_waiters = set(self._pending)
+        timeout = _orphan_timeout()
+        failed = self.tasks.fail_orphans(timeout, exclude=live_waiters)
+        for tid in failed:
+            logger.warning("A2A: orphaned task %s marked failed (timeout %gs)", tid, timeout)
+            protocol.metrics.tasks_failed += 1
+        return failed
 
     def _load_served_agents(self, extra: dict) -> dict[str, dict]:
         """Served-agent routing from ``platforms.a2a.extra.agents`` (top-level ``a2a_served_agents``

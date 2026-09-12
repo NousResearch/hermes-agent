@@ -77,6 +77,27 @@ class _AuxProbeClientStub:
     """Non-functional placeholder returned while `aux_probe_mode` is active."""
     __slots__ = ("api_key", "base_url")
 
+    @classmethod
+    def is_in_client_chain(cls, client: Any) -> bool:
+        """Whether ``client`` is or wraps a probe stub via ``_real_client``.
+
+        Adapter chains are shallow in practice.  The hard bound also keeps
+        dynamic proxies and mocks that synthesize a new attribute object on
+        every access from turning cache insertion into an infinite walk.
+        """
+        seen = set()
+        for _ in range(8):
+            if client is None or id(client) in seen:
+                return False
+            if isinstance(client, cls):
+                return True
+            seen.add(id(client))
+            try:
+                client = getattr(client, "_real_client", None)
+            except Exception:  # defensive: third-party client proxy
+                return False
+        return False
+
     def __init__(self, api_key: str = "", base_url: str = "") -> None:
         self.api_key = api_key
         self.base_url = base_url
@@ -5340,7 +5361,7 @@ def _current_event_loop() -> Any:
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
-    if isinstance(client, _AuxProbeClientStub):
+    if _AuxProbeClientStub.is_in_client_chain(client):
         return  # probe stubs must never be cached — the next hit would get a dud client
     with _client_cache_lock:
         old_entry = _client_cache.get(cache_key)
@@ -5559,7 +5580,7 @@ def _get_cached_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
-    if client is not None:
+    if client is not None and not _AuxProbeClientStub.is_in_client_chain(client):
         with _client_cache_lock:
             if cache_key not in _client_cache:
                 # FIFO safety-belt eviction. Do NOT close evicted clients: another caller may be

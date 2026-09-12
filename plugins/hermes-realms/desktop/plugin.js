@@ -1,6 +1,7 @@
 import { host, SESSION_AREAS, useQuery, Button, Badge } from '@hermes/plugin-sdk';
 import { useState, useRef, useEffect } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
+import { RealmSetupControls, setupLocales } from './setup-controls.js';
 
 // Host @hermes/shared LOCAL_CONNECTION_ID contract. External plugins can only
 // import the plugin SDK, not @hermes/shared; do not infer local from a URL.
@@ -90,6 +91,7 @@ export default {
   name: 'Realms',
   description: 'Desktop viewing controls only. Enable hermes-realms under Agent plugins for each profile that should use private desktops.',
   register(ctx) {
+    ctx.i18n?.register(setupLocales);
     function StatusRow({ session }) {
       const result = useQuery(realmQueryOptions(ctx, session));
       const ownerKey = JSON.stringify(realmQueryOptions(ctx, session).queryKey);
@@ -119,17 +121,13 @@ export default {
         jsx(Button, { size: 'micro', variant: 'ghost', disabled: result.isFetching, onClick: () => void result.refetch(), children: 'Retry' })
       ] });
       const mode = result.data?.mode;
-      // The two kinds have independent prerequisites: a profile with a working
-      // labwc realm and no VM base image is ready, just not for the VM kind.
-      const setup = result.data?.kind === 'omarchy-vm' ? result.data?.vm_setup : result.data?.setup;
-      if (mode === 'realm' && setup?.ready === false) return jsx('div', {
-        role: 'alert', style: { fontSize: 12 }, children: jsxs('details', { children: [
-          jsx('summary', { children: `${kindName(result.data?.kind)} setup required` }),
-          jsx('div', { children: setup.message })
-        ] })
-      });
-      if (!realms.length) return modeLabel(mode) ? jsx('div', { style: { color: 'var(--ui-text-secondary)', fontSize: 12 }, children: modeLabel(mode) }) : null;
+
+      const controls = modeLabel(mode) ? jsx(RealmSetupControls, {
+        ctx, session, data: result.data, refresh: result.refetch
+      }, ownerKey) : null;
+      if (!realms.length) return controls;
       return jsxs('div', { 'data-realms-status': '', style: { display: 'flex', flexDirection: 'column', gap: 4 }, children: [
+        controls,
         mode !== 'realm' && modeLabel(mode) ? jsx('span', { children: modeLabel(mode) }) : null,
         session.connectionId !== LOCAL_CONNECTION_ID ? jsx('span', { role: 'note', children: REMOTE_VIEWER_UNSUPPORTED }) : null,
         action?.ownerKey === ownerKey && action.error ? jsx('span', { role: 'alert', children: action.error }) : null,

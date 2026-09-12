@@ -13,10 +13,13 @@ class OwnerError(PermissionError):
 class OwnershipStore:
     """Profile-local cross-process aliases, populated only by trusted host hooks."""
 
-    def __init__(self, home):
+    def __init__(self, home, *, readonly=False):
         self.root = Path(home).resolve() / "realms"
-        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = self.root / "sessions.sqlite3"
+        self.readonly = readonly
+        if readonly:
+            return
+        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS owners (id TEXT PRIMARY KEY, mode TEXT);
@@ -31,11 +34,49 @@ class OwnershipStore:
                 row[1] for row in db.execute("PRAGMA table_info(owners)")
             }:
                 db.execute("ALTER TABLE owners ADD COLUMN realm_kind TEXT")
+            if "setup_generation" not in {
+                row[1] for row in db.execute("PRAGMA table_info(owners)")
+            }:
+                db.execute("ALTER TABLE owners ADD COLUMN setup_generation INTEGER NOT NULL DEFAULT 0")
         self.path.chmod(0o600)
 
     @contextmanager
+    def activation_guard(self, owner):
+        """Serialize lease check/start with teardown, across backend processes.
+
+        Keep SQLite transactions short: startup can take minutes, and an open
+        write transaction would block unrelated owners and nested owner reads.
+        Callers hold their integration's RLock before taking this owner lock.
+        """
+        import fcntl  # windows-footgun: ok — Linux-only plugin
+        import hashlib
+        from .setup_plan import confined
+
+        path = confined(self.root.parent, self.root / (
+            "activation-" + hashlib.sha256(owner.encode()).hexdigest() + ".lock"
+        ))
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)  # windows-footgun: ok — Linux-only plugin
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
+    def setup_generation(self, owner, *, revoke=False):
+        with self.connection() as db:
+            if revoke:
+                db.execute("UPDATE owners SET setup_generation=setup_generation+1 WHERE id=?", (owner,))
+            row = db.execute("SELECT setup_generation FROM owners WHERE id=?", (owner,)).fetchone()
+            if row is None:
+                raise OwnerError("Unregistered setup owner")
+            return row[0]
+
+    @contextmanager
     def connection(self):
-        db = sqlite3.connect(self.path, timeout=30)
+        db = sqlite3.connect(
+            self.path.as_uri() + "?mode=ro" if self.readonly else self.path,
+            timeout=30, uri=self.readonly,
+        )
         try:
             with db:
                 yield db
@@ -293,6 +334,9 @@ class RealmIntegration:
 
         self._window_counter = WindowCounter()
         self._vm = None
+        self._activation_config = None
+        self._setup_owners = set()
+        self._unloaded = False
 
     @property
     def vm(self):
@@ -303,11 +347,56 @@ class RealmIntegration:
         every non-VM session would otherwise pay.
         """
         with self._lock:
-            if self._vm is None:
-                from .vm_manager import VmManager
+            from .config import Config
+            from .vm_manager import VmManager
 
+            config = self._activation_config or Config.load(self.home)
+            if self._vm is None or self._vm.config != config:
                 self._vm = VmManager(self.home)
+                # The constructor may observe a newer config. Only the captured
+                # snapshot governs this startup; never retain a removed override.
+                self._vm.config = config
             return self._vm
+
+    def reserve_setup(self, owner):
+        with self._lock, self.owners.activation_guard(owner):
+            if self._unloaded:
+                raise OwnerError("Realms integration has been unloaded")
+            generation = self.owners.setup_generation(owner, revoke=True)
+            self._setup_owners.add(owner)
+            return generation
+
+    def finish_setup(self, owner):
+        with self._lock:
+            self._setup_owners.discard(owner)
+
+    def activate_setup(self, owner, kind, config, generation, identity):
+        """Eager setup activation with revocable authority and a frozen config.
+
+        Unlike plain /realm on, setup success means an owned desktop exists.
+        The owner lock covers both the lease check and the complete activation;
+        off/finalize either revoke first or wait and tear the new desktop down.
+        """
+        from .config import Config
+
+        expected = Config(**config)
+        with self._lock, self.owners.activation_guard(owner):
+            if self._unloaded or self.owners.setup_generation(owner) != generation:
+                raise OwnerError("Setup activation was revoked")
+            if self.owners.resolve(session_id=owner, **identity) != owner:
+                raise OwnerError("Setup ownership changed")
+            if Config.load(self.home) != expected:
+                raise SetupError("Setup configuration changed; prepare again")
+            if kind == "omarchy-vm" and expected.vm.omarchy_vm_path:
+                raise SetupError("Setup requires the pinned vendored VM installer")
+            previous_config = self.manager.config
+            self._activation_config = expected
+            self.manager.config = expected
+            try:
+                self._activate(owner, [kind], eager=True)
+            finally:
+                self.manager.config = previous_config
+                self._activation_config = None
 
     def kind(self, owner):
         return self.owners.kind(owner, self.manager.config.default_kind)
@@ -421,41 +510,54 @@ class RealmIntegration:
         The kind is a property of this conversation, so a later plain
         ``/realm on`` in the same chat keeps the kind that was chosen.
         """
-        from .config import KINDS
+        with self._lock, self.owners.activation_guard(owner):
+            self.owners.setup_generation(owner, revoke=True)
+            self._activate(owner, arguments)
+
+    def _activate(self, owner, arguments, *, eager=False):
+        from .config import Config, KINDS
 
         if len(arguments) > 1:
             raise ValueError(self.USAGE)
-        if arguments:
-            requested = {"omarchy": "omarchy-vm"}.get(arguments[0], arguments[0])
+        with self._lock:
+            previous_kind = self.kind(owner)
+            previous_mode = self.owners.mode(owner, self.manager.config.default_mode)
+            requested = {"omarchy": "omarchy-vm"}.get(arguments[0], arguments[0]) if arguments else previous_kind
             if requested not in KINDS:
                 raise ValueError("Use /realm on [omarchy]")
-            if requested != self.kind(owner):
-                # Switching kind mid-conversation would leave the previous
-                # desktop running with nothing routed to it.
-                self.stop(owner)
+
+            # Check before retiring the old desktop or publishing a new kind.
+            setup = vm_setup_status(self.home) if requested == "omarchy-vm" else setup_status(driver_executable=self.driver_executable)
+            if not setup["ready"]:
+                raise SetupError(setup["message"])
+            if requested != previous_kind:
+                self._stop(owner)
             self.owners.set_kind(owner, requested)
-        if self.kind(owner) == "omarchy-vm":
-            setup = vm_setup_status(self.home)
-        else:
-            setup = setup_status(driver_executable=self.driver_executable)
-        if not setup["ready"]:
-            raise SetupError(setup["message"])
-        self.owners.set_mode(owner, "realm")
-        if self.kind(owner) == "omarchy-vm":
-            # Every other kind starts lazily on first tool use, inside
-            # ``pre_tool``. A guest boots in tens of seconds and that hook is
-            # bounded by ``plugins.hook_callback_timeout`` (30s), which fails
-            # CLOSED: the boot outran the budget and the tool was blocked with
-            # "pre_tool_call plugin callback timed out". The slash command is
-            # not on that path, and it is where the user asked for the realm,
-            # so a VM realm boots here and the first tool call finds it live.
-            self.ready(owner)
+            self.owners.set_mode(owner, "realm")
+            try:
+                if requested == "omarchy-vm" or eager:
+                    # Setup eagerly starts both kinds; plain native /realm on
+                    # still selects lazy allocation for its first eligible tool.
+                    self.ready(owner)
+                if eager and Config.load(self.home) != self._activation_config:
+                    raise SetupError("Setup configuration changed during startup; prepare again")
+            except BaseException:
+                try:
+                    self._stop(owner)
+                finally:
+                    self.owners.set_kind(owner, previous_kind)
+                    self.owners.set_mode(owner, previous_mode)
+                raise
 
     def _command_off(self, owner, arguments, identity):
         if arguments:
             raise ValueError(self.USAGE)
-        self.stop(owner)
-        self.owners.set_mode(owner, "host")
+        with self._lock, self.owners.activation_guard(owner):
+            self.owners.setup_generation(owner, revoke=True)
+            try:
+                self._stop(owner)
+            finally:
+                self.owners.set_mode(owner, "host")
 
     def _command_stop(self, owner, arguments, identity):
         self.stop(owner)
@@ -699,6 +801,12 @@ class RealmIntegration:
         return not get_profile_viewer(self.home).is_controlled(realm_id)
 
     def stop(self, owner):
+        with self._lock, self.owners.activation_guard(owner):
+            self.owners.setup_generation(owner, revoke=True)
+            self._stop(owner)
+
+    def _stop(self, owner):
+        """Teardown while the caller holds the owner activation guard."""
         from hermes_cli.session_execution import remove_session_execution_context
 
         with self._lock:
@@ -769,11 +877,17 @@ class RealmIntegration:
     def unload(self):
         from .bridge import close_profile_viewer
 
-        try:
-            for owner in list(self._attachments):
-                self.stop(owner)
-        finally:
-            close_profile_viewer(self.home)
+        with self._lock:
+            self._unloaded = True
+            try:
+                # An installer may not have attached a desktop yet. Revoke those
+                # pending owners too; aliases intentionally outlive unloading.
+                for owner in self._setup_owners | set(self._attachments):
+                    self.stop(owner)
+            finally:
+                if _services.get(self.home) is self:
+                    del _services[self.home]
+                close_profile_viewer(self.home)
 
     def pre_tool(self, *, tool_name, args, **identity):
         if tool_name not in ("terminal", "computer_use", "realm"):

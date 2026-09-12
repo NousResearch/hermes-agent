@@ -97,3 +97,25 @@ def test_listing_and_watch_reject_invalid_ownership_without_binding(dashboard):
         assert response.status_code == 403, (identity, response.text)
         assert response.json() == {"detail": "Session ownership mismatch"}
     assert ownership_rows(service) == before
+
+
+def test_vm_watch_keeps_ownership_and_local_access_guards(dashboard, monkeypatch):
+    client, service = dashboard
+    service.bind(session_id="owner", stored_session_id="history")
+    service.bind(session_id="other", stored_session_id="other-history")
+    record = {"id": "v-fixture", "session_id": "owner", "status": "running"}
+    monkeypatch.setattr(service.manager, "list", lambda: [])
+    monkeypatch.setattr(service.vm, "list", lambda: [record])
+    monkeypatch.setattr(service, "watch", lambda owner, realm_id: {"url": "/fixture-view"})
+    with TestClient(client.app, base_url="http://localhost", client=("127.0.0.1", 1234)) as local:
+        path = "/api/plugins/hermes-realms/realms/v-fixture/watch"
+        identity = {"stored_session_id": "history"}
+        assert local.post(path, json={"stored_session_id": "other-history"}).status_code == 403
+        record["status"] = "starting"
+        assert local.post(path, json=identity).status_code == 409
+        record["status"] = "running"
+        assert local.post(path, json=identity, headers={"forwarded": "for=external"}).status_code == 503
+        response = local.post(path, json=identity)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert response.json() == {"url": "/fixture-view"}

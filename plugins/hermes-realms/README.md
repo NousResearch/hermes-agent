@@ -43,7 +43,22 @@ The guest is installed by **Omarchy's own GPG-verified release ISO**, through a 
 
 ### Setup (once per profile)
 
-Needs `qemu-full`, `edk2-ovmf`, `mtools`, access to `/dev/kvm` and an `~/.ssh/id_ed25519.pub`. Install system packages with your distribution's package manager — the plugin never installs them.
+Needs `qemu-full`, `edk2-ovmf`, `mtools`, access to `/dev/kvm` and an existing `~/.ssh/id_ed25519` key pair.
+
+In a Desktop conversation, choose **Omarchy VM → Set up Omarchy VM…**. Review
+the download, disk, SSH and network details, then confirm. The setup job prepares
+the profile's base image, verifies readiness and selects the VM only after it
+boots successfully. **Realm → Repair…** re-verifies the existing profile-local
+Cua driver or installs the pinned release if it is missing. Cancel makes no
+changes; progress and failures remain available after reopening the chat.
+
+On Arch Linux, the review lists any missing allowlisted system packages;
+confirming requests administrator authorization through Polkit, never chat.
+Packages affect the gateway host; driver/base files stay in the selected profile,
+and the desktop choice belongs to this conversation. Other distributions need
+their package manager. KVM access and existing SSH keys remain explicit
+prerequisites; setup never modifies host keys or virtualization permissions.
+The CLI remains available:
 
 ```sh
 hermes realms vm doctor     # what is missing
@@ -86,7 +101,7 @@ Realms strip the host's display, bus and input handles from every command's envi
 
 ## Enable and prepare (Linux only)
 
-The runtime needs labwc, Xwayland, WayVNC, grim, wlr-randr, bubblewrap, D-Bus, the AT-SPI bus launcher/registry, a working systemd **user** manager and a render node. Install these explicitly with your distribution's package manager. This plugin does not install system packages, services, or alter/reload Hyprland configuration.
+The runtime needs labwc, Xwayland, WayVNC, grim, wlr-randr, bubblewrap, D-Bus, the AT-SPI bus launcher/registry, a working systemd **user** manager and a render node. Install these explicitly with your distribution's package manager, or approve the listed Arch packages in the Desktop setup dialog. The plugin never alters or reloads host Hyprland configuration.
 
 **The pinned driver installer supports Linux x86-64 only.** macOS, Windows and Linux ARM do not have a supported installer. Do not enable native Realms on unsupported hosts. Enabling without prerequisites does not authorize host fallback.
 

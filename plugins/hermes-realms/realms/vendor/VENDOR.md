@@ -23,7 +23,7 @@ pins nothing. After editing the script, update `VENDORED_SHA256`.
 
 ## Local patches
 
-Four, each because upstream's single-user assumptions do not hold when one
+These exist because upstream's single-user assumptions do not hold when one
 machine runs a guest per conversation. Nothing else is changed.
 
 **1. Per-session unit, sockets and ISO directory.** Upstream hardcodes the unit
@@ -40,9 +40,10 @@ vendored copy always renders to a software framebuffer with `-display none` and
 serves RFB on a mode-0600 unix socket, which is both what the existing noVNC
 viewer already speaks and what lets QMP `screendump` work at all.
 
-**3. No package installation.** `cmd_install` upstream calls `omarchy-pkg-add`
-to install `qemu-full edk2-ovmf mtools`. The plugin never installs system
-packages; the vendored copy only *checks* for them with `pacman -Q`, and
+**3. No implicit package installation.** `cmd_install` upstream calls `omarchy-pkg-add`
+to install `qemu-full edk2-ovmf mtools`. The vendored copy only *checks*
+for them with `pacman -Q`; the Desktop setup review separately requests
+administrator consent for missing allowlisted packages, and
 `hermes realms vm doctor` reports what is missing for the user to install.
 
 **4. An optional netdev suffix.** `OMARCHY_VM_NETDEV_EXTRA` is appended to
@@ -50,10 +51,15 @@ QEMU's `-netdev` so `plugins.realms.vm.network: false` can pass `restrict=on`,
 which refuses the guest's outbound routes while keeping the SSH forward that
 reaches it.
 
+**Explicit SSH identity.** Installer connections use the exact key whose public
+half is provisioned into the guest, with ambient SSH configuration and agent/X11
+forwarding disabled. OpenSSH otherwise resolves default identities from the OS
+account's home, not the installer environment's `HOME`.
+
 ## Updating
 
 1. Fetch the new upstream `bin/omarchy-vm` and record its SHA-256 here.
-2. Re-apply the four patches above; each is marked `# hermes-realms:` in place.
+2. Re-apply the local patches above.
 3. Set `VENDORED_SHA256` in `realms/vm_manager.py` to the new digest.
 4. Run `scripts/run_tests.sh tests/plugins/test_bundled_realms_vm.py` — the
    headless and parameterisation patches are covered by behaviour tests that

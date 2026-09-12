@@ -50,9 +50,53 @@ def list_realms(
         return {"mode": service.manager.config.default_mode, "realms": [],
                 "setup": _integration.setup_status(driver_executable=service.driver_executable)}
     result = service.status(owner)
+    result["setup_job"] = _load_runtime("setup_flow").latest(service, owner)
     for row in result["realms"]:
         row.update(identity)
     return result
+
+
+class SetupRequest(SessionOwner):
+    kind: str
+
+
+class SetupStart(SetupRequest):
+    consent: str
+
+
+def _setup_call(operation):
+    try:
+        return operation()
+    except (PermissionError, OwnerError):
+        raise HTTPException(403, "Setup ownership mismatch") from None
+    except FileNotFoundError:
+        raise HTTPException(404, "Setup job not found") from None
+    except ValueError:
+        raise HTTPException(409, "Setup proposal changed, prerequisites are blocked, or a job is active. Prepare again.") from None
+    except OSError:
+        raise HTTPException(503, "Profile setup storage is unavailable") from None
+
+
+@router.post("/realms/setup/prepare")
+def prepare_setup(request: SetupRequest):
+    service = _setup_call(lambda: _load_runtime("setup_plan").proposal_service())
+    owner = resolve_owner(service, request.model_dump(exclude={"kind"}))
+    return _setup_call(lambda: _load_runtime("setup_flow").prepare(service, owner, request.kind))
+
+
+@router.post("/realms/setup/start")
+def start_setup(request: SetupStart):
+    service = get_integration()
+    identity = request.model_dump(exclude={"kind", "consent"})
+    owner = resolve_owner(service, identity)
+    return _setup_call(lambda: _load_runtime("setup_flow").start(service, owner, request.kind, request.consent, identity))
+
+
+@router.get("/realms/setup/jobs/{job_id}")
+def setup_job(job_id: str, runtime_session_id: str | None = None, stored_session_id: str | None = None):
+    service = get_integration()
+    owner = resolve_owner(service, dict(runtime_session_id=runtime_session_id, stored_session_id=stored_session_id))
+    return _setup_call(lambda: _load_runtime("setup_flow").status(service, owner, job_id))
 
 
 @router.get("/realms/vm/settings")
@@ -82,6 +126,8 @@ def watch_realm(realm_id: str, identity: SessionOwner, request: Request):
     service = get_integration()
     owner = resolve_owner(service, identity.model_dump())
     record = next((r for r in service.manager.list() if r["id"] == realm_id), None)
+    if record is None and realm_id.startswith("v-"):
+        record = next((r for r in service.vm.list() if r["id"] == realm_id), None)
     if record is None:
         raise HTTPException(404, "Realm is stopped or missing")
     if record["session_id"] != owner:

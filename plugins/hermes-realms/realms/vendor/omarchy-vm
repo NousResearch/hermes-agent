@@ -52,8 +52,10 @@ OVMF_CODE=/usr/share/edk2/x64/OVMF_CODE.4m.fd
 OVMF_VARS_TEMPLATE=/usr/share/edk2/x64/OVMF_VARS.4m.fd
 SIGNING_KEY=40DFB630FF42BCFFB047046CF0134EE680CAC571
 
-SSH_OPTIONS=(-p "$SSH_PORT" -o ConnectTimeout=3 -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR)
+SSH_OPTIONS=(-F /dev/null -i "$HOME/.ssh/id_ed25519" -p "$SSH_PORT"
+  -o ConnectTimeout=3 -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR
+  -o IdentitiesOnly=yes -o ForwardAgent=no -o ForwardX11=no -o ForwardX11Trusted=no)
 # Tools inside the guest that need its Wayland session rather than a bare shell.
 GUEST_SESSION_ENV="export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 HYPRLAND_INSTANCE_SIGNATURE=\$(ls /run/user/1000/hypr | head -1);"
 

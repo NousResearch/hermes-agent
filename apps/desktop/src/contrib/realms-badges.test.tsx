@@ -79,7 +79,8 @@ it('shows setup failure instead of waiting for apps when realm execution is bloc
     </QueryClientProvider>
   )
 
-  expect(view.getByRole('alert').textContent).toContain('hermes realms install-driver')
+  expect(view.getByRole('button', { name: 'Repair…' })).toBeTruthy()
+  expect(view.container.textContent).not.toContain('hermes realms install-driver')
   expect(view.container.textContent).not.toContain('waiting for apps')
 })
 

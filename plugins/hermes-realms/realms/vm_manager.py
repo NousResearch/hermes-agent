@@ -48,7 +48,7 @@ VENDORED_SCRIPT = Path(__file__).resolve().with_name("vendor") / "omarchy-vm"
 UPSTREAM_SHA256 = "19a51517c2713e033b2f703bfa387a79a9880c1c7a918e327e1327cfde47c3b6"
 # The vendored copy *with* those patches applied. Pinned in code rather than in
 # a file beside the script: a checksum an attacker can rewrite pins nothing.
-VENDORED_SHA256 = "e811cade90b9e9341e767a8bc9ab2771b82d056350739322ea4acd43f41971c4"
+VENDORED_SHA256 = "b8f4b082f49786753330d91ff32a012ae3fe2617e361c1d6cc4e34beb00f7009"
 
 # Ports the per-session guests forward SSH on, loopback only. A realm picks the
 # first free one and records it; a collision fails the launch rather than
@@ -64,6 +64,10 @@ FORWARDED_ENV = ("TERM", "LANG", "LC_ALL", "COLUMNS", "LINES")
 
 class VmError(RealmError):
     pass
+
+
+def _base_runtime(generation):
+    return Path(f"/run/user/{os.getuid()}/hvb-{generation[:16]}")
 
 
 def _generation_paths(uid, generation):
@@ -251,8 +255,9 @@ class VmManager:
         return self.data / "base"
 
     def base_status(self):
+        from .setup_plan import base_present
         disk = self.base_home() / "disk.qcow2"
-        info = {"present": disk.is_file(), "path": str(disk)}
+        info = {"present": base_present(self.home), "path": str(disk)}
         if info["present"]:
             info["bytes"] = disk.stat().st_size
             info["built_at"] = disk.stat().st_mtime
@@ -264,7 +269,7 @@ class VmManager:
                     pass
         return info
 
-    def install_base(self, *, iso=None, timeout=5400, stdout=None):
+    def install_base(self, *, iso=None, timeout=5400, stdout=None, generation=None):
         """Install the shared base guest. Explicit, consented, never implicit.
 
         Downloads and signature-verifies the official ISO through the vendored
@@ -272,34 +277,53 @@ class VmManager:
         in the guest, then powers it off so session clones start from a
         consistent disk.
         """
-        base = self.base_home()
-        if (base / "disk.qcow2").is_file():
-            raise VmError("a base image already exists; remove it before rebuilding")
-        base.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (self.data / "iso").mkdir(mode=0o700, parents=True, exist_ok=True)
-        unit = "hermes-vm-base.service"
-        runtime = Path(f"/run/user/{os.getuid()}/hv-base")
-        runtime.mkdir(mode=0o700, exist_ok=True)
-        port = self._free_port(set())
+        from .setup_plan import confined
+        from .setup_process import vm_lifetime
+        generation = generation or uuid.uuid4().hex
+        if not re.fullmatch(r"[0-9a-f]{32}", generation):
+            raise VmError("invalid base install generation")
+        base = confined(self.home, self.base_home())
+        if base.exists():
+            raise VmError("a base image directory already exists; remove it explicitly before rebuilding")
+        self.data.mkdir(mode=0o700, parents=True, exist_ok=True)
+        confined(self.home, self.data / "iso").mkdir(mode=0o700, exist_ok=True)
+        staging = self.data / (".install-" + generation)
+        staging.mkdir(mode=0o700)
+        unit = f"hermes-vm-base-{generation}.service"
+        runtime = _base_runtime(generation)
+        runtime_created = False
         try:
-            self._run_script(
-                ["install", *(["--iso", str(iso)] if iso else [])],
-                vm_home=base, ssh_port=port, unit=unit, runtime=runtime,
-                timeout=timeout, stdout=stdout,
-            )
-            self._run_script(
-                ["stop"], vm_home=base, ssh_port=port, unit=unit, runtime=runtime,
-                timeout=120, stdout=stdout,
-            )
-        except (subprocess.SubprocessError, OSError) as exc:
-            self._force_stop(unit)
-            raise VmError("base image install failed: " + _reason(exc)) from exc
+            runtime.mkdir(mode=0o700)
+            runtime_created = True
+            port = self._free_port(set())
+            with vm_lifetime(unit, timeout=timeout, env=host_control_env()):
+                self._run_script(
+                    ["install", *(["--iso", str(iso)] if iso else [])],
+                    vm_home=staging, ssh_port=port, unit=unit, runtime=runtime,
+                    timeout=timeout, stdout=stdout,
+                )
+                self._run_script(
+                    ["stop"], vm_home=staging, ssh_port=port, unit=unit, runtime=runtime,
+                    timeout=120, stdout=stdout,
+                )
+            # The detached unit is observed stopped before publishing its disk.
+            disk = staging / "disk.qcow2"
+            if not disk.is_file() or disk.stat().st_size == 0:
+                raise VmError("base installer did not produce a disk")
+            atomic_json(staging / "base.json", {
+                "built_at": time.time(), "iso": _installed_iso(self.data / "iso"),
+                "generation": generation,
+            })
+            # Only a completed, stopped install becomes cloneable. rename refuses
+            # a concurrently published nonempty base rather than overwriting it.
+            staging.rename(base)
+        except (subprocess.SubprocessError, OSError, VmError) as exc:
+            raise VmError("Base image install failed; check prerequisites and retry") from exc
         finally:
-            shutil.rmtree(runtime, ignore_errors=True)
-        atomic_json(
-            base / "base.json",
-            {"built_at": time.time(), "iso": _installed_iso(self.data / "iso")},
-        )
+            if runtime_created:
+                self._force_stop(unit)
+                shutil.rmtree(runtime, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
         return self.base_status()
 
     def remove_base(self):
@@ -444,7 +468,7 @@ class VmManager:
         if not isinstance(session_id, str) or not session_id or len(session_id) > 256:
             raise ValueError("session_id must contain 1 to 256 characters")
         base_disk = self.base_home() / "disk.qcow2"
-        if not base_disk.is_file():
+        if not self.base_status()["present"]:
             raise VmError(
                 "No Omarchy base image in this profile. Build one explicitly with "
                 "hermes realms vm install (downloads the signed ISO, ~5 GB, then "
@@ -693,10 +717,16 @@ class VmManager:
         per-command, user-approved opt-in, never an ambient default.
         ``IdentitiesOnly`` keeps ssh from offering unrelated host keys.
         """
-        key = Path.home() / ".ssh" / "id_ed25519"
         return [
             "ssh", "-p", str(record["ssh_port"]),
             *(["-tt"] if tty else ["-T"]),
+            *self._ssh_options(),
+            f"{user}@127.0.0.1",
+        ]
+
+    def _ssh_options(self):
+        return [
+            "-F", "/dev/null", "-i", str(Path.home() / ".ssh" / "id_ed25519"),
             "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
@@ -706,8 +736,6 @@ class VmManager:
             "-o", "ForwardX11=no",
             "-o", "ForwardX11Trusted=no",
             "-o", "IdentitiesOnly=yes",
-            *(["-i", str(key)] if key.is_file() else []),
-            f"{user}@127.0.0.1",
         ]
 
     def guest_run(self, vm_id, command, *, timeout=60, user="root"):
@@ -767,9 +795,7 @@ class VmManager:
         subprocess.run(
             [
                 "scp", "-r", "-P", str(record["ssh_port"]),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
+                *self._ssh_options(),
                 str(local), f"root@127.0.0.1:{remote}",
             ],
             capture_output=True, text=True, timeout=600, check=True,
@@ -784,9 +810,7 @@ class VmManager:
         subprocess.run(
             [
                 "scp", "-r", "-P", str(record["ssh_port"]),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "BatchMode=yes", "-o", "LogLevel=ERROR",
+                *self._ssh_options(),
                 f"root@127.0.0.1:{source}", str(local),
             ],
             capture_output=True, text=True, timeout=600, check=True,

@@ -1683,6 +1683,45 @@ def _next_run_or_reject_past_oneshot(
     return next_run_at
 
 
+_RECURRING_SCHEDULE_KINDS = frozenset({"interval", "cron"})
+
+
+def _parse_optional_start_at(start_at: Optional[str]) -> Optional[datetime]:
+    """Parse optional ISO-8601 ``start_at``. None/blank → None (legacy). Naive or garbage → ValueError."""
+    if start_at is None:
+        return None
+    if not isinstance(start_at, str):
+        raise ValueError(
+            "start_at must be an ISO-8601 timestamp with timezone "
+            "(e.g. '2026-09-10T13:00:00+00:00').")
+    text = start_at.strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid start_at {start_at!r}: must be ISO-8601 with timezone "
+            "(e.g. '2026-09-10T13:00:00+00:00').") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(
+            f"start_at {start_at!r} is missing a timezone; "
+            "provide an ISO-8601 timestamp with offset (e.g. '...+00:00' or '...Z').")
+    return parsed
+
+
+def _honored_recurring_start_at(
+    parsed_schedule: Dict[str, Any], start_at_dt: Optional[datetime], now: datetime,
+) -> Optional[str]:
+    """ISO ``start_at`` when it should pin the first recurring fire; else None (legacy / ignore)."""
+    if start_at_dt is None or parsed_schedule.get("kind") not in _RECURRING_SCHEDULE_KINDS:
+        return None
+    if start_at_dt <= now:
+        return None
+    return start_at_dt.isoformat()
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1707,6 +1746,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    start_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1715,7 +1755,9 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    start_at: optional ISO-8601-with-tz first fire for recurring (interval/cron) jobs; omitted,
+    blank, past, or one-shot schedules keep the legacy now-based anchor."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1723,6 +1765,7 @@ def create_job(
     if paused_reason is not None and not paused:
         raise ValueError("paused_reason requires paused=True.")
     parsed_schedule = parse_schedule(schedule)
+    start_at_dt = _parse_optional_start_at(start_at)
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
     # (#66824/#64520/#7142/#71987/#95706).
@@ -1758,6 +1801,9 @@ def create_job(
     provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
         provider=f["provider"], model=f["model"], base_url=f["base_url"], no_agent=f["no_agent"])
     next_run_at = _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "")
+    honored_start_at = _honored_recurring_start_at(parsed_schedule, start_at_dt, _hermes_now())
+    if honored_start_at is not None:
+        next_run_at = honored_start_at
 
     job = {
         "id": job_id,
@@ -1803,6 +1849,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]),
+        ("start_at", honored_start_at),
     ):
         if value is not None:
             job[key] = value
@@ -2024,6 +2071,17 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     if not job:
         return None
     next_run_at = compute_next_run(job["schedule"])
+    if not job.get("last_run_at"):
+        try:
+            honored = _honored_recurring_start_at(
+                job.get("schedule") or {},
+                _parse_optional_start_at(job.get("start_at")),
+                _hermes_now(),
+            )
+        except ValueError:
+            honored = None
+        if honored:
+            next_run_at = honored
     if next_run_at is None and job["schedule"].get("kind") == "once":
         run_at = job["schedule"].get("run_at", "unknown")
         raise ValueError(

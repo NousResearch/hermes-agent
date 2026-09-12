@@ -26,6 +26,7 @@ from agent.prompt_builder import (
     _CONTEXT_FILE_DYNAMIC_CEILING,
     DEFAULT_AGENT_IDENTITY,
     drain_truncation_warnings,
+    TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -61,6 +62,27 @@ def _drain_truncation_warnings():
 
 
 class TestGuidanceConstants:
+    def test_task_completion_guidance_owns_outcomes_and_open_loops(self):
+        text = TASK_COMPLETION_GUIDANCE.lower()
+        assert "own outcomes, not answers" in text
+        assert "never make the user audit" in text
+        assert "durable system" in text
+        assert "driving it to closure across sessions" in text
+
+    def test_task_completion_guidance_taxes_proactive_messages(self):
+        text = TASK_COMPLETION_GUIDANCE.lower()
+        assert "every proactive message pays a tax" in text
+        assert "relief, saved time" in text
+        assert "merely interesting" in text
+        assert "three unanswered proactive messages" in text
+        assert "urgent from important" in text
+
+    def test_task_completion_guidance_earns_autonomy(self):
+        text = TASK_COMPLETION_GUIDANCE.lower()
+        assert "earn autonomy" in text
+        assert "approvals and corrections" in text
+        assert "cost of delegating" in text
+
     def test_memory_guidance_keeps_form_rule_and_routing(self):
         """Dieted (#95681): WHAT belongs in memory is the memory tool
         schema's job (taught on every call). This block keeps only the

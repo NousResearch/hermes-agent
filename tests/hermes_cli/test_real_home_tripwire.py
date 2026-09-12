@@ -98,3 +98,30 @@ def test_explicit_opt_out_allows_only_the_disposable_canary(protected_home):
     target = protected_home / "file.txt"
     target.write_text("opted out", encoding="utf-8")
     assert target.read_text(encoding="utf-8") == "opted out"
+
+
+def test_close_keeps_a_reused_descriptors_new_owner(tmp_path, monkeypatch):
+    from tests.home_io_guard import HomeIOGuard
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.touch()
+    second.touch()
+    original_close = os.close
+    reopened = []
+
+    def close_and_reopen(fd):
+        original_close(fd)
+        reopened.append(os.open(second, os.O_RDONLY))
+
+    guard = HomeIOGuard(lambda: [])
+    try:
+        with monkeypatch.context() as patcher:
+            patcher.setattr(os, "close", close_and_reopen)
+            guard.install(patcher)
+            fd = os.open(first, os.O_RDONLY)
+            os.close(fd)
+            assert reopened == [fd], "the test must exercise descriptor reuse"
+            assert guard.directories[fd] == second
+    finally:
+        for fd in reopened:
+            original_close(fd)

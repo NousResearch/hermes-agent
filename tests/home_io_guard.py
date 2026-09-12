@@ -85,10 +85,10 @@ class HomeIOGuard:
 
         @wraps(original_close)
         def guarded_close(fd):
-            try:
-                return original_close(fd)
-            finally:
-                self.directories.pop(fd, None)
+            # Forget the old owner before close releases the number for reuse
+            # by another thread's open; afterwards we could erase its mapping.
+            self.directories.pop(fd, None)
+            return original_close(fd)
 
         monkeypatch.setattr(os, "open", guarded_open)
         monkeypatch.setattr(os, "close", guarded_close)

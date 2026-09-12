@@ -171,6 +171,22 @@ class TestResumeRoundTrip:
         assert kwargs["base_url"] == MIMO_URL
         assert kwargs["api_key"] == MIMO_KEY
 
+    def test_make_agent_forwards_runtime_request_overrides(self, monkeypatch):
+        config = {
+            "model": {"default": "mimo-v2.5-pro", "provider": "custom:mimo-v2.5-pro"},
+            "custom_providers": [{
+                **LEGACY_LIST_CONFIG["custom_providers"][0],
+                "model": "mimo-v2.5-pro",
+                "extra_body": {"user": "proxy-user"},
+            }],
+        }
+
+        kwargs = _make_agent_with_override(
+            "mimo-v2.5-pro", monkeypatch, config, model_cfg=config["model"]
+        )
+
+        assert kwargs["request_overrides"] == {"extra_body": {"user": "proxy-user"}}
+
 
 # --- Regression: bare "custom" WITHOUT a base_url (GH #44022 / #47714) ------
 #

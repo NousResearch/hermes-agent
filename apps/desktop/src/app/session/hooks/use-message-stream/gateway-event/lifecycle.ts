@@ -11,7 +11,13 @@ import {
   setChangeEventsAvailable
 } from '@/store/live-sync'
 import { markRuntimeGone } from '@/store/runtime-gone'
-import { dropSessionState, unbindTileRuntime } from '@/store/session-states'
+import { getSessionOwnerHint, requestSessionResume } from '@/store/session'
+import {
+  $sessionTiles,
+  dropSessionState,
+  sessionTileDelegate,
+  unbindTileRuntime
+} from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
 import { ingestBackendSkin } from '@/themes/backend-sync'
@@ -112,6 +118,44 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
 
     // The row's ended_at moved, so refresh the lists that render it.
     notifySessionsChanged()
+
+    return true
+  }
+
+  if (event.type === 'session.replay_gap') {
+    const runtimeId = event.session_id || ''
+
+    const storedSessionId = runtimeId
+      ? deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId
+      : null
+
+    const eventMatchesOwner = (owner: { connectionId: string; profile: string } | undefined) =>
+      Boolean(
+        owner &&
+          event.connectionId === owner.connectionId &&
+          (event.profile?.trim() || 'default') === (owner.profile.trim() || 'default')
+      )
+
+    if (storedSessionId && runtimeId === deps.activeSessionIdRef.current) {
+      const ownerRoute = getSessionOwnerHint(storedSessionId, {
+        connectionId: event.connectionId || '',
+        profile: event.profile || 'default'
+      })
+
+      if (eventMatchesOwner(ownerRoute)) {
+        requestSessionResume(storedSessionId, ownerRoute, { authoritativeSnapshot: true })
+
+        return true
+      }
+    }
+
+    const tile = $sessionTiles
+      .get()
+      .find(candidate => candidate.runtimeId === runtimeId && eventMatchesOwner(candidate.ownerRoute))
+
+    if (tile) {
+      void sessionTileDelegate()?.resumeTile(tile.storedSessionId, { authoritativeSnapshot: true }).catch(() => undefined)
+    }
 
     return true
   }

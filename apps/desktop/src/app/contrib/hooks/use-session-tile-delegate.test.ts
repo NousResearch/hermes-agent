@@ -2,9 +2,15 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesModule from '@/hermes'
-import { setSessionOwnerHint, setSessions } from '@/store/session'
+import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { $activeSessionId, setSessionOwnerHint, setSessions } from '@/store/session'
 import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
+
+import {
+  clearSingleFlightSessionResumeState,
+  singleFlightSessionResume
+} from '../../session/hooks/use-prompt-actions/single-flight-resume'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
 
@@ -63,11 +69,13 @@ function renderTile(
 
 describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
+    clearSingleFlightSessionResumeState()
     setSessions([])
     vi.mocked(getLatestSessionMessages).mockClear()
   })
 
   afterEach(() => {
+    clearSingleFlightSessionResumeState()
     setSessions([])
   })
 
@@ -192,6 +200,164 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(runtimeId).toBe('runtime-a')
     expect(requestGateway).not.toHaveBeenCalled()
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it('forces an owner-routed message snapshot into a warm tile without touching foreground state', async () => {
+    const ownerRoute = { connectionId: 'remote-tile', profile: 'tile-profile', targetProfile: 'backend-tile' }
+
+    const pending = {
+      id: 'user-pending',
+      parts: [{ type: 'text', text: 'local pending prompt' }],
+      pending: true,
+      role: 'user'
+    }
+
+    const warm = { busy: false, messages: [pending], storedSessionId: 'stored-tile' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-tile', 'runtime-tile']]) }
+    const states = { current: new Map([['runtime-tile', warm]]) }
+
+    const update = vi.fn((id, updater) => {
+      const next = updater(states.current.get(id))
+      states.current.set(id, next)
+
+      return next
+    })
+
+    $activeSessionId.set('runtime-foreground')
+    $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
+    stashSessionDraft('stored-tile', 'unsent tile draft', [])
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
+      info: { model: 'snapshot-model', yolo: true },
+      message_count: 2,
+      messages: [
+        { content: 'new prompt', role: 'user', timestamp: 1 },
+        { content: 'new answer', role: 'assistant', timestamp: 2 }
+      ],
+      resumed: 'stored-tile',
+      running: true,
+      session_id: 'runtime-tile'
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    await sessionTileDelegate()!.resumeTile('stored-tile', { authoritativeSnapshot: true })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('remote-tile', 'tile-profile', 'session.resume', {
+      cols: 96,
+      omit_messages: false,
+      profile: 'backend-tile',
+      session_id: 'stored-tile'
+    })
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(states.current.get('runtime-tile')).toMatchObject({ busy: true, model: 'snapshot-model', yolo: true })
+    expect(JSON.stringify(states.current.get('runtime-tile')?.messages)).toContain('new answer')
+    expect(states.current.get('runtime-tile')?.messages).toContainEqual(pending)
+    expect($activeSessionId.get()).toBe('runtime-foreground')
+    expect(takeSessionDraft('stored-tile').text).toBe('unsent tile draft')
+
+    clearSessionDraft('stored-tile')
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('serializes an authoritative gap snapshot after an omitted-message resume already in flight', async () => {
+    const ownerRoute = { connectionId: 'remote-tile', profile: 'tile-profile', targetProfile: 'backend-tile' }
+    const oldMessage = { id: 'old-user', parts: [{ type: 'text', text: 'old prompt' }], role: 'user' }
+
+    const pending = {
+      id: 'user-pending',
+      parts: [{ type: 'text', text: 'local pending prompt' }],
+      pending: true,
+      role: 'user'
+    }
+
+    const warm = { busy: false, messages: [oldMessage, pending], storedSessionId: 'stored-tile' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-tile', 'runtime-tile']]) }
+    const states = { current: new Map([['runtime-tile', warm]]) }
+
+    const update = vi.fn((id, updater) => {
+      const next = updater(states.current.get(id))
+      states.current.set(id, next)
+
+      return next
+    })
+
+    let resolveNormal!: (value: unknown) => void
+    let resolveAuthoritative!: (value: unknown) => void
+    const normalResponse = new Promise(resolve => (resolveNormal = resolve))
+    const authoritativeResponse = new Promise(resolve => (resolveAuthoritative = resolve))
+
+    vi.mocked(requestGatewayForAgent).mockReset()
+    vi.mocked(requestGatewayForAgent).mockImplementation(
+      async (_connectionId, _profile, _method, params) =>
+        (params?.omit_messages ? normalResponse : authoritativeResponse) as never
+    )
+
+    $activeSessionId.set('runtime-foreground')
+    $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
+    stashSessionDraft('stored-tile', 'unsent tile draft', [])
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    const normal = singleFlightSessionResume('stored-tile', () =>
+      requestGatewayForAgent('remote-tile', 'tile-profile', 'session.resume', {
+        omit_messages: true,
+        profile: 'backend-tile',
+        session_id: 'stored-tile'
+      })
+    )
+
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(1))
+
+    let authoritativeSettled = false
+
+    const authoritative = sessionTileDelegate()!
+      .resumeTile('stored-tile', { authoritativeSnapshot: true })
+      .finally(() => (authoritativeSettled = true))
+
+    await Promise.resolve()
+    expect(requestGatewayForAgent).toHaveBeenCalledTimes(1)
+
+    resolveNormal({ messages: [], resumed: 'stored-tile', session_id: 'runtime-tile' })
+    await normal
+    await Promise.resolve()
+    expect(authoritativeSettled).toBe(false)
+    expect(states.current.get('runtime-tile')?.messages).toEqual([oldMessage, pending])
+
+    await vi.waitFor(() => expect(requestGatewayForAgent).toHaveBeenCalledTimes(2))
+    expect(requestGatewayForAgent).toHaveBeenLastCalledWith('remote-tile', 'tile-profile', 'session.resume', {
+      cols: 96,
+      omit_messages: false,
+      profile: 'backend-tile',
+      session_id: 'stored-tile'
+    })
+
+    resolveAuthoritative({
+      info: { model: 'snapshot-model' },
+      messages: [
+        { content: 'new prompt', role: 'user', timestamp: 1 },
+        { content: 'new answer', role: 'assistant', timestamp: 2 }
+      ],
+      resumed: 'stored-tile',
+      session_id: 'runtime-tile'
+    })
+    await authoritative
+
+    expect(JSON.stringify(states.current.get('runtime-tile')?.messages)).toContain('new answer')
+    expect(states.current.get('runtime-tile')?.messages).toContainEqual(pending)
+    expect($activeSessionId.get()).toBe('runtime-foreground')
+    expect(takeSessionDraft('stored-tile').text).toBe('unsent tile draft')
+
+    clearSessionDraft('stored-tile')
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
   })
 
   it('merges persisted messages into a warm tile on explicit reopen (#96183)', async () => {

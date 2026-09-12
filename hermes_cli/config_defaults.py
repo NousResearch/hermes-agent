@@ -1419,18 +1419,21 @@ DEFAULT_CONFIG = {
     },
 
     "discord": {
-        "require_mention": True,  # require @mention to respond in server channels
-        "free_response_channels": "",  # comma-separated channel IDs answered without mention
-        "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
-        "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
-        "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
-        # Multi-bot rooms: another bot must type @thisbot (a reply/quote alone won't) to trigger a
-        # reply — stops two bots replying to each other forever. Humans unaffected.
-        "bots_require_inline_mention": False,
-        # Prepend recent channel scrollback when triggered (recovers messages gated out by
-        # require_mention); limit = max messages scanned.
-        "history_backfill": True,
-        "history_backfill_limit": 50,
+        "require_mention": True,       # Require @mention to respond in server channels
+        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
+        "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
+        "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
+        "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
+        "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
+        # Disabled by default. When enabled, exact read-only status questions
+        # can be answered from one explicitly named source-scoped Kanban board
+        # without invoking a model or granting any mutation authority.
+        "progress_queries": {
+            "enabled": False,
+            "board": "",
+        },
         # Replay messages missed while offline, after reconnect/startup.
         "missed_message_backfill": {
             "enabled": False,

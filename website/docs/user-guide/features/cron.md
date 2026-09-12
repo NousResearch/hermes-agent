@@ -527,6 +527,45 @@ cron:
   wrap_response: false
 ```
 
+### Decisions as inline buttons
+
+A run cannot ask you a question: `clarify` blocks the agent, and an unattended job
+has nobody to answer it. Instead, a report can end with a **question block**, and
+the delivery layer — not the agent — turns it into buttons:
+
+```
+<question>
+Merge PR #1827?
+- ✅ Yes (Recommended)
+- ⏸️ Not yet
+</question>
+```
+
+The block is removed from the delivered text and sent as its own message with one
+button per option (Telegram). Tapping a button records the answer and re-enters it
+into the conversation as if you had typed it, so a continuable job keeps going with
+the answer in context. Nothing waits: the scheduled run finished long before you tap.
+
+Rules of the markup:
+
+- The first line inside the block is the question; every following line that starts
+  with `-`, `*`, `•` or `1.` is an option.
+- Up to 8 options per question, and several questions per report.
+- A block that breaks these rules (no options, too many, prose mixed into the
+  options, unterminated tag) is delivered verbatim as text — the parser never
+  swallows part of a report.
+- Platforms without inline buttons get a numbered list instead, and a run that
+  cannot reach a live gateway (plain `hermes cron run`, relay-fronted platforms)
+  keeps the questions inline in the report text.
+
+To turn the whole behaviour off:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  question_buttons: false   # default: true
+```
+
 ### Push notifications (`cron.delivery.notify`)
 
 Cron output is a *final* delivery, not a progress message, so by default it is

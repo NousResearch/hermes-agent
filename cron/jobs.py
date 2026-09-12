@@ -2156,6 +2156,11 @@ def remove_job(job_id: str) -> bool:
             clear_notepad(canonical_id)
         except Exception:
             logger.debug("Failed to clear notepad for removed job %s", canonical_id, exc_info=True)
+        try:
+            from cron.questions import clear_for_job
+            clear_for_job(canonical_id)
+        except Exception:
+            logger.debug("Failed to clear pending questions for removed job %s", canonical_id, exc_info=True)
         # Prune the fire-fence lock entry so the registry doesn't grow monotonically.
         _fence_key = f"{_current_cron_store().cron_dir.resolve()}::{canonical_id}"
         with _fire_fence_locks_guard:

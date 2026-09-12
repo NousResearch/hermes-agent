@@ -1673,6 +1673,10 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a task-name header and "The agent cannot see this
         # message" footer. False = clean output.
         "wrap_response": True,
+        # Deliver ``<question>`` blocks at the end of a report as inline buttons on platforms that
+        # support them (Telegram), instead of leaving the decision as dead text. The job opts in by
+        # emitting the markup; False disables the parsing process-wide.
+        "question_buttons": True,
         "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
             # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
             # otherwise sends with disable_notification=True and briefs look undelivered). False =

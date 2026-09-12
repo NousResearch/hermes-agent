@@ -1676,6 +1676,94 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
     return msg
 
 
+def _cron_question_buttons_enabled(user_cfg: Optional[dict]) -> bool:
+    """Whether the delivery layer may turn ``<question>`` blocks into buttons.
+
+    The job opts in by emitting the markup (existing jobs are byte-identically
+    unaffected); ``cron.question_buttons: false`` disables the parsing process-wide.
+    """
+    cron_cfg = (user_cfg or {}).get("cron") or {}
+    if not isinstance(cron_cfg, dict):
+        return True
+    return bool(cron_cfg.get("question_buttons", True))
+
+
+def _parse_delivery_questions(content: str, user_cfg: Optional[dict]) -> tuple[str, list]:
+    """Split a cron response into ``(body_without_question_blocks, questions)``.
+
+    A parser failure must never cost the report its text, so anything unexpected
+    degrades to "no questions" and the untouched content.
+    """
+    if not _cron_question_buttons_enabled(user_cfg):
+        return content, []
+    try:
+        from cron.questions import parse_questions
+        return parse_questions(content)
+    except Exception as exc:
+        logger.warning("Question markup parsing failed; delivering the text as-is: %s", exc)
+        return content, []
+
+
+def _deliver_questions_via_live_adapter(
+    t: _TargetDelivery, questions: list, delivery_errors: list
+) -> None:
+    """Send the report's questions as native inline buttons on the live adapter.
+
+    The body was already delivered without them, so a failure here has to be loud
+    (run status, hence `hermes cron list`) rather than swallowed: the recipient is
+    looking at a report whose questions are not on screen. Answer rows are recorded
+    before the send, so a tap that somehow arrives early still resolves.
+    """
+    from agent.async_utils import safe_schedule_threadsafe
+    from cron.questions import forget_questions, record_questions, to_payload
+
+    def _reported(message: str) -> None:
+        delivery_errors.append(
+            f"{len(questions)} question(s) from this report reached {t.where} without "
+            f"buttons and were dropped from the body: {message}")
+
+    job = t.job
+    _, route_metadata, _ = _live_route_metadata(t)
+    try:
+        tokens = record_questions(job["id"], t.platform_name, t.chat_id, questions)
+    except Exception as exc:
+        logger.error(
+            "Job '%s': question buttons to %s were not sent (store write failed: %s)",
+            job["id"], t.where, exc, exc_info=True)
+        _reported(f"question store write failed: {exc}")
+        return
+    payload = to_payload(questions, tokens)
+    send_metadata = {**route_metadata, "question_tokens": tokens}
+    future = safe_schedule_threadsafe(
+        t.runtime_adapter.send_cron_questions(t.chat_id, payload, metadata=send_metadata),
+        t.loop,
+    )
+    if future is None:
+        forget_questions(tokens)
+        _reported("the gateway event loop refused the send")
+        return
+    try:
+        result = future.result(timeout=60)
+    except Exception as exc:
+        # Ambiguous (the coroutine may still be in flight): keep the rows so a tap resolves.
+        logger.warning(
+            "Job '%s': question buttons to %s failed: %s", job["id"], t.where, exc)
+        _reported(f"send raised {exc}")
+        return
+    if not _result_field(result, "success"):
+        # A refused send is definite: no buttons exist anywhere, so drop the rows
+        # rather than leaving tokens no tap can ever reach.
+        forget_questions(tokens)
+        error = _result_field(result, "error") or "unconfirmed result"
+        logger.warning(
+            "Job '%s': question buttons to %s were not delivered: %s", job["id"], t.where, error)
+        _reported(f"adapter refused the send ({error})")
+        return
+    logger.info(
+        "Job '%s': delivered %d question(s) as buttons to %s:%s",
+        job["id"], len(questions), t.platform_name, t.chat_id)
+
+
 def _deliver_result(
     job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
 ) -> Optional[str]:
@@ -1720,18 +1808,28 @@ def _deliver_result(
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
-    if wrap_response:
+    # ``<question>`` blocks in the report become inline buttons on a target that can render them
+    # (#107138) — the job opts in by emitting the markup, nothing else changes for existing jobs.
+    # The plain-text variant is kept for every lane that cannot render buttons so the questions are
+    # never dropped: only the lane that actually delivers the buttons gets the stripped body.
+    body_content, questions = _parse_delivery_questions(content, user_cfg)
+
+    def _wrap(text: str) -> str:
+        if not wrap_response:
+            return text
         task_name = job.get("name", job["id"])
-        delivery_content = (
+        return (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job.get('id', '')})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
+            f"{text}\n\n"
             "To stop or manage this job, send me a new message "
             f"(e.g. \"stop reminder {task_name}\")."
         )
-    else:
-        delivery_content = content
+
+    delivery_content = _wrap(body_content)
+    # Same message with the questions left inline, for button-less lanes (see loop below).
+    delivery_content_with_questions = _wrap(content) if questions else delivery_content
 
     from gateway.platforms.base import BasePlatformAdapter
     # Bridge media-policy config into the env vars the path validator reads. The gateway does this
@@ -1739,6 +1837,10 @@ def _deliver_result(
     from gateway.media_policy import apply_media_policy_env
     apply_media_policy_env(user_cfg)
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    # Questions kept inline (same MEDIA handling) for the lanes that cannot render buttons.
+    cleaned_delivery_content_with_questions = (
+        BasePlatformAdapter.extract_media(delivery_content_with_questions)[1]
+        if questions else cleaned_delivery_content)
     requested_media = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.
@@ -1788,14 +1890,20 @@ def _deliver_result(
         if t is None:
             continue
         target_errors: list = []
+        # Buttons only exist on the live lane: the standalone senders have no reply_markup path, so
+        # those targets keep the questions inline rather than losing them.
+        as_buttons = bool(questions) and t.live_adapter_ready
+        target_text = cleaned_delivery_content if as_buttons else cleaned_delivery_content_with_questions
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
+            t, target_text, media_files,
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
         )
+        if delivered and as_buttons:
+            _deliver_questions_via_live_adapter(t, questions, delivery_errors)
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, target_text, media_files, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once.
     delivery_errors.extend(policy_drop_errors)

@@ -200,6 +200,24 @@ _CRON_HINT = (
 )
 
 
+_QUESTIONS_HINT = (
+    "QUESTIONS: when your report ends with a decision the user has to make, put it in a "
+    "<question>...</question> block instead of prose — the delivery layer renders the options "
+    "as buttons and the run finishes without waiting. Format:\n"
+    "<question>\nMerge PR #1827?\n- Yes (Recommended)\n- Not yet\n</question>\n\n"
+)
+
+
+def _questions_hint_enabled() -> bool:
+    """Mirror the delivery-side `cron.question_buttons` switch so the prompt never asks for markup
+    the delivery layer has been told not to render."""
+    try:
+        cron_cfg = (_sched.load_config() or {}).get("cron") or {}
+        return bool(cron_cfg.get("question_buttons", True)) if isinstance(cron_cfg, dict) else True
+    except Exception:
+        return True
+
+
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading skills first.
@@ -244,7 +262,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = _CRON_HINT + (_QUESTIONS_HINT if _questions_hint_enabled() else "") + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

@@ -119,10 +119,11 @@ If your platform supports interactive button/menu messages, implement these for 
 | `send_clarify(chat_id, question, choices, clarify_id, session_key, ...)` | Render the `clarify` tool's multi-choice question as tappable buttons. Pair with inbound dispatch that routes button taps to `tools.clarify_gateway.resolve_gateway_clarify`. |
 | `send_exec_approval(chat_id, command, session_key, description, ...)` | Render dangerous-command approval as Approve/Deny buttons. Inbound dispatch routes to `tools.approval.resolve_gateway_approval`. |
 | `send_slash_confirm(chat_id, title, message, session_key, confirm_id, ...)` | Render slash-command confirmations (e.g. `/reload-mcp`) as Once/Always/Cancel buttons. Inbound dispatch routes to `tools.slash_confirm.resolve`. |
+| `send_cron_questions(chat_id, questions, ...)` | Render the `<question>` blocks at the end of a scheduled report as tappable buttons (`cq:<token>:<idx>`). Inbound dispatch records the tap via `cron.questions.claim_answer` and re-enters the answer as a user turn. Nothing blocks — the run finished long before the tap. |
 | `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram, Discord, and Slack (Socket Mode). |
 | `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), and Matrix (reactions). Platforms without it fall back to the text status card automatically. |
 
-See `gateway/platforms/telegram.py`, `discord.py`, and `whatsapp_cloud.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
+See `gateway/platforms/telegram.py`, `discord.py`, and `whatsapp_cloud.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`, `cq:<token>:<idx>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
 
 ### Required function
 

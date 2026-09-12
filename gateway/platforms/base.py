@@ -2557,6 +2557,17 @@ class BasePlatformAdapter(ABC):
             text = f"❓ {question}"
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
 
+    async def send_cron_questions(
+        self, chat_id: str, questions: list, metadata: Optional[Dict[str, Any]] = None
+    ) -> SendResult:
+        """A scheduled report's questions (#107138). Button-capable adapters SHOULD override; a
+        tap MUST resolve through ``cron.questions.claim_answer(token, index)`` and re-inject the
+        answer as a user turn. Default: numbered text — the delivery layer only strips the
+        ``<question>`` markup on a lane that reaches this method, so nothing is lost here."""
+        from cron.questions import render_questions_text
+        return await self.send(
+            chat_id=chat_id, content=render_questions_text(list(questions)), metadata=metadata)
+
     async def send_private_notice(
         self, chat_id: str, user_id: Optional[str], content: str, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:

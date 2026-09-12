@@ -296,6 +296,26 @@ By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 
+### Question buttons
+
+`cron/questions.py` owns the `<question>` markup contract (`parse_questions`), the
+button/callback shapes (`button_rows`, `build_callback_data`/`parse_callback_data`)
+and the durable pending-question store (`cron/questions.db`, same ledger helpers as
+`cron/notepad.db`). `scheduler_delivery._parse_delivery_questions` splits the run's
+final response; the body goes out without the blocks and the questions ride a second
+send through `BasePlatformAdapter.send_cron_questions` (Telegram overrides it with an
+inline keyboard). A tap (`cq:<token>:<idx>`) claims the answer first-write-wins and
+then re-enters the conversation as a user turn.
+
+Two invariants:
+
+- **Lossless parsing.** A block that does not match the contract stays in the text,
+  and the delivery layer only strips the markup on a target whose live adapter is
+  ready — the standalone sender and relay-fronted lanes keep the questions inline.
+  Answers are only ever sent after the body was confirmed delivered.
+- **The run never blocks.** Nothing here waits for input; the store exists because
+  the tap can arrive days later, from a gateway that restarted in between.
+
 ### Session Isolation
 
 Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.

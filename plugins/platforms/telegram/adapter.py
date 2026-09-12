@@ -3859,6 +3859,33 @@ class TelegramAdapter(BasePlatformAdapter):
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
 
+    async def send_cron_questions(
+        self, chat_id: str, questions: list, metadata: Optional[Dict[str, Any]] = None
+    ) -> SendResult:
+        """Render a scheduled report's questions as inline buttons (#107138).
+
+        ``cq:<token>:<idx>`` buttons; a tap records the answer and re-injects it into the
+        conversation as a user turn (see ``_handle_cron_question_callback``). Unlike
+        ``send_clarify`` nothing here blocks: the report is already delivered, and the user
+        answers whenever they get to it.
+        """
+        from cron.questions import answers_prompt, button_rows, render_questions_text
+        from tools.wisdom_notifications import telegram_notification_markup
+
+        def build():
+            items = list(questions)
+            # Labels are the answers, so they stay on the buttons; the body repeats them
+            # numbered because phones truncate button text and replies may quote it.
+            text = "\n\n".join([
+                _html.escape(answers_prompt(items)),
+                _html.escape(render_questions_text(items, hint=False)),
+            ])
+            return text, telegram_notification_markup(action_button_rows=button_rows(items)), None
+
+        return await self._send_prompt(
+            "send_cron_questions", chat_id, metadata, build, parse_mode=ParseMode.HTML,
+            thread_id=self._metadata_thread_id(metadata))
+
     @staticmethod
     def _provider_get_label():
         try:
@@ -4263,6 +4290,7 @@ class TelegramAdapter(BasePlatformAdapter):
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
+            ("cq:", self._handle_cron_question_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
@@ -4432,6 +4460,87 @@ class TelegramAdapter(BasePlatformAdapter):
             # Entry evicted / gateway restarted between ask and tap.
             await self._notify_clarify_expired(query, user_display)
             logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
+
+    async def _handle_cron_question_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """``cq:<token>:<idx>`` — record an answer to a scheduled report's question (#107138).
+
+        Non-blocking by construction: the report already went out, the answer is written to
+        the durable store first (first write wins, so a double tap cannot answer twice), and
+        the tap is then handed to the conversation as an ordinary user turn.
+        """
+        from cron.questions import claim_answer, parse_callback_data
+
+        parsed = parse_callback_data(data)
+        if parsed is None:
+            return
+        token, index = parsed
+        if not await self._callback_authorized(
+            query, cb, "⛔ You are not authorized to answer this question."
+        ):
+            return
+        user_display = getattr(query.from_user, "first_name", "User")
+        result = claim_answer(token, index)
+        status = result.get("status")
+        if status == "unknown":
+            await query.answer(text="This question is no longer available.")
+            logger.info("Telegram cron question: unknown/expired token (token=%s, user=%s)", token, user_display)
+            return
+        if status == "invalid_option":
+            await query.answer(text="That option is no longer part of the question.")
+            return
+        if status == "already_answered":
+            await query.answer(text=f"Already answered: {result.get('answer_text') or '—'}")
+            return
+        answer_text = str(result.get("answer_text") or "")
+        await query.answer(text=f"✓ {answer_text[:60]}")
+        await self._edit_html_quiet(
+            query,
+            f"❓ {_html.escape(str(result.get('question') or ''))}\n\n"
+            f"<b>{_html.escape(user_display)}:</b> {_html.escape(answer_text)}",
+        )
+        logger.info(
+            "Telegram cron question answered (token=%s, choice=%r, user=%s)",
+            token, answer_text, user_display)
+        await self._inject_cron_question_answer(query, cb, result)
+
+    async def _inject_cron_question_answer(self, query, cb: Dict[str, Any], result: Dict[str, Any]) -> None:
+        """Re-enter the tapped answer as a user turn, so the job (or the chat) continues with it."""
+        from cron.questions import answer_reply_text
+
+        if self._message_handler is None:
+            # Buttons only exist through a live gateway, so this is a torn-down adapter; the
+            # answer is already durable, and the next report run re-reads the job state.
+            logger.warning(
+                "Telegram cron question answered with no gateway handler attached (token=%s)",
+                result.get("token"))
+            return
+        message = getattr(query, "message", None)
+        user = getattr(query, "from_user", None)
+        chat = getattr(message, "chat", None)
+        message_id = getattr(message, "message_id", None)
+        source = self.build_source(
+            chat_id=str(cb["chat_id"]),
+            chat_name=getattr(chat, "title", None) or getattr(chat, "full_name", None),
+            chat_type=self._normalize_chat_type(cb["chat_type"], is_forum=cb["thread_id"] is not None),
+            user_id=str(getattr(user, "id", "") or "") or None,
+            user_name=getattr(user, "full_name", None) or getattr(user, "first_name", None),
+            thread_id=str(cb["thread_id"]) if cb["thread_id"] is not None else None,
+            message_id=str(message_id) if message_id is not None else None,
+            is_bot=False,
+        )
+        question = str(result.get("question") or "")
+        answer_text = str(result.get("answer_text") or "")
+        await self.handle_message(MessageEvent(
+            text=answer_reply_text(question, answer_text),
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=str(message_id) if message_id is not None else None,
+            reply_to_message_id=str(message_id) if message_id is not None else None,
+            reply_to_is_own_message=True,
+            allow_gateway_control=False,
+        ))
+        logger.info(
+            "Telegram cron question answer delivered to the conversation (token=%s)", result.get("token"))
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""

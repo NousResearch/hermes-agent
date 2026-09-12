@@ -100,6 +100,41 @@ def _is_contended_windows_replace_error(exc: OSError) -> bool:
     return _IS_WINDOWS and getattr(exc, "winerror", None) in _WINDOWS_CONTENDED_REPLACE_ERRORS
 
 
+_TRANSIENT_READ_ERRNOS = (errno.EACCES, errno.EPERM, errno.EBUSY)
+_READ_RETRY_ATTEMPTS = 6
+_READ_RETRY_BASE_DELAY_S = 0.05
+_READ_RETRY_MAX_DELAY_S = 0.8
+
+
+def open_text_with_retry(path: Union[str, Path], *, encoding: str = "utf-8",
+                         attempts: int = _READ_RETRY_ATTEMPTS):
+    """Open *path* for reading, retrying a transient sharing violation.
+
+    A plain read is denied (errno EACCES/EPERM/EBUSY, Windows winerror 5/32/33) while another
+    process holds the file without FILE_SHARE_READ — the window around a Hermes atomic rewrite,
+    or an antivirus/indexer scanner. Config callers treat ANY read failure as "the YAML is
+    broken" and fall back to defaults, which silently drops the user's overrides (``approvals.deny``,
+    fallback chain, model routing), so a lock that clears in milliseconds must not reach them.
+    Non-transient errors (missing file, directory, ACL denial) still raise on the first attempt;
+    a persistent EACCES costs the retry budget once and then reports the real error.
+    """
+    last_exc = None
+    for attempt in range(attempts + 1):
+        try:
+            return open(path, encoding=encoding)
+        except OSError as exc:
+            transient = (getattr(exc, "errno", None) in _TRANSIENT_READ_ERRNOS
+                         or _is_contended_windows_replace_error(exc))
+            if not transient or attempt == attempts:
+                raise
+            last_exc = exc
+            # Lazy: keeps ``utils`` free of a package-level dependency on ``agent``.
+            from agent.retry_utils import jittered_backoff
+            time.sleep(jittered_backoff(attempt + 1, base_delay=_READ_RETRY_BASE_DELAY_S,
+                                        max_delay=_READ_RETRY_MAX_DELAY_S))
+    raise last_exc  # pragma: no cover - the loop returns or raises
+
+
 def _rewrite_in_place(tmp_str: str, real_path: str) -> None:
     """Overwrite *real_path* through the existing file — last resort for a still-held target.
 

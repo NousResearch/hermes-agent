@@ -869,6 +869,10 @@ class TurnRunner:
                         on_before_finalize=pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                     )
+                    # The consumer can exist for interim commentary alone (text streaming off);
+                    # without deltas it never carries the turn final — see the duplicate-risk
+                    # diagnostic in run_turn.py.
+                    stream_consumer.receives_deltas = want_stream_deltas
                     ctx.stream_consumer_holder[0] = stream_consumer
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)

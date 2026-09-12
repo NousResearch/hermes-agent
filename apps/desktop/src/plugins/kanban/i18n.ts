@@ -416,8 +416,8 @@ export const en: KanbanMessages = {
     blockedTitle: 'Task blocked — needs your input',
     blockLoopTitle: 'Task routed to triage — needs a decision',
     gaveUpTitle: 'Task gave up',
-    crashedTitle: 'Worker crashed — will retry',
-    timedOutTitle: 'Task timed out — will retry',
+    crashedTitle: 'Worker crashed',
+    timedOutTitle: 'Task timed out',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
   }
@@ -627,8 +627,8 @@ const ja: KanbanMessages = {
     blockedTitle: 'タスクがブロック中 — 入力が必要です',
     blockLoopTitle: 'タスクをトリアージへ移動 — 判断が必要です',
     gaveUpTitle: 'タスクを断念しました',
-    crashedTitle: 'ワーカーがクラッシュ — 再試行します',
-    timedOutTitle: 'タスクがタイムアウト — 再試行します',
+    crashedTitle: 'ワーカーがクラッシュ',
+    timedOutTitle: 'タスクがタイムアウト',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
   }
@@ -835,8 +835,8 @@ const zh: KanbanMessages = {
     blockedTitle: '任务受阻 — 需要你的输入',
     blockLoopTitle: '任务已转入分类 — 需要人工决定',
     gaveUpTitle: '任务已放弃',
-    crashedTitle: '工作单元崩溃 — 将重试',
-    timedOutTitle: '任务超时 — 将重试',
+    crashedTitle: '工作单元崩溃',
+    timedOutTitle: '任务超时',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
   }
@@ -1043,8 +1043,8 @@ const zhHant: KanbanMessages = {
     blockedTitle: '任務受阻 — 需要你的輸入',
     blockLoopTitle: '任務已轉入分類 — 需要人工決定',
     gaveUpTitle: '任務已放棄',
-    crashedTitle: '工作單元當機 — 將重試',
-    timedOutTitle: '任務逾時 — 將重試',
+    crashedTitle: '工作單元當機',
+    timedOutTitle: '任務逾時',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
   }

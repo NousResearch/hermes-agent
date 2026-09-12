@@ -524,16 +524,16 @@ def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
 
 
 def _secure_dir(path: Path):
-    """Set directory to owner-only access (0700). No-op where chmod is unsupported (Windows)."""
-    with contextlib.suppress(OSError, NotImplementedError):
-        os.chmod(path, 0o700)
+    """Owner-only (0700) via the shared helper, so cron/ and cron/output honor the same managed/
+    container/HERMES_HOME_MODE rules as the rest of HERMES_HOME (#10757)."""
+    from hermes_cli.config import _secure_dir as _shared_secure_dir
+    _shared_secure_dir(path)
 
 
 def _secure_file(path: Path):
-    """Set file to owner-only read/write (0600). No-op where chmod is unsupported (Windows)."""
-    with contextlib.suppress(OSError, NotImplementedError):
-        if path.exists():
-            os.chmod(path, 0o600)
+    """Owner-only (0600) via the shared helper (managed/container skip included)."""
+    from hermes_cli.config import _secure_file as _shared_secure_file
+    _shared_secure_file(path)
 
 
 def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:

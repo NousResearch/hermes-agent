@@ -70,7 +70,7 @@ When the user asks you to set this up:
 
 Do not apt-get merely because the skill loaded. Full procedure: `references/hermes-agent-install.md`.
 
-Reviewers without WireGuard: `cd templates/lab && docker compose up --build`, then http://127.0.0.1:6080/vnc.html (host loopback only). Fake mesh numbers live in `references/topology.md` (`10.13.37.1` VPS, `10.13.37.4` peer). Copy `templates/lab.env.example` → `~/.hermes/takeover/env` and replace those addresses.
+The owner URL is always `http://$BIND_IP:6080/vnc.html` on WireGuard. Fake mesh: `10.13.37.1` VPS / `10.13.37.4` peer (`references/topology.md`). Do **not** put noVNC on `127.0.0.1` — that is only raw x11vnc `:5900`. No WireGuard yet: `scripts/lab-dummy-iface.sh` then the same `install.sh vps` path. Copy `templates/lab.env.example` → `~/.hermes/takeover/env` and replace those addresses if they are not yours.
 
 ## Hard rules
 

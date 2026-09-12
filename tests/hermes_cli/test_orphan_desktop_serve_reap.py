@@ -27,6 +27,13 @@ def test_desktop_local_serve_shape_matches_ephemeral_loopback():
     assert _is_desktop_local_serve_cmdline(
         "/venv/bin/hermes serve --host=127.0.0.1 --port=0"
     )
+    assert not _is_desktop_local_serve_cmdline(
+        "hermes_cli.main kanban --preserve-cache --host 127.0.0.1 --port 0"
+    )
+    assert not _is_desktop_local_serve_cmdline(
+        "/home/u/hermes-server/venv/bin/python -m hermes_cli.main dashboard "
+        "--host 127.0.0.1 --port 0"
+    )
 
 
 def test_desktop_local_serve_shape_spares_fixed_port_and_non_serve():

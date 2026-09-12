@@ -492,9 +492,11 @@ def _is_desktop_local_serve_cmdline(command: str) -> bool:
     Long-lived headless serves (``--host <tailscale-ip> --port 9119``) must never match —
     those are operator-managed remote backends that legitimately run with ppid 1.
     """
-    cmd = command.lower()
-    if "serve" not in cmd or ("hermes" not in cmd and "hermes_cli" not in cmd):
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+
+    if _hermes_holder_subcommand(command) != "serve":
         return False
+    cmd = command.lower()
     has_loopback = any(tok in cmd for tok in (
         "--host 127.0.0.1", "--host=127.0.0.1", "--host localhost", "--host=localhost"))
     return has_loopback and ("--port 0" in cmd or "--port=0" in cmd)

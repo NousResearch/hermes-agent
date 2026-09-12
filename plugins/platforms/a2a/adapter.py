@@ -684,6 +684,7 @@ class A2AAdapter(BasePlatformAdapter):
         """message/stream as an SSE response of JSON-RPC-wrapped StreamResponse events (§9.4)."""
         protocol.metrics.streams_started += 1
         self._sse_headers(handler)
+        pending = None
         try:
             terminal, pending = self._prepare_task(params, peer, agent=agent)
             if terminal is not None:
@@ -694,8 +695,11 @@ class A2AAdapter(BasePlatformAdapter):
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(submitted), req_id))
             self._sse_write(handler, protocol.sse_data(protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
             state, reply = self._finalize_task(pending, *self._await_reply(pending, keepalive=self._keepalive(handler)))
+            pending = None
             self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
+            if pending is not None:
+                self._finalize_task(pending, protocol.STATE_FAILED, "[client disconnected]")
             logger.debug("A2A: stream client disconnected")
 
     def _rpc_tasks_subscribe(self, handler, req_id: Any, params: dict, agent: Optional[dict] = None) -> None:

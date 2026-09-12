@@ -758,14 +758,28 @@ _FILE_READ_COMMANDS = frozenset({
     "awk", "sed",
 })
 
-_SECRET_FILE_BASENAMES = _ENV_FILE_BASENAMES | frozenset({
-    "config.yaml",
+_SHELL_SECRET_FILE_BASENAMES = frozenset({
     ".bashrc",
     ".bash_profile",
     ".profile",
     ".zshrc",
     ".zprofile",
 })
+
+
+def _is_hermes_config_path(path: str) -> bool:
+    """Whether ``path`` names the active Hermes home's config file."""
+    shell_path = path.replace("\\", "/")
+    if shell_path in {"$HERMES_HOME/config.yaml", "${HERMES_HOME}/config.yaml"}:
+        return True
+
+    from hermes_constants import get_hermes_home
+
+    expanded_path = os.path.expanduser(path)
+    expected_path = str(get_hermes_home().expanduser() / "config.yaml")
+    return os.path.normcase(os.path.normpath(expanded_path)) == os.path.normcase(
+        os.path.normpath(expected_path)
+    )
 
 
 def _command_segments(command: str) -> list[str]:
@@ -935,7 +949,10 @@ def _command_reads_secret_file(command: str | None) -> bool:
             continue
         for arg in _reader_file_operands(tokens[0], tokens[1:]):
             basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if basename.lower() in _SECRET_FILE_BASENAMES:
+            if (
+                basename.lower() in _ENV_FILE_BASENAMES | _SHELL_SECRET_FILE_BASENAMES
+                or _is_hermes_config_path(arg)
+            ):
                 return True
     return False
 

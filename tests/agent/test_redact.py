@@ -880,11 +880,12 @@ class TestTerminalOutputRedaction:
         assert _command_reads_secret_file("cat ~/.hermes/.env")
         assert _command_reads_secret_file("cat /home/user/project/.env")
         assert _command_reads_secret_file("cat ./config/.env.local")
-        assert _command_reads_secret_file("grep TOKEN ~/.hermes/config.yaml")
+        assert _command_reads_secret_file("grep TOKEN $HERMES_HOME/config.yaml")
+        assert _command_reads_secret_file("grep TOKEN ${HERMES_HOME}/config.yaml")
         assert _command_reads_secret_file("awk '{print $0}' ~/.bashrc")
-        assert _command_reads_secret_file("grep -E 'API_KEY|TOKEN' ~/.hermes/config.yaml")
+        assert _command_reads_secret_file("grep -E 'API_KEY|TOKEN' $HERMES_HOME/config.yaml")
         assert _command_reads_secret_file("sed -n '1;5p' ~/.bashrc")
-        assert _command_reads_secret_file("grep -e config.yaml ~/.hermes/config.yaml")
+        assert _command_reads_secret_file("grep -e config.yaml $HERMES_HOME/config.yaml")
         assert _command_reads_secret_file("sed --expression='1p' ~/.profile")
         # In a pipeline / sequence
         assert _command_reads_secret_file("cat .env | grep KEY")
@@ -912,6 +913,9 @@ class TestTerminalOutputRedaction:
         assert not _command_reads_secret_file("cat .envrc.bak")  # .bak not in list
         assert not _command_reads_secret_file("python app.py")
         assert not _command_reads_secret_file("echo .env")  # echo is not a file-read cmd
+        assert not _command_reads_secret_file("cat ./config.yaml")
+        assert not _command_reads_secret_file("cat fixtures/config.yaml")
+        assert not _command_reads_secret_file("cat /tmp/config.yaml")
         assert not _command_reads_secret_file("grep config.yaml README.md")
         assert not _command_reads_secret_file("grep -e config.yaml README.md")
         assert not _command_reads_secret_file("sed -e config.yaml README.md")
@@ -922,9 +926,9 @@ class TestTerminalOutputRedaction:
     @pytest.mark.parametrize(
         ("output", "command"),
         [
-            ("ADS_API_TOKEN: " + "A" * 40, "grep -n mcp ~/.hermes/config.yaml"),
+            ("ADS_API_TOKEN: " + "A" * 40, "grep -n mcp $HERMES_HOME/config.yaml"),
             ("export FOO_TOKEN=" + "B" * 40, "awk '{print $0}' ~/.bashrc"),
-            ("ADS_API_TOKEN: " + "C" * 40, "grep -E 'API_KEY|TOKEN' ~/.hermes/config.yaml"),
+            ("ADS_API_TOKEN: " + "C" * 40, "grep -E 'API_KEY|TOKEN' ${HERMES_HOME}/config.yaml"),
             ("export FOO_TOKEN=" + "D" * 40, "sed -n '1;5p' ~/.bashrc"),
         ],
     )
@@ -966,11 +970,11 @@ class TestTerminalOutputRedaction:
     @pytest.mark.parametrize(
         "command",
         [
-            "grep --after-context 3 TOKEN ~/.hermes/config.yaml",
-            "grep --after-context=3 TOKEN ~/.hermes/config.yaml",
-            "rg --glob '*.py' TOKEN ~/.hermes/config.yaml",
-            "rg --glob='*.py' TOKEN ~/.hermes/config.yaml",
-            "rg --color never TOKEN ~/.hermes/config.yaml",
+            "grep --after-context 3 TOKEN $HERMES_HOME/config.yaml",
+            "grep --after-context=3 TOKEN ${HERMES_HOME}/config.yaml",
+            "rg --glob '*.py' TOKEN $HERMES_HOME/config.yaml",
+            "rg --glob='*.py' TOKEN ${HERMES_HOME}/config.yaml",
+            "rg --color never TOKEN $HERMES_HOME/config.yaml",
             "awk --assign x=1 '{print $0}' ~/.bashrc",
             "awk --assign=x=1 '{print $0}' ~/.bashrc",
             "sed --line-length 80 -n '1p' ~/.profile",

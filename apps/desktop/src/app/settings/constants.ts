@@ -825,3 +825,15 @@ export const MODE_OPTIONS: ModeOption[] = [
   { id: 'dark', label: 'Dark', icon: Moon },
   { id: 'system', label: 'System', icon: Monitor }
 ]
+
+export interface NumericFieldConfig {
+  min?: number
+  max?: number
+  step?: number
+}
+
+export const NUMERIC_FIELD_CONFIG: Record<string, NumericFieldConfig> = {
+  'compression.target_ratio': { min: 0.1, max: 0.8, step: 0.05 },
+  'compression.threshold': { min: 0.0, max: 1.0, step: 0.05 },
+  'compression.protect_last_n': { min: 1, step: 1 }
+}

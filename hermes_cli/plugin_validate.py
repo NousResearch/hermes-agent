@@ -287,9 +287,10 @@ calls = []
 _orig = providers_mod.register_provider
 
 def _spy(profile):
+    result = _orig(profile)
     name = getattr(profile, "name", None)
     calls.append(str(name) if name is not None else "")
-    return _orig(profile)
+    return result
 
 providers_mod.register_provider = _spy
 

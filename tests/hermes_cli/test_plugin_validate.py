@@ -185,6 +185,18 @@ class TestModelProviderProbe:
                 "no register() function", None, None,
                 id="wrong_case_kind",
             ),
+            pytest.param(
+                _MP_MANIFEST,
+                (
+                    "from providers import register_provider\n"
+                    "try:\n"
+                    "    register_provider(object())\n"
+                    "except AttributeError:\n"
+                    "    pass\n"
+                ),
+                False, "register_provider", "no register() function", None,
+                id="swallowed_failed_register_provider",
+            ),
         ],
     )
     def test_model_provider_admission(

@@ -200,6 +200,25 @@ export interface PendingDraftPersist {
   text: string
 }
 
+/** Window (ms) in which a second empty Enter counts as a double-Enter. */
+export const DOUBLE_ENTER_WINDOW_MS = 600
+
+/**
+ * Whether an empty Enter completes a double-Enter gesture: it must follow a
+ * previous empty Enter within {@link DOUBLE_ENTER_WINDOW_MS} — the first tap
+ * (typically the send) lands in the tracker, and only a quick second tap
+ * converts to "Continue". `now` is injectable for tests.
+ */
+export function isDoubleEnter(lastEmptyEnterAt: number | null, now: number): boolean {
+  if (lastEmptyEnterAt === null) {
+    return false
+  }
+
+  const elapsed = now - lastEmptyEnterAt
+
+  return elapsed >= 0 && elapsed <= DOUBLE_ENTER_WINDOW_MS
+}
+
 /**
  * Defense-in-depth for #54527: the debounce timer and the `pagehide` flush
  * both write a captured `{ scope, text }` pair some time after it was

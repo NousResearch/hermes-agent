@@ -412,6 +412,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    double_enter_continue?: boolean
   }
   desktop?: {
     repo_scan_enabled?: boolean

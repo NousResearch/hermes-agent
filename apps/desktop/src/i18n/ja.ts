@@ -2361,6 +2361,7 @@ export const ja = defineLocale({
     startVoice: '音声会話を開始',
     openDirective: '開く',
     queueMessage: 'メッセージをキューに入れる',
+    continueNudge: '続行',
     stop: '停止',
     send: '送信',
     speaking: '話しています',

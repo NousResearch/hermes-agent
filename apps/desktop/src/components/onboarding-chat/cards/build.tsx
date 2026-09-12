@@ -54,7 +54,10 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
 
   const answeredInComposer = answeredAfter(useStore(view.$messages), messageId)
 
-  const committed = useStore($onboardingAnswers).committed.find(step => step.startsWith('first:'))?.slice(6) ?? null
+  const committed =
+    useStore($onboardingAnswers)
+      .committed.find(step => step.startsWith('first:'))
+      ?.slice(6) ?? null
   const picked = committed ?? (answeredInComposer ? '' : null)
 
   // The 60-character limit keeps an option on one chip. The dedupe is case-insensitive because models repeat

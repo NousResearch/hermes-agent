@@ -74,9 +74,13 @@ const SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-
 /** The card's strings, from this tool's own copy. The verb changes with the
  *  action (Install / Enable / Authorize); the rest is the shared consent
  *  vocabulary every connector card speaks. */
-function cardCopy(copy: ReturnType<typeof useI18n>['t']['assistant']['mcpSetup'], action: SetupAction): ConnectorCardCopy {
+function cardCopy(
+  copy: ReturnType<typeof useI18n>['t']['assistant']['mcpSetup'],
+  action: SetupAction
+): ConnectorCardCopy {
   return {
-    connectAction: action === 'enable' ? copy.enableAction : action === 'authorize' ? copy.authorizeAction : copy.installAction,
+    connectAction:
+      action === 'enable' ? copy.enableAction : action === 'authorize' ? copy.authorizeAction : copy.installAction,
     connectTitle:
       action === 'enable' ? copy.enableTitle : action === 'authorize' ? copy.authorizeTitle : copy.installTitle,
     decline: copy.decline,

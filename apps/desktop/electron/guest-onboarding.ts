@@ -19,7 +19,10 @@ export function guestOnboardingEnabled(
   return env[GUEST_ONBOARDING_ENV] === '1' || argv.includes(GUEST_ONBOARDING_FLAG)
 }
 
-export function skipIntroEnabled(argv: readonly string[] = process.argv, env: NodeJS.ProcessEnv = process.env): boolean {
+export function skipIntroEnabled(
+  argv: readonly string[] = process.argv,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
   return env[SKIP_INTRO_ENV] === '1' || argv.includes(SKIP_INTRO_FLAG)
 }
 

@@ -176,23 +176,26 @@ describe('useComposerSubmit external request routing', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it.each([true, false])('delivers a busy hidden request as a steer with no user turn and queues it hidden on refusal (%s)', async accepted => {
-    const { onSteer, onSteerHidden, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: true })
-    onSteerHidden.mockResolvedValue(accepted)
+  it.each([true, false])(
+    'delivers a busy hidden request as a steer with no user turn and queues it hidden on refusal (%s)',
+    async accepted => {
+      const { onSteer, onSteerHidden, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: true })
+      onSteerHidden.mockResolvedValue(accepted)
 
-    await act(async () => {
-      requestComposerSubmit('[setup] links opened', { target: 'main', displayKind: 'hidden' })
-    })
+      await act(async () => {
+        requestComposerSubmit('[setup] links opened', { target: 'main', displayKind: 'hidden' })
+      })
 
-    expect(onSteerHidden).toHaveBeenCalledExactlyOnceWith('[setup] links opened')
-    expect(onSteer).not.toHaveBeenCalled()
-    expect(onSubmit).not.toHaveBeenCalled()
-    expect(getQueuedPrompts('stored-session').map(({ text, displayKind }) => ({ text, displayKind }))).toEqual(
-      accepted ? [] : [{ text: '[setup] links opened', displayKind: 'hidden' }]
-    )
-    expect(loadIntoComposer).not.toHaveBeenCalled()
-    expect(stashAt).not.toHaveBeenCalled()
-  })
+      expect(onSteerHidden).toHaveBeenCalledExactlyOnceWith('[setup] links opened')
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(getQueuedPrompts('stored-session').map(({ text, displayKind }) => ({ text, displayKind }))).toEqual(
+        accepted ? [] : [{ text: '[setup] links opened', displayKind: 'hidden' }]
+      )
+      expect(loadIntoComposer).not.toHaveBeenCalled()
+      expect(stashAt).not.toHaveBeenCalled()
+    }
+  )
 
   it('drops an idle hidden request the gateway rejects instead of restoring it into the draft', async () => {
     const { onSteer, onSubmit, loadIntoComposer, stashAt } = renderSubmitHook({ busy: false })

@@ -56,8 +56,15 @@ export function ConnectorsCard({ locked }: CardProps) {
   // The step still has to end, so the card offers Skip.
   if (catalog.status === 'unavailable' || (catalog.status === 'ready' && rows.length === 0)) {
     return (
-      <CardFrame continueLabel="Skip this" done={done} locked={locked} onContinue={() => commit('apps I use: none for now')}>
-        <p className="text-sm text-muted-foreground">Connections aren’t available right now — this can be set up later.</p>
+      <CardFrame
+        continueLabel="Skip this"
+        done={done}
+        locked={locked}
+        onContinue={() => commit('apps I use: none for now')}
+      >
+        <p className="text-sm text-muted-foreground">
+          Connections aren’t available right now — this can be set up later.
+        </p>
       </CardFrame>
     )
   }

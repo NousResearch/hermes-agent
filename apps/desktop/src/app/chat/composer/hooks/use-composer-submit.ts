@@ -145,7 +145,8 @@ export function useComposerSubmit({
 
           const queueKey = activeQueueSessionKeyRef.current
           // External requests contain only text; the unsent draft and its attachments stay in the composer.
-          const enqueue = () => void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
+          const enqueue = () =>
+            void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
 
           // A hidden note never becomes a user turn: it rides session.steer into
           // the model's next tool result, and keeps its kind if it has to queue.

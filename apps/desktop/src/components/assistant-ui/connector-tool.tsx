@@ -297,7 +297,9 @@ export function ConnectorOffer({ flow, onSkipped }: ConnectorOfferProps) {
           </Button>
         </p>
       ) : null}
-      {!state.available && !state.error ? <p className="px-1 text-xs text-muted-foreground">{copy.unavailable}</p> : null}
+      {!state.available && !state.error ? (
+        <p className="px-1 text-xs text-muted-foreground">{copy.unavailable}</p>
+      ) : null}
       {catalog ? <SearchField onChange={setQuery} placeholder={copy.search} value={query} /> : null}
       <div className={cn('grid min-w-0', catalog && 'max-h-96 overflow-y-auto')}>
         {rows.map(row => (

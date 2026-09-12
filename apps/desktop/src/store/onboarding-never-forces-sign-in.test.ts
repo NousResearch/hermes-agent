@@ -46,13 +46,18 @@ it.each(['cinematic', 'guided', 'handoff'])('the provider picker never opens ove
   expect(onboarding.$desktopOnboarding.get().requested).toBe(false)
 })
 
-it.each(['cinematic', 'guided', 'handoff'])('a credential warning during the guide is dropped, not deferred (%s)', async phase => {
-  const { onboarding } = await load(phase)
+it.each(['cinematic', 'guided', 'handoff'])(
+  'a credential warning during the guide is dropped, not deferred (%s)',
+  async phase => {
+    const { onboarding } = await load(phase)
 
-  onboarding.requestDesktopOnboardingForCredentialWarning("No API key configured for provider 'nous'. First message will fail.")
+    onboarding.requestDesktopOnboardingForCredentialWarning(
+      "No API key configured for provider 'nous'. First message will fail."
+    )
 
-  expect(onboarding.consumePendingCredentialWarning()).toBeNull()
-})
+    expect(onboarding.consumePendingCredentialWarning()).toBeNull()
+  }
+)
 
 it.each(['idle', 'skipped', 'done'])('outside the guide the picker opens as before (%s)', async phase => {
   const { onboarding } = await load(phase)

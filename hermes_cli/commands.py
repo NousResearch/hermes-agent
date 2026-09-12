@@ -10,9 +10,11 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
+from agent.i18n import get_language, t
 
 logger = logging.getLogger(__name__)
 
@@ -335,11 +337,65 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
-def _build_description(cmd: CommandDef) -> str:
+def _build_description(cmd: CommandDef, lang: str | None = None) -> str:
     """CLI-facing description including the usage hint."""
+    if lang is None:
+        description = cmd.description
+    else:
+        description = t(f"commands.builtin.{cmd.name}", lang=lang)
+    if lang is not None and description.startswith("commands.builtin."):
+        description = cmd.description
     if not cmd.args_hint:
-        return cmd.description
-    return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
+        return description
+    usage = t("commands.usage_label", lang=lang) if lang is not None else "usage"
+    if usage.startswith("commands."):
+        usage = "usage"
+    return f"{description} ({usage}: /{cmd.name} {cmd.args_hint})"
+
+
+@lru_cache(maxsize=None)
+def _localized_command_catalog_cached(lang: str) -> dict[str, object]:
+    """Return registry descriptions and categories for a requested UI language.
+
+    The English registry remains the compatibility/default view; translations
+    live in the Python locale catalogs so CLI, TUI, and Desktop share one source.
+    """
+    pairs: dict[str, str] = {}
+    categories: dict[str, dict[str, str]] = {}
+    english_pairs: dict[str, str] = {}
+    for cmd in COMMAND_REGISTRY:
+        if cmd.gateway_only:
+            continue
+        entries = {f"/{cmd.name}": _build_description(cmd, lang)}
+        english_entries = {f"/{cmd.name}": _build_description(cmd)}
+        for alias in cmd.aliases:
+            alias_label = t("commands.alias_label", lang=lang)
+            if alias_label.startswith("commands."):
+                alias_label = "alias for"
+            entries[f"/{alias}"] = f"{entries[f'/{cmd.name}']} ({alias_label} /{cmd.name})"
+            english_entries[f"/{alias}"] = f"{english_entries[f'/{cmd.name}']} (alias for /{cmd.name})"
+        pairs.update(entries)
+        english_pairs.update(english_entries)
+        categories.setdefault(
+            t(f"commands.categories.{cmd.category}", lang=lang)
+            if not t(f"commands.categories.{cmd.category}", lang=lang).startswith("commands.")
+            else cmd.category,
+            {}).update(entries)
+    return {
+        "pairs": list(pairs.items()),
+        "english_pairs": english_pairs,
+        "categories": [{"name": name, "pairs": list(rows.items())} for name, rows in categories.items()],
+    }
+
+
+def localized_command_catalog(lang: str | None = None) -> dict[str, object]:
+    """Return the cached command catalog for the requested or active UI language."""
+    return _localized_command_catalog_cached(lang or get_language())
+
+
+def _reset_localized_command_catalog_cache() -> None:
+    """Clear localized command descriptions after the active language changes."""
+    _localized_command_catalog_cached.cache_clear()
 
 
 # Flat "/command" -> description, and the same grouped by category; both exclude gateway_only.

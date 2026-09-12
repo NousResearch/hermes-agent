@@ -346,14 +346,17 @@ class _Catalog:
         self.cat_map.setdefault(cat, []).append([key, desc])
 
 
-def _catalog_registry(cat: _Catalog) -> None:
+def _catalog_registry(cat: _Catalog, language: str | None = None) -> None:
     commands = _tools_mod("hermes_cli.commands")
     for cmd in commands.COMMAND_REGISTRY:
         meta = commands.command_desktop_meta(cmd)
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
         if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
             continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
+        description = commands._build_description(cmd, language)
+        category = _tools_mod("agent.i18n").t(f"commands.categories.{cmd.category}", lang=language)
+        category = category if not category.startswith("commands.") else cmd.category
+        cat.add(f"/{cmd.name}", description, category)
         for a in cmd.aliases:
             cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
     for name, desc, category in _TUI_EXTRA:
@@ -405,7 +408,10 @@ def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
     (skills' message wins, then quick commands', then plugins')."""
     cat = _Catalog()
-    _catalog_registry(cat)
+    language_value = str(params.get("language") or "").strip()
+    i18n = _tools_mod("agent.i18n")
+    language = i18n.normalize_language(language_value) if language_value else i18n.get_language()
+    _catalog_registry(cat, language)
     warning = ""
     try:
         _catalog_quick_commands(cat)
@@ -425,7 +431,8 @@ def _(rid, params: dict) -> dict:
         "canon": cat.canon,
         "commands": cat.commands,
         "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
-        "skills": skills, "skill_count": len(skills), "warning": warning})
+        "skills": skills, "skill_count": len(skills), "warning": warning,
+        "language": language})
 
 
 @method("cli.exec")
@@ -451,7 +458,11 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     r = _tools_mod("hermes_cli.commands").resolve_command(params.get("name", ""))
     if r:
-        return _ok(rid, {"canonical": r.name, "description": r.description, "category": r.category})
+        commands = _tools_mod("hermes_cli.commands")
+        language = str(params.get("language") or "").strip() or None
+        category = _tools_mod("agent.i18n").t(f"commands.categories.{r.category}", lang=language)
+        return _ok(rid, {"canonical": r.name, "description": commands._build_description(r, language),
+                         "category": category if not category.startswith("commands.") else r.category})
     return _err(rid, 4011, f"unknown command: {params.get('name')}")
 
 

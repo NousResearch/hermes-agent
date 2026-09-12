@@ -11,6 +11,7 @@ export interface CommandCatalogMeta {
 }
 
 export interface CommandsCatalogLike {
+  language?: string
   canon?: Record<string, string>
   categories?: CommandsCatalogSection[]
   commands?: Record<string, CommandCatalogMeta>
@@ -586,6 +587,10 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
+  const language = liveCatalog()?.language
+  if (language === 'ko' && fallback) {
+    return fallback
+  }
   return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
 }
 

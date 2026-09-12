@@ -53,6 +53,7 @@ from tools.tool_result_storage import (
     extract_persisted_path,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from agent.clarify_debug import log_clarify_debug
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +145,41 @@ class _BatchAbandoned(BaseException):
     so ``except Exception`` handlers in the middleware chain can't swallow it."""
 
 
-def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
+def _has_degenerate_repetition(value: Any, window: int = 40, min_in_window: int = 5) -> bool:
+    """Detect repeated Hangul syllables in a short span, recursively."""
+    if isinstance(value, str):
+        hangul = [(index, char) for index, char in enumerate(value) if "\uac00" <= char <= "\ud7a3"]
+        for index, char in hangul:
+            if sum(1 for other_index, other_char in hangul if other_index - index <= window and other_char == char) >= min_in_window:
+                return True
+        return False
+    if isinstance(value, dict):
+        return any(_has_degenerate_repetition(item, window, min_in_window) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_degenerate_repetition(item, window, min_in_window) for item in value)
+    return False
+
+
+def _parse_tool_arguments(raw_arguments: Any, function_name: str | None = None) -> tuple[dict, Optional[str]]:
     """Parse model-emitted arguments without repairing or coercing them."""
     try:
         arguments = json.loads(raw_arguments)
     except (json.JSONDecodeError, TypeError):
         arguments = None
+    if function_name == "clarify":
+        log_clarify_debug("after_json_loads", raw_arguments, parsed_repr=repr(arguments))
+        if isinstance(arguments, dict) and _has_degenerate_repetition(arguments):
+            return {}, json.dumps(
+                {
+                    "error": "Degenerate clarify text detected",
+                    "message": (
+                        "The clarify question/choices text you generated contains abnormal character repetition "
+                        "(a stuck-decoding artifact), not real words. Do not show this to the user. Regenerate "
+                        "the same clarify call with clean, correctly-spelled text."
+                    ),
+                },
+                ensure_ascii=False,
+            )
     if isinstance(arguments, dict):
         return arguments, None
     return {}, json.dumps(
@@ -431,7 +461,7 @@ class _ParsedCall:
 
 def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
     name = _canonical_tool_name(tool_call.function.name)
-    args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
+    args, parse_error = _parse_tool_arguments(tool_call.function.arguments, name)
     scope_block = None
     if parse_error is None:
         name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)

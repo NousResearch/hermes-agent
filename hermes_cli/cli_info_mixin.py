@@ -246,7 +246,8 @@ class CLIInfoMixin:
         from cli import (
             ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint, _ensure_skill_commands,
             _termux_example_image_path, get_skill_bundles)
-        from hermes_cli.commands import COMMANDS_BY_CATEGORY, HELP_SESSION_SUBGROUPS
+        from hermes_cli.commands import HELP_SESSION_SUBGROUPS, localized_command_catalog
+        from agent.i18n import t
 
         arg = (arg or "").strip()
         skill_commands = _ensure_skill_commands()
@@ -281,6 +282,9 @@ class CLIInfoMixin:
 
         def _section(title: str, rows) -> None:
             """Print available/matching rows under a `── title ──` header (omitted if empty)."""
+            localized_title = t(f"commands.categories.{title}")
+            if localized_title.startswith("commands."):
+                localized_title = title
             printed_header = False
             for cmd, desc in rows:
                 if not self._command_available(cmd):
@@ -288,12 +292,14 @@ class CLIInfoMixin:
                 if query and query not in cmd.lower() and query not in desc.lower():
                     continue
                 if not printed_header:
-                    _cprint(f"\n  {_BOLD}── {title} ──{_RST}")
+                    _cprint(f"\n  {_BOLD}── {localized_title} ──{_RST}")
                     printed_header = True
                 _row(cmd, desc)
 
-        for category, commands in COMMANDS_BY_CATEGORY.items():
-            if category != "Session":
+        localized = localized_command_catalog()
+        for section in localized["categories"]:
+            category, commands = section["name"], dict(section["pairs"])
+            if category != t("commands.categories.Session"):
                 _section(category, commands.items())
                 continue
             # The oversized Session category renders as sub-groups

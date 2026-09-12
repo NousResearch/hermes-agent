@@ -202,6 +202,27 @@ def test_continue_technical_release_follow_up_does_not_inherit_clinical_scope(pl
     ) is False
 
 
+def test_technical_follow_up_ignores_internal_clinical_repair_directives(plugin):
+    history = [
+        {
+            "role": "user",
+            "content": (
+                "[PRE_DELIVERY_REPAIR]\n"
+                '{"required":"Ejecuta la ruta clínica seleccionada y recupera fuentes."}'
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "La suite integral sigue ejecutándose; el PR requiere aprobación.",
+        },
+    ]
+
+    assert plugin._on_pre_delivery_scope(
+        "¿Qué queda pendiente?",
+        conversation_history=history,
+    ) is False
+
+
 def test_clinical_assistance_stat_report_is_not_a_care_request(plugin):
     prompt = (
         "stat report de todo lo que se hizo hasta ahora para mejorar el pilar clinico "

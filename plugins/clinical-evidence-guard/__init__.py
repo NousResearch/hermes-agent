@@ -728,18 +728,22 @@ def _classify_turn(user_message: str, conversation_history: Any = None) -> bool:
         )
     ):
         return clinical
-    recent: list[str] = []
+    recent_user_requests: list[str] = []
     if isinstance(conversation_history, list):
         for item in conversation_history[-6:]:
-            if isinstance(item, dict) and isinstance(item.get("content"), str):
-                recent.append(item["content"])
-    if recent and re.search(
+            if not isinstance(item, dict) or item.get("role") != "user":
+                continue
+            content = item.get("content")
+            if not isinstance(content, str) or "[PRE_DELIVERY_REPAIR]" in content:
+                continue
+            recent_user_requests.append(_strip_reply_context(content))
+    if recent_user_requests and re.search(
         r"^\s*(?:[¿?]?\s*(?:y|entonces|pero|cu[aá]l|c[oó]mo|qu[eé])\b|"
         r"(?:la|el|esa|ese|eso)\s+)",
         user_message or "",
         re.IGNORECASE,
     ):
-        return _is_clinical("\n".join(recent))
+        return _is_clinical("\n".join(recent_user_requests))
     return False
 
 

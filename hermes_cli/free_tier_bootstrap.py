@@ -126,6 +126,12 @@ def run_bootstrap(*, announce: bool = True) -> SetupRecord:
             error = str(exc)
             logger.info("Nous free tier not set up at boot: %s", exc)
     free_tier = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
+
+    if not other and not free_tier:
+        from hermes_cli.main import _has_any_provider_configured
+        if _has_any_provider_configured(strict_profile_scope=False):
+            other = True
+
     record = SetupRecord(
         provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state)),
         inference_provider=_resolve_inference(),

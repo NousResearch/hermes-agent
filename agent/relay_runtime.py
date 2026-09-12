@@ -110,6 +110,39 @@ def pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: An
     return pop(handle, **kwargs)
 
 
+def safe_pop_relay_scope(relay: Any, handle: Any, *, output: Any = None, metadata: Any = None, timestamp: Any = None) -> Any:
+    """Like :func:`pop_relay_scope`, but tolerant of a stale/already-popped handle.
+
+    nemo-relay 0.8.3's native ``_native_pop_scope`` raises
+    ``RuntimeError("invalid argument: scope handle is not at the top of the stack")``
+    when the caller passes a handle that was already popped by an earlier interrupt
+    or drain path. For finalization/cleanup callers (``_finish_task`` and similar
+    observability sites) this is semantically a success: the scope is already gone,
+    and raising only costs one observability-loss log line and skips metrics export
+    for the finished task.
+
+    Callers that own drain semantics — e.g. ``_pop_with_drain``, which needs the
+    RuntimeError signal to trigger orphan draining above the target — must keep
+    using :func:`pop_relay_scope` so the drain still fires.
+
+    Unrelated RuntimeErrors and non-RuntimeError exceptions are propagated unchanged
+    so future vendor or local bugs are not silently swallowed.
+    """
+    try:
+        return pop_relay_scope(relay, handle, output=output, metadata=metadata, timestamp=timestamp)
+    except RuntimeError as exc:
+        if "scope handle is not at the top of the stack" not in str(exc):
+            raise
+        # Handle was already popped by an earlier drain / interrupt path.
+        # The scope is gone; treat the pop as successful and log for forensics.
+        import logging
+        logging.getLogger(__name__).info(
+            "safe_pop_relay_scope: handle %r already drained; treating as success.",
+            handle,
+        )
+        return None
+
+
 def _current_top(relay: Any) -> Any:
     """Return the current top-of-stack scope handle, or None."""
     # Prefer scope.get_handle(): get_scope_stack() may return a native ScopeStack that scope.pop rejects.

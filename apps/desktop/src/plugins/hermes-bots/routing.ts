@@ -196,7 +196,9 @@ export function botBackendProfileScope(route: null | ProfileRoute | undefined, f
 }
 
 /** Gateway RPC on the bot's OWN source. Source-scoped rows always use the
- * explicit descriptor, including a registered local source. */
+ * explicit descriptor, including a registered local source. Unscoped local
+ * rows ride `requestLocalProfileGateway` so a foregrounded orchestrator
+ * cannot mint or prompt against the wrong HERMES_HOME (#101422). */
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
@@ -219,7 +221,13 @@ export async function requestForBot<T = unknown>(
     }
   }
 
+  const profile = String(bot?.name || 'default').trim() || 'default'
+
   try {
+    if (typeof host.requestLocalProfileGateway === 'function') {
+      return await host.requestLocalProfileGateway(profile, method, params)
+    }
+
     return await host.request(method, params)
   } catch (error) {
     throw asRpcError(error, `Gateway request ${method} failed`)

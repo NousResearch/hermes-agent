@@ -13,12 +13,12 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const request = vi.fn()
+const requestLocalProfileGateway = vi.fn()
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
-  return { ...sdk, host: { ...sdk.host, request } }
+  return { ...sdk, host: { ...sdk.host, requestLocalProfileGateway } }
 })
 
 const { loadRoutines } = await import('./cron')
@@ -31,7 +31,7 @@ function react19Format(error: { message?: unknown; name?: unknown }) {
 
 /** The rejection `requestForBot` hands back, after coercion. */
 async function rejectionFrom(thrown: unknown) {
-  request.mockRejectedValue(thrown)
+  requestLocalProfileGateway.mockRejectedValue(thrown)
 
   return requestForBot({ name: 'research' }, 'cron.manage', {}).then(
     () => {
@@ -47,7 +47,7 @@ beforeEach(() => {
 
 describe('a rejection always reaches React with a string name', () => {
   it('coerces a plain JSON-RPC object whose name is an error code', async () => {
-    request.mockRejectedValue({ code: -32603, message: 'cron.manage failed', name: 32000 })
+    requestLocalProfileGateway.mockRejectedValue({ code: -32603, message: 'cron.manage failed', name: 32000 })
 
     const error = await loadRoutines('research').then(
       () => {

@@ -30,6 +30,7 @@ import type { ProfileRoute, RosterRow } from './types'
 const { hostMock } = vi.hoisted(() => ({
   hostMock: {
     request: vi.fn(),
+    requestLocalProfileGateway: vi.fn(),
     requestProfile: vi.fn(),
     state: { connectionId: { get: vi.fn(() => 'local') } }
   }
@@ -277,12 +278,25 @@ describe('requestForBot rides the bot’s own source', () => {
   it('coerces a JSON-RPC rejection into an Error with a string name (#94471)', async () => {
     // React 19 formats query errors with `(error.name || '').trim()`; a
     // numeric JSON-RPC `name` crashed the Routines pane and hid the cause.
-    hostMock.request.mockRejectedValue({ code: -32000, message: 'profile busy', name: -32000 })
+    hostMock.requestLocalProfileGateway.mockRejectedValue({ code: -32000, message: 'profile busy', name: -32000 })
 
     const error = await requestForBot({ name: 'ops' }, 'cron.list', {}).catch((thrown: unknown) => thrown)
 
     expect(error).toBeInstanceOf(Error)
     expect(typeof (error as Error).name).toBe('string')
     expect((error as Error).message).toBe('profile busy')
+  })
+
+  it('pins an unscoped local bot to its own profile gateway, not the active socket (#101422)', async () => {
+    hostMock.requestLocalProfileGateway.mockResolvedValue({ ok: true })
+
+    await requestForBot({ name: 'default' }, 'session.create', { profile: 'default', title: 'Bot Chat' })
+    await requestForBot({ name: 'default' }, 'prompt.submit', { session_id: 'rt-1', text: 'hi' })
+
+    expect(hostMock.requestLocalProfileGateway.mock.calls.map(([profile, method]) => [profile, method])).toEqual([
+      ['default', 'session.create'],
+      ['default', 'prompt.submit']
+    ])
+    expect(hostMock.request).not.toHaveBeenCalled()
   })
 })

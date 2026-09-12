@@ -4166,6 +4166,9 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
     """Step-1 target: (provider, model, base_url, api_key, api_mode) of the main runtime, after the
     fast-model opt-in and the MoA aggregator substitution."""
     main_provider = str(runtime.get("provider", "") or _read_main_provider() or "")
+    requested_provider = str(runtime.get("requested_provider", "") or "")
+    if main_provider == "custom" and requested_provider.startswith("custom:"):
+        main_provider = requested_provider
     main_model = str(runtime.get("model") or _read_main_model() or "")
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
@@ -4378,7 +4381,8 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
         custom_key = _scoped_key_env(custom_key_env)
-    custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
+    from agent.command_token_source import normalize_key_command
+    custom_key_cmd = normalize_key_command(custom_entry.get("key_cmd"))
     if custom_key_cmd:
         from agent.command_token_source import build_command_token_provider
         custom_key = build_command_token_provider(custom_key_cmd, custom_entry.get("name") or provider) or custom_key
@@ -4761,8 +4765,30 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         or "gpt-4o-mini",
         provider,
     )
+    profile = None
+    with contextlib.suppress(ImportError):
+        from providers import get_provider_profile
+        profile_name = str(custom_entry.get("provider_key") or provider)
+        if profile_name.startswith("custom:"):
+            profile_name = profile_name.split(":", 1)[1]
+        profile = get_provider_profile(profile_name)
+    if profile is not None:
+        entry_api_mode = profile.resolve_api_mode(final_model, entry_api_mode or "chat_completions")
+        custom_base = profile.resolve_base_url(final_model, custom_base)
     logger.debug("resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                  provider, final_model, entry_api_mode or "chat_completions")
+    if profile is not None:
+        try:
+            supplied_client = profile.create_client(api_key=custom_key, base_url=custom_base)
+        except Exception:
+            logger.warning(
+                "Named custom provider %r failed to create its auxiliary client; "
+                "falling back to standard transport selection.",
+                provider, exc_info=True,
+            )
+        else:
+            if supplied_client is not None:
+                return _route_client(req, supplied_client, final_model)
     # anthropic_messages: route via AnthropicAuxiliaryClient (mirrors _try_custom_endpoint);
     # the Anthropic SDK sees the original (un-rewritten) URL.
     # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.

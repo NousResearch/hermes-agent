@@ -37,6 +37,13 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _key_cmd(entry: Dict[str, Any]) -> str | list[str]:
+    """Validated legacy shell string or literal argv list; malformed values fail closed."""
+    from agent.command_token_source import normalize_key_command
+    value = normalize_key_command(entry.get("key_cmd"))
+    return list(value) if isinstance(value, tuple) else value
+
+
 def _entry_url(entry: Dict[str, Any]) -> str:
     return entry.get("api") or entry.get("url") or entry.get("base_url") or ""
 
@@ -127,7 +134,7 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         result: Dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
                                   "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
         # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.
-        key_cmd = _clean(entry.get("key_cmd", ""))
+        key_cmd = _key_cmd(entry)
         if key_cmd:
             result["key_cmd"] = key_cmd
         # v12 migration writes ``transport``; hand-edited configs may still use ``api_mode``.
@@ -362,7 +369,10 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
     return {"extra_body": dict(extra_body)}
 
 
-def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any]) -> None:
+def _apply_custom_provider_extras(
+    custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any],
+    *, requested_provider: str = "",
+) -> None:
     """Copy model / capabilities / extra_headers / request_overrides onto a
     resolved custom runtime. An explicit ``target_model`` wins over the provider's configured
     default (auxiliary slots / background-review resolve a concrete model and must not fall back to
@@ -371,6 +381,17 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
     if model_name:
         result["model"] = model_name
     _lift_model_capabilities(custom_provider, model_name, result)
+    profile_name = str(custom_provider.get("provider_key") or requested_provider or "")
+    if profile_name.startswith("custom:"):
+        profile_name = profile_name.split(":", 1)[1]
+    try:
+        import providers as provider_registry
+        profile = getattr(provider_registry, "get_provider_profile")(profile_name)
+        if profile is not None:
+            result["api_mode"] = profile.resolve_api_mode(model_name, result.get("api_mode", "chat_completions"))
+            result["base_url"] = profile.resolve_base_url(model_name, result.get("base_url", ""))
+    except Exception:
+        pass
 
     if custom_provider.get("extra_headers"):
         result["extra_headers"] = dict(custom_provider["extra_headers"])
@@ -449,7 +470,7 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     return None
 
 
-def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
+def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Any = None,
                                   explicit_base_url: Optional[str] = None,
                                   target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
@@ -481,21 +502,30 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
-        _apply_custom_provider_extras(custom_provider, target_model, pool_result)
+        _apply_custom_provider_extras(
+            custom_provider, target_model, pool_result, requested_provider=requested_provider,
+        )
         return pool_result
-    explicit_key = (explicit_api_key or "").strip()
-    candidates = [
-        explicit_key,
-        _clean(custom_provider.get("api_key", "")),
-        rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
-        *rp._host_gated_env_key_candidates(base_url, ollama=False),
-    ]
-    api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
+    explicit_key: Any = (
+        explicit_api_key.strip()
+        if isinstance(explicit_api_key, str)
+        else explicit_api_key if callable(explicit_api_key) else ""
+    )
+    if callable(explicit_key):
+        api_key: Any = explicit_key
+    else:
+        candidates = [
+            explicit_key,
+            _clean(custom_provider.get("api_key", "")),
+            rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
+            *rp._host_gated_env_key_candidates(base_url, ollama=False),
+        ]
+        api_key = next((c for c in candidates if rp.has_usable_secret(c)), "")
     # ``key_cmd`` credentials are minted per request (short-lived bearers would go stale
     # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
     # explicit --api-key still wins as the one-off recovery escape hatch.
-    key_cmd = _clean(custom_provider.get("key_cmd", ""))
-    if key_cmd and not rp.has_usable_secret(explicit_key):
+    key_cmd = _key_cmd(custom_provider)
+    if key_cmd and not callable(explicit_key) and not rp.has_usable_secret(explicit_key):
         from agent.command_token_source import build_command_token_provider
         token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
         if token_provider is not None:
@@ -503,7 +533,9 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)
-    _apply_custom_provider_extras(custom_provider, target_model, result)
+    _apply_custom_provider_extras(
+        custom_provider, target_model, result, requested_provider=requested_provider,
+    )
     # OpenCode-family custom providers (opencode-go/zen names, or opencode.ai hosts) serve models
     # on different API surfaces — a static api_mode 503s for /v1/responses-only models. Re-derive
     # api_mode from the model and normalize /v1 like the built-in paths.

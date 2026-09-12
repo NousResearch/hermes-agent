@@ -1,0 +1,5 @@
+name: databricks-provider
+kind: model-provider
+version: 1.0.0
+description: Databricks Unity Gateway
+author: Nous Research

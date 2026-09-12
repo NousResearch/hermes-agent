@@ -15,7 +15,7 @@ import re
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import httpx
 
@@ -620,13 +620,15 @@ class GeminiNativeClient:
 
     def __init__(
         self, *, api_key: str, base_url: Optional[str] = None, default_headers: Optional[Dict[str, str]] = None,
-        timeout: Any = None, http_client: Optional[httpx.Client] = None, **_: Any,
+        timeout: Any = None, http_client: Optional[httpx.Client] = None,
+        bearer_token_provider: Optional[Callable[[], str]] = None, **_: Any,
     ) -> None:
         if not (api_key or "").strip():
             raise RuntimeError(_MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
         self.base_url = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/").removesuffix("/openai")
         self._default_headers = dict(default_headers or {})
+        self._bearer_token_provider = bearer_token_provider
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0))
 
@@ -643,8 +645,16 @@ class GeminiNativeClient:
         self.close()
 
     def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
-                "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+        headers = {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
+                   "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+        if self._bearer_token_provider is not None:
+            token = self._bearer_token_provider()
+            if not isinstance(token, str) or not token.strip():
+                raise RuntimeError(_MISSING_KEY_ERROR)
+            blocked = {"authorization", "x-goog-api-key", "x-api-key", "api-key"}
+            headers = {name: value for name, value in headers.items() if name.lower() not in blocked}
+            headers["Authorization"] = f"Bearer {token.strip()}"
+        return headers
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:

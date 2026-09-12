@@ -57,6 +57,20 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
 
+def _provider_profile_for_agent(agent: Any):
+    """Resolve provider metadata through a named custom runtime identity."""
+    provider = str(getattr(agent, "provider", "") or "")
+    requested = str(getattr(agent, "requested_provider", "") or "")
+    if provider.startswith("custom:"):
+        provider = provider.split(":", 1)[1]
+    elif provider == "custom" and requested.startswith("custom:"):
+        provider = requested.split(":", 1)[1]
+    with contextlib.suppress(Exception):
+        import providers as provider_registry
+        return getattr(provider_registry, "get_provider_profile")(provider)
+    return None
+
+
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
     context = contextvars.copy_context()
@@ -1095,6 +1109,11 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     idle_default = next(
         (default for threshold, default in ((100_000, 180.0), (50_000, 120.0), (10_000, 60.0)) if est_tokens > threshold),
         12.0)
+    profile = _provider_profile_for_agent(agent)
+    profile_idle = getattr(profile, "responses_event_stale_timeout_seconds", None)
+    if codex and isinstance(profile_idle, (int, float)) and profile_idle > 0:
+        idle_default = float(profile_idle)
+        stale_timeout = max(stale_timeout, idle_default)
 
     # No-event TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
     # and a tight 12s killed subscription-backed requests mid-prefill.
@@ -1315,10 +1334,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _prefs = _provider_preferences_for_agent(agent)
 
     _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
-    _profile = None
-    with contextlib.suppress(Exception):
-        from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
+    _profile = _provider_profile_for_agent(agent)
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     # Strip image parts for non-vision models on BOTH paths (registered
@@ -2695,7 +2711,11 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
         # Native Gemini rejects OpenAI's usage-streaming extension.
-        if not is_native_gemini_base_url(self.agent.base_url):
+        provider_supports_stream_options = True
+        profile = _provider_profile_for_agent(self.agent)
+        if profile is not None:
+            provider_supports_stream_options = profile.supports_stream_options
+        if provider_supports_stream_options and not is_native_gemini_base_url(self.agent.base_url):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))

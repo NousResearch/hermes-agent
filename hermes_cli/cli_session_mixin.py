@@ -86,14 +86,17 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
             explicit_provider=_config_provider or "")
         if not r.success:
             return
+        runtime_provider = r.runtime_provider or r.target_provider
+        requested_provider = r.requested_provider or r.target_provider
         if cli.agent:
             cli.agent.switch_model(
-                new_model=r.new_model, new_provider=r.target_provider, api_key=r.api_key,
+                new_model=r.new_model, new_provider=runtime_provider,
+                new_requested_provider=requested_provider, api_key=r.api_key,
                 base_url=r.base_url, api_mode=r.api_mode,
                 capabilities=getattr(r, "runtime_capabilities", None))
         cli.model = r.new_model
-        cli.provider = r.target_provider
-        cli.requested_provider = r.target_provider
+        cli.provider = runtime_provider
+        cli.requested_provider = requested_provider
         cli._explicit_api_key = r.api_key
         cli._explicit_base_url = r.base_url
         if r.api_key:

@@ -1598,11 +1598,23 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
         return None
     profile = None
     provider_name = (getattr(agent, "provider", "") or "").strip()
-    if provider_name:
+    requested_name = (getattr(agent, "requested_provider", "") or "").strip()
+    provider_names = (
+        [requested_name, provider_name]
+        if provider_name == "custom" and requested_name.startswith("custom:")
+        else [provider_name, requested_name]
+    )
+    for provider_name in provider_names:
+        if provider_name.startswith("custom:"):
+            provider_name = provider_name.split(":", 1)[1]
+        if not provider_name:
+            continue
         try:
             profile = get_provider_profile(provider_name)
         except Exception:
             profile = None
+        if profile is not None:
+            break
     if profile is None:
         base_url = str(client_kwargs.get("base_url", "") or "").strip()
         if base_url:
@@ -1614,7 +1626,7 @@ def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     except Exception:
         _ra().logger.warning(
             "Provider profile %r failed to create a client; falling back to the standard client path",
-            getattr(profile, "name", provider_name) or "?", exc_info=True,
+            getattr(profile, "name", "") or "?", exc_info=True,
         )
         return None
 
@@ -1958,12 +1970,16 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
     agent.client = agent._create_openai_client(dict(agent._client_kwargs), reason="switch_model", shared=True)
 
 
-def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm) -> None:
+def _swap_switch_runtime(
+    agent, new_model, new_provider, new_requested_provider, api_key, base_url, api_mode,
+    old_provider, old_norm, new_norm, old_route_norm, new_route_norm,
+) -> None:
     """Swap identity/transport fields, reload the pool, rebuild the client (rolled back by the caller on error)."""
     # Clear the per-config override so the new model's context window is re-resolved.
     agent._config_context_length = None
     agent.model = new_model
-    agent.provider = agent.requested_provider = new_provider
+    agent.provider = new_provider
+    agent.requested_provider = new_requested_provider
     # Re-read reasoning_echo so the flag reflects the new primary model (see _reasoning_echo_opt_in).
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     # Empty base_url while the provider changes means upstream resolution failed; falling back to
@@ -1971,7 +1987,7 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # Same-provider re-select (credential refresh) may keep the URL.
     if base_url:
         agent.base_url = base_url
-    elif old_norm != new_norm:
+    elif old_norm != new_norm or old_route_norm != new_route_norm:
         raise ValueError(
             f"switch_model: no base_url resolved for provider "
             f"'{new_provider}' (switching from '{old_provider}'); "
@@ -1985,13 +2001,13 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
         agent.api_key = api_key
     # Reload the credential pool on provider change: a pool with a mismatched provider makes
     # recover_with_credential_pool short-circuit. Reload failure is non-fatal.
-    if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+    if old_route_norm != new_route_norm or getattr(agent, "_credential_pool", None) is None:
         # A pool bound to the old provider is worse than none: the recovery guard rejects it.
         agent._credential_pool = None
         agent._credential_pool_entry_id = None
         try:
             from agent.credential_pool import load_pool
-            agent._credential_pool = load_pool(new_provider)
+            agent._credential_pool = load_pool(new_requested_provider)
         except Exception as _pool_exc:  # noqa: BLE001
             logger.warning(
                 "switch_model: credential pool reload failed for %s (%s); "
@@ -2141,7 +2157,8 @@ def _persist_switch_billing_route(agent) -> None:
 
 
 def switch_model(
-    agent, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None
+    agent, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None,
+    new_requested_provider='',
 ):
     """Switch the model/provider in-place for a live agent (rebuild clients, caching flags,
     compressor). Mirrors ``_try_activate_fallback()`` but also updates ``_primary_runtime`` so
@@ -2149,6 +2166,13 @@ def switch_model(
     snapshot and re-raises (callers catch)."""
     old_model = agent.model
     old_provider = agent.provider
+    stored_requested_provider = getattr(agent, "requested_provider", "")
+    old_requested_provider = (
+        stored_requested_provider
+        if isinstance(stored_requested_provider, str) and stored_requested_provider
+        else old_provider
+    )
+    new_requested_provider = new_requested_provider or new_provider
     # ── Reload credential pool for the new provider (issue #52727) ── Without this,
     # ``recover_with_credential_pool`` sees a ``pool.provider != agent.provider`` mismatch and
     # short-circuits, leaving the new provider with no rotation/recovery on 401/429 and burning the original
@@ -2157,13 +2181,16 @@ def switch_model(
     # swallowed: the switch itself must still complete.
     old_norm = (old_provider or "").strip().lower()
     new_norm = (new_provider or "").strip().lower()
+    old_route_norm = (old_requested_provider or "").strip().lower()
+    new_route_norm = (new_requested_provider or "").strip().lower()
     api_mode, base_url, destination_capabilities = _resolve_switch_destination(
         agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm
     )
     snapshot = _snapshot_switch_state(agent)
     try:
         _swap_switch_runtime(
-            agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm
+            agent, new_model, new_provider, new_requested_provider, api_key, base_url, api_mode,
+            old_provider, old_norm, new_norm, old_route_norm, new_route_norm,
         )
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
@@ -2199,7 +2226,7 @@ def switch_model(
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
-    _finish_switch(agent, new_provider, old_norm, new_norm)
+    _finish_switch(agent, new_requested_provider, old_route_norm, new_route_norm)
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,

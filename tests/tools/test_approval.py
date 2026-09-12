@@ -386,8 +386,14 @@ class TestHermesHomeHardline:
             "find $HERMES_HOME -delete",
             "dd if=/dev/zero of=$HERMES_HOME/state.db",
             "rsync /tmp/replacement $HERMES_HOME/state.db",
+            "rsync --remove-source-files $HERMES_HOME/ /tmp/backup/",
+            "sed -i s/x/y/ $HERMES_HOME/state.db",
+            "perl -pi -e s/x/y/ $HERMES_HOME/state.db",
+            "tar --remove-files -cf /tmp/backup.tar $HERMES_HOME/state.db",
             "cmd.exe /c del $HERMES_HOME/state.db",
             "powershell Remove-Item $HERMES_HOME/state.db",
+            'cmd.exe /c del "%HERMES_HOME%\\state.db"',
+            "powershell -Command 'Remove-Item $env:HERMES_HOME/state.db'",
             'rm -rf "$HERMES_HOME"*',
             "rm -rf ~/.hermes*",
             'printf x >&"$HERMES_HOME/state.db"',
@@ -423,6 +429,7 @@ class TestHermesHomeHardline:
             "busybox cp $HERMES_HOME/state.db /tmp/backup",
             "find $HERMES_HOME -exec cp {} /tmp/backup \\;",
             "busybox sqlite3 $HERMES_HOME/state.db 'select 1'",
+            "sqlite3 $HERMES_HOME/state.db '.backup /tmp/state.db.bak'",
         ):
             assert detect_hardline_command(command) == (False, None), command
 
@@ -449,6 +456,10 @@ class TestHermesHomeHardline:
         monkeypatch.setenv("HERMES_HOME", str(home))
         assert detect_hardline_command("cd $HERMES_HOME && rm state.db")[0] is True
         assert detect_hardline_command("truncate -s0 state.db", cwd=str(home))[0] is True
+        assert detect_hardline_command("cd $HERMES_HOME && : > state.db")[0] is True
+        assert detect_hardline_command("find . -delete", cwd=str(home))[0] is True
+        assert detect_hardline_command("rm ../state.db", cwd=str(home / "sub"))[0] is True
+        assert detect_hardline_command("cd /missing || rm state.db", cwd=str(home))[0] is True
 
 
 class TestFindExecFullPathRm:

@@ -1194,7 +1194,7 @@ _HERMES_HOME_DESTRUCTION_DESCRIPTION = "destructive operation on Hermes data dir
 _HERMES_HOME_ROOTS = ("~/.hermes", "$hermes_home", "${hermes_home}", "$home/.hermes", "${home}/.hermes")
 _HERMES_DESTRUCTIVE_NAMES = frozenset({
     "rm", "mv", "truncate", "shred", "unlink", "tee", "cp", "dd", "install",
-    "rsync", "sqlite3",
+    "perl", "rsync", "ruby", "sed", "sqlite3", "tar",
 })
 _HERMES_OPTIONS_WITH_ARG = {
     "mv": {"-S", "--suffix", "-t", "--target-directory"},
@@ -1212,6 +1212,12 @@ _HERMES_OPTIONS_WITH_ARG = {
 }
 def _is_hermes_managed_path(word: str) -> bool:
     path = word.lower().replace("\\", "/").rstrip("/")
+    path = path.replace("%hermes_home%", "$hermes_home")
+    path = path.replace("$env:hermes_home", "$hermes_home")
+    path = path.replace("${env:hermes_home}", "$hermes_home")
+    path = path.replace("%home%/.hermes", "$home/.hermes")
+    path = path.replace("$env:home/.hermes", "$home/.hermes")
+    path = path.replace("${env:home}/.hermes", "$home/.hermes")
     if path.startswith("${hermes_home"):
         close = path.find("}")
         if close != -1 and (close == len(path) - 1 or path[close + 1] == "/"):
@@ -1243,8 +1249,7 @@ def _relative_operand_is_managed(word: str, managed_cwd: bool) -> bool:
         return False
     if len(word) > 1 and word[1] == ":":
         return False
-    normalized = word.replace("\\", "/")
-    return normalized not in {".", ".."} and not normalized.startswith("../")
+    return True
 
 
 def _managed_cwd_before(command: str, start: int, cwd: str | None) -> bool:
@@ -1256,14 +1261,8 @@ def _managed_cwd_before(command: str, start: int, cwd: str | None) -> bool:
             argv = shlex.split(_shell_command_segment(command, command_start), posix=True)
         except ValueError:
             continue
-        if len(argv) < 2:
-            managed = False
-        elif _is_hermes_managed_path(argv[1]):
+        if len(argv) >= 2 and _is_hermes_managed_path(argv[1]):
             managed = True
-        elif argv[1].startswith(("/", "~")) or (len(argv[1]) > 1 and argv[1][1] == ":"):
-            managed = False
-        elif managed and (argv[1] == ".." or argv[1].startswith("../")):
-            managed = False
     return managed
 
 
@@ -1303,7 +1302,7 @@ def _command_operands(argv: list[str], command_name: str) -> tuple[list[str], di
     return operands, option_values
 
 
-def _has_hermes_redirect(command: str) -> bool:
+def _has_hermes_redirect(command: str, cwd: str | None = None) -> bool:
     """Detect an output redirection whose shell target is inside HERMES_HOME."""
     for kind, index, _, quote in _scan_shell(command, subst="uq"):
         if kind != "char" or quote is not None or command[index] != ">":
@@ -1320,19 +1319,21 @@ def _has_hermes_redirect(command: str) -> bool:
         target = _deobfuscate_shell_word_for_detection(target)
         if descriptor_form and (target == "-" or target.isdigit()):
             continue
-        if _is_hermes_managed_path(target):
+        if (_is_hermes_managed_path(target)
+                or _relative_operand_is_managed(target, _managed_cwd_before(command, index, cwd))):
             return True
     return False
 
 
 def _detect_hermes_home_destruction(command: str, cwd: str | None = None) -> bool:
     """Hard-block destructive verbs only when they target Hermes-managed state."""
-    if _has_hermes_redirect(command):
+    if _has_hermes_redirect(command, cwd=cwd):
         return True
     for word_start, _, word in _iter_shell_command_word_spans(command):
         name = _hermes_destructive_executable_name(word)
         segment = _shell_command_segment(command, word_start)
-        if name in _HERMES_COMMAND_DISPATCHERS and _dispatcher_targets_hermes(segment):
+        managed_cwd = _managed_cwd_before(command, word_start, cwd)
+        if name in _HERMES_COMMAND_DISPATCHERS and _dispatcher_targets_hermes(segment, managed_cwd=managed_cwd):
             return True
         if name not in _HERMES_DESTRUCTIVE_NAMES:
             continue
@@ -1341,7 +1342,6 @@ def _detect_hermes_home_destruction(command: str, cwd: str | None = None) -> boo
         except ValueError:
             continue
         operands, option_values = _command_operands(argv, name)
-        managed_cwd = _managed_cwd_before(command, word_start, cwd)
         is_managed = lambda arg: (_is_hermes_managed_path(arg)
                                   or _relative_operand_is_managed(arg, managed_cwd))
         if name in {"rm", "truncate", "shred", "unlink", "tee"}:
@@ -1361,6 +1361,19 @@ def _detect_hermes_home_destruction(command: str, cwd: str | None = None) -> boo
                 return True
         elif name == "rsync" and len(operands) >= 2 and is_managed(operands[-1]):
             return True
+        elif name == "rsync" and "--remove-source-files" in argv:
+            if any(is_managed(arg) for arg in operands[:-1]):
+                return True
+        elif name in {"sed", "perl", "ruby"}:
+            in_place = any(
+                arg == "--in-place" or (arg.startswith("-") and not arg.startswith("--") and "i" in arg[1:])
+                for arg in argv[1:]
+            )
+            if in_place and any(is_managed(arg) for arg in operands):
+                return True
+        elif name == "tar" and "--remove-files" in argv:
+            if any(is_managed(arg) for arg in operands):
+                return True
         elif name == "dd":
             for operand in operands:
                 key, separator, value = operand.partition("=")
@@ -1384,7 +1397,7 @@ def _hermes_destructive_executable_name(word: str) -> str:
 _HERMES_COMMAND_DISPATCHERS = frozenset({"busybox", "cmd", "find", "powershell", "pwsh", "xargs"})
 
 
-def _dispatcher_targets_hermes(segment: str) -> bool:
+def _dispatcher_targets_hermes(segment: str, *, managed_cwd: bool = False) -> bool:
     """Detect managed paths passed to destructive applets/dispatcher payloads."""
     try:
         argv = shlex.split(segment, posix=True)
@@ -1394,14 +1407,19 @@ def _dispatcher_targets_hermes(segment: str) -> bool:
         return False
     dispatcher = _hermes_destructive_executable_name(argv[0])
     if dispatcher == "busybox" and len(argv) > 1:
-        return _detect_hermes_home_destruction(" ".join(shlex.quote(arg) for arg in argv[1:]))
+        return _detect_hermes_home_destruction(
+            " ".join(shlex.quote(arg) for arg in argv[1:]),
+            cwd=os.environ.get("HERMES_HOME") if managed_cwd else None,
+        )
     if dispatcher == "xargs":
-        for index, arg in enumerate(argv[1:], start=1):
+        for arg in argv[1:]:
             if _hermes_destructive_executable_name(arg) in _HERMES_DESTRUCTIVE_NAMES:
-                return _detect_hermes_home_destruction(" ".join(shlex.quote(item) for item in argv[index:]))
+                # xargs receives paths dynamically; an explicitly destructive
+                # payload is never safe to replay through the hardline floor.
+                return True
         return False
     if dispatcher == "find":
-        roots_managed = any(_is_hermes_managed_path(arg) for arg in argv[1:])
+        roots_managed = managed_cwd or any(_is_hermes_managed_path(arg) for arg in argv[1:])
         if roots_managed and "-delete" in argv:
             return True
         for marker in ("-exec", "-execdir"):
@@ -1413,15 +1431,17 @@ def _dispatcher_targets_hermes(segment: str) -> bool:
             )
         return False
     if dispatcher == "cmd":
-        destructive = any(arg.lower() in {"del", "erase", "rd", "rmdir"} for arg in argv[1:])
+        destructive_re = r"(?:^|\s)(?:del|erase|rd|rmdir)(?:\s|$)"
     else:
-        destructive = any(arg.lower() in {"del", "erase", "rd", "ri", "rm", "remove-item"} for arg in argv[1:])
-    return destructive and any(_is_hermes_managed_path(arg) for arg in argv[1:])
+        destructive_re = r"(?:^|\s)(?:del|erase|rd|ri|rm|remove-item)(?:\s|$)"
+    destructive = any(re.search(destructive_re, arg, re.IGNORECASE) for arg in argv[1:])
+    path_words = [word for arg in argv[1:] for word in re.split(r"\s+", arg)]
+    return destructive and any(_is_hermes_managed_path(arg.strip("'\"")) for arg in path_words)
 
 
 _SQLITE_READ_ONLY_PREFIXES = frozenset({"select", "explain", "values"})
 _SQLITE_READ_ONLY_DOT_COMMANDS = (
-    ".databases", ".dump", ".headers", ".indexes", ".mode", ".nullvalue",
+    ".backup", ".databases", ".dump", ".headers", ".indexes", ".mode", ".nullvalue",
     ".schema", ".separator", ".show", ".tables", ".width",
 )
 _SQLITE_READ_ONLY_PRAGMAS = frozenset({

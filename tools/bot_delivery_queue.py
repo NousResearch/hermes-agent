@@ -282,8 +282,12 @@ def busy_from_detail(record: dict[str, Any]) -> bool:
 
     Deriving ``busy`` from the same field the envelope prints is what stops a
     replayed envelope from contradicting its own cause (VERIFICATION D7).
+
+    A live-owner hold is a HELD slot too (P12): the target's Bot Chat is owned by
+    another surface, so the receipt for it must report ``busy: true`` — exactly as
+    the target_busy receipt does (VERIFICATION D2).
     """
-    return record.get("status_detail") == STATUS_DETAIL_TARGET_BUSY
+    return record.get("status_detail") in (STATUS_DETAIL_TARGET_BUSY, STATUS_DETAIL_LIVE_OWNER)
 
 
 def slot_held(home: str | os.PathLike[str], profile: str) -> bool:

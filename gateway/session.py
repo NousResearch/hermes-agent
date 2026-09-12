@@ -638,9 +638,14 @@ def _canonical_participant(source: SessionSource) -> Optional[str]:
     return participant_id
 
 
+# Telegram private-chat General/lobby ids. Forum groups use chat_type=forum and keep thread_id.
+_TELEGRAM_DM_GENERAL_TOPIC_IDS = frozenset({"", "1"})
+
+
 def build_session_key(
     source: SessionSource, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False, profile: Optional[str] = None,
+    *, include_telegram_dm_thread: bool = True,
 ) -> str:
     """Build a deterministic session key from a message source (single source of truth).
 
@@ -649,6 +654,11 @@ def build_session_key(
     compatibility). DMs are isolated per chat_id, falling back to the sender id, then to one
     session per platform. Groups add the participant id only when ``group_sessions_per_user`` and
     not in a thread (threads are shared unless ``thread_sessions_per_user``).
+
+    Telegram DMs: ``include_telegram_dm_thread=False`` drops ``thread_id`` so a reply-derived /
+    per-message ``message_thread_id`` cannot fan one private chat into N keys (issue #107133).
+    SessionStore re-enables the suffix for topic-mode non-General bound DM topics. Forum groups
+    (``chat_type=forum``) always keep per-topic isolation.
     """
     is_dm = source.chat_type == "dm"
     chat_id = source.chat_id
@@ -658,6 +668,10 @@ def build_session_key(
     # delivered into (prospective_thread_id), and normalize the chat_type slot to "thread" so
     # in-thread follow-ups byte-match. A real thread_id always wins. DMs use thread_id only.
     thread_id = source.thread_id or (None if is_dm else source.prospective_thread_id)
+    if (
+        is_dm and source.platform == Platform.TELEGRAM and not include_telegram_dm_thread
+    ):
+        thread_id = None
     chat_type_slot = "thread" if thread_id and not source.thread_id else source.chat_type
     if is_dm:
         # No chat_id: fall back to the sender id before the bare per-platform sink, or every
@@ -890,6 +904,7 @@ class SessionStore(
         now = _now()
         if not force_new:
             self._adopt_legacy_slack_entry(source, session_key)
+            self._adopt_telegram_dm_fanout_entry(source, session_key)
 
         # Phase 1 (lock): snapshot the entry for stale/reset checks.
         with self._lock:

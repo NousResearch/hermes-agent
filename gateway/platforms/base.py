@@ -2306,11 +2306,33 @@ class BasePlatformAdapter(ABC):
 
     def _event_session_key(self, event: "MessageEvent") -> str:
         """Adapter-level session key for ``event``, profile-namespaced like the agent run."""
+        source = event.source
         extra = self.config.extra
+        # Telegram DMs: prefer SessionStore so topic-mode lanes keep their suffix while
+        # synthetic per-message thread_ids coalesce (issue #107133). Without a store, drop
+        # the Telegram DM thread slot — different keys would flush N parallel turns.
+        if (
+            getattr(source, "platform", None) == Platform.TELEGRAM
+            and getattr(source, "chat_type", None) == "dm"
+        ):
+            store = getattr(self, "_session_store", None)
+            generate = getattr(store, "_generate_session_key", None)
+            if callable(generate):
+                try:
+                    key = generate(source)
+                    if isinstance(key, str) and key:
+                        return key
+                except Exception:
+                    logger.debug("telegram DM session-key via store failed; coalescing", exc_info=True)
+            return build_session_key(
+                source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
+                profile=self._session_key_profile(source),
+                include_telegram_dm_thread=False)
         return build_session_key(
-            event.source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            source, group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source))
+            profile=self._session_key_profile(source))
 
     def _text_batch_key(self, event: "MessageEvent") -> str:
         """Session-scoped key for text batching (subclasses may override)."""

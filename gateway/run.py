@@ -3885,7 +3885,11 @@ class GatewayRunner(
         return build_session_key(
             source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-            profile=_profile)
+            profile=_profile,
+            include_telegram_dm_thread=not (
+                source.platform == Platform.TELEGRAM and source.chat_type == "dm"
+            ),
+        )
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})

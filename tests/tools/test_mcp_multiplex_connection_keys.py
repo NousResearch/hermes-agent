@@ -89,6 +89,31 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     assert handlers._check_circuit_breaker("x") is None
 
 
+def test_same_named_server_with_other_mtls_identity_is_a_separate_connection(two_profiles):
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+
+    cfg_a = {
+        "url": "https://mcp.example/x",
+        "client_cert": "/certs/profile-a.pem",
+        "client_key": "/certs/profile-a.key",
+    }
+    cfg_b = {
+        "url": "https://mcp.example/x",
+        "client_cert": "/certs/profile-b.pem",
+        "client_key": "/certs/profile-b.key",
+    }
+
+    two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+
+    two_profiles("b")
+    reg.register_connected_into_current_scope({"x": cfg_b})
+    assert "x" in disc._select_new_servers({"x": cfg_b})
+
+
 def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profiles):
     import tools.mcp_tool as core
     from tools import mcp_tool_discovery as disc, mcp_tool_lifecycle as lifecycle

@@ -403,14 +403,16 @@ def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
     everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
     the schema cache survives a token rotation). Two profiles pointing at the same URL with different
-    headers/env/auth are two identities; borrowing across them would call tools as the other user."""
+    headers/env/auth/client certificates are two identities; borrowing across them would call tools
+    as the other user."""
     from tools.mcp_schema_cache import config_fingerprint
 
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
 
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
-            (config.get("auth") or "").lower().strip())
+            (config.get("auth") or "").lower().strip(), _frozen(config.get("client_cert")),
+            _frozen(config.get("client_key")))
 
 
 def _same_server_route(server: Any, config: dict) -> bool:

@@ -11179,6 +11179,26 @@ async function forgetLocalGatewayDescriptor(profile) {
   }
 }
 
+// Registry twin of forgetLocalGatewayDescriptor: a 'local' registry connection
+// either delegates to the v1 profile route or pools a forced-local child under
+// its composite key, so the stale descriptor lives wherever ensureRegistryBackend
+// put it.
+async function forgetRegistryLocalGatewayDescriptor(connectionId, profile) {
+  const profileKey = String(profile ?? '').trim() || 'default'
+  const localRoute = resolveRegistryLocalRoute(profileKey, {
+    globalRemote: globalRemoteActive(),
+    profileRemoteOverride: Boolean(profileHasRemoteOverride(profileKey))
+  })
+
+  if (localRoute.delegate) {
+    return forgetLocalGatewayDescriptor(profile)
+  }
+
+  if (backendPool.delete(localRoute.poolKey)) {
+    rememberLog(`[gateway] forgot stale canonical endpoint for connection "${String(connectionId || '').trim() || 'primary'}" profile "${profileKey}"; re-ensuring`)
+  }
+}
+
 async function ensureBackend(profile, opts: { passive?: boolean } = {}) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const passive = Boolean(opts.passive)
@@ -14940,9 +14960,15 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
     const connection = await ensureRegistryBackend(payload?.connectionId, payload?.profile)
 
     if (connection.gatewayEndpoint) {
-      const ticket = await mintLocalGatewayTicket(connection.gatewayEndpoint)
+      return redialLocalGateway({
+        ensure: () => ensureRegistryBackend(payload?.connectionId, payload?.profile),
+        forget: () => forgetRegistryLocalGatewayDescriptor(payload?.connectionId, payload?.profile),
+        use: async (current: typeof connection) => {
+          const ticket = await mintLocalGatewayTicket(current.gatewayEndpoint)
 
-      return localGatewayDials.prepare(connection.baseUrl, ticket, _event.sender.id)
+          return localGatewayDials.prepare(current.baseUrl, ticket, _event.sender.id)
+        }
+      })
     }
 
     return registryGatewayWsUrlHandler(payload)

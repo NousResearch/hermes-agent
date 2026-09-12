@@ -106,3 +106,85 @@ test('a dial that keeps failing after one re-ensure surfaces the error instead o
   expect(ensures).toBe(2)
   expect(forgets).toBe(1)
 })
+
+test.skipIf(process.platform === 'win32')('a stopped gateway that unlinked its control socket is a stale owner, not a raw filesystem error', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const net = await import('node:net')
+  const { mintLocalGatewayTicket, redialLocalGateway } = await import('./local-gateway')
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-redial-'))
+  const socketPath = path.join(home, 'gateway.sock')
+  const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+
+  const serve = async (ticket: string) => {
+    const server = net.createServer(socket => socket.once('data', () => {
+      socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket } }) + '\n')
+    }))
+
+    await new Promise<void>(resolve => server.listen(socketPath, resolve))
+    await fs.chmod(socketPath, 0o600)
+
+    return server
+  }
+
+  const stop = async (server: ReturnType<typeof net.createServer>) => {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await fs.rm(socketPath, { force: true })
+  }
+
+  let replacement: ReturnType<typeof net.createServer> | null = null
+  const original = await serve('grant-original')
+
+  try {
+    expect(await mintLocalGatewayTicket(endpoint)).toBe('grant-original')
+    await stop(original)
+
+    let ensures = 0
+    let forgets = 0
+
+    const result = await redialLocalGateway({
+      ensure: async () => {
+        ensures += 1
+
+        if (ensures === 2) {replacement = await serve('grant-replacement')}
+
+        return endpoint
+      },
+      forget: () => { forgets += 1 },
+      use: e => mintLocalGatewayTicket(e)
+    })
+
+    expect(result).toBe('grant-replacement')
+    expect(forgets).toBe(1)
+    expect(ensures).toBe(2)
+  } finally {
+    if (replacement) {await stop(replacement)}
+    await fs.rm(home, { recursive: true, force: true })
+  }
+})
+
+test.skipIf(process.platform === 'win32')('a group-accessible control socket is refused as unsafe, and unrelated errors are never stale', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const net = await import('node:net')
+  const { isStaleLocalGatewayError, mintLocalGatewayTicket } = await import('./local-gateway')
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-unsafe-'))
+  const socketPath = path.join(home, 'gateway.sock')
+  const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  const server = net.createServer(socket => socket.end())
+  await new Promise<void>(resolve => server.listen(socketPath, resolve))
+  await fs.chmod(socketPath, 0o660)
+
+  try {
+    const failure = await mintLocalGatewayTicket(endpoint).catch(error => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure.message).toBe('Unsafe gateway control path')
+    expect(isStaleLocalGatewayError(failure)).toBe(true)
+    expect(isStaleLocalGatewayError(new Error('EACCES: permission denied'))).toBe(false)
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await fs.rm(home, { recursive: true, force: true })
+  }
+})

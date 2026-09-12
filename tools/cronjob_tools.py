@@ -267,44 +267,33 @@ def _run_heartbeat(job_name: str):
 def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
     """Fire an already-claimed job through the shared ``run_one_job`` body (split from
     ``_execute_job_now`` so the background path can claim synchronously and hand the run
-    to a worker). Returns {"claimed": True, "success": bool, "error": ...}."""
+    to a worker). Returns {"claimed": True, "success": bool, "error": ...}.
+    
+    The in-memory firing lock is ALWAYS released on exit, regardless of whether the job
+    succeeded or failed. This guarantees that a completed background run never leaves a
+    stale lock that blocks subsequent manual fires (#107559).
+    """
     job_id = job["id"]
-    _registered = False
     fire_owner = None
+    registered = False
+    from cron.scheduler import release_running_job, run_one_job, try_register_running_job
+    
     try:
-        from cron.scheduler import release_running_job, run_one_job, try_register_running_job
-
-        # In-flight dedupe: the fire claim's TTL is routinely outlived by real jobs, so
-        # register in the scheduler's shared running set (same guard the ticker uses;
-        # also visible to the gateway shutdown drain).
-        # In-flight dedupe (idea from #53395 by @izumi0uu): the fire claim's TTL (300s) is routinely
-        # outlived by real jobs, so it alone cannot stop a manual run from double-firing a job the ticker
-        # (or another manual run) is still executing.
         if not try_register_running_job(job_id):
             return {"claimed": True, "success": False, "error": _ALREADY_RUNNING_ERROR}
-        _registered = True
+        registered = True
 
         claim = job.get("fire_claim")
         fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
 
-        # Inside the gateway process deliver on the loop that owns clients such as
-        # Matrix/aiohttp (a standalone asyncio.run() loop breaks them).
         runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
-        # Manual runs invoked from a gateway agent execute outside the scheduler ticker, but they still
-        # share the process with the live platform adapters. Calling those clients from run_one_job's
-        # standalone asyncio.run() loop raises errors like "Timeout context manager should be used inside a
-        # task" and can break encrypted Matrix delivery (#61495 — salvaged from #63586 by @Fly-onlyone).
         runner = runner_ref() if callable(runner_ref) else None
         adapters = getattr(runner, "adapters", None) if runner is not None else None
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
-        try:
-            # run_one_job records last_run_at/last_status via mark_job_run; `job` is the
-            # owner-bearing claimed snapshot, so terminal writes stay fenced by that owner.
-            with _run_heartbeat(str(job.get("name") or job_id)):
-                processed = run_one_job(job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
-        finally:
-            _registered = False
-            release_running_job(job_id)
+        
+        with _run_heartbeat(str(job.get("name") or job_id)):
+            processed = run_one_job(job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
+        
         refreshed = get_job(job_id) or {}
         execution = None
         execution_id = job.get("execution_id")
@@ -313,14 +302,9 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
 
             execution = get_execution(str(execution_id))
         last_status = refreshed.get("last_status")
-        # "delivery_failed": the run succeeded but output never reached the user — not a
-        # success for the caller; surface last_delivery_error.
         run_error = refreshed.get("last_error")
         if last_status == "delivery_failed" and not run_error:
             run_error = refreshed.get("last_delivery_error")
-        # That is NOT a success for the caller — the calling agent relays this result — so report it as
-        # failed and surface the delivery error, which lives in last_delivery_error (last_error is None for
-        # these runs, and a bare success=False with error=None reads as an unexplained failure). See #83993.
         ok = last_status in {"ok", "delivery_queued"}
         if execution is not None and execution.get("status") != "completed":
             ok = False
@@ -328,15 +312,13 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         return {"claimed": True, "success": bool(processed and ok), "error": run_error}
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
-        if _registered:
-            # Raised before the run's own release (e.g. heartbeat setup): don't leave the
-            # job marked in-flight. Only release registrations WE took — a bare discard
-            # could erase a ticker-owned entry.
-            with contextlib.suppress(Exception):
-                release_running_job(job_id)
         with contextlib.suppress(Exception):
             mark_job_run(job_id, False, str(e), expected_fire_owner=fire_owner)
         return {"claimed": True, "success": False, "error": str(e)}
+    finally:
+        if registered:
+            with contextlib.suppress(Exception):
+                release_running_job(job_id)
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:

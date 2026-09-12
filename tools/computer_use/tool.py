@@ -280,6 +280,16 @@ def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -
     leak unlocks into one another. See #67052.
     """
     scope_key = (action, "foreground" if args.get("delivery_mode") == "foreground" else "background")
+    # Honor the process/session approval bypass (--yolo / -z / approvals.mode: off) the same way
+    # terminal_tool does, so headless yolo runs never block on an unanswerable CLI prompt.
+    try:
+        from tools.approval import is_approval_bypass_active_for_session
+        from tools.approval_context import get_current_session_key
+        if is_approval_bypass_active_for_session(session_id) or (
+                bool(key := get_current_session_key(default="")) and is_approval_bypass_active_for_session(key)):
+            return None
+    except Exception:
+        pass
     with _approval_lock:
         if _session_auto_approve.get(session_id) or scope_key in _always_allow.get(session_id, set()):
             return None

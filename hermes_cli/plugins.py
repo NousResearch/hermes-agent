@@ -1569,8 +1569,11 @@ def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
 
 def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
-    background discovery instead of racing a second scan."""
-    _join_background_discovery()
+    background discovery instead of racing a second scan. If that join times out, returns with
+    registrations loaded so far while the background scan continues."""
+    if not _join_background_discovery():
+        logger.warning("Plugin discovery is still running; continuing with partial plugin state")
+        return
     get_plugin_manager().discover_and_load(force=force)
 
 
@@ -1601,12 +1604,13 @@ def start_background_plugin_discovery() -> None:
         _background_discovery_thread.start()
 
 
-def _join_background_discovery(timeout: float = 30.0) -> None:
-    """Wait for an in-flight background discovery (no-op from its own thread)."""
+def _join_background_discovery(timeout: float = 30.0) -> bool:
+    """Wait for in-flight background discovery; return whether it finished within ``timeout``."""
     t = _background_discovery_thread
     if t is None or not t.is_alive() or t is threading.current_thread():
-        return
+        return True
     t.join(timeout=timeout)
+    return not t.is_alive()
 
 
 def _plugin_toolset_keys_cache_path() -> Path:

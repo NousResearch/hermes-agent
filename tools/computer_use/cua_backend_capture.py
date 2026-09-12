@@ -236,19 +236,20 @@ class _CaptureMixin:
         (tree DISCARDED here). Before discovery ran we still try ``screenshot`` first and fall back, so the path
         self-heals on any driver version."""
         png_b64, image_mime_type, window_title = None, None, ""
+        gws_args = self._gws_args()
         if self._session._has_tool("screenshot") or not self._session.capabilities_discovered:
             png_b64, image_mime_type = _image_from_tool_result(self._call_capture_tool("screenshot", {
-                "window_id": self._active_window_id, "format": "jpeg", "quality": 85, "session": self._session_id}))
+                "window_id": gws_args["window_id"], "format": "jpeg", "quality": 85, "session": self._session_id}))
         if not png_b64:
             # "Unknown tool: screenshot" or an empty image part -> get_window_state. The title is cheap
             # and useful; `elements` stays empty by contract.
-            gws_out = self._call_capture_tool("get_window_state", self._gws_args())
+            gws_out = self._call_capture_tool("get_window_state", gws_args)
             (png_b64, image_mime_type), (_, window_title) = _image_from_tool_result(gws_out), _tree_and_title(gws_out)
         if not png_b64:
             cli_out = self._cli_refetch(
-                "get_window_state", self._gws_args(), 30.0, "vision screenshot",
+                "get_window_state", gws_args, 30.0, "vision screenshot",
                 "cua-driver vision capture returned no image over MCP (window_id=%s); re-fetching via CLI transport",
-                self._active_window_id) or {}
+                gws_args["window_id"]) or {}
             if cli_out.get("images"):
                 png_b64, image_mime_type = cli_out["images"][0], "image/png"
         return png_b64, image_mime_type, [], window_title
@@ -271,9 +272,11 @@ class _CaptureMixin:
         sc_elements = (gws_out.get("structuredContent") or {}).get("elements")
         elements = (_parse_elements_from_structured(sc_elements) if isinstance(sc_elements, list) and sc_elements
                     else _parse_elements_from_tree(tree) if tree else [])
-        # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
-        self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
         return *_image_from_tool_result(gws_out), elements, window_title
+
+    def _adopt_capture_snapshot(self, target: Dict[str, Any], elements: List[UIElement]) -> None:
+        self._set_active_target(target)
+        self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,
                 window_id: Optional[int] = None) -> CaptureResult:
@@ -292,12 +295,13 @@ class _CaptureMixin:
             return windows
         self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
         app_name = target["app_name"]
-        # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
-        # to the frontmost window.
-        if app or not self._last_app:
-            self._last_app = app_name or app or ""
         png_b64, image_mime_type, elements, window_title = (
             self._capture_vision() if mode == "vision" else self._capture_window_state())
+        if not png_b64 and not elements:
+            return self._failed_capture(mode, window_title)
+        self._adopt_capture_snapshot(target, elements)
+        if app or not self._last_app:
+            self._last_app = app_name or app or ""
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
         return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
                              window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type)

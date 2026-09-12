@@ -425,6 +425,98 @@ class TestUnifiedCronjobTool:
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
 
+    def test_create_normalizes_configured_whatsapp_home_label_deliver(self, monkeypatch):
+        """Agent-generated whatsapp:Home stores the canonical WhatsApp home target."""
+        from cron.jobs import get_job
+
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "22617767604330@lid")
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                deliver="whatsapp:Home",
+            )
+        )
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "whatsapp"
+
+    def test_create_preserves_whatsapp_home_label_without_home_config(self, monkeypatch):
+        """whatsapp:Home may still be an explicit label when no home target is configured."""
+        from cron.jobs import get_job
+
+        monkeypatch.delenv("WHATSAPP_HOME_CHANNEL", raising=False)
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                deliver="whatsapp:Home",
+            )
+        )
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "whatsapp:Home"
+
+    def test_create_normalizes_configured_whatsapp_home_jid_alias(self, monkeypatch):
+        """A model-supplied s.whatsapp.net alias for the configured LID home target stores whatsapp."""
+        from cron.jobs import get_job
+
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "22617767604330@lid")
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                deliver="whatsapp:22617767604330@s.whatsapp.net",
+            )
+        )
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "whatsapp"
+
+    def test_create_preserves_explicit_non_home_whatsapp_jid(self, monkeypatch):
+        """Explicit WhatsApp JIDs remain explicit when they are not the configured home alias."""
+        from cron.jobs import get_job
+
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "22617767604330@lid")
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                deliver="whatsapp:99999999999999@s.whatsapp.net",
+            )
+        )
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "whatsapp:99999999999999@s.whatsapp.net"
+
+    def test_update_normalizes_configured_whatsapp_home_label_deliver(self, monkeypatch):
+        """update applies the same WhatsApp home-target normalization as create."""
+        from cron.jobs import get_job
+
+        monkeypatch.setenv("WHATSAPP_HOME_CHANNEL", "22617767604330@lid")
+
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 1h")
+        )
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                deliver="whatsapp:Home",
+            )
+        )
+        assert updated["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "whatsapp"
+
 
 # =========================================================================
 # Agent-facing surface: per-job model pins are user-owned

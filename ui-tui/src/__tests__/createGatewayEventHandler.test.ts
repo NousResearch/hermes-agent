@@ -2204,5 +2204,37 @@ describe('createGatewayEventHandler', () => {
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
     })
+
+    describe('vault.save_login prompt (#109101)', () => {
+      it('opens the two-step save-login overlay and rings the prompt bell', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        onEvent({
+          payload: { origin: 'https://www.linkedin.com', request_id: 'save-9', site: 'www.linkedin.com' },
+          type: 'vault.save_login.request'
+        } as any)
+
+        expect(getOverlayState().vaultSaveLogin).toEqual({
+          origin: 'https://www.linkedin.com',
+          requestId: 'save-9',
+          site: 'www.linkedin.com'
+        })
+        expect(getUiState().status).toBe('save login for www.linkedin.com')
+      })
+
+      it('tears the card down on expire, but only for the matching request', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        onEvent({
+          payload: { origin: 'https://a.example', request_id: 'save-1', site: 'a.example' },
+          type: 'vault.save_login.request'
+        } as any)
+        onEvent({ payload: { request_id: 'save-2' }, type: 'vault.save_login.expire' } as any)
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { request_id: 'save-1' }, type: 'vault.save_login.expire' } as any)
+        expect(getOverlayState().vaultSaveLogin).toBeNull()
+      })
+    })
   })
 })

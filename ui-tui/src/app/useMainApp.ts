@@ -1090,6 +1090,34 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.vaultUnlock, respondWith]
   )
 
+  const answerVaultSaveLogin = useCallback(
+    (identifier: string, password: string) => {
+      if (!overlay.vaultSaveLogin) {
+        return
+      }
+
+      const requestId = overlay.vaultSaveLogin.requestId
+
+      // Either step left empty = declined (CLI parity). Answer with an empty
+      // login — the backend treats a password-less login as "not saving" —
+      // so the tool's blocked wait resolves immediately instead of burning
+      // its 180s timeout.
+      if (!identifier || !password) {
+        patchOverlayState({ vaultSaveLogin: null })
+      }
+
+      return respondWith(
+        'vault.save_login.respond',
+        { login: identifier && password ? { identifier, password } : {}, request_id: requestId },
+        () => {
+          patchOverlayState({ vaultSaveLogin: null })
+          patchUiState({ status: 'running…' })
+        }
+      )
+    },
+    [overlay.vaultSaveLogin, respondWith]
+  )
+
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
     slashRef.current(`/model ${value}`)
@@ -1200,6 +1228,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
@@ -1224,6 +1253,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       closeLiveSession,

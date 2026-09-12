@@ -770,12 +770,17 @@ export type GatewayEvent =
   | {
       payload: { request_id: string }
       session_id?: string
-      type: 'secret.expire' | 'sudo.expire' | 'vault.unlock.expire'
+      type: 'secret.expire' | 'sudo.expire' | 'vault.save_login.expire' | 'vault.unlock.expire'
     }
   | {
       payload: { backend: string; display_name: string; request_id: string }
       session_id?: string
       type: 'vault.unlock.request'
+    }
+  | {
+      payload: { origin: string; request_id: string; site: string }
+      session_id?: string
+      type: 'vault.save_login.request'
     }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
   | { payload: { question?: string; task_id: string; text: string }; session_id?: string; type: 'btw.complete' }

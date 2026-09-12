@@ -112,6 +112,12 @@ hermes config set   # Set individual config values
 hermes config get   # Print individual config values
 hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
 hermes setup        # Run the full setup wizard (configures everything at once)
+hermes secrets bitwarden setup  # Wire up Bitwarden Secrets Manager (bws) for secret injection
+hermes security     # Supply-chain audit (OSV.dev) for venv, plugins, and MCP servers
+hermes egress       # Manage the iron-proxy egress credential-injection firewall
+hermes sessions     # Manage session history (list, rename, export, prune, ...)
+hermes insights     # Show usage insights and analytics (tokens, costs, tool patterns)
+hermes backup       # Back up the Hermes home directory to a zip file
 hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
 hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
@@ -153,7 +159,7 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Retry or undo the last turn    | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                |
 | Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
 | Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
-| Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
+| Steer or interrupt current work | `/busy steer`, `/busy queue`, `/busy interrupt`, or `/stop` | `/stop`, or send a new message (busy-input mode set per gateway via `HERMES_GATEWAY_BUSY_INPUT_MODE`) |
 | Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).

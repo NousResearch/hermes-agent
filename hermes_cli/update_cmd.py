@@ -109,6 +109,7 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
     _run_post_update_maintenance, _run_pre_update_backup, _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
+from hermes_cli.update_cmd_plugins import _refresh_active_web_provider_dependencies  # noqa: F401
 logger = logging.getLogger(__name__)
 
 

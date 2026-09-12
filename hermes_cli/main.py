@@ -2061,6 +2061,7 @@ _FROZEN_UPDATER_SURFACE: dict[str, tuple[str, ...]] = {
         "_pause_windows_gateways_for_update", "_print_parked_branch_kept_notice",
         "_print_parked_branch_skip_warning", "_purge_stale_hermes_modules",
         "_refresh_active_lazy_features", "_refresh_active_memory_provider_dependencies",
+        "_refresh_active_web_provider_dependencies",
         "_refresh_bootstrap_cache_scripts", "_refresh_windows_gateway_launchers",
         "_relaunch_stopped_serves", "_reload_updated_runtime_modules",
         "_restore_active_tool_dependencies", "_restore_stashed_changes",

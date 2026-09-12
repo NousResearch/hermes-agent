@@ -454,3 +454,22 @@ hermes memory status     # check what's active
 ```
 
 See the [Memory Providers](./memory-providers.md) guide for full details on each provider, setup instructions, and comparison.
+
+### Review completion when a worker exits
+
+`auxiliary.background_review.shutdown_timeout_s` (default `120`, bounded to
+`0`–`600` seconds) gives an already requested review time to finish before a
+single-query CLI or Kanban worker exits, or a disconnected GUI session is
+reclaimed. The budget includes publication of the review confirmation, not just
+the model request. On expiry Hermes cancels unfinished work and logs a timeout;
+it does not turn a successful foreground task into a failed task. Deferred
+managed-local reviews still wait for idle admission inside that budget.
+
+Skill-review effort is checkpointed in the profile's existing `state.db`.
+Ordinary conversations retain their counter across runtime reconstruction and
+compression. Kanban cards share a profile-local clock: reaching the configured
+skill interval reviews the **current card**, without importing other cards'
+transcripts. A review can still conclude there is nothing to save. An interrupted
+turn retains its accumulated effort but does not launch a review, and rejected
+review admission refunds its cadence claim. Cron and delegated-agent opt-outs,
+tool restrictions, protected skills, and write approvals remain in effect.

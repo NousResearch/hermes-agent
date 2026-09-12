@@ -970,6 +970,12 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+def _wait_for_oneshot_reviews(cli) -> None:
+    from agent.review_lifecycle import drain_background_reviews
+    agent, _session_id = _oneshot_agent_and_session(cli)
+    drain_background_reviews(agent)
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
@@ -979,6 +985,7 @@ def _finalize_single_query(cli) -> None:
         # nothing after it may fail in a way that loses the turn.
         for step, what in (
             (_wait_for_oneshot_background_completions, "background completion wait"),
+            (_wait_for_oneshot_reviews, "background review wait"),
             (_flush_one_shot_session_store, "session store flush"),
         ):
             try:

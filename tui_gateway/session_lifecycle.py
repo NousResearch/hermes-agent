@@ -305,6 +305,13 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     slash-worker is closed in ``_finalize_session`` (the single chokepoint), NOT here. Idempotent via ``_finalized``."""
     if not session:
         return
+    # Isolated sessions have no local agent: retire the real owner as well, without
+    # starting a missing compute host just to shut a session down.
+    if session.get("_compute_host_active"):
+        with contextlib.suppress(Exception):
+            supervisor = _compute_host_supervisor
+            if supervisor is not None and supervisor.is_running():
+                supervisor.control(str(session.get("_sid") or ""), route_name="session.close", wait=False)
     _finalize_session(session, end_reason=end_reason)
     _announce_session_reclaimed(session, end_reason)
     with contextlib.suppress(Exception):
@@ -421,6 +428,27 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
     return use_compute_host
 
 
+def _session_review_pending(session: dict) -> bool:
+    from agent.review_lifecycle import has_pending_review
+    return has_pending_review(session.get("agent")) or bool(session.get("_review_pending"))
+
+
+def _session_review_keeps_alive(session: dict) -> bool:
+    """Automatic reclamation gets a bounded review grace, never a fake foreground turn."""
+    if not _session_review_pending(session):
+        session.pop("_review_reclaim_started", None)
+        return False
+    from agent.review_lifecycle import DEFAULT_SHUTDOWN_TIMEOUT_S
+    budget = getattr(session.get("agent"), "_review_shutdown_timeout_s", None)
+    if budget is None:
+        budget = session.get("_review_shutdown_timeout_s", DEFAULT_SHUTDOWN_TIMEOUT_S)
+    started = session.setdefault("_review_reclaim_started", time.monotonic())
+    if time.monotonic() - started < float(budget):
+        return True
+    logger.warning("Background review session-reclaim timeout (session=%s)", session.get("session_key"))
+    return False
+
+
 def _session_has_active_delegations(sid: str, session: dict | None = None) -> bool:
     """True when UI session ``sid`` still owns live background work — by live UI sid AND, when the TUI owns the durable
     lifecycle (never for gateway-viewer tabs), by session_key so a delegation from an earlier tab keeps it alive.
@@ -484,6 +512,7 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
     Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
     at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
     _attach_session_transport(session, transport)
+    session.pop("_review_reclaim_started", None)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()
@@ -549,7 +578,7 @@ def _schedule_ws_orphan_reap(
                 current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
-            if _session_has_active_delegations(sid, current):
+            if _session_review_keeps_alive(current) or _session_has_active_delegations(sid, current):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)
@@ -638,7 +667,8 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
             with _session_transport_lock:
                 if _session_has_live_transport(current, excluding=transport):
                     continue
-            if current.get("close_on_disconnect"):
+            if current.get("close_on_disconnect") and not (
+                    not current.get("running") and _session_review_keeps_alive(current)):
                 claimed_for_teardown = _pop_session_by_id(sid)
             else:
                 # Point at the drop sentinel (NOT real stdio) so _ws_session_is_orphaned recognizes it; standalone

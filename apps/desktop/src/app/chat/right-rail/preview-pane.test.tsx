@@ -365,6 +365,34 @@ describe('PreviewPane console state', () => {
     expect(rendered.container.textContent).not.toContain('machine running your agent')
   })
 
+  it('ignores a failed subframe after the main page has loaded', async () => {
+    const pageUrl = 'https://example.com'
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(<PreviewPane target={{ kind: 'url', label: 'Preview', source: pageUrl, url: pageUrl }} />)
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+
+    act(() => {
+      webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: pageUrl }))
+      webview.dispatchEvent(new Event('did-stop-loading'))
+      webview.dispatchEvent(
+        Object.assign(new Event('did-fail-load'), {
+          errorCode: -105,
+          errorDescription: 'ERR_NAME_NOT_RESOLVED',
+          isMainFrame: false,
+          validatedURL: 'https://ads.example.invalid/sync.html'
+        })
+      )
+    })
+
+    expect(rendered.container.textContent).not.toContain('ERR_NAME_NOT_RESOLVED')
+    expect(rendered.container.textContent).not.toContain('Preview failed to load')
+    expect(webview.parentElement?.className).not.toContain('opacity-0')
+  })
+
   it('surfaces a rejected navigation as a load error', async () => {
     let rendered!: ReturnType<typeof render>
     await act(async () => {

@@ -12,7 +12,7 @@ import fnmatch
 import os
 from pathlib import Path
 
-from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
+from tools.binary_extensions import OPAQUE_DOCUMENT_EXTENSIONS, is_pdf_path
 from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
@@ -378,25 +378,36 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     plausibly believes it holds the file's contents and tries to write the edited text back with
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
+
+    Symlinks are resolved before the extension checks: a text-suffixed alias
+    (``alias.txt -> document.docx``) would otherwise read as plain text here and
+    follow the link on write, corrupting the binary target (#108715).
     """
-    if has_opaque_document_extension(filepath):
-        ext = filepath[filepath.rfind("."):].lower()
+    try:
+        resolved = Path(_resolve_path_for_task(filepath, task_id))
+    except Exception:
+        resolved = Path(_expand_tilde(filepath))
+    target = str(resolved)
+    given_ext = Path(filepath).suffix.lower()
+    target_ext = resolved.suffix.lower()
+    # Only annotate when the link actually changes the extension — a direct
+    # .docx write keeps the original message shape.
+    suffix_note = "" if target_ext == given_ext else f" — resolves to '{target}'"
+
+    if given_ext in OPAQUE_DOCUMENT_EXTENSIONS or target_ext in OPAQUE_DOCUMENT_EXTENSIONS:
+        ext = given_ext if given_ext in OPAQUE_DOCUMENT_EXTENSIONS else target_ext
         return (
-            f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
+            f"Refusing to write plain text to binary document '{filepath}'{suffix_note} ({ext}). "
             "A text write cannot produce a valid document container and would "
             "corrupt the file (read_file showed you EXTRACTED text, not the real "
             "bytes). Use the docx/xlsx/powerpoint skills or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
-    if is_pdf_path(filepath):
-        try:
-            resolved = Path(_resolve_path_for_task(filepath, task_id))
-        except Exception:
-            resolved = Path(_expand_tilde(filepath))
+    if is_pdf_path(filepath) or is_pdf_path(target):
         try:
             if resolved.is_file():
                 return (
-                    f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
+                    f"Refusing to overwrite existing PDF '{filepath}'{suffix_note} with plain text. "
                     "read_file showed you EXTRACTED text, not the real bytes — writing "
                     "text back would destroy the document. Use the pdf skill or a PDF "
                     "library via the terminal to modify it. (Creating a NEW .pdf file "

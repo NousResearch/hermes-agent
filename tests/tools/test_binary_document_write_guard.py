@@ -183,3 +183,61 @@ class TestPatchToolGuard:
         )
         assert not result.get("error")
         assert target.read_text() == "hello there"
+
+
+class TestSymlinkAliasGuard:
+    """Regression for #108715: a text-suffixed symlink to a binary document
+    must not bypass the guard — the write follows the link and corrupts the
+    target while the given path reads as plain text."""
+
+    def test_write_file_via_text_suffix_symlink_rejected(self, tmp_path: Path):
+        docx = tmp_path / "document.docx"
+        _make_minimal_docx(docx)
+        original = docx.read_bytes()
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(docx)
+
+        result = json.loads(write_file_tool(str(alias), "edited text"))
+
+        assert result.get("error"), "text write via symlink alias must be refused"
+        assert "document.docx" in result["error"], "refusal should surface the resolved target"
+        assert docx.read_bytes() == original, "document bytes must be untouched"
+        assert zipfile.is_zipfile(docx), "document must remain a valid container"
+
+    def test_patch_replace_via_text_suffix_symlink_rejected(self, tmp_path: Path):
+        docx = tmp_path / "document.docx"
+        _make_minimal_docx(docx)
+        original = docx.read_bytes()
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(docx)
+
+        result = json.loads(
+            patch_tool(mode="replace", path=str(alias),
+                       old_string="good", new_string="great")
+        )
+
+        assert result.get("error")
+        assert docx.read_bytes() == original
+
+    def test_pdf_overwrite_via_symlink_rejected(self, tmp_path: Path):
+        pdf = tmp_path / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n1 0 obj\nendobj\n%%EOF")
+        original = pdf.read_bytes()
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(pdf)
+
+        result = json.loads(write_file_tool(str(alias), "not a pdf"))
+
+        assert result.get("error"), "PDF overwrite via symlink alias must be refused"
+        assert pdf.read_bytes() == original
+
+    def test_symlink_to_plain_text_still_allowed(self, tmp_path: Path):
+        target = tmp_path / "notes.txt"
+        target.write_text("hello")
+        alias = tmp_path / "link.md"
+        alias.symlink_to(target)
+
+        result = json.loads(write_file_tool(str(alias), "replaced"))
+
+        assert not result.get("error")
+        assert target.read_text() == "replaced"

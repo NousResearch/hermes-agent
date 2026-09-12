@@ -106,6 +106,12 @@ CREDENTIAL_PERSIST_FAILED_REASON = "credential_persist_failed"
 # ``_seed_from_singletons`` would re-create them from the same stale tokens.
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60
 
+# Claude Code rotates its shared token pair out of process.  Anthropic can
+# reject the old pair before Claude Code's atomic file replacement is visible,
+# so a failed borrowed refresh needs a short bounded handoff window.
+_CLAUDE_CODE_ROTATION_WAIT_SECONDS = 2.0
+_CLAUDE_CODE_ROTATION_POLL_SECONDS = 0.25
+
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
 
@@ -1617,34 +1623,43 @@ class CredentialPool(CredentialPoolAdminMixin):
         """
         if self.provider == "anthropic":
             if entry.source == "claude_code":
-                synced = self._sync_anthropic_entry_from_credentials_file(entry)
-                if synced.refresh_token != entry.refresh_token:
-                    logger.debug("Retrying refresh with synced token from credentials file")
-                    try:
-                        from agent.anthropic_credentials import refresh_anthropic_oauth_pure
-                        refreshed = refresh_anthropic_oauth_pure(
-                            synced.refresh_token, use_json=synced.source.endswith("hermes_pkce"),
-                        )
-                        # Commit to the authoritative singleton BEFORE marking or
-                        # persisting the pool row, or a failed write leaves an
-                        # "ok" row that the next load_pool() re-seeds over.
-                        self._commit_anthropic_rotation(synced, refreshed)
-                        return self._adopt(
-                            synced,
-                            access_token=refreshed["access_token"],
-                            refresh_token=refreshed["refresh_token"],
-                            expires_at_ms=refreshed["expires_at_ms"],
-                            last_status=STATUS_OK,
-                            last_status_at=None,
-                            last_error_code=None,
-                        )
-                    except _RefreshDone as done:
-                        return done.result
-                    except Exception as retry_exc:
-                        logger.debug("Retry refresh also failed: %s", retry_exc)
-                elif not self._entry_needs_refresh(synced):
-                    logger.debug("Credentials file has valid token, using without refresh")
-                    return synced
+                deadline = time.monotonic() + _CLAUDE_CODE_ROTATION_WAIT_SECONDS
+                while True:
+                    synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                    access_changed = synced.access_token != entry.access_token
+                    refresh_changed = synced.refresh_token != entry.refresh_token
+                    if access_changed and not self._entry_needs_refresh(synced):
+                        logger.debug("Adopting rotated token from Claude Code credentials file")
+                        return synced
+                    if refresh_changed:
+                        logger.debug("Retrying refresh with synced token from credentials file")
+                        try:
+                            from agent.anthropic_credentials import refresh_anthropic_oauth_pure
+                            refreshed = refresh_anthropic_oauth_pure(
+                                synced.refresh_token, use_json=synced.source.endswith("hermes_pkce"),
+                            )
+                            # Commit to the authoritative singleton BEFORE marking or
+                            # persisting the pool row, or a failed write leaves an
+                            # "ok" row that the next load_pool() re-seeds over.
+                            self._commit_anthropic_rotation(synced, refreshed)
+                            return self._adopt(
+                                synced,
+                                access_token=refreshed["access_token"],
+                                refresh_token=refreshed["refresh_token"],
+                                expires_at_ms=refreshed["expires_at_ms"],
+                                **_MARK_OK,
+                            )
+                        except _RefreshDone as done:
+                            return done.result
+                        except Exception as retry_exc:
+                            logger.debug("Retry refresh also failed: %s", retry_exc)
+                            break
+                    if access_changed:
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(_CLAUDE_CODE_ROTATION_POLL_SECONDS, remaining))
             else:
                 # Backstop for pool-owned sources (hermes_pkce, manual:dashboard_pkce):
                 # the winner may have persisted between our pre-check and our POST.

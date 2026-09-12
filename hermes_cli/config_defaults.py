@@ -1337,6 +1337,9 @@ DEFAULT_CONFIG = {
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Opt-in names-only catalog + targeted loading guidance; never hides a skill.
+        # Existing sessions keep their frozen prompt. Invalid values use full behavior.
+        "prompt_mode": "full",  # full | lean
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
         # HERMES_HOME, scanned alongside the local dir.

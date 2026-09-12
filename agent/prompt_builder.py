@@ -1291,6 +1291,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    *, lean: bool = False,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
@@ -1298,6 +1299,10 @@ def _render_skills_index(
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
     demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    if lean:
+        # Keep collision warnings visible: a bare ambiguous name cannot be loaded safely.
+        demoted = frozenset(cat for cat, entries in skills_by_category.items()
+                            if not any("[name collision" in desc for _, desc in entries))
     hidden_note = (
         "\n(Categories marked [names only] are outside the current coding "
         "context, so their descriptions are omitted — the skills work "
@@ -1318,6 +1323,20 @@ def _render_skills_index(
             if name not in seen:
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+    if lean:
+        discovery = "Use skills_list to inspect descriptions when names are ambiguous. " if (
+            available_tools is None or "skills_list" in available_tools) else ""
+        return (
+            "## Skills\n"
+            "Load the governing skill with skill_view before an operational workflow, or when its "
+            "procedures, user preferences or safety constraints are needed. Honor explicitly requested "
+            "skills and mandatory task-specific gates. A weak thematic match alone does not require "
+            "loading a skill; answer conceptual questions directly when the available context suffices. "
+            + discovery +
+            "Names-only entries remain available; load references only when needed. Follow loaded skills, "
+            "and correct material errors or record reusable lessons after difficult work.\n\n"
+            "<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
+        )
     return (
         "## Skills\n"
         "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
@@ -1349,12 +1368,15 @@ def _build_skills_system_prompt_inner(
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    skills_cfg = _config_readonly("skills.prompt_mode").get("skills")
+    lean = isinstance(skills_cfg, dict) and skills_cfg.get("prompt_mode") == "lean"
     project_dirs = project_dirs or []
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        lean,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1412,7 +1434,8 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools,
+                                 lean=lean)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

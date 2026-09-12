@@ -107,6 +107,42 @@ def test_install_writes_only_after_native_confirmation(tmp_path, monkeypatch):
     assert state["installed"]["sk1"]["version"] == 1
 
 
+def test_generated_manifest_and_share_requests_match_gateway_contract(tmp_path, monkeypatch):
+    """The manifest we infer for a bare local skill (hermes.minimum_version from the running
+    version, host platform/arch) and the draft/approve/publish bodies we send must validate against
+    the Gateway's published schemas; the commit author must be the token owner (attribution guard)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from plugins.wisdom.client import WisdomClient
+    src = tmp_path / "my-skill"
+    src.mkdir()
+    (src / "SKILL.md").write_text("---\nname: my-skill\ndescription: d\n---\n# hi\n", encoding="utf-8")
+    prepared = pkg.prepare(src, description="Team <b>notes</b>", owner="did:privy:me",
+                           installation_id="i" * 32, staging=tmp_path / "staging")
+    manifest = json.loads(next(b for p, _, b in prepared.files if p == "skill.manifest.json"))
+    spec = manifest["requirements"]
+    assert spec["hermes"]["minimum_version"] and spec["platforms"] and spec["architectures"]
+    assert pkg.PackageManifest.model_validate(manifest)  # round-trips through the strict schema mirror
+    commit = json.loads(prepared.objects.objects[prepared.commit][1])
+    assert commit["author"] == {"owner": "did:privy:me", "device": "i" * 32}
+
+    client = WisdomClient.__new__(WisdomClient)
+    client.sync = type("S", (), {"put_objects": lambda self, o: None})()
+    sent = []
+    client._request = lambda m, p, json_body=None, params=None: sent.append((p, json_body)) or {"draft": {"id": "d1"}}
+    client.submit_draft(prepared, slug=pkg.slug_for("my-skill"))
+    client.approve_and_publish("d1", content_hash=prepared.content_hash,
+                               description_hash=prepared.description_hash, manifest_hash=prepared.manifest_hash)
+    bodies = dict(sent)
+    assert set(bodies["drafts"]) == {"slug", "draft_commit", "content_hash", "author_description"}
+    assert bodies["drafts"]["author_description"] == "Team notes"
+    assert set(bodies["drafts/d1/approve"]) == {"content_hash", "author_description_hash", "package_manifest_hash"}
+    assert set(bodies["drafts/d1/publish"]) == {"content_hash", "base_commit"}
+    for body in bodies.values():
+        for k, v in body.items():
+            if k.endswith("hash") or k == "draft_commit":
+                assert pkg.SHA256_RE.fullmatch(v), (k, v)
+
+
 def test_reinstall_keeps_local_edits_and_failed_install_leaves_no_skill(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_cli.plugins_state import PluginState

@@ -298,6 +298,12 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
+# Plugin API routers (``/api/plugins/<name>/*``) get the request's ``?profile=`` scope here, once,
+# instead of every plugin re-implementing what the core routers do per handler. Registered FIRST
+# so it sits innermost: auth runs before an unknown profile name can 404.
+from hermes_cli.web_server_dashboard import _PluginProfileScopeMiddleware  # noqa: E402
+app.add_middleware(_PluginProfileScopeMiddleware)
+
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
 from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402

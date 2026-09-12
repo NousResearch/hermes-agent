@@ -2,6 +2,7 @@
 
 import asyncio
 import ssl
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,11 +29,24 @@ def test_edge_ssl_adds_custom_ca_to_both_dependency_contexts(monkeypatch, tmp_pa
     ca_bundle.write_text("test certificate bundle", encoding="utf-8")
     edge_tts, communicate_context, voices_context = _fake_edge_tts()
     monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: str(ca_bundle))
+    monkeypatch.setattr(tts_tool_providers, "_EDGE_TTS_SSL_STATE", None)
 
-    tts_tool_providers._configure_edge_tts_ssl(edge_tts)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(
+            pool.map(
+                lambda _: tts_tool_providers._configure_edge_tts_ssl(edge_tts),
+                range(8),
+            )
+        )
 
     communicate_context.load_verify_locations.assert_called_once_with(cafile=str(ca_bundle))
     voices_context.load_verify_locations.assert_called_once_with(cafile=str(ca_bundle))
+
+    other_bundle = tmp_path / "other-ca.pem"
+    other_bundle.write_text("other certificate bundle", encoding="utf-8")
+    monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: str(other_bundle))
+    with pytest.raises(RuntimeError, match="changed after initialization"):
+        tts_tool_providers._configure_edge_tts_ssl(edge_tts)
 
 
 def test_edge_ssl_preserves_dependency_defaults_without_custom_ca(monkeypatch):

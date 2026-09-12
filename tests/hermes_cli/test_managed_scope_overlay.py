@@ -42,3 +42,64 @@ def test_overlay_preserves_user_siblings(managed):
     assert out["display"]["show_reasoning"] is True
 
 
+def _write_flat_moa(md):
+    _write(
+        md,
+        """
+        moa:
+          reference_models:
+            - provider: anthropic
+              model: claude-fable-5
+          aggregator:
+            provider: openai-codex
+            model: gpt-5.6-sol
+        """,
+    )
+
+
+def _assert_flat_moa_resolves(out):
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    resolved = resolve_moa_preset(out["moa"])
+    assert resolved["reference_models"] == [
+        {"provider": "anthropic", "model": "claude-fable-5", "enabled": True}
+    ]
+    assert resolved["aggregator"]["provider"] == "openai-codex"
+    assert resolved["aggregator"]["model"] == "gpt-5.6-sol"
+
+
+def test_flat_managed_moa_replaces_inherited_named_presets(managed):
+    from hermes_cli import managed_scope
+
+    _write_flat_moa(managed)
+    out = managed_scope.apply_managed_overlay(
+        {
+            "moa": {
+                "default_preset": "custom",
+                "presets": {
+                    "custom": {
+                        "reference_models": [
+                            {"provider": "openrouter", "model": "old/reference"}
+                        ],
+                        "aggregator": {
+                            "provider": "openrouter",
+                            "model": "old/aggregator",
+                        },
+                    }
+                },
+            }
+        }
+    )
+
+    _assert_flat_moa_resolves(out)
+
+
+def test_flat_managed_moa_replaces_malformed_user_value(managed):
+    from hermes_cli import managed_scope
+
+    _write_flat_moa(managed)
+    out = managed_scope.apply_managed_overlay({"moa": "invalid"})
+
+    _assert_flat_moa_resolves(out)
+
+

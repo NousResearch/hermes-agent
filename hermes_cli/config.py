@@ -19,7 +19,7 @@ import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, cast
 
 import yaml
 
@@ -1510,6 +1510,38 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+_LEGACY_FLAT_MOA_SLOT_KEYS = frozenset({"reference_models", "aggregator"})
+
+
+def _merge_config_layer(base: dict, override: dict) -> dict:
+    """Merge one config layer without shadowing an explicit flat MoA preset.
+
+    ``DEFAULT_CONFIG`` contains ``moa.presets.default``.  A legacy flat MoA
+    layer deliberately has no ``presets`` key, so an ordinary deep merge would
+    retain that inherited preset and make ``normalize_moa_config`` ignore the
+    layer's explicit slot settings.  Remove only the inherited preset selectors
+    before merging such a layer; named-preset layers keep normal deep-merge
+    behavior.
+    """
+    moa_override = override.get("moa")
+    if (
+        isinstance(moa_override, dict)
+        and "presets" not in moa_override
+        and not {"default_preset", "active_preset"}.intersection(moa_override)
+        and _LEGACY_FLAT_MOA_SLOT_KEYS.intersection(moa_override)
+    ):
+        base = base.copy()
+        inherited_moa = base.get("moa")
+        base_moa = (
+            dict(inherited_moa) if isinstance(inherited_moa, dict) else {}
+        )
+        base_moa.pop("presets", None)
+        base_moa.pop("default_preset", None)
+        base_moa.pop("active_preset", None)
+        base["moa"] = base_moa
+    return _deep_merge(base, override)
+
+
 def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     """Remove dotted leaf keys from *cfg* in place -> ``(cfg, keys_actually_present)``.
     ``save_config`` drops managed-scope leaves this way so a bulk write never persists a user
@@ -2157,7 +2189,7 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
     if isinstance(managed_normalized.get("model"), str):
         managed_normalized = dict(managed_normalized)
         managed_normalized["model"] = {"default": managed_normalized["model"]}
-    return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
+    return _merge_config_layer(expanded, cast(Dict[str, Any], _expand_env_vars(managed_normalized))), managed_config
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
@@ -2193,7 +2225,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
 
-                config = _deep_merge(config, user_config)
+                config = _merge_config_layer(config, user_config)
             except Exception as e:
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:

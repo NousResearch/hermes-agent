@@ -160,6 +160,10 @@ def _session_model_ids(session: dict[str, Any]) -> list[str]:
     """Account-authorized model ids advertised by ``session/new`` in ACP v1 or its legacy extension."""
     if option := _model_config_option(session):
         return _enabled_id_list(option.get("options"), "value")
+    return _legacy_session_model_ids(session)
+
+
+def _legacy_session_model_ids(session: dict[str, Any]) -> list[str]:
     return _enabled_id_list((session.get("models") or {}).get("availableModels"), "modelId")
 
 
@@ -174,10 +178,10 @@ def _model_selection_request(session: dict[str, Any], requested_model: str) -> t
         return None
     option = _model_config_option(session)
     if option:
-        if requested_model not in _session_model_ids(session):
+        if requested_model not in _enabled_id_list(option.get("options"), "value"):
             return None
         return "session/set_config_option", {"sessionId": session_id, "configId": str(option.get("id") or "model"), "value": requested_model}
-    available = set(_session_model_ids(session))
+    available = _legacy_session_model_ids(session)
     return None if available and requested_model not in available else ("session/set_model", {"sessionId": session_id, "modelId": requested_model})
 
 
@@ -406,7 +410,7 @@ class CopilotACPClient:
 
     def list_models(self, *, timeout_seconds: float = 15.0) -> list[str]:
         """Return the enabled models advertised by a short-lived authenticated ACP session."""
-        with self._session(timeout_seconds, allow_file_requests=False) as (session, _request):
+        with self._session(timeout_seconds, allow_file_requests=False) as (session, _):
             return _session_model_ids(session)
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float, model: str | None = None) -> tuple[str, str]:

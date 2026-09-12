@@ -466,6 +466,7 @@ def _bind_turn_identity(
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
     agent._persist_user_message_platform_id = persist_user_platform_id
+    agent._current_turn_timestamp = persist_user_timestamp
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -494,7 +495,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_tool_guardrail_halt_decision", None), ("_vision_supported", True),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
-    ("_pre_verify_nudges", 0),
+    ("_pre_verify_nudges", 0), ("_current_turn_timestamp", None),
 )
 
 
@@ -504,8 +505,11 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         setattr(agent, name, value)
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
-    agent._tool_guardrails.reset_for_turn()
-    _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
+    _guardrails = getattr(agent, "_tool_guardrails", None)
+    if _guardrails is not None and hasattr(_guardrails, "reset_for_turn"):
+        _guardrails.reset_for_turn()
+    _mem = getattr(agent, "_memory_store", None)
+    _reset_consol = getattr(_mem, "reset_consolidation_failures", None) if _mem is not None else None
     if callable(_reset_consol):
         _reset_consol()
 
@@ -563,6 +567,8 @@ def _stage_turn_user_message(
     # CLI input is stamped when staged; gateway input may carry the platform event
     # time. Preserve either value and cover any legacy unstamped handoff.
     stamp_message_timestamp(user_msg, timestamp=persist_user_timestamp)
+    if agent is not None and getattr(agent, "_current_turn_timestamp", None) is None:
+        agent._current_turn_timestamp = user_msg.get("timestamp")
 
     # Synthesized turns stamp their transcript type so the crash persist writes a typed
     # row; the model still receives role/content unchanged (api_messages strips both).
@@ -1034,6 +1040,7 @@ def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
 def build_api_messages(
     agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+    now: Optional[float] = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Build the wire copy of ``messages`` for one API call plus the effective system
     message. Returns ``(api_messages, effective_system)``.
@@ -1047,9 +1054,44 @@ def build_api_messages(
     replayed verbatim."""
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
+    from agent.replay_cleanup import canonicalize_replay_history
+
+    current_turn_message = (
+        messages[current_turn_user_idx]
+        if isinstance(current_turn_user_idx, int)
+        and 0 <= current_turn_user_idx < len(messages)
+        else None
+    )
+
+    turn_now = now
+    if turn_now is None and agent is not None:
+        _agent_ts = getattr(agent, "_current_turn_timestamp", None)
+        if isinstance(_agent_ts, (int, float)):
+            turn_now = float(_agent_ts)
+    if turn_now is None and isinstance(current_turn_message, dict):
+        _msg_ts = current_turn_message.get("timestamp")
+        if isinstance(_msg_ts, (int, float)):
+            turn_now = float(_msg_ts)
+        elif isinstance(_msg_ts, str):
+            try:
+                turn_now = float(_msg_ts)
+            except ValueError:
+                pass
+    if turn_now is None:
+        turn_now = time.time()
+    if agent is not None:
+        with suppress(Exception):
+            agent._current_turn_timestamp = turn_now
+
+    # Replay consumers rewrite interrupted blocks, dangling tails, and expired
+    # confirmations on read. Apply the exact same transform to this request-only
+    # copy before sidecars are substituted; the durable transcript remains intact.
+    # The expiry evaluation is frozen for the active turn so tool-loop iterations
+    # cannot rewrite the prefix or withdraw confirmation mid-turn.
+    canonical_messages = canonicalize_replay_history(messages, now=turn_now)
 
     api_messages = []
-    for idx, msg in enumerate(messages):
+    for idx, msg in enumerate(canonical_messages):
         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
         # persisted history via nested containers; see _clone_message_for_send.
         api_msg = _clone_message_for_send(msg)
@@ -1063,7 +1105,7 @@ def build_api_messages(
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
-        if idx == current_turn_user_idx and msg.get("role") == "user":
+        if msg is current_turn_message and msg.get("role") == "user":
             if isinstance(_api_content, str) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
                 # and every pass this turn sends identical bytes.
@@ -1094,7 +1136,7 @@ def build_api_messages(
         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
         # stops re-healing and flooding errors.log; durable history is untouched.
         # After the reasoning copy so thinking-only turns keep payload.
-        fill_empty_non_final_wire_payload(api_msg, is_final=(idx == len(messages) - 1))
+        fill_empty_non_final_wire_payload(api_msg, is_final=(idx == len(canonical_messages) - 1))
         # _thinking_prefill survives intentionally: the drop pass below needs it.
         # Strip length-continuation marks; some transports keep underscore keys.
         api_msg.pop("_length_continuation_fragment", None)

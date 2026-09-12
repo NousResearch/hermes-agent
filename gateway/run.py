@@ -1273,18 +1273,10 @@ def _build_gateway_agent_history(
                 entry.pop("api_content", None)  # prefix rewrite: the sidecar no longer matches
             agent_history.append(entry)
 
-    # Strip interrupted tool-call tails so the LLM doesn't re-execute tools killed mid-flight.
-    agent_history = strip_interrupted_tool_tails(agent_history)
-
-    # Strip a dangling assistant(tool_calls) tail (SIGKILL-mid-tool-call); else the model re-issues it forever.
-    # Strip a dangling assistant(tool_calls) tail with no tool answers — the signature of a SIGKILL
-    # mid-tool-call (e.g. the tool itself ran `docker restart`/`kill` and took the gateway down before the
-    # result was persisted). Without this the model re-issues the unanswered call on resume and loops the
-    # restart forever (#49201).
-    agent_history = strip_dangling_tool_call_tail(agent_history)
-
-    # Strip expired dangerous-confirmation phrases; replayed, a follow-up could read as a fresh confirmation.
-    agent_history = strip_stale_dangerous_confirmations(agent_history, now=time.time())
+    # Keep gateway resume byte-identical to the TUI resume and send paths. The
+    # canonicalizer owns interrupted-block, dangling-tail, and stale-confirmation
+    # cleanup together so a middle-of-history rewrite cannot break the prefix cache.
+    agent_history = canonicalize_replay_history(agent_history)
 
     observed_context = "\n".join(observed_group_context).strip() or None
     return agent_history, observed_context
@@ -1357,9 +1349,9 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # Tool output may hold literal MEDIA: examples (docs, logs); only deliberate media producers may auto-append.
 _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool", "image_generate"}
 
-# Replay-tail sanitization lives in agent/replay_cleanup.py so every resume surface shares one implementation.
-from agent.replay_cleanup import (  # noqa: E402
-    strip_interrupted_tool_tails, strip_dangling_tool_call_tail, strip_stale_dangerous_confirmations)
+# Replay-history canonicalization lives in agent/replay_cleanup.py so every resume
+# surface and the send path share one implementation.
+from agent.replay_cleanup import canonicalize_replay_history  # noqa: E402
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"

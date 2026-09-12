@@ -7,7 +7,8 @@ re-issues the unanswered call → endless "thinking"/reboot loop. These pure hel
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
@@ -126,6 +127,34 @@ def sanitize_replay_history(agent_history: List[Dict[str, Any]]) -> List[Dict[st
     return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
 
 
+def canonicalize_replay_history(
+    agent_history: List[Dict[str, Any]], *, now: Optional[float] = None
+) -> List[Dict[str, Any]]:
+    """Apply every destructive replay transform in the shared, fixed order.
+
+    Resume surfaces and the send path must serialize the same history bytes. The
+    older consumers each applied only a subset of these transforms: interrupted
+    blocks and dangling tails were handled by TUI replay, while stale dangerous
+    confirmations were handled by gateway replay. A request built from the
+    unmodified history could therefore diverge in the middle of the cached
+    prefix after a resume.
+
+    The input is never modified. ``now`` is injectable for deterministic tests;
+    production callers use the same wall clock as the existing expiry policy.
+    """
+    if not agent_history:
+        return agent_history
+    if now is None:
+        now = time.time()
+    cleaned = strip_interrupted_tool_tails(agent_history)
+    cleaned = strip_dangling_tool_call_tail(cleaned)
+    return strip_stale_dangerous_confirmations(cleaned, now=now)
+
+
+# Backward-compatible alias for the send-path name (2026-09-07 code).
+canonicalize_history_for_send = canonicalize_replay_history
+
+
 # --- Stale dangerous-confirmation text expiry ---
 
 # Short on purpose: a dangerous confirmation must not survive any restart or resume gap.
@@ -174,12 +203,21 @@ def strip_stale_dangerous_confirmations(
     cleaned: List[Dict[str, Any]] = []
     for msg in agent_history:
         ts = msg.get("timestamp") if isinstance(msg, dict) and msg.get("role") == "user" else None
-        if ts is None or not is_dangerous_confirmation(msg.get("content", "")) or (now - float(ts)) <= expiry_seconds:
+        try:
+            is_stale = (
+                ts is not None
+                and is_dangerous_confirmation(msg.get("content", ""))
+                and (float(now) - float(ts)) > expiry_seconds
+            )
+        except (ValueError, TypeError):
+            is_stale = False
+
+        if not is_stale:
             cleaned.append(msg)
             continue
         logger.debug(
             "Redacting stale dangerous-confirmation text in user message (age=%.1fs, expiry=%.1fs): %r",
-            now - float(ts), expiry_seconds, (msg.get("content") or "")[:80],
+            float(now) - float(ts), expiry_seconds, (msg.get("content") or "")[:80],
         )
         redacted = dict(msg)
         redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL

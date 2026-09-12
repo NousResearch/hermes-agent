@@ -510,7 +510,7 @@ export function TreeGroup({
           style={topEdge ? { height: TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) } : undefined}
         >
           {topEdge && (
-            <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, 100%)' }} />
+            <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, var(--titlebar-controls-left, 14px))' }} />
           )}
           {headerVisible ? (
             <ZoneMenu {...zoneMenu}>

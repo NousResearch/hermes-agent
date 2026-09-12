@@ -292,7 +292,7 @@ This is also how **command approval** works — when the agent needs to run a da
 
 ### Required Feishu App Configuration
 
-Interactive cards require **four** configuration steps in the Feishu Developer Console. Missing any of them causes error **200340** when users click card buttons.
+Interactive cards need the following configuration in the Feishu Developer Console. The usual symptom of a gap here is error **200340** when users click card buttons.
 
 1. **Subscribe to the card action callback (not an event):**
    In **Development Configuration > Events and Callbacks**, open the **Callback Configuration** tab — it is separate from the **Event Configuration** tab where `im.message.receive_v1` lives — and add `card.action.trigger` under *Subscribed Callbacks*. Adding it as an event does not deliver button clicks.
@@ -307,10 +307,10 @@ Interactive cards require **four** configuration steps in the Feishu Developer C
    Callback changes only take effect after **Version Management > Create version** is published (and approved, for enterprise apps). Feishu's own description of 200340 is "the application has not configured the card callback address or the configured address is invalid … ensure that you have created and published the latest version of the app".
 
 :::warning
-Without all four steps, Feishu will successfully *send* interactive cards (sending only requires `im:message:send` permission), but clicking any button returns error 200340. The card appears to work — the error only surfaces when a user interacts with it, and the click never reaches Hermes (nothing is logged), because Feishu rejects it before delivering the callback.
+Without a published card callback, Feishu will still successfully *send* interactive cards (sending only requires `im:message:send` permission), but clicking any button returns error 200340. The card appears to work — the error only surfaces when a user interacts with it, and the click never reaches Hermes (nothing is logged), because Feishu rejects it before delivering the callback.
 :::
 
-Error codes 200672 / 200673 mean the callback *did* reach Hermes and Feishu rejected the response payload; those are adapter bugs — please file an issue with the gateway log.
+Error codes 200672 / 200673 indicate the callback *did* reach Hermes and Feishu rejected the response; if you see them, please file an issue with the matching `gateway.log` lines.
 
 ## Document Comment Intelligent Reply
 

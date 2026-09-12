@@ -30,6 +30,12 @@ from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_wa
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Bounded window for replies whose agent loop already ended but whose send has not reached the adapter
+# yet (see ``_settle_reply_deliveries``). ``_running_agents`` is released when the agent loop returns,
+# so the drain is blind to them; without the window the adapter is disconnected under the send. Clamped
+# to the remaining shutdown-watchdog leash by the caller, so it can never cost us the watchdog.
+_REPLY_DELIVERY_GRACE_S = 5.0
+
 
 def _exit_with_failure_verdict(runner) -> bool:
     """True (after logging the reason) when the runner asked for a failure exit."""
@@ -1580,6 +1586,65 @@ class GatewayShutdownMixin:
         await self._notify_active_sessions_of_shutdown()
         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
 
+    def _undelivered_reply_session_keys(self) -> list:
+        """Sessions whose turn already left ``_running_agents`` but has not handed its reply to the adapter.
+
+        ``gateway/run_turn.py`` releases the session slot as soon as the agent loop returns
+        (``_run_agent_cleanup_turn_tasks``), while the reply is shaped, persisted and sent afterwards in
+        ``_handle_message_with_agent``. The durable active-turn marker is the accurate signal: it is set
+        before the turn runs and cleared (``_clear_durable_active_turn``) only once delivery is done.
+        Best-effort — a shutdown must never fail on this probe.
+        """
+        entries = getattr(getattr(self, "session_store", None), "_entries", None)
+        if not isinstance(entries, dict):
+            return []
+        with suppress(Exception):
+            return [
+                key for key, entry in list(entries.items())
+                if getattr(entry, "active_turn_token", None)
+            ]
+        return []
+
+    async def _settle_reply_deliveries(self, timeout: float, ctx: "GatewayShutdownMixin._StopContext") -> None:
+        """Give replies that are mid-delivery a bounded window, then arm recovery for any that miss it.
+
+        Adapters are disconnected in the next ``_stop_*`` phase, so a reply still in flight here would
+        be lost with no trace: its session is absent from ``_running_agents``, so the drain reported no
+        work, nothing gets a ``resume_pending`` marker, and ``.clean_shutdown`` makes the next boot
+        discard the active-turn marker (``discard_active_turn_markers``) instead of recovering the turn.
+        """
+        left = self._undelivered_reply_session_keys()
+        if not left:
+            return
+        # Never eat the shutdown watchdog's leash: it hard-exits past it.
+        budget = max(0.0, min(
+            _REPLY_DELIVERY_GRACE_S,
+            resolve_shutdown_watchdog_delay(timeout) - ctx.elapsed() - 1.0,
+        ))
+        logger.info(
+            "Shutdown drain: %d reply/replies still mid-delivery (the agent loop already ended) — "
+            "holding the transport open for up to %.1fs", len(left), budget,
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget
+        while left and loop.time() < deadline:
+            await asyncio.sleep(0.05)
+            left = self._undelivered_reply_session_keys()
+        if not left:
+            return
+        # Out of budget: the reply cannot land. Mark the session resumable and report the drain as
+        # timed out so ``.clean_shutdown`` is skipped (see ``_stop_persist_exit_state``) and the next
+        # boot auto-resumes the turn instead of discarding its marker as an orphan.
+        logger.warning(
+            "Shutdown: %d reply/replies were still mid-delivery after %.1fs — arming resume_pending so "
+            "the next boot recovers them", len(left), budget,
+        )
+        reason = "restart_timeout" if self._restart_requested else "shutdown_timeout"
+        for _key in left:
+            with _log_suppressed(logging.DEBUG, "mark_resume_pending for an undelivered reply failed for %s: %s", _key):
+                await self.async_session_store.mark_resume_pending(_key, reason)
+        ctx.timed_out = True
+
     async def _stop_drain_active_work(self, timeout: float, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``."""
         from gateway.run import GatewayRunner
@@ -1613,6 +1678,9 @@ class GatewayShutdownMixin:
             self._active_cron_job_count(), _api_at_start, self._active_api_run_count(),
             _deferred_at_start, ctx.deferred_count(),
         )
+        # Replies that already left ``_running_agents`` but have not reached the adapter are invisible
+        # to the drain above; settle them while the transport is still connected.
+        await self._settle_reply_deliveries(timeout, ctx)
         if ctx.timed_out:
             return
         # Graceful drain: clear the pre-drain resume_pending markers so sessions that finished

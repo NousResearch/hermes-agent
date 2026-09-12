@@ -9,7 +9,7 @@ behaviour.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Any, Optional, cast
 
 import pytest
 
@@ -167,7 +167,7 @@ class _NonInteractiveProvider(_TokenProvider):
 def test_authenticate_token_accepts_valid():
     register_provider(_TokenProvider(secret="good-secret"))
     req = _FakeRequest(headers={"authorization": "Bearer good-secret"})
-    principal, unreachable = token_auth.authenticate_token(req)
+    principal, unreachable = token_auth.authenticate_token(cast(Any, req))
     assert unreachable is None
     assert principal is not None
     assert principal.provider == "tok"
@@ -177,7 +177,7 @@ def test_authenticate_token_accepts_valid():
 def test_authenticate_token_rejects_wrong_secret():
     register_provider(_TokenProvider(secret="good-secret"))
     req = _FakeRequest(headers={"authorization": "Bearer wrong"})
-    principal, unreachable = token_auth.authenticate_token(req)
+    principal, unreachable = token_auth.authenticate_token(cast(Any, req))
     assert principal is None
     assert unreachable is None
 
@@ -188,7 +188,7 @@ def test_authenticate_token_stacks_first_match_wins():
     second.name = "tok2"
     register_provider(second)
     req = _FakeRequest(headers={"authorization": "Bearer bbb"})
-    principal, _ = token_auth.authenticate_token(req)
+    principal, _ = token_auth.authenticate_token(cast(Any, req))
     assert principal is not None and principal.provider == "tok2"
 
 
@@ -196,7 +196,7 @@ def test_authenticate_token_unreachable_then_valid_provider_wins():
     register_provider(_UnreachableTokenProvider())
     register_provider(_TokenProvider(secret="good"))
     req = _FakeRequest(headers={"authorization": "Bearer good"})
-    principal, unreachable = token_auth.authenticate_token(req)
+    principal, unreachable = token_auth.authenticate_token(cast(Any, req))
     # A later provider accepting the token beats the earlier outage.
     assert principal is not None and principal.provider == "tok"
     assert unreachable is None
@@ -206,7 +206,7 @@ def test_authenticate_token_buggy_provider_does_not_crash():
     register_provider(_BuggyTokenProvider())
     register_provider(_TokenProvider(secret="good"))
     req = _FakeRequest(headers={"authorization": "Bearer good"})
-    principal, unreachable = token_auth.authenticate_token(req)
+    principal, unreachable = token_auth.authenticate_token(cast(Any, req))
     assert principal is not None and principal.provider == "tok"
 
 
@@ -231,7 +231,110 @@ def test_seam_rejects_wrong_token_401():
     req = _FakeRequest(
         path="/api/gateway/drain", headers={"authorization": "Bearer bad"}
     )
-    resp = _run(token_auth.token_auth_middleware(req, _call_next_ok))
+    resp = _run(token_auth.token_auth_middleware(cast(Any, req), _call_next_ok))
     assert resp.status_code == 401
+
+
+def test_registered_route_tracks_required_scopes():
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+    assert token_auth.is_token_route("/api/plugins/kanban/events") is True
+    assert token_auth.token_route_required_scopes("/api/plugins/kanban/events") == ("kanban:read",)
+    assert token_auth.token_route_required_scopes("/api/plugins/kanban/board") == ()
+
+
+def test_register_token_route_is_monotonic_and_never_clears_existing_scopes():
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:write",))
+    assert token_auth.token_route_required_scopes("/api/plugins/kanban/events") == (
+        "kanban:read",
+        "kanban:write",
+    )
+
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=())
+    assert token_auth.token_route_required_scopes("/api/plugins/kanban/events") == (
+        "kanban:read",
+        "kanban:write",
+    )
+
+
+def test_ws_bearer_without_authorization_is_explicitly_not_handled():
+    provider = _CountingTokenProvider(secret="good-secret", scopes=("kanban:read",))
+    register_provider(provider)
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+
+    reason = token_auth._ws_auth_reason(_FakeWS(headers={}))
+
+    assert reason == (token_auth.NOT_HANDLED, "bearer")
+    assert provider.calls == 0
+
+
+class _CountingTokenProvider(_TokenProvider):
+    def __init__(self, *, secret: str = "good-secret", scopes=("kanban:read",)):
+        super().__init__(secret=secret, scopes=scopes)
+        self.calls = 0
+
+    def verify_token(self, *, token: str):
+        self.calls += 1
+        return super().verify_token(token=token)
+
+
+class _FakeWS:
+    def __init__(self, path="/api/plugins/kanban/events", headers=None):
+        self.url = _FakeURL(path)
+        self.headers = headers or {}
+        self.client = _FakeClient()
+        self.query_params = {}
+
+
+def test_ws_bearer_accepts_only_exact_registered_route():
+    provider = _CountingTokenProvider(secret="good-secret", scopes=("kanban:read",))
+    register_provider(provider)
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+
+    accepted = token_auth._ws_auth_reason(
+        _FakeWS(headers={"authorization": "Bearer good-secret"})
+    )
+    assert accepted == (None, "bearer")
+    assert provider.calls == 1
+
+    unregistered = token_auth._ws_auth_reason(
+        _FakeWS(path="/api/plugins/kanban/other", headers={"authorization": "Bearer good-secret"})
+    )
+    assert unregistered[0] == "route_not_registered"
+    assert provider.calls == 1
+
+
+def test_ws_bearer_rejects_malformed_authorization_header():
+    provider = _CountingTokenProvider(secret="good-secret", scopes=("kanban:read",))
+    register_provider(provider)
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+
+    malformed = token_auth._ws_auth_reason(
+        _FakeWS(headers={"authorization": "Bearer"})
+    )
+    assert malformed[0] == "malformed_authorization"
+    assert provider.calls == 0
+
+
+def test_ws_bearer_rejects_scope_mismatch_and_outage_without_fallback():
+    scope_limited = _CountingTokenProvider(secret="good-secret", scopes=("drain",))
+    register_provider(scope_limited)
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+
+    insufficient = token_auth._ws_auth_reason(
+        _FakeWS(headers={"authorization": "Bearer good-secret"})
+    )
+    assert insufficient[0] == "insufficient_scope"
+    assert scope_limited.calls == 1
+
+    clear_providers()
+    token_auth.clear_token_routes()
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+    unreachable = _UnreachableTokenProvider()
+    register_provider(unreachable)
+    failure = token_auth._ws_auth_reason(
+        _FakeWS(headers={"authorization": "Bearer good-secret"})
+    )
+    assert failure[0] == "provider_unreachable"
 
 

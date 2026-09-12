@@ -1077,7 +1077,10 @@ _WORDS_PER_TOKEN = 0.9  # conservative: ensures the padded prompt clears the tie
 def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     """Discover a model's real context window by provoking a length error — the only authoritative source
     ("prompt is too long: 1300032 tokens > 1000000 maximum"); length validation runs before inference so the
-    probe costs nothing. An accepted tier is a safe lower bound; None (no creds/network/unparseable) → static table."""
+    probe costs nothing. An accepted tier is a safe lower bound; None (no creds/network/unparseable) → static table.
+    Escalating to a larger tier is only for failures that say nothing about size — a throttle or a
+    numberless overflow is terminal, because the next tier uploads more to learn the same nothing."""
+    from agent.error_classifier import FailoverReason, classify_api_error
     from agent.model_metadata import parse_context_limit_from_error
     try:
         client = _get_bedrock_runtime_client(region)
@@ -1085,6 +1088,7 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
         logger.debug("Bedrock context probe skipped for %s: %s", model_id, exc)
         return None
     last_error = ""
+    accepted_floor = 0
     for tier_tokens in _BEDROCK_PROBE_TIERS:
         oversized = "data " * int(tier_tokens / _WORDS_PER_TOKEN)
         try:
@@ -1092,16 +1096,44 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
                             inferenceConfig={"maxTokens": 8})
             logger.debug("Bedrock context probe for %s accepted ~%s-token prompt; "
                          "window is at least that", model_id, f"{tier_tokens:,}")
-            return tier_tokens
+            # A tier that fits bounds the window from below only; a rejection is what quotes the
+            # number. So record the floor and step up — this is the outcome the tier ladder exists
+            # for, and returning here is why a 2M model used to probe as 1,300,000.
+            accepted_floor = tier_tokens
         except Exception as exc:
             last_error = str(exc)
             limit = parse_context_limit_from_error(last_error)
             if limit and limit >= 1024:
                 logger.info("Probed Bedrock context window for %s: %s tokens", model_id, f"{limit:,}")
                 return limit
-            # Opaque server error / auth / throttle at this tier — try the next.
+            # Nothing parseable. Two shapes make a larger tier pointless or actively harmful, and the
+            # classifier the retry loop already uses names both: a throttle ("Too many tokens, please
+            # wait before trying again" — arriving after boto3 has already spent its own retries) and a
+            # numberless overflow ("Input is too long for requested model.", what Converse answers once
+            # the padding is far past the window). Escalating either one re-uploads a bigger prompt to
+            # be told the same thing.
+            if classify_api_error(exc).reason in (FailoverReason.rate_limit, FailoverReason.context_overflow):
+                logger.debug("Bedrock context probe for %s stopped at the ~%s-token tier: %s",
+                             model_id, f"{tier_tokens:,}", last_error[:200])
+                break
+            # Opaque server error / auth at this tier — try the next.
+    if accepted_floor:
+        # Every tier fit, so all the probe learned is ">= the top tier". Reporting that floor as the
+        # window is how a 3.5M model gets pinned to 2.2M, and callers that persist probe results keep
+        # the number. Answer only when the floor is genuinely more than the static table knows.
+        if accepted_floor > _static_bedrock_context_length(model_id):
+            return accepted_floor
+        logger.debug("Bedrock context probe for %s accepted ~%s tokens, no more than the static table "
+                     "already knows; deferring to it", model_id, f"{accepted_floor:,}")
+        return None
     logger.debug("Bedrock context probe for %s returned no parseable limit: %s", model_id, last_error[:200])
     return None
+
+
+def _static_bedrock_context_length(model_id: str) -> int:
+    """Longest-substring match in ``BEDROCK_CONTEXT_LENGTHS``, else the default. Never touches the network."""
+    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
+    return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)] if matches else BEDROCK_DEFAULT_CONTEXT_LENGTH
 
 
 def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
@@ -1109,8 +1141,7 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
     only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4")."""
     if probe and region and (probed := probe_bedrock_context_length(model_id, region)):
         return probed
-    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
-    return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)] if matches else BEDROCK_DEFAULT_CONTEXT_LENGTH
+    return _static_bedrock_context_length(model_id)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

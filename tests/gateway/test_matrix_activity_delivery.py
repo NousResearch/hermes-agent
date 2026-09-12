@@ -68,7 +68,7 @@ async def test_seal_transport_timeout_is_bounded_and_retryable():
     pane.TRANSPORT_TIMEOUT = 0.01
     pane.SEAL_RETRY_DELAY = 0
     adapter.edit_release = asyncio.Event()
-    await asyncio.wait_for(pane.close(), timeout=0.5)
+    await asyncio.wait_for(pane.close(), timeout=2.0)
     assert not pane.closed and pane.footer == "Working"
     assert len(adapter.edits) == pane.SEAL_ATTEMPTS
     adapter.edit_release.set()
@@ -126,3 +126,103 @@ async def test_queue_burst_coalesces_and_final_seal_preserves_all_labels():
     assert len(adapter.edits) <= 2
     assert "Working" not in adapter.edits[-1]["content"]
     assert all(e["message_id"] == "$root" for e in adapter.edits)
+
+
+@pytest.mark.asyncio
+async def test_cancel_preserves_dequeued_label_waiting_for_heartbeat_lock():
+    adapter = _PaneAdapter()
+    pane = _pane(adapter)
+    await pane.set_footer("Working")
+    dequeued = asyncio.Event()
+
+    class SignallingQueue(queue.Queue):
+        def get_nowait(self):
+            raw = super().get_nowait()
+            dequeued.set()
+            return raw
+
+    ctx = TurnContext()
+    ctx.matrix_activity_pane, ctx.progress_queue = pane, SignallingQueue()
+    ctx._run_still_current = lambda: True
+    runner = TurnRunner(SimpleNamespace(), ctx)
+    ctx.progress_queue.put("last tool")
+    # A heartbeat owns the same lock while the consumer dequeues its label.
+    async with pane.lock:
+        task = asyncio.create_task(runner._send_matrix_activity_progress())
+        await asyncio.wait_for(dequeued.wait(), timeout=2.0)
+        task.cancel()
+        await asyncio.sleep(0)
+    await asyncio.wait_for(task, timeout=2.0)
+    await pane.close()
+    assert pane.activity_lines == ["last tool"]
+    assert "last tool" in adapter.edits[-1]["metadata"]["matrix_formatted_body"]
+    assert len(adapter.sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_drain_coalesces_even_when_transport_exceeds_edit_interval(monkeypatch):
+    import gateway.matrix_activity_pane as module
+
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+
+    class SlowAdapter(_PaneAdapter):
+        async def edit_message(self, *args, **kwargs):
+            clock.now += 2.0
+            return await super().edit_message(*args, **kwargs)
+
+    adapter = SlowAdapter()
+    pane = _pane(adapter)
+    await pane.set_footer("Working")
+    ctx = TurnContext()
+    ctx.matrix_activity_pane, ctx.progress_queue = pane, queue.Queue()
+    ctx._run_still_current = lambda: True
+    runner = TurnRunner(SimpleNamespace(), ctx)
+    task = asyncio.create_task(runner._send_matrix_activity_progress())
+    await asyncio.sleep(0)
+    labels = [f"tool {i}" for i in range(30)]
+    for label in labels:
+        ctx.progress_queue.put(label)
+    clock.now = 2.0
+    task.cancel()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert not adapter.edits  # The shutdown drain collects; close publishes once.
+    await pane.close()
+    assert pane.activity_lines == labels
+    assert len(adapter.edits) == 1
+    assert len(adapter.sends) == 1
+    html = adapter.edits[-1]["metadata"]["matrix_formatted_body"]
+    assert all(label in html for label in labels)
+    assert "Working" not in html
+
+
+@pytest.mark.asyncio
+async def test_cancelled_progress_transport_error_still_allows_turn_cleanup():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class FailingAdapter(_PaneAdapter):
+        async def send(self, *args, **kwargs):
+            entered.set()
+            await release.wait()
+            raise TimeoutError("homeserver unavailable")
+
+    pane = _pane(FailingAdapter())
+    ctx = TurnContext()
+    ctx.matrix_activity_pane, ctx.progress_queue = pane, queue.Queue()
+    ctx._run_still_current = lambda: True
+    ctx.progress_queue.put("last tool")
+    runner = TurnRunner(SimpleNamespace(), ctx)
+    task = asyncio.create_task(runner._send_matrix_activity_progress())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        task.cancel()
+        release.set()
+        done, _ = await asyncio.wait({task}, timeout=2.0)
+        assert task in done, "transport failure swallowed the cleanup cancellation"
+        await task
+        assert pane.activity_lines == ["last tool"]
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await task

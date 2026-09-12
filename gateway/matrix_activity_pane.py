@@ -44,15 +44,17 @@ class MatrixActivityPane:
     TRANSPORT_TIMEOUT = 2.0
     SEAL_RETRY_DELAY = 0.1
 
-    async def append_activity(self, line: str) -> Any:
-        """Append one status/tool label and publish the complete snapshot."""
+    async def append_activity(self, line: str, *, publish: bool = True) -> Any:
+        """Append one status/tool label, optionally publishing the snapshot."""
 
         text = str(line or "").strip()
         if not text:
             return None
-        return await self._coordinate(lambda: self.activity_lines.append(text))
+        return await self._coordinate(lambda: self.activity_lines.append(text), publish=publish)
 
-    async def replace_activity(self, previous: str, replacement: str) -> Any:
+    async def replace_activity(
+        self, previous: str, replacement: str, *, publish: bool = True,
+    ) -> Any:
         """Replace the latest matching activity line, or append if absent."""
 
         old = str(previous or "").strip()
@@ -68,7 +70,7 @@ class MatrixActivityPane:
                     return
             self.activity_lines.append(new)
 
-        return await self._coordinate(_mutate)
+        return await self._coordinate(_mutate, publish=publish)
 
     async def set_footer(self, footer: str | None) -> Any:
         """Replace the heartbeat footer and publish the complete snapshot."""
@@ -132,14 +134,18 @@ class MatrixActivityPane:
         self._last_publish = time.monotonic()
         return await self._transport_locked()
 
-    async def _coordinate(self, mutate: Callable[[], None]) -> Any:
-        """Mutate, snapshot, render, and transport under one turn-local lock."""
+    async def _coordinate(self, mutate: Callable[[], None], *, publish: bool = True) -> Any:
+        """Mutate and optionally publish under one turn-local lock."""
 
         async with self.lock:
             if self.closing or not self.coalescing_enabled:
                 return None
             mutate()
-            return await self._flush_locked()
+            # Queue consumers absorb without I/O, so cancellation cannot leave
+            # them unsure whether a dequeued label was applied before an await.
+            if publish:
+                return await self._flush_locked()
+            return None
 
     async def _transport_locked(self, *, seal: bool = False) -> Any:
         """Send or edit the current snapshot. Caller MUST hold ``self.lock``."""
@@ -191,15 +197,27 @@ class MatrixActivityPane:
         """Finish the Matrix call even if the consumer task is cancelled."""
 
         task = asyncio.ensure_future(asyncio.wait_for(awaitable, self.TRANSPORT_TIMEOUT))
+        cancelled = False
         try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            result = await task
+            while True:
+                try:
+                    result = await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError:
+                    if task.cancelled():
+                        raise
+                    cancelled = True
             if (
-                self.root_event_id is None
+                cancelled and self.root_event_id is None
                 and getattr(result, "success", False)
                 and getattr(result, "message_id", None)
             ):
                 self.root_event_id = str(result.message_id)
                 self._delivered_snapshot = (tuple(self.activity_lines), self.footer)
-            raise
+            return result
+        finally:
+            # A timeout/error after cancellation must not replace CancelledError:
+            # the fail-soft transport handler would swallow it and revive the
+            # progress loop that turn cleanup is waiting to finish.
+            if cancelled:
+                raise asyncio.CancelledError

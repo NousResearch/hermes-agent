@@ -723,7 +723,7 @@ class TurnRunner:
         # pending snapshots even when no later tool arrives.
         pane.publish_interval = 1.5
 
-        async def _publish(raw: Any) -> None:
+        async def _absorb(raw: Any) -> None:
             if isinstance(raw, tuple) and raw and raw[0] == "__reset__":
                 # Matrix has one root for the whole turn, including across
                 # streamed content segment boundaries.
@@ -737,36 +737,45 @@ class TurnRunner:
                 await pane.replace_activity(
                     str(base_msg),
                     f"{base_msg} (×{count + 1})",
+                    publish=False,
                 )
                 return
-            await pane.append_activity(str(raw))
+            await pane.append_activity(str(raw), publish=False)
 
+        pending = None
         try:
             while True:
                 if not ctx._run_still_current():
                     return
                 try:
-                    raw = ctx.progress_queue.get_nowait()
+                    pending = ctx.progress_queue.get_nowait()
                 except queue.Empty:
                     if not self._agent_interrupted():
                         await pane.flush()
                     await asyncio.sleep(0.1)
                     continue
                 if ctx._run_still_current() and not self._agent_interrupted():
-                    await _publish(raw)
+                    await _absorb(pending)
+                    pending = None
+                    await pane.flush()
+                else:
+                    pending = None
                 # Yield under a continuously replenished queue, without emitting
                 # one replacement per queued label.
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
+            # A label waiting on a heartbeat's lock has been dequeued but not
+            # absorbed. Keep it ahead of the tail, and leave all transport to
+            # close() so a slow connection cannot turn the drain into N calls.
             while True:
-                try:
-                    raw = ctx.progress_queue.get_nowait()
-                except queue.Empty:
-                    break
-                except Exception:
-                    break
+                if pending is None:
+                    try:
+                        pending = ctx.progress_queue.get_nowait()
+                    except queue.Empty:
+                        break
                 if ctx._run_still_current() and not self._agent_interrupted():
-                    await _publish(raw)
+                    await _absorb(pending)
+                pending = None
             return
         except Exception:
             logger.debug("Matrix activity progress failed", exc_info=True)

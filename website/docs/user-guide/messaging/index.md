@@ -294,7 +294,7 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 
 ## Per-Channel Model, Reasoning & System Prompt Overrides
 
-Different channels can run different models, reasoning levels, and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with deeper reasoning plus a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:
+Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:

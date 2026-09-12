@@ -121,28 +121,30 @@ def _tool_call_response():
 def test_clean_stop_reasoning_is_promoted_without_retry(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     calls = 0
+    secret = "sk-" + "promoted-secret-value-123456"
+    expected = f"The answer is 42. Credential: {secret}"
 
     def respond(api_kwargs):
         nonlocal calls
         calls += 1
-        return _reasoning_only_response()
+        return _reasoning_only_response(reasoning=expected)
 
     monkeypatch.setattr(agent, "_interruptible_api_call", respond)
 
     result = agent.run_conversation("what is the answer?")
 
-    expected = "The answer is 42 because of the calculation above."
     assert result["final_response"] == expected
     assert result["turn_exit_reason"] == "reasoning_response(clean_stop)"
     assert calls == 1
-    assert result["messages"][-1]["content"] == expected
+    assert secret not in result["messages"][-1]["content"]
     assert result["messages"][-1]["reasoning"] == expected
 
 
 def test_clean_stop_promotion_survives_stall_guard_continuation(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     agent.valid_tool_names = {"todo"}
-    promoted = "The tests pass. I will now run the linter."
+    secret = "sk-" + "interim-secret-value-123456"
+    promoted = f"The tests pass. Credential: {secret}. I will now run the linter."
     responses = [
         _reasoning_only_response(reasoning=promoted),
         _text_response("The linter passes."),
@@ -160,7 +162,8 @@ def test_clean_stop_promotion_survives_stall_guard_continuation(tmp_path, monkey
     assistant_messages = [
         message for message in result["messages"] if message["role"] == "assistant"
     ]
-    assert assistant_messages[0]["content"] == promoted
+    assert assistant_messages[0]["content"].startswith("The tests pass.")
+    assert secret not in assistant_messages[0]["content"]
     assert assistant_messages[-1]["content"] == "The linter passes."
     roles = [message["role"] for message in result["messages"]]
     assert all(left != right for left, right in zip(roles, roles[1:]))

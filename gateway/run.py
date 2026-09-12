@@ -42,7 +42,15 @@ from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
-# Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
+# Power management (Windows sleep/wake handling, #100025) -- optional import
+# so bare test doubles that mock gateway.run can still import without the
+# new module present (e.g. during partial ``hermes update``).
+try:
+    from gateway.power_management import PowerManager  # type: ignore[import]
+except Exception:  # pragma: no cover - missing during partial update
+    PowerManager = None  # type: ignore[assignment]
+
+# Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_expiry_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
@@ -3415,6 +3423,7 @@ class GatewayRunner(
     _loop_heartbeat_task: Optional["asyncio.Task"] = None
     _loop_floor_timer_handle: Optional[Any] = None
     _loop_liveness_watchdog: Optional[Any] = None
+    _power_manager: Optional[Any] = None
     _gateway_started_at: float = 0.0
     _shutdown_watchdog_done: Optional["threading.Event"] = None
     _platform_lock_takeover_on_start: bool = False
@@ -3698,6 +3707,9 @@ class GatewayRunner(
         self._gateway_started_at: float = time.time()
         self._loop_heartbeat_task: Optional[asyncio.Task] = None
         self._loop_floor_timer_handle = self._loop_liveness_watchdog = None
+        # Power management (Windows sleep/wake, #100025): PowerManager armed
+        # from the gateway loop and torn down with the liveness guards.
+        self._power_manager = None  # type: ignore[assignment]
         # scale-to-zero: gateway-scoped "last inbound seen" clock, stamped in _handle_message (the single
         # inbound chokepoint) and seeded to "now" so a fresh gateway isn't idle from epoch.
         self._last_inbound_at: float = time.time()
@@ -4427,6 +4439,132 @@ class GatewayRunner(
         timeout_fired: Any = None
         cleanup_lock: Any = None
         is_current: Any = None
+
+    # ------------------------------------------------------------------
+    # Power management: Windows sleep/wake handling (#100025)
+    # ------------------------------------------------------------------
+
+    def _start_power_management(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Arm suspend/resume detectors for the gateway loop.
+
+        Best-effort: any failure here must never abort startup. The gateway
+        is strictly more available without power management than not started
+        at all.
+        """
+        if PowerManager is None:
+            return
+        if getattr(self, "_power_manager", None) is not None:
+            return
+        try:
+            mgr = PowerManager(
+                on_suspend=self._on_system_suspend,
+                on_resume=self._on_system_resume,
+                loop=loop,
+            )
+            mgr.start(loop=loop)
+            self._power_manager = mgr
+            logger.debug("Power management start attempted (armed=%s)", getattr(mgr, "is_armed", False))
+        except Exception:
+            logger.debug("Failed to start power management", exc_info=True)
+
+    def _stop_power_management(self) -> None:
+        """Disarm suspend/resume detectors (idempotent)."""
+        mgr = getattr(self, "_power_manager", None)
+        self._power_manager = None
+        if mgr is None:
+            return
+        try:
+            mgr.stop()
+        except Exception:
+            logger.debug("Failed to stop power management", exc_info=True)
+
+    def _on_system_suspend(self) -> None:
+        """Synchronous suspend hook -- log only (must stay <1 ms).
+
+        Runs on the Win32 pump thread (via ``call_soon_threadsafe``) or on the
+        monotonic detector's loop task. It must not block, allocate, or touch
+        adapters -- the machine may freeze at any moment.
+        """
+        try:
+            logger.info("System suspend detected -- gateway going to sleep")
+        except Exception:
+            logger.debug("_on_system_suspend failed", exc_info=True)
+
+    async def _on_system_resume(self, sleep_duration: float = 0.0) -> None:
+        """Async resume hook -- reconnect stale platforms after a sleep.
+
+        Runs on the gateway loop (scheduled via ``call_soon_threadsafe`` /
+        ``run_coroutine_threadsafe`` from the native thread, or directly from
+        the monotonic detector). ``sleep_duration`` is the extra monotonic time
+        beyond one normal tick (0.0 for native Win32 resumes, where the
+        duration is not measured).
+
+        Strategy (Option A from #100025 -- graceful reconnect, not a crash):
+
+        1. Log the resume with its duration.
+        2. Force a heartbeat write so external probes see a fresh file
+           immediately after wake instead of up to 30 s later.
+        3. Queue adapters whose transports are stale for a zero-backoff
+           reconnect through the existing reconnect watcher: every connected
+           adapter is health-checked and, if its transport is broken, queued
+           for background reconnect. Transient failures self-heal; permanent
+           ones surface as ``NEEDS_ATTENTION`` via the existing watcher, not as
+           an UNCLEAN crash.
+        """
+        try:
+            if sleep_duration and sleep_duration >= 60:
+                dur_str = (
+                    f"{sleep_duration / 3600:.1f}h" if sleep_duration >= 3600
+                    else f"{sleep_duration / 60:.1f}m"
+                )
+            elif sleep_duration:
+                dur_str = f"{sleep_duration:.0f}s"
+            else:
+                dur_str = "unknown duration"
+            logger.warning(
+                "System resume detected after %s suspend -- refreshing heartbeat and checking platform transports",
+                dur_str,
+            )
+        except Exception:
+            logger.debug("_on_system_resume log failed", exc_info=True)
+
+        # 1. Refresh the heartbeat immediately so stale-file monitors don't
+        #    misclassify the wake as a wedge during the reconnect window. The
+        #    loop-tick witness keys are carried forward: the heartbeat task owns
+        #    them, and a resume write without them would blank the flags the
+        #    liveness probe reads before its next 30 s tick.
+        try:
+            from gateway.shutdown_watchdog import get_loop_heartbeat_path, write_loop_heartbeat
+
+            extra: Dict[str, Any] = {"resume_after_s": float(sleep_duration) if sleep_duration else None}
+            try:
+                payload = json.loads(get_loop_heartbeat_path(None).read_text(encoding="utf-8"))
+                for key in ("loop_tick_socket", "loop_tick_tcp_port"):
+                    if key in payload:
+                        extra[key] = payload[key]
+            except Exception:
+                pass
+            await asyncio.to_thread(
+                write_loop_heartbeat,
+                pid=os.getpid(),
+                start_time=getattr(self, "_gateway_started_at", None),
+                extra=extra,
+            )
+        except Exception:
+            logger.debug("Resume heartbeat refresh failed", exc_info=True)
+
+        # 2. Queue platforms whose transports are likely stale, then make sure
+        #    the watcher that retries them is alive -- a wake is the right moment
+        #    to revive one parked in its slow-respawn backoff rather than waiting
+        #    minutes for it.
+        try:
+            await self._reconnect_platforms_after_resume()
+        except Exception:
+            logger.debug("Resume platform reconnect sweep failed", exc_info=True)
+        try:
+            self._ensure_reconnect_watcher_running()
+        except Exception:
+            logger.debug("Resume reconnect-watcher ensure failed", exc_info=True)
 
 
 def _run_planned_stop_watcher(

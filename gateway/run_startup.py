@@ -752,6 +752,11 @@ class GatewayStartupMixin:
             with _log_suppressed(logging.DEBUG, "Startup watchdog disarm failed", exc_info=True):
                 from hermes_startup_watchdog import disarm_startup_watchdog
                 disarm_startup_watchdog()
+            # Power management (sleep/wake, #100025) -- armed from the gateway loop itself (same
+            # invariant as the liveness guards) so the Win32 power-event pump and the monotonic
+            # sleep detector share the loop's lifetime instead of outliving it.
+            with _log_suppressed(logging.DEBUG, "Power management arm failed", exc_info=True):
+                self._start_power_management(self._gateway_loop)
         logger.info("Session storage: %s", self.config.sessions_dir)
         self._start_log_systemd_timing_alignment()
         # Log the resolved max_iterations so operators can verify the config.yaml → env bridge.

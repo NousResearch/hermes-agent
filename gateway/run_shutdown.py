@@ -1918,6 +1918,12 @@ class GatewayShutdownMixin:
         _stop_guards = getattr(self, "_stop_loop_liveness_guards", None)
         if callable(_stop_guards):
             _stop_guards()
+        # Power management (sleep/wake, #100025): disarm with the liveness guards so no resume
+        # fires mid-teardown.
+        _stop_pm = getattr(self, "_stop_power_management", None)
+        if callable(_stop_pm):
+            with _log_suppressed(logging.DEBUG, "Failed to stop power management", exc_info=True):
+                _stop_pm()
         if restart:
             self._restart_requested = True
             self._restart_detached = detached_restart

@@ -1090,6 +1090,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Components V2 rendering for final replies (discord.components_v2 / DISCORD_COMPONENTS_V2).
+        # Off by default: v2's 4000-char whole-tree text budget is SMALLER than the legacy
+        # 8x2000 chunked path, so it is an opt-in presentation upgrade that silently falls
+        # back to chunked text whenever a reply does not fit.
+        self._components_v2: bool = _env_bool(
+            "DISCORD_COMPONENTS_V2", bool(self.config.extra.get("components_v2", False)))
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: Dict[str, str] = {}
         # Bot-authored lifecycle/status message IDs that must not bound history after restart.
@@ -2816,6 +2822,41 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         kept.append(notice)
         return kept
 
+    async def _try_send_components_v2(
+        self, channel: Any, content: str, reference: Any, chat_id: str,
+        thread_id: Optional[str], nonconversational: bool,
+    ) -> Optional[SendResult]:
+        """Send *content* as a Components V2 message, or return ``None`` to use chunked text.
+
+        ``None`` is the normal outcome for anything that exceeds v2's 4000-char whole-tree
+        text budget, and for every failure: this is a presentation upgrade, so it must never
+        be the reason a reply fails to arrive.
+        """
+        if not self._components_v2:
+            return None
+        try:
+            from plugins.platforms.discord.components_v2 import build_layout_view
+
+            view = build_layout_view(self.format_message(content))
+            if view is None:
+                return None
+            # A v2 message carries its text inside components; `content` must stay unset or
+            # Discord rejects the send outright.
+            msg = await channel.send(view=view, reference=reference)
+        except Exception as e:
+            logger.warning(
+                "[%s] Components V2 send failed (%s); falling back to chunked text.", self.name, e)
+            return None
+        message_id = str(msg.id)
+        target_id = thread_id or chat_id
+        if nonconversational:
+            await self._nonconversational_messages.mark_many([message_id])
+        elif not _looks_like_nonconversational_history_message(content):
+            self._last_self_message_id[target_id] = message_id
+        return SendResult(
+            success=True, message_id=message_id,
+            raw_response={"message_ids": [message_id], "components_v2": True})
+
     async def send(
         self,
         chat_id: str,
@@ -2856,11 +2897,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery)
             formatted = self.format_message(content)
+            reference = self._reply_reference_for_send(reply_to, channel)
+            # Components V2 first: one structured message instead of N chunks. Returns None
+            # whenever the reply does not fit v2's budgets, which falls through to chunking.
+            v2_result = await self._try_send_components_v2(
+                channel, content, reference, chat_id, thread_id, nonconversational)
+            if v2_result is not None:
+                return await self._record_response_async(reply_to, v2_result, content, final_delivery)
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             )
             message_ids = []
-            reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
@@ -6941,6 +6988,7 @@ _YAML_BOOL_ENV_KEYS = (
     ("require_mention", "DISCORD_REQUIRE_MENTION"),
     ("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION"),
     ("bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION"),
+    ("components_v2", "DISCORD_COMPONENTS_V2"),
 )
 # (public websocket_* key, legacy liveness_* alias, env bridge var)
 _YAML_WEBSOCKET_LIVENESS_KEYS = (

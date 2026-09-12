@@ -66,8 +66,8 @@ describe('#68321 assistant rows whose reply persisted only in codex_message_item
     expect(messages.map(m => m.role)).toEqual(['user', 'assistant', 'user'])
     // The final-answer text is painted as the bubble's reply text...
     expect(chatMessageText(messages[1])).toContain('Here is the full response you saw live.')
-    // ...and commentary / analysis narration (reasoning channel on the backend) is not.
-    expect(chatMessageText(messages[1])).not.toContain('Working through the approach...')
+    // ...and public commentary survives too, without promoting analysis.
+    expect(chatMessageText(messages[1])).toContain('Working through the approach...')
     expect(chatMessageText(messages[1])).not.toContain('Scratchpad thoughts.')
   })
 

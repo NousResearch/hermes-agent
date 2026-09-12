@@ -156,8 +156,10 @@ export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessage
 /**
  * Merge the final assistant text into a message's parts.
  *
- * - Removes all existing `text` parts (they were streamed deltas, now superseded
- *   by the authoritative final response).
+ * - Preserves earlier tool-delimited responses: a missed interim frame must
+ *   not make their public text disposable.
+ * - Replaces provisional text only in the latest response with its authoritative
+ *   final text, retaining confirmed text/reasoning boundaries.
  * - Keeps `reasoning` parts, but drops one that the final text fully covers
  *   (reasoning ⊆ final) — the final restates it. A short final ("Done.") must
  *   NOT swallow a longer reasoning block that merely starts with it (#61447).
@@ -190,14 +192,33 @@ export function mergeFinalAssistantText(
     return parts
   }
 
+  // A tool call is an explicit model-response boundary even when no
+  // message.interim frame sealed the earlier text into a separate bubble.
+  // Only the suffix after the last call belongs to this authoritative final.
+  const lastToolIndex = parts.findLastIndex(part => part.type === 'tool-call')
+
+  if (lastToolIndex >= 0) {
+    const earlier = parts.slice(0, lastToolIndex + 1)
+
+    const earlierText = earlier
+      .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+      .map(part => part.text)
+      .join('')
+
+    // Some terminal frames carry cumulative text. Strip only an exact prefix;
+    // fuzzy similarity is not proof that two assistant messages are the same.
+    const responseText =
+      earlierText && finalText.startsWith(earlierText) ? finalText.slice(earlierText.length) : finalText
+
+    return [...earlier, ...mergeFinalAssistantText(parts.slice(lastToolIndex + 1), responseText, fallbackTimestamp)]
+  }
+
   const previousText = parts.findLast(part => part.type === 'text')
 
   const kept = parts.filter(part => {
     if (part.type === 'text') {
-      // Sealed text parts were already finalized into their own bubbles —
-      // this filter only runs on the LAST streaming bubble, so there are no
-      // sealed parts here. All text parts are streamed deltas that get
-      // replaced by the authoritative final text.
+      // The tool-delimited prefix was retained above. This suffix is
+      // provisional text from the response being finalized.
       return false
     }
 

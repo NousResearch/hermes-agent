@@ -99,6 +99,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
 | `hermes --version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
+| `hermes sync-fork` | Merge `upstream/main` into a fork that has diverged (local commits), one upstream commit at a time. `--check` / `--dry-run` / `--json` / `--ui`. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
 ## `hermes chat`

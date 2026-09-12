@@ -808,6 +808,12 @@ class SessionDB(
         and the WHOLE callback retried — *fn* must stay idempotent under retry."""
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
+        
+        from hermes_state_common import _writer_gate_acquire
+        refusal = _writer_gate_acquire(self.db_path)
+        if refusal:
+            raise SessionDbLockedError(refusal)
+            
         deadline = time.monotonic() + patience_s
         compression_deadline: Optional[float] = None  # set on the first compression-busy collision
         # One retry for SQLITE_IOERR raised by BEGIN IMMEDIATE itself (callback not run: nothing

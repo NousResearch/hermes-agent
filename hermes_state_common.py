@@ -1209,3 +1209,43 @@ def fts_rebuild_admission(db_path, *, timeout_seconds=None):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+
+_held_writer_gates = {}
+_writer_gate_lock = __import__('threading').Lock()
+
+def _writer_gate_acquire(db_path) -> str | None:
+    import os
+    from pathlib import Path
+    if os.environ.get('HERMES_STATE_DB_WRITER_GATE', '').lower() == 'off':
+        return None
+    db_path = Path(db_path).absolute()
+    with _writer_gate_lock:
+        if db_path in _held_writer_gates:
+            return None
+        lock_path = db_path.with_name(db_path.name + '.writer.lock')
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            handle = lock_path.open('a+b')
+        except OSError as exc:
+            return f'REFUSED: Could not open writer lock {lock_path} ({exc}).'
+            
+        is_windows = os.name == 'nt'
+        try:
+            if is_windows:
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            record = None if is_windows else _read_lock_holder_record(handle)
+            holder = _describe_lock_holder(record)
+            handle.close()
+            return f'REFUSED: state.db is currently locked for writing by another process ({holder}). Stop that gateway/process first.'
+            
+        if not is_windows:
+            _write_lock_holder_record(handle)
+            
+        _held_writer_gates[db_path] = handle
+        return None

@@ -234,12 +234,9 @@ class TestTimeoutInversionDoubleSend:
                 1 if gateway_would_send_normal else 0
             )
 
-            # DESIRED post-fix invariants (currently violated == bug reproduced):
-            assert consumer.final_content_delivered is True, (
-                "BUG: consumer was cancelled mid-finalize; the finalize frame "
-                "was rendered by WeCom but final_content_delivered stayed False, "
-                "so the gateway will not suppress the normal send"
-            )
+            # An attempted final suppresses duplicates without claiming an ACK we never received.
+            assert consumer.final_response_sent is True
+            assert consumer.final_content_delivered is False
             assert _gateway_suppresses_normal_send(consumer, final_text) is True, (
                 "BUG: gateway does not suppress the normal final send → duplicate"
             )
@@ -491,14 +488,13 @@ class TestOrphanQueueAckRouting:
         ))
         await asyncio.sleep(0)  # let finalize reach the drain await
 
-        # 3) Deliver the intermediate ack MID-DRAIN. _resolve_reply_ack resolves
-        #    the drain future AND pops the whole queue out of _reply_queues.
+        # 3) Deliver the intermediate ack MID-DRAIN. The finalizing owner remains
+        #    registered while its drain waiter resumes, so the fence has no admission gap.
         await adapter._dispatch_payload(
             {"headers": {"req_id": REQ_ID}, "body": {"errcode": 0}}
         )
-        assert REQ_ID not in adapter._reply_queues, (
-            "precondition: intermediate ack should have popped the queue"
-        )
+        assert adapter._reply_queues[REQ_ID] is inter_queue
+        assert inter_queue.finalizing
 
         # 4) Let finalize resume: it must clear the drained pending_ack, create
         #    its own frame, re-attach the queue, register pending_ack, and write

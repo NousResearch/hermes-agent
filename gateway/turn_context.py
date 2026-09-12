@@ -22,6 +22,10 @@ class TurnContext:
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
     tool_progress_enabled: bool = False
+    # Native-stream tool-timer animation lifecycle events (tool.started / tool.completed /
+    # llm.request_started) must reach the stream consumer even when tool_progress_enabled is False, so a
+    # user who sets only extra.tool_timer_enabled: true still gets ticks (#96942).
+    tool_timer_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
     # mutable single-element containers (shared with the outer body)

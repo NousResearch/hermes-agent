@@ -1524,6 +1524,20 @@ def _run_conversation_turn(
         if _pg.action == "continue":
             continue
         _run_phase(announce_api_call, agent, s)
+        # Fire the "thinking" signal so the native-stream tool-timer shows animation during TTFB. Fires on
+        # EVERY API call including the first: api_call_count resets per turn, so a ``> 1`` gate would drop
+        # every turn's first-call thinking timer, leaving the first request behind only the static typing
+        # indicator (#342s hang). The stream consumer latches a pre-seed first-call signal (see
+        # _pending_thinking) so it is not lost racing the native seed; only a timer-opted-in native consumer
+        # acts on it (gated downstream).
+        if s.api_call_count >= 1 and getattr(agent, "tool_progress_callback", None):
+            try:
+                agent.tool_progress_callback(
+                    "llm.request_started", "_thinking_timer",
+                    f"{agent.model or 'LLM'} (API call #{s.api_call_count})", None,
+                )
+            except Exception:
+                pass
 
         s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
         s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None

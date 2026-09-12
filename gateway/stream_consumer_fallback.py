@@ -385,6 +385,10 @@ class StreamFallbackMixin:
         self._preview_message_ids = set()
         self._message_id = None
         self._accumulated = self._stream_ledger = self._last_sent_text = ""
+        # The rotation split offset is an _accumulated coordinate; reset it alongside the buffer or a stale
+        # offset would mis-slice a later frame (symmetry with _reset_message_state).
+        self._native_split_offset = 0
+        self._native_committed_len = 0
         self._already_sent = False
         self._clear_turn_final_flags()
         logger.info("Suppressed streamed intentional-silence marker (chat=%s)", self.chat_id)

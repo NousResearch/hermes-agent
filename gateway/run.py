@@ -4697,14 +4697,23 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
-async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0) -> bool:
+async def _shutdown_mcp_servers_nonblocking(timeout: float | None = None) -> bool:
     """Close MCP servers off-loop with a bounded wait; True when done within ``timeout``.
     ``shutdown_mcp_servers()`` can block ~15s; on the loop thread short-grace supervisors (s6 3s)
     SIGKILL us before ``mark_exited()`` runs, so every later boot reports a phantom unclean death.
     On timeout shutdown proceeds and the daemon thread is left to finish or die.
 
+    ``timeout`` defaults to ``tools.mcp_tool._MCP_TEARDOWN_BUDGET_SECONDS`` rather than a bare
+    5.0s: the whole funnel must stay under a container supervisor's ~3s kill grace so the
+    clean-exit marker is still written before SIGKILL (#82874 round-2).
+
     See #82874.
     """
+    if timeout is None:
+        from tools.mcp_tool import _MCP_TEARDOWN_BUDGET_SECONDS
+
+        timeout = _MCP_TEARDOWN_BUDGET_SECONDS
+
     def _do() -> None:
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers

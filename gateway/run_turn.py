@@ -2555,6 +2555,21 @@ class GatewayTurnMixin:
             headers["Authorization"] = f"Bearer {proxy_key}"
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
+        # Forward SessionSource identity so the remote api_server can reconstruct
+        # per-user peer scoping (same subset the api_server identity headers accept).
+        # Each is sent only when set on the source — a partial identity is more
+        # useful downstream than none.
+        for _header, _attr in (
+            ("X-Hermes-User-Id", "user_id"),
+            ("X-Hermes-User-Name", "user_name"),
+            ("X-Hermes-Chat-Id", "chat_id"),
+            ("X-Hermes-Chat-Name", "chat_name"),
+            ("X-Hermes-Chat-Type", "chat_type"),
+            ("X-Hermes-Thread-Id", "thread_id"),
+        ):
+            _value = getattr(source, _attr, None)
+            if _value:
+                headers[_header] = str(_value)
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)

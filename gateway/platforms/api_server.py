@@ -72,7 +72,11 @@ _STATIC_FEATURE_FLAGS = {
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
-    "session_key_header": "X-Hermes-Session-Key"}
+    "session_key_header": "X-Hermes-Session-Key",
+    "user_id_header": "X-Hermes-User-Id", "user_name_header": "X-Hermes-User-Name",
+    "chat_id_header": "X-Hermes-Chat-Id", "chat_name_header": "X-Hermes-Chat-Name",
+    "chat_type_header": "X-Hermes-Chat-Type", "thread_id_header": "X-Hermes-Thread-Id",
+    "user_body_fallback": "user"}
 # /v1/capabilities "endpoints" table: name -> (method, path).
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
@@ -1648,6 +1652,58 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None, _invalid_request("Session key too long")
         return raw, None
 
+    # ``X-Hermes-*`` header -> ``AIAgent.__init__`` kwarg. Each kwarg already exists on
+    # AIAgent and is threaded by native adapters from their SessionSource, so values reach
+    # the same consumers (Honcho ``runtime_user_peer_name``, per-user memory, session DB).
+    _USER_IDENTITY_HEADERS = (
+        ("X-Hermes-User-Id", "user_id"), ("X-Hermes-User-Name", "user_name"),
+        ("X-Hermes-Chat-Id", "chat_id"), ("X-Hermes-Chat-Name", "chat_name"),
+        ("X-Hermes-Chat-Type", "chat_type"), ("X-Hermes-Thread-Id", "thread_id"))
+
+    def _parse_user_identity_headers(
+        self, request: "web.Request", body: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+        """Extract the optional identity headers -> dict of AIAgent kwargs (absent key omitted).
+
+        Same auth gate as ``X-Hermes-Session-Key``: without ``API_SERVER_KEY`` the headers are
+        silently ignored rather than 403'd, so local-only dev stays frictionless. Malformed
+        values (control chars, oversized) are dropped per-header with a warning instead of
+        failing the request — a partial identity beats rejecting the turn.
+
+        ``body``'s OpenAI-standard top-level ``user`` field is a fallback for ``user_id`` so
+        vanilla OpenAI SDK clients work without custom headers; the header wins when both exist.
+        """
+        if not self._api_key:
+            return {}
+        out: Dict[str, str] = {}
+        for header_name, kwarg_name in self._USER_IDENTITY_HEADERS:
+            raw = request.headers.get(header_name, "").strip()
+            if not raw:
+                continue
+            if re.search(r"[\r\n\x00]", raw):
+                logger.warning("%s rejected: control characters in value", header_name)
+                continue
+            if len(raw) > self._MAX_SESSION_HEADER_LEN:
+                logger.warning(
+                    "%s rejected: value exceeds %d chars", header_name, self._MAX_SESSION_HEADER_LEN)
+                continue
+            out[kwarg_name] = raw
+        if "user_id" not in out and body is not None:
+            body_user = body.get("user")
+            if isinstance(body_user, str):
+                stripped = body_user.strip()
+                if (stripped and not re.search(r"[\r\n\x00]", stripped)
+                        and len(stripped) <= self._MAX_SESSION_HEADER_LEN):
+                    out["user_id"] = stripped
+        return out
+
+    @staticmethod
+    def _identity_response_headers(user_identity: Optional[Dict[str, str]]) -> Dict[str, str]:
+        """Echo the accepted identity back so clients can confirm what the server saw."""
+        if not user_identity:
+            return {}
+        by_kwarg = {kwarg: header for header, kwarg in APIServerAdapter._USER_IDENTITY_HEADERS}
+        return {by_kwarg[k]: v for k, v in user_identity.items() if k in by_kwarg}
+
     # -- Session DB -------------------------------------------------------------------
 
     def _open_and_cache_session_db(self, home) -> Optional[Any]:
@@ -2121,11 +2177,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
-        room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[Dict[str, Any]] = None,
+        user_identity: Optional[Dict[str, str]] = None) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
-        session ``/model`` override, disables the fallback chain and fails closed."""
+        session ``/model`` override, disables the fallback chain and fails closed.
+        ``user_identity`` is the parsed identity-header subset (see
+        ``_parse_user_identity_headers``); each key is an existing AIAgent kwarg."""
         from run_agent import AIAgent
         from gateway.run import (
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
@@ -2176,6 +2235,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "gateway_session_key": gateway_session_key}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
+        # Per-request caller identity; each key is an existing AIAgent kwarg, so it reaches the
+        # same consumers as the SessionSource subset native adapters thread.
+        if user_identity:
+            agent_kwargs.update(user_identity)
         agent = AIAgent(**agent_kwargs)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
@@ -3668,7 +3731,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None) -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None,
+        user_identity: Optional[Dict[str, str]] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3700,7 +3764,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
-                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
+                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
+                        user_identity=user_identity)
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if active_run_id:

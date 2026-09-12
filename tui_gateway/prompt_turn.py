@@ -402,8 +402,9 @@ def _run_post_turn_followups(
             sid, session, [event for event, _text in drained],
             session.setdefault("_notification_emitted", set()), process_registry,
             format_process_notification, deferred, owned=True)
-        for event in deferred:
-            process_registry.completion_queue.put(event)
+        with process_registry.completion_routing_lock:
+            for event in deferred:
+                process_registry.completion_queue.put(event)
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 

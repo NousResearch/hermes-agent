@@ -47,6 +47,7 @@ class _Batch:
     overall_start: float
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
+    result_delivery: str = "after_turn"
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
 
     def owner_kwargs(self) -> Dict[str, Any]:
@@ -328,6 +329,14 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
             {"delegation_id": uid, "group": unit.group, "task_indexes": [i for (i, _, _) in unit.children]}
             for unit, uid in units
         ]
+    payload["result_delivery"] = batch.result_delivery
+    if batch.result_delivery == "inject":
+        payload["note"] = (
+            f"{n} subagent(s) run asynchronously as {len(units)} completion unit(s); "
+            "each unit reports once after all of its tasks finish. "
+            "Keep working: ready units may ride a new tool-result boundary in this turn. "
+            "Missed boundaries use normal after-turn delivery. Never wait or poll."
+        )
     sids = [getattr(c, "_subagent_id", None) for (_, _, c) in batch.children]
     if any(isinstance(s, str) and s for s in sids):
         payload["subagent_ids"] = sids
@@ -371,6 +380,8 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
         task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
+        result_delivery=unit.result_delivery,
+        parent_turn_id=str(getattr(unit.parent_agent, "_active_turn_id", "") or ""),
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 

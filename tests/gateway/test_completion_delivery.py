@@ -9,6 +9,7 @@ state (when available) is acknowledged through its authoritative SQLite API.
 import asyncio
 import json
 import queue
+import threading
 from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -832,6 +833,166 @@ def test_single_async_event_latency_and_text_are_unchanged(
     delivered = adapter.handle_message.await_args.args[0]
     assert "background subagent delegations" not in delivered.text
     assert "deleg_single" in delivered.text
+
+
+def test_gateway_dequeue_cannot_hide_ready_inject_from_active_tool_boundary(
+    monkeypatch, isolated_registry,
+):
+    """The gateway must requeue an active-turn inject before releasing routing ownership.
+
+    Pause the real gateway classifier after it has dequeued the event while holding
+    the shared reservation.  The tool-boundary drain must block, then observe and
+    claim the event immediately after the gateway restores it to the queue.
+    """
+    from agent.delegation_inject import (
+        acknowledge_pending_injects,
+        attach_ready_injects_to_tool_results,
+    )
+
+    event = _distinct_async_event("deleg_active_boundary")
+    event.update({
+        "parent_session_id": "parent-session",
+        "parent_turn_id": "turn-active",
+        "result_delivery": "inject",
+    })
+    _persist_pending_completion(event)
+    isolated_registry.completion_queue.put(dict(event))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    active_parent = SimpleNamespace(
+        session_id="parent-session",
+        _active_turn_id="turn-active",
+        _pending_delegation_inject_claims=[],
+        _session_messages=[],
+    )
+    runner._running_agents = {event["session_key"]: active_parent}
+
+    gateway_dequeued = threading.Event()
+    release_gateway = threading.Event()
+    original_enrich = runner._enrich_async_delegation_routing
+
+    def paused_enrich(candidate):
+        original_enrich(candidate)
+        gateway_dequeued.set()
+        assert release_gateway.wait(timeout=2)
+
+    monkeypatch.setattr(runner, "_enrich_async_delegation_routing", paused_enrich)
+    reserved: list[list[dict]] = []
+    gateway_thread = threading.Thread(
+        target=lambda: reserved.append(
+            runner._reserve_idle_async_delegation_events(isolated_registry)
+        )
+    )
+    gateway_thread.start()
+    assert gateway_dequeued.wait(timeout=2)
+
+    messages = [{"role": "tool", "tool_call_id": "tc", "content": "foreground result"}]
+    attached: list[int] = []
+    attach_done = threading.Event()
+
+    def attach():
+        attached.append(attach_ready_injects_to_tool_results(active_parent, messages, 1))
+        attach_done.set()
+
+    attach_thread = threading.Thread(target=attach)
+    attach_thread.start()
+    assert not attach_done.wait(timeout=0.05)  # blocked by the gateway's routing reservation
+
+    release_gateway.set()
+    gateway_thread.join(timeout=2)
+    attach_thread.join(timeout=2)
+    assert not gateway_thread.is_alive()
+    assert not attach_thread.is_alive()
+    assert reserved == [[]]
+    assert attached == [1]
+    assert "Result for deleg_active_boundary" in messages[0]["content"]
+    adapter.handle_message.assert_not_awaited()
+
+    messages[0]["_db_persisted"] = True
+    assert acknowledge_pending_injects(active_parent) == 1
+    active_parent._delegation_inject_claim_heartbeat["thread"].join(timeout=1)
+
+
+def test_watch_drain_cannot_hide_ready_inject_from_active_tool_boundary(
+    monkeypatch, isolated_registry,
+):
+    """The watch-only queue pass shares the same routing reservation.
+
+    It legitimately removes an async event only to put it back.  Pause between
+    those operations and prove the current-turn drain waits for the requeue
+    rather than observing an empty safe boundary.
+    """
+    from agent.delegation_inject import (
+        acknowledge_pending_injects,
+        attach_ready_injects_to_tool_results,
+    )
+    import gateway.run as run_module
+
+    event = _distinct_async_event("deleg_watch_boundary")
+    event.update({
+        "parent_session_id": "parent-session",
+        "parent_turn_id": "turn-active",
+        "result_delivery": "inject",
+    })
+    _persist_pending_completion(event)
+    isolated_registry.completion_queue.put(dict(event))
+
+    runner = _runner(SimpleNamespace(handle_message=AsyncMock()))
+    runner._load_background_notifications_mode = lambda: "off"
+    active_parent = SimpleNamespace(
+        session_id="parent-session",
+        _active_turn_id="turn-active",
+        _pending_delegation_inject_claims=[],
+        _session_messages=[],
+    )
+
+    watch_dequeued = threading.Event()
+    release_watch = threading.Event()
+
+    def paused_watch_drain(completion_queue):
+        candidate = completion_queue.get_nowait()
+        assert candidate["delegation_id"] == event["delegation_id"]
+        watch_dequeued.set()
+        assert release_watch.wait(timeout=2)
+        completion_queue.put(candidate)
+        return []
+
+    monkeypatch.setattr(run_module, "_drain_gateway_watch_events", paused_watch_drain)
+    drain_done = threading.Event()
+
+    def drain_watch():
+        asyncio.run(runner._drain_watch_notifications(isolated_registry.completion_queue))
+        drain_done.set()
+
+    watch_thread = threading.Thread(target=drain_watch)
+    watch_thread.start()
+    assert watch_dequeued.wait(timeout=2)
+
+    messages = [{"role": "tool", "tool_call_id": "tc", "content": "foreground result"}]
+    attached: list[int] = []
+    attach_done = threading.Event()
+
+    def attach():
+        attached.append(attach_ready_injects_to_tool_results(active_parent, messages, 1))
+        attach_done.set()
+
+    attach_thread = threading.Thread(target=attach)
+    attach_thread.start()
+    assert not attach_done.wait(timeout=0.05)
+
+    release_watch.set()
+    watch_thread.join(timeout=2)
+    attach_thread.join(timeout=2)
+    assert drain_done.is_set()
+    assert not watch_thread.is_alive()
+    assert not attach_thread.is_alive()
+    assert attached == [1]
+    assert "Result for deleg_watch_boundary" in messages[0]["content"]
+
+    messages[0]["_db_persisted"] = True
+    assert acknowledge_pending_injects(active_parent) == 1
+    active_parent._delegation_inject_claim_heartbeat["thread"].join(timeout=1)
 
 
 def test_failed_coalesced_async_batch_releases_claims_and_retries(

@@ -827,8 +827,9 @@ DEFAULT_CONFIG = {
         "focus_view": False,
         "focus_saved_tool_progress": "all",
         "skin": "default",
-        # UI language for static messages (approval prompts, some gateway slash replies); not agent
-        # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
+        # UI language for static user-facing messages, including gateway slash replies and
+        # descriptions in /help and Telegram menus; not agent responses/logs/tool outputs.
+        # Supported IDs and aliases are defined by agent.i18n; unknown values fall back to en.
         "language": "en",
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",

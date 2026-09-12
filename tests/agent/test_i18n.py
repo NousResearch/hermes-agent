@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from agent import i18n
+from hermes_cli.commands import COMMAND_REGISTRY
 
 
 LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
@@ -46,6 +47,37 @@ def test_catalog_keys_match_english(lang: str):
     extra = lang_keys - en_keys
     assert not missing, f"{lang}.yaml missing keys: {sorted(missing)}"
     assert not extra, f"{lang}.yaml has keys not in en.yaml: {sorted(extra)}"
+
+
+def test_command_description_catalog_matches_registry():
+    """The English baseline tracks every canonical command byte-for-byte."""
+    catalog = _load_raw("en").get("command_descriptions") or {}
+    registry = {cmd.name: cmd.description for cmd in COMMAND_REGISTRY}
+    assert catalog == registry
+
+
+@pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
+def test_command_description_catalogs_do_not_copy_english(lang: str):
+    """Translations are real or blank, so stale English copies cannot shadow the registry."""
+    english = _load_raw("en").get("command_descriptions") or {}
+    translated = _load_raw(lang).get("command_descriptions") or {}
+    copied = sorted(name for name, text in translated.items() if text and text == english.get(name))
+    assert not copied, f"{lang}.yaml duplicates English command descriptions: {copied}"
+
+
+@pytest.mark.parametrize(
+    "lang", [l for l in i18n.SUPPORTED_LANGUAGES if l not in {"en", "ru"}]
+)
+def test_untranslated_command_description_catalogs_are_blank(lang: str):
+    translated = _load_raw(lang).get("command_descriptions") or {}
+    assert not {name: text for name, text in translated.items() if text.strip()}
+
+
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+def test_command_descriptions_fit_telegram_limit(lang: str):
+    catalog = _load_raw(lang).get("command_descriptions") or {}
+    too_long = {name: len(text) for name, text in catalog.items() if len(text) > 256}
+    assert not too_long, f"{lang}.yaml command descriptions exceed 256 characters: {too_long}"
 
 
 @pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))

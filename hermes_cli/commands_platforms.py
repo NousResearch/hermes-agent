@@ -9,7 +9,8 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from hermes_cli.commands import (
-    COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries, _resolve_config_gates)
+    COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries,
+    _resolve_config_gates, localized_command_description)
 
 # Logger name parity with the origin module (tests capture "hermes_cli.commands").
 logger = logging.getLogger("hermes_cli.commands")
@@ -72,15 +73,39 @@ def _clamp_command_names(
 
 # --- Telegram ---------------------------------------------------------------
 
+# https://core.telegram.org/bots/api#botcommand -- descriptions are 1-256
+# characters. The limit is counted in characters, not bytes.
+_TELEGRAM_MAX_DESCRIPTION_CHARS = 256
+
+
+def _clamp_telegram_description(name: str, description: str) -> str:
+    """Clamp one description so an oversized entry cannot reject the menu."""
+    if len(description) <= _TELEGRAM_MAX_DESCRIPTION_CHARS:
+        return description
+    logger.warning(
+        "Telegram description for /%s is %d chars (limit %d); truncating",
+        name, len(description), _TELEGRAM_MAX_DESCRIPTION_CHARS,
+    )
+    return description[:_TELEGRAM_MAX_DESCRIPTION_CHARS - 1] + "…"
+
+
 def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, str]]:
     """(command_name, description) pairs for Telegram setMyCommands: sanitized canonical names
     only (no aliases). Built-ins needing arguments are included (their handlers show usage when
     selected bare); plugin commands needing arguments are excluded (may lack a no-arg fallback)."""
-    pairs = [(cmd.name, cmd.description) for cmd in _gateway_available_commands()]
+    # Localize by canonical registry name before Telegram rewrites hyphens.
+    pairs = [
+        (cmd.name, localized_command_description(cmd.name, cmd.description))
+        for cmd in _gateway_available_commands()
+    ]
     if include_plugins:
         pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
-    return [(tg, desc) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
+    return [
+        (tg, _clamp_telegram_description(name, desc))
+        for name, desc in pairs
+        if (tg := _sanitize_telegram_name(name))
+    ]
 
 
 # Telegram allows 100 BotCommands; the 60-slot default keeps every built-in plus common skill

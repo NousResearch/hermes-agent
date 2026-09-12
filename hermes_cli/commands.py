@@ -442,6 +442,36 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return cmd.name in overrides
 
 
+def _alias_label() -> str:
+    """Return the localized ``alias`` label used in gateway help lines."""
+    try:
+        from agent.i18n import t
+    except Exception:  # pragma: no cover - i18n is optional at import time
+        return "alias"
+    value = t("gateway.help.alias")
+    if value == "gateway.help.alias" or not value.strip():
+        return "alias"
+    return value
+
+
+def localized_command_description(name: str, description: str) -> str:
+    """Return a localized command description, falling back to registry text.
+
+    Missing and blank catalog values both mean "not translated". Command names
+    stay canonical; platform-specific sanitization happens after this lookup.
+    """
+    key = f"command_descriptions.{name}"
+    try:
+        from agent.i18n import t
+        value = t(key)
+    except Exception:  # pragma: no cover - broken i18n must not break menus
+        logger.debug("command description lookup failed for %r", name, exc_info=True)
+        return description
+    if value == key or not value.strip():
+        return description
+    return value
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
@@ -453,8 +483,9 @@ def gateway_help_lines() -> list[str]:
         # Skip internal aliases like reload_mcp (underscore variant of the name).
         alias_parts = [f"`/{a}`" for a in cmd.aliases
                        if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
-        alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        alias_note = f" ({_alias_label()}: {', '.join(alias_parts)})" if alias_parts else ""
+        description = localized_command_description(cmd.name, cmd.description)
+        lines.append(f"`/{cmd.name}{args}` -- {description}{alias_note}")
     return lines
 
 

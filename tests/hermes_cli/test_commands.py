@@ -3,7 +3,8 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
+from agent import i18n
+from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, _alias_label, command_desktop_meta, gateway_help_lines, infer_argument_mode, localized_command_description, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
@@ -1127,3 +1128,34 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+class TestLocalizedCommandDescriptions:
+    def setup_method(self):
+        i18n.reset_language_cache()
+
+    def teardown_method(self):
+        i18n.reset_language_cache()
+
+    def test_missing_and_blank_entries_fall_back_to_registry(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        assert localized_command_description("missing", "Registry text") == "Registry text"
+        assert localized_command_description("save", "Current registry text") == "Current registry text"
+
+    def test_whitespace_entry_falls_back_to_registry(self, monkeypatch):
+        monkeypatch.setattr("agent.i18n.t", lambda key, **kwargs: "   ")
+        assert localized_command_description("save", "Registry text") == "Registry text"
+
+    def test_gateway_help_localizes_descriptions_and_alias_label(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ru")
+        joined = "\n".join(gateway_help_lines())
+        assert "Помощь по командам" in joined
+        assert "алиас:" in joined
+
+    def test_gateway_help_defaults_to_registry_english(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        joined = "\n".join(gateway_help_lines())
+        help_command = resolve_command("help")
+        assert help_command is not None
+        assert help_command.description in joined
+        assert _alias_label() == "alias"

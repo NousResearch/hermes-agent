@@ -117,7 +117,8 @@ def table_rows(assets_by_app: dict) -> list[tuple[str, list[tuple[str, str, str,
 
 
 def render_tables(assets_by_app: dict, base_url: str,
-                  incomplete_jobs: list[str] | None = None) -> str:
+                  incomplete_jobs: list[str] | None = None,
+                  run_url: str | None = None) -> str:
     """The replacement block: marker + tables + end marker."""
     sections = []
     for title, rows in table_rows(assets_by_app):
@@ -133,6 +134,10 @@ def render_tables(assets_by_app: dict, base_url: str,
     if incomplete_jobs:
         sections.insert(0, "> **Build incomplete.** Jobs not successful: "
                         + ", ".join(incomplete_jobs) + ". The channel page was not advanced.")
+        if run_url:
+            sections.append("### Build diagnostics\n\n| Job | Diagnostics |\n|---|---|\n"
+                            + "\n".join(f"| {job} | [View build run]({run_url}) |"
+                                        for job in incomplete_jobs))
     return MARKER + "\n## Downloads\n\n" + "\n\n".join(sections) + "\n" + END_MARKER
 
 
@@ -232,45 +237,51 @@ def _validated_commit_inputs(commit: str, receipts: dict[str, dict | None]) -> N
 def commit_entries(commit: str, names: list[str], base_url: str,
                    receipts: dict[str, dict | None],
                    failed_legs: list[str] | None = None,
+                   run_url: str | None = None,
                    ) -> list[tuple[str, str, str | None, str | None]]:
-    """[(label, status, download URL or None, object basename or None)] — the
-    ONE row set the step summary and the commit page render. A link exists
-    only for a receipt-listed object that is really in the bucket."""
+    """[(label, status, URL or None, link text or None)] for both summary sinks.
+
+    Downloads require a receipt-listed object in the bucket. Missing artifacts
+    link to the actual workflow run, never a guessed download or job URL.
+    """
     failed = set(failed_legs or [])
     entries: list[tuple[str, str, str | None, str | None]] = []
     for row in commit_expected_rows(names, receipts):
         label, leg, key, state = row["label"], row["leg"], row["key"], row["state"]
         if state == "built":
             entries.append((label, "✅ Built", r2.public_url_for(base_url, key), key.rsplit("/", 1)[-1]))
+            continue
         elif state == "receipt-missing":
             related = failed.intersection({leg, _COMMIT_JOBS[leg]})
             blame = f"failed: {', '.join(sorted(related))}" if related \
                 else "leg incomplete or upload interrupted"
-            entries.append((label, f"❌ Not built ({blame})", None, None))
+            status = f"❌ Not built ({blame})"
         elif state == "object-missing":
-            entries.append((label, "❌ Not built (receipt present but object missing)", None, None))
+            status = "❌ Not built (receipt present but object missing)"
         elif state == "receipt-omits":
-            entries.append((label, "❌ Not built (artifact absent from receipt)", None, None))
+            status = "❌ Not built (artifact absent from receipt)"
         else:
-            entries.append((label, "❌ Not built (ambiguous: multiple objects match)", None, None))
+            status = "❌ Not built (ambiguous: multiple objects match)"
+        entries.append((label, status, run_url, "View build run" if run_url else None))
     for label in _COMMIT_DISABLED:
-        entries.append((label, "❌ Not built (release leg disabled)", None, None))
+        entries.append((label, "Disabled (release leg disabled)", None, None))
     return entries
 
 
 def render_commit_summary(names: list[str], base_url: str, commit: str,
                           receipts: dict[str, dict | None],
-                          failed_legs: list[str] | None = None) -> str:
+                          failed_legs: list[str] | None = None,
+                          run_url: str | None = None) -> str:
     """Render every expected product without reading or changing a release."""
     _validated_commit_inputs(commit, receipts)
     lines = [
         f"## Commit build `{commit[:12]}`",
         "",
-        "| Binary | Status | Download |",
+        "| Binary | Status | Download / diagnostics |",
         "|---|---|---|",
     ]
-    for label, status, url, basename in commit_entries(commit, names, base_url, receipts, failed_legs):
-        cell = f"[{basename}]({url})" if url and basename else "—"
+    for label, status, url, link_text in commit_entries(commit, names, base_url, receipts, failed_legs, run_url):
+        cell = f"[{link_text}]({url})" if url and link_text else "—"
         lines.append(f"| {label} | {status} | {cell} |")
     return "\n".join([*lines, ""])
 
@@ -359,7 +370,8 @@ def _link(url: str) -> str:
 
 
 def render_page(tag: str, assets_by_app: dict, base_url: str,
-                incomplete_jobs: list[str] | None = None) -> str:
+                incomplete_jobs: list[str] | None = None,
+                run_url: str | None = None) -> str:
     """The tag/channel page: the release-body download table as HTML."""
     channel = r2.channel_for_tag(tag)
     body = [
@@ -382,23 +394,30 @@ def render_page(tag: str, assets_by_app: dict, base_url: str,
               f"{_link(r2.public_url_for(base_url, name))}{html.escape(kind)}</a>"]
              for os_name, arch, kind, name in rows],
         ))
+    if incomplete_jobs and run_url:
+        body.append("<h2>Build diagnostics</h2>")
+        body.extend(_table(
+            ("Job", "Diagnostics"),
+            [[html.escape(job), f"{_link(run_url)}View build run</a>"] for job in incomplete_jobs],
+        ))
     return _page(f"Hermes Desktop {channel} builds", tag, body)
 
 
 def render_commit_page(commit: str, names: list[str], base_url: str,
                        receipts: dict[str, dict | None],
-                       failed_legs: list[str] | None = None) -> str:
+                       failed_legs: list[str] | None = None,
+                       run_url: str | None = None) -> str:
     """The commit-build page: every expected binary, built or not."""
     _validated_commit_inputs(commit, receipts)
     rows = []
-    for label, status, url, basename in commit_entries(commit, names, base_url, receipts, failed_legs):
-        cell = (f"{_link(url)}{html.escape(basename)}</a>" if url and basename else "—")
+    for label, status, url, link_text in commit_entries(commit, names, base_url, receipts, failed_legs, run_url):
+        cell = (f"{_link(url)}{html.escape(link_text)}</a>" if url and link_text else "—")
         rows.append([html.escape(label), html.escape(status), cell])
     body = [
         f"<h1>Hermes commit build <code>{html.escape(commit[:12])}</code></h1>",
         f"<p>Commit <code>{html.escape(commit)}</code>. Every expected binary is listed; "
-        "a row without a link was not built.</p>",
-        *_table(("Binary", "Status", "Download"), rows),
+        "built rows link to downloads; incomplete rows link to the build run when available.</p>",
+        *_table(("Binary", "Status", "Download / diagnostics"), rows),
     ]
     return _page(f"Hermes commit build {commit[:12]}", commit, body)
 
@@ -499,6 +518,8 @@ def main() -> int:
                         help="With --summary-commit: comma-separated failed job names, "
                              "blamed on the Not built rows")
     parser.add_argument("--repo", default="NousResearch/hermes-agent")
+    parser.add_argument("--run-url", default=None,
+                        help="Actual workflow run URL for incomplete-build diagnostics")
     parser.add_argument("--r2-base-url", default=os.environ.get("CLOUDFLARE_R2_PUBLIC_URL"),
                         help="Public base URL of the R2 bucket (default: $CLOUDFLARE_R2_PUBLIC_URL)")
     parser.add_argument("--dry-run", action="store_true",
@@ -530,11 +551,11 @@ def main() -> int:
         receipts = read_commit_receipts(commit)
         failed_legs = (failed_legs_from_release_needs(os.environ.get("RELEASE_NEEDS"))
                        or [leg.strip() for leg in args.summary_failed_legs.split(",") if leg.strip()])
-        block = render_commit_summary(names, args.r2_base_url, commit, receipts, failed_legs)
+        block = render_commit_summary(names, args.r2_base_url, commit, receipts, failed_legs, args.run_url)
         with open(args.summary_out, "a", encoding="utf-8") as out:
             out.write(block)
         write_page(r2.commit_page_key_for(commit),
-                   render_commit_page(commit, names, args.r2_base_url, receipts, failed_legs),
+                   render_commit_page(commit, names, args.r2_base_url, receipts, failed_legs, args.run_url),
                    args.r2_base_url)
         built = sum(1 for row in commit_expected_rows(names, receipts) if row["state"] == "built")
         print(f"✓ Commit summary appended to {args.summary_out} ({built}/{len(_COMMIT_EXPECTED)} binaries built)")
@@ -555,12 +576,12 @@ def main() -> int:
         names = r2_object_names(args.tag)
         assets = parse_assets(names)
         incomplete = incomplete_release_jobs(os.environ.get("RELEASE_NEEDS"))
-        block = render_tables(assets, args.r2_base_url, incomplete)
+        block = render_tables(assets, args.r2_base_url, incomplete, args.run_url)
         # A failed run still owns its tag page, never the channel pointer
-        # consumed by source updates. Missing artifacts never become links.
+        # consumed by source updates. Missing artifacts never become downloads.
         if not args.dry_run:
             write_page(r2.staging_key_for(args.tag, "index.html"),
-                       render_page(args.tag, assets, args.r2_base_url, incomplete), args.r2_base_url)
+                       render_page(args.tag, assets, args.r2_base_url, incomplete, args.run_url), args.r2_base_url)
 
     # Keep the per-tag diagnostic page even when GitHub cannot supply a draft.
     view = subprocess.run(

@@ -176,6 +176,26 @@ class TestBucketPage:
         assert BASE_URL + "/releases/tag/v0.28.0/HermesBundled-0.28.0-linux-x64.AppImage" in page
         assert "linux-arm64" not in page
 
+    @pytest.mark.parametrize("has_download", [True, False])
+    def test_failed_tag_rows_link_diagnostics_not_downloads(self, has_download):
+        run_url = "https://github.example/o/r/actions/runs/12345"
+        names = [ASSETS[2]] if has_download else []
+        assets = rbt.parse_assets(names)
+        failed = ["build-win32 (failure)", "build-darwin (failure)", "termux-deb (failure)"]
+        block = rbt.render_tables(assets, BASE_URL, failed, run_url=run_url)
+        page = rbt.render_page("v0.28.0", assets, BASE_URL, failed, run_url=run_url)
+        for job in failed:
+            md = next(line for line in block.splitlines() if line.startswith(f"| {job} |"))
+            html_row = next(row for row in re.findall(r"<tr><td>(.*?)</tr>", page) if job in row)
+            assert f"[View build run]({run_url})" in md
+            assert f'<a href="{run_url}">View build run</a>' in html_row
+            assert BASE_URL not in md and BASE_URL not in html_row
+        downloads = [url for url in re.findall(r"href=\"([^\"]+)\"", page) if url.startswith(BASE_URL)]
+        assert downloads == [f"{BASE_URL}/{name}" for name in names]
+        assert ("No downloadable artifacts" in page) is (not has_download)
+        for url in downloads:
+            assert f"]({url})" in block
+
     def test_page_names_the_build_it_describes(self):
         page = rbt.render_page("v0.28.0", rbt.parse_assets(ASSETS), BASE_URL)
         assert rbt.recorded_build(page) == "v0.28.0"

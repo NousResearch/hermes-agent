@@ -24,6 +24,7 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     assert render["env"]["RELEASE_NEEDS"] == "${{ toJSON(needs) }}"
 
     tag = "v0.28.0-canary.20260818101010"
+    run_url = "https://github.example/o/r/actions/runs/12345"
     base = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"
     channel_key = "releases/canary/index.html"
     previous = b'<meta name="hermes-build" content="v0.27.0-canary.20260817101010">'
@@ -50,9 +51,12 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     gh.chmod(0o755)
     needs = {name: {"result": "success"} for name in job["needs"]}
     needs["build-win32"]["result"] = "failure"
+    needs["build-darwin"]["result"] = "failure"
+    needs["termux-deb"]["result"] = "failure"
     needs["publish-win32-updater"]["result"] = "skipped"
     result = shell_step(tmp_path, r2_server, "builds-table", "Render", {
         "HERMES_PAYLOAD_TAG": tag, "GITHUB_REPOSITORY": "o/r",
+        "RUN_URL": run_url,
         "RELEASE_NEEDS": json.dumps(needs), "CLOUDFLARE_R2_PUBLIC_URL": base,
         "CLOUDFLARE_R2_ACCOUNT_ID": "loopback", "CLOUDFLARE_R2_ACCESS_KEY_ID": "test-inert",
         "CLOUDFLARE_R2_SECRET_ACCESS_KEY": "test-inert", "CLOUDFLARE_R2_BUCKET": "hermes-releases",
@@ -63,7 +67,12 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     page = r2_server.store[key][0].decode()
     assert "Build incomplete" in page
     assert "build-win32 (failure)" in page and "publish-win32-updater (skipped)" in page
-    assert "No downloadable artifacts" in page and 'href="' not in page
+    assert "No downloadable artifacts" in page
+    for name, info in needs.items():
+        if info["result"] != "success":
+            assert f'<td>{name} ({info["result"]})</td><td><a href="{run_url}">View build run</a>' in page
+    assert base not in page
+    assert render["env"]["RUN_URL"] == "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     assert f"{base}/{key}" in result.stdout
     assert r2_server.store[channel_key][0] == previous
     assert set(r2_server.store) == {channel_key, key}

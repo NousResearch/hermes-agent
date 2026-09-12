@@ -1625,6 +1625,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -1632,7 +1633,7 @@ jobs:
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
         run: |
           python3 scripts/render-builds-table.py \
-            --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY"
+            --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
 
       # publish-canary consumes this job's result. Publish diagnostics first,
       # then retain the original all-needs-success release gate.
@@ -1671,6 +1672,7 @@ jobs:
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         # Render failed admitted builds too. Only receipt-listed objects
         # receive download links. Rendering does not alter job results.
         run: |
@@ -1686,7 +1688,7 @@ jobs:
           python3 scripts/render-builds-table.py \
             --summary-commit "$RELEASE_COMMIT" \
             --summary-out "$GITHUB_STEP_SUMMARY" \
-            --summary-failed-legs "$failed"
+            --summary-failed-legs "$failed" --run-url "$RUN_URL"
 
   candidate-manifest:
     name: Stage verified stable candidate artifacts

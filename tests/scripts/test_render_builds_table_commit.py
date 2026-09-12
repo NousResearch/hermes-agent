@@ -221,6 +221,36 @@ def test_summary_uses_exact_nested_keys_and_lists_the_sideload_bundle():
     assert "Linux x64" in summary and "Linux ARM64" in summary
 
 
+@pytest.mark.parametrize("has_download", [True, False])
+def test_incomplete_commit_rows_link_run_not_missing_downloads(has_download):
+    run_url = "https://github.example/o/r/actions/runs/12345"
+    receipts = _receipts_all_built() if has_download else {}
+    names = _names("HermesBundled-0.28.0-win-x64.msix") if has_download else []
+    # The uploaded x64 binary stays downloadable even when that job fails
+    # after staging, or a sibling fails before staging its own artifact.
+    failed = ["build-win32", "build-darwin", "publish-win32-updater", "termux-deb"]
+    summary = rbt.render_commit_summary(names, BASE, COMMIT, receipts, failed, run_url=run_url)
+    page = rbt.render_commit_page(COMMIT, names, BASE, receipts, failed, run_url=run_url)
+    markdown_rows = [line for line in summary.splitlines() if line.startswith("| ")][1:]
+    html_rows = re.findall(r"<tr><td>(.*?)</tr>", page)
+    assert len(markdown_rows) == len(html_rows) == len(rbt._COMMIT_EXPECTED) + len(rbt._COMMIT_DISABLED)
+    for md, html_row in zip(markdown_rows, html_rows):
+        if "Linux" in md:
+            assert "Disabled" in md and "Disabled" in html_row
+            assert "](" not in md and "href=" not in html_row
+        elif has_download and "Windows x64" in md:
+            url = f"{BASE}/{names[0]}"
+            assert "✅ Built" in md and "✅ Built" in html_row
+            assert f"]({url})" in md and f'href="{url}"' in html_row
+            assert run_url not in md and run_url not in html_row
+        else:
+            assert "❌ Not built" in md and "❌ Not built" in html_row
+            assert f"[View build run]({run_url})" in md
+            assert f'<a href="{run_url}">View build run</a>' in html_row
+            assert BASE not in md and BASE not in html_row
+    assert summary.count("✅ Built") == page.count("✅ Built") == int(has_download)
+
+
 def test_commit_page_matches_the_summary_rows():
     """Two sinks, ONE row set: every link and every status in the step
     summary appears on the page, and neither sink drops a missing binary."""
@@ -233,7 +263,8 @@ def test_commit_page_matches_the_summary_rows():
     for url in links:
         assert f'href="{url}"' in page
     assert page.count("✅ Built") == summary.count("✅ Built") == len(rbt._COMMIT_EXPECTED)
-    assert page.count("❌ Not built") == summary.count("❌ Not built") == len(rbt._COMMIT_DISABLED)
+    assert page.count("Disabled") == summary.count("Disabled") == len(rbt._COMMIT_DISABLED)
+    assert "❌ Not built" not in page and "❌ Not built" not in summary
     assert rbt.recorded_build(page) == COMMIT
 
 

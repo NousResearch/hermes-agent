@@ -8,6 +8,8 @@ import subprocess
 import sys
 from urllib.request import urlopen
 
+import pytest
+
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _workflow
 from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 
@@ -52,6 +54,54 @@ def shell_step(tmp_path, r2_server, job, name, env):
     environment['PATH'] = str(helper) + os.pathsep + environment['PATH']
     return subprocess.run([_BASH, '-e', '-o', 'pipefail', str(script)], cwd=tmp_path,
                           env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60)
+
+
+@pytest.mark.parametrize("has_download", [True, False])
+def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_server, has_download):
+    sha = 'a' * 40
+    run_url = 'https://github.example/o/r/actions/runs/12345'
+    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
+    summary = tmp_path / 'summary.md'
+    jobs = _workflow()['jobs']
+    env = dict(HERMES_BUILD_COMMIT=sha, HERMES_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
+               RELEASE_PHASE='', TARGET='win32-x64', RUN_URL=run_url,
+               GITHUB_STEP_SUMMARY=str(summary), CLOUDFLARE_R2_PUBLIC_URL=base,
+               CLOUDFLARE_R2_ACCOUNT_ID='loopback', CLOUDFLARE_R2_ACCESS_KEY_ID='test-inert',
+               CLOUDFLARE_R2_SECRET_ACCESS_KEY='test-inert', CLOUDFLARE_R2_BUCKET='hermes-releases',
+               RELEASE_NEEDS=json.dumps({name: {'result': 'success' if name == 'validate' else 'failure'}
+                                         for name in jobs['commit-builds-summary']['needs']}))
+    if has_download:
+        artifact = tmp_path / 'apps/desktop/release/HermesBundled-0.33.0-win-x64.msix'
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b'inert downloadable fixture')
+        staged = shell_step(tmp_path, r2_server, 'build-win32', 'Stage Windows packages to R2', env)
+        assert staged.returncode == 0, staged.stdout + staged.stderr
+    result = shell_step(tmp_path, r2_server, 'commit-builds-summary',
+                        'Render the full expected-binary matrix', env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    text = summary.read_text(encoding='utf-8')
+    page_key = f'releases/commit/{sha}/index.html'
+    with urlopen(f'{base}/{page_key}', timeout=5) as response:
+        page = response.read().decode()
+    links = re.findall(r'\]\((https?://[^)]+)\)', text)
+    assert run_url in links
+    assert text.count('✅ Built') == page.count('✅ Built') == int(has_download)
+    for url in links:
+        assert f'href="{url}"' in page
+        if url != run_url:
+            assert url.startswith(base + '/')
+            with urlopen(url, timeout=5) as response:
+                assert response.read() == b'inert downloadable fixture'
+    for line in text.splitlines():
+        if 'Not built' in line:
+            assert f'[View build run]({run_url})' in line and base not in line
+        elif 'Linux' in line:
+            assert 'Disabled' in line and '](' not in line
+    assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
+    for name in ('build-win32', 'build-darwin'):
+        assert jobs[name]['strategy']['fail-fast'] is False
+    step = next(step for step in jobs['commit-builds-summary']['steps'] if 'run' in step)
+    assert step['env']['RUN_URL'] == '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
 
 
 def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tmp_path, r2_server):

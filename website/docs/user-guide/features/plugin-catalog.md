@@ -81,6 +81,18 @@ hermes plugins enable <name>
 The install prompt shows the entry's capability summary — declared tools,
 hooks, and required env vars — before anything is cloned.
 
+The catalog name and the plugin's own manifest name can differ; `hermes
+plugins install` prints the installed name, and `enable` takes that one. For
+example the `touchdesigner` entry (a portable Agent Plugins v1 package that
+bundles the twozero MCP server with the `touchdesigner-mcp` skill) installs as
+`td`, kept short so its generated MCP tool names stay under provider
+function-name limits:
+
+```bash
+hermes plugins install touchdesigner
+hermes plugins enable td
+```
+
 ### Updating a catalog install
 
 `hermes plugins update <name>` never runs `git pull` for catalog installs —

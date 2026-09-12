@@ -35,6 +35,18 @@ def _profile_user_agent() -> str:
         return "hermes-cli"
 
 
+_IMAGE_ONLY_CATALOG_TYPES = frozenset({"image", "image_generation", "image-generation"})
+
+
+def _catalog_item_is_chat_candidate(item: dict[str, Any]) -> bool:
+    """Fail open unless structured catalog metadata proves the model is image-only."""
+    capabilities = item.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return True
+    model_type = str(capabilities.get("type") or "").strip().lower()
+    return model_type not in _IMAGE_ONLY_CATALOG_TYPES
+
+
 @dataclass
 class ProviderProfile:
     """Base provider profile — subclass or instantiate with overrides."""
@@ -334,7 +346,10 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
+            return [
+                m["id"] for m in items
+                if isinstance(m, dict) and "id" in m and _catalog_item_is_chat_candidate(m)
+            ]
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None

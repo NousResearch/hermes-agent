@@ -3736,6 +3736,69 @@ class GatewayTurnMixin:
                 "possible duplicate send (see wecom ack-timeout RCA).",
                 _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
+            self._run_agent_schedule_abandoned_preview_cleanup(_sc, source, turn_ctx, _content_delivered)
+
+    def _run_agent_schedule_abandoned_preview_cleanup(
+        self, stream_consumer: Any, source: SessionSource, turn_ctx: TurnContext,
+        content_delivered: bool) -> None:
+        """Delete previews the consumer abandoned when the gateway had to send the final itself.
+
+        The consumer deletes the previews it replaces on its own fresh-final and fallback paths. This
+        branch is the one where the consumer gave up and the GATEWAY sends the replacement instead, and
+        nothing cleaned up behind it: a preview frozen mid-render, because its edits were refused inside
+        a flood window, stayed in the chat above the complete reply showing raw MarkdownV2 markers and
+        the streaming cursor.
+
+        Three guards keep this from ever removing the reader's only copy of the answer. Skipped when the
+        stream did deliver the content (those previews ARE the reply). The ids come from the consumer's
+        segment-only seam, so finalized earlier segments survive. And the delete runs from the
+        post-delivery callback, which base.py fires from ``finally`` whether or not the final send
+        succeeded: the callback reads the outcome base.py stamps on the session event and stands down
+        after a failed send, rather than deleting the preview with no replacement in the chat."""
+        from gateway.run import safe_schedule_threadsafe
+        session_key = turn_ctx.session_key
+        if content_delivered or not session_key or stream_consumer is None:
+            return
+        ids_fn = getattr(stream_consumer, "abandoned_preview_ids", None)
+        delete_fn = getattr(stream_consumer, "delete_abandoned_previews", None)
+        if not callable(ids_fn) or not callable(delete_fn):
+            return
+        cleanup_adapter = self._adapter_for_source(source)
+        if cleanup_adapter is None or not hasattr(cleanup_adapter, "register_post_delivery_callback"):
+            return
+        try:
+            stale_ids = set(ids_fn())
+        except Exception as exc:
+            logger.debug("Abandoned preview id lookup failed: %s", exc)
+            return
+        if not stale_ids:
+            return
+        _loop_snapshot = asyncio.get_running_loop()
+
+        def _cleanup_abandoned_previews() -> None:
+            # Stamped by base.py right before the hook fires. Missing or False means the replacement
+            # never reached the reader, and the frozen preview is all they have: keep it.
+            _active = getattr(cleanup_adapter, "_active_sessions", {}).get(session_key)
+            if not getattr(_active, "_hermes_final_delivered", False):
+                logger.debug(
+                    "Abandoned preview cleanup skipped for session %s: final send did not land.", session_key)
+                return
+
+            async def _delete_all() -> None:
+                with suppress(Exception):
+                    await delete_fn(stale_ids)
+            with suppress(Exception):
+                safe_schedule_threadsafe(
+                    _delete_all(), _loop_snapshot, logger=logger,
+                    log_message="Abandoned preview cleanup scheduling error",
+                )
+
+        try:
+            cleanup_adapter.register_post_delivery_callback(
+                session_key, _cleanup_abandoned_previews, generation=turn_ctx.run_generation,
+            )
+        except Exception as exc:
+            logger.debug("Abandoned preview cleanup registration failed: %s", exc)
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.

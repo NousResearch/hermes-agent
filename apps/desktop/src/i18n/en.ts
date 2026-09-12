@@ -718,6 +718,10 @@ export const en: Translations = {
       appActionsDesc: 'Where Settings, Layout, and HUD sit in the titlebar. Right leaves room for tabs on the left.',
       appActionsLeft: 'Left',
       appActionsRight: 'Right',
+      externalButtonsTitle: 'Third-Party Titlebar Buttons',
+      externalButtonsDesc:
+        'Room to leave for caption buttons added by other apps (DisplayFusion, Actual Window Manager), so the Hermes titlebar tools are not drawn underneath them.',
+      externalButtonsNone: 'None',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',

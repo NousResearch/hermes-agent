@@ -488,6 +488,10 @@ export const zhHant = defineLocale({
       appActionsDesc: '設定、版面與 HUD 放在標題列左側或右側。選右側可把左側留給分頁。',
       appActionsLeft: '左側',
       appActionsRight: '右側',
+      externalButtonsTitle: '第三方標題列按鈕',
+      externalButtonsDesc:
+        '為其他應用程式（DisplayFusion、Actual Window Manager 等）加入的標題列按鈕預留空間，避免它們遮住 Hermes 的標題列工具。',
+      externalButtonsNone: '無',
       terminalFontTitle: '終端機字型',
       terminalFontDesc:
         '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',

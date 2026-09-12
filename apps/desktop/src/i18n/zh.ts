@@ -693,6 +693,10 @@ export const zh = defineLocale({
       appActionsDesc: '设置、布局和 HUD 放在标题栏左侧还是右侧。选右侧可给标签留出左边空间。',
       appActionsLeft: '左侧',
       appActionsRight: '右侧',
+      externalButtonsTitle: '第三方标题栏按钮',
+      externalButtonsDesc:
+        '为其他应用（DisplayFusion、Actual Window Manager 等）添加的标题栏按钮预留空间，避免它们遮住 Hermes 的标题栏工具。',
+      externalButtonsNone: '无',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',

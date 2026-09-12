@@ -89,6 +89,26 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     assert handlers._check_circuit_breaker("x") is None
 
 
+def test_oauth_server_is_not_adopted_across_profiles(two_profiles):
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.registry import registry
+
+    cfg = {"url": "https://mcp.example/x", "auth": "oauth"}
+
+    two_profiles("a")
+    srv_a = _server("x", cfg)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg)
+    assert reg.register_connected_into_current_scope({"x": dict(cfg)}) == 0
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+
+    two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": dict(cfg)}) == 0
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    assert "x" in disc._select_new_servers({"x": dict(cfg)})
+
+
 def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profiles):
     import tools.mcp_tool as core
     from tools import mcp_tool_discovery as disc, mcp_tool_lifecycle as lifecycle

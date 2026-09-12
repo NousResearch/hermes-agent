@@ -265,7 +265,12 @@ def run_configured_review(
     if review_enabled is False:
         return {"status": "disabled"}
 
-    timezone_name = str(review.get("timezone") or "America/Los_Angeles")
+    timezone_name = review.get("timezone", "America/Los_Angeles")
+    if timezone_name != "America/Los_Angeles":
+        raise ValueError("review.timezone must be America/Los_Angeles")
+    sample_size = review.get("sample_size", 5)
+    if type(sample_size) is not int or sample_size != 5:
+        raise ValueError("review.sample_size must be exactly 5")
     clock = now or datetime.now(ZoneInfo(timezone_name))
     local_clock = clock.astimezone(ZoneInfo(timezone_name))
     not_before = str(review.get("not_before_local") or "00:15")
@@ -316,7 +321,7 @@ def run_configured_review(
         alert_sender=sender,
         alert_channel_id=delivery_channel_id,
         alert_workspace_id=delivery_workspace_id,
-        sample_size=int(review.get("sample_size", 5)),
+        sample_size=sample_size,
         reviewer_provider=SOL_REVIEWER_PROVIDER,
         reviewer_model=SOL_REVIEWER_MODEL,
         timezone_name=timezone_name,

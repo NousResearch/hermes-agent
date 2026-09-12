@@ -60,6 +60,10 @@ def test_store_creates_exact_schema_and_private_permissions(tmp_path: Path):
         assert {
             "receipt_id", "routing_day", "process_started_at_utc", "goal_sha256",
             "context_sha256", "prompt_sha256", "raw_envelope_json", "fallback_used",
+            "terminal_worker_route", "terminal_provider", "terminal_model",
+            "terminal_worker_status",
+            "terminal_response_text", "terminal_response_sha256",
+            "terminal_error_code",
         } <= columns
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() in {"wal", "delete"}
 
@@ -93,6 +97,11 @@ def test_concurrent_connections_upgrade_one_legacy_schema(tmp_path: Path):
     db_path = tmp_path / "profile" / "routing" / "gemini-routing.sqlite3"
     db_path.parent.mkdir(parents=True)
     with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE gemini_attempts "
+            "(receipt_id TEXT PRIMARY KEY, routing_day TEXT NOT NULL, "
+            "route_decision TEXT NOT NULL)"
+        )
         conn.execute("CREATE TABLE daily_review_batches (batch_id TEXT PRIMARY KEY)")
         conn.execute(
             "CREATE TABLE daily_review_items "
@@ -124,14 +133,28 @@ def test_concurrent_connections_upgrade_one_legacy_schema(tmp_path: Path):
         item_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(daily_review_items)")
         }
+        attempt_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(gemini_attempts)")
+        }
     assert {
         "alert_delivery_key",
         "alert_message",
         "slack_workspace_id",
         "alert_lease_token",
         "alert_lease_started_at_utc",
+        "review_lease_token",
+        "review_lease_started_at_utc",
     } <= batch_columns
     assert "failure_kind" in item_columns
+    assert {
+        "terminal_worker_route",
+        "terminal_provider",
+        "terminal_model",
+        "terminal_worker_status",
+        "terminal_response_text",
+        "terminal_response_sha256",
+        "terminal_error_code",
+    } <= attempt_columns
 
 
 def test_store_retries_locked_journal_initialization(
@@ -154,6 +177,95 @@ def test_store_retries_locked_journal_initialization(
     make_store(tmp_path)
 
     assert attempts == 2
+
+
+def test_stale_reviewer_cannot_overwrite_terminal_batch_or_outbox(tmp_path: Path):
+    store = make_store(tmp_path)
+    old = datetime(2026, 9, 11, 12, tzinfo=UTC)
+    batch = store.create_or_get_review_batch(
+        routing_day="2026-09-11",
+        timezone_name="America/Los_Angeles",
+        sample_size_requested=5,
+        eligible_count=0,
+        sample_seed_hex="11" * 32,
+        sample_receipt_ids=[],
+        started_at=old,
+    )
+    review_lease = "stale-runner"
+    assert store.claim_review_batch(
+        batch["batch_id"], lease_token=review_lease, now=old
+    )
+    assert store.fail_stale_review_batch(
+        batch["batch_id"],
+        stale_before=old + timedelta(seconds=1),
+        pipeline_error="stale_review_lease",
+        alert_message="authoritative stale-lease alert",
+        slack_channel_id="C_AUTH",
+        slack_workspace_id="T_AUTH",
+        completed_at=old + timedelta(seconds=2),
+    )
+
+    with pytest.raises(KeyError):
+        store.update_review_batch(
+            batch["batch_id"],
+            lease_token=review_lease,
+            status="passed",
+            alert_status="not_needed",
+            alert_message="late runner payload",
+            slack_channel_id="C_LATE",
+            slack_workspace_id="T_LATE",
+            completed_at=old + timedelta(seconds=3),
+        )
+
+    current = store.get_review_batch("2026-09-11")
+    assert current is not None
+    assert current["status"] == "pipeline_failed"
+    assert current["pipeline_error"] == "stale_review_lease"
+    assert current["alert_message"] == "authoritative stale-lease alert"
+    assert current["slack_channel_id"] == "C_AUTH"
+    assert current["slack_workspace_id"] == "T_AUTH"
+
+
+def test_review_batch_update_requires_current_lease_token(tmp_path: Path):
+    store = make_store(tmp_path)
+    now = datetime(2026, 9, 11, 12, tzinfo=UTC)
+    batch = store.create_or_get_review_batch(
+        routing_day="2026-09-11",
+        timezone_name="America/Los_Angeles",
+        sample_size_requested=0,
+        eligible_count=0,
+        sample_seed_hex="12" * 32,
+        sample_receipt_ids=[],
+        started_at=now,
+    )
+    assert store.claim_review_batch(
+        batch["batch_id"], lease_token="runner-a", now=now
+    )
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            "UPDATE daily_review_batches SET review_lease_token=? WHERE batch_id=?",
+            ("runner-b", batch["batch_id"]),
+        )
+
+    with pytest.raises(KeyError):
+        store.update_review_batch(
+            batch["batch_id"],
+            lease_token="runner-a",
+            status="passed",
+            alert_status="not_needed",
+            completed_at=now,
+        )
+    store.update_review_batch(
+        batch["batch_id"],
+        lease_token="runner-b",
+        status="passed",
+        alert_status="not_needed",
+        completed_at=now,
+    )
+
+    current = store.get_review_batch("2026-09-11")
+    assert current is not None
+    assert current["status"] == "passed"
 
 
 def test_attempt_lifecycle_hashes_and_success_payload(tmp_path: Path):
@@ -182,6 +294,76 @@ def test_attempt_lifecycle_hashes_and_success_payload(tmp_path: Path):
     assert row["process_started_at_utc"].startswith("2026-09-11T12:00:00")
     assert json.loads(row["usage_json"]) == {"input": 1}
     assert json.loads(row["raw_envelope_json"])["status"] == "SUCCESS"
+
+
+@pytest.mark.parametrize(
+    "gemini_status",
+    ["timeout", "cancelled", "malformed", "denied", "oversized"],
+)
+def test_fallback_outcome_records_after_every_terminal_gemini_failure(
+    tmp_path: Path, gemini_status: str
+):
+    store = make_store(tmp_path)
+    receipt_id = prepare(store)
+    store.mark_process_started(receipt_id)
+    store.complete_attempt(
+        receipt_id,
+        worker_status=gemini_status,
+        duration_ms=1,
+        fallback_used=True,
+    )
+
+    store.record_fallback_outcome(
+        receipt_id,
+        worker_route="sol",
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+        worker_status="completed",
+        response_text="fallback",
+        error_code=None,
+    )
+
+    row = store.get_attempt(receipt_id)
+    assert row is not None
+    assert row["terminal_worker_route"] == "sol"
+    assert row["terminal_worker_status"] == "completed"
+
+
+def test_fallback_outcome_cannot_be_rewritten(tmp_path: Path):
+    store = make_store(tmp_path)
+    receipt_id = prepare(store)
+    store.mark_process_started(receipt_id)
+    store.complete_attempt(
+        receipt_id,
+        worker_status="failed",
+        duration_ms=1,
+        fallback_used=True,
+    )
+    store.record_fallback_outcome(
+        receipt_id,
+        worker_route="sol",
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+        worker_status="completed",
+        response_text="authoritative",
+        error_code=None,
+    )
+
+    with pytest.raises(KeyError):
+        store.record_fallback_outcome(
+            receipt_id,
+            worker_route="sol",
+            provider="anthropic",
+            model="other-model",
+            worker_status="failed",
+            response_text=None,
+            error_code="late",
+        )
+
+    row = store.get_attempt(receipt_id)
+    assert row is not None
+    assert row["terminal_provider"] == "openai-codex"
+    assert row["terminal_response_text"] == "authoritative"
 
 
 def test_duplicate_receipt_id_is_rejected_and_terminal_row_cannot_be_rewritten(tmp_path: Path):
@@ -317,7 +499,16 @@ def test_retention_redacts_raw_text_before_deleting_hashes(tmp_path: Path):
     store.mark_process_started("grt_test", when=old)
     store.complete_attempt(
         "grt_test", worker_status="completed", response_text="secret raw text",
-        duration_ms=1, completed_at=old,
+        duration_ms=1, fallback_used=True, completed_at=old,
+    )
+    store.record_fallback_outcome(
+        "grt_test",
+        worker_route="sol",
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+        worker_status="completed",
+        response_text="secret fallback text",
+        error_code=None,
     )
 
     outcome = store.apply_retention(now=datetime.now(UTC), raw_days=30, aggregate_days=180)
@@ -326,8 +517,10 @@ def test_retention_redacts_raw_text_before_deleting_hashes(tmp_path: Path):
     assert row["goal_text"] == ""
     assert row["context_text"] == ""
     assert row["response_text"] is None
+    assert row["terminal_response_text"] is None
     assert row["goal_sha256"]
     assert row["response_sha256"]
+    assert row["terminal_response_sha256"]
 
 
 def test_retention_redacts_raw_reviewer_prose_at_raw_cutoff(tmp_path: Path):

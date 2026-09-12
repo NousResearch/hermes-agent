@@ -284,7 +284,10 @@ class DailyReviewRunner:
         else:
             batch = existing
 
-        if not self.store.claim_review_batch(batch["batch_id"]):
+        review_lease_token = secrets.token_hex(16)
+        if not self.store.claim_review_batch(
+            batch["batch_id"], lease_token=review_lease_token, now=self.clock()
+        ):
             current = self.store.get_review_batch(day) or batch
             terminal = current["status"] in {"passed", "failed", "pipeline_failed"}
             return self._result_from_batch(
@@ -300,6 +303,7 @@ class DailyReviewRunner:
             )
             self.store.update_review_batch(
                 batch["batch_id"],
+                lease_token=review_lease_token,
                 status="pipeline_failed",
                 pipeline_error=pipeline_preflight_error,
                 alert_status="pending",
@@ -401,6 +405,7 @@ class DailyReviewRunner:
         delivery_key = self._alert_delivery_key(str(batch["batch_id"]), alert) if alert else None
         self.store.update_review_batch(
             batch["batch_id"],
+            lease_token=review_lease_token,
             status=status,
             pipeline_error=pipeline_error,
             alert_status="pending" if alert else "not_needed",
@@ -435,15 +440,26 @@ class DailyReviewRunner:
     ) -> str:
         sampled = len(json.loads(str(batch["sample_receipt_ids_json"])))
         reviewed = self._completed_review_count(str(batch["batch_id"]))
-        receipt_path = self._display_receipt_path()
         if pipeline:
-            return (
-                f"Gemini daily review {day}: PIPELINE FAIL — {reviewed}/{sampled} "
-                f"reviews completed. Receipt: {receipt_path} batch {batch['batch_id']}"
-            )
+            return self._pipeline_failure_alert(day, batch, reviewed=reviewed, sampled=sampled)
+        receipt_path = self._display_receipt_path()
         return (
             f"Gemini daily review {day}: FAIL — {len(failures)}/{sampled} sampled "
             f"tasks failed; pipeline=ok. Receipt: {receipt_path} batch {batch['batch_id']}"
+        )
+
+    def _pipeline_failure_alert(
+        self,
+        day: str,
+        batch: Mapping[str, Any],
+        *,
+        reviewed: int,
+        sampled: int,
+    ) -> str:
+        return (
+            f"Gemini daily review {day}: PIPELINE FAIL — {reviewed}/{sampled} "
+            f"reviews completed. Receipt: {self._display_receipt_path()} "
+            f"batch {batch['batch_id']}"
         )
 
     def _display_receipt_path(self) -> str:
@@ -462,9 +478,23 @@ class DailyReviewRunner:
         failures = [item for item in items if item.get("verdict") == "fail"]
         if pipeline and not failures:
             failures = [{"receipt_id": "pipeline", "reason": "pipeline failure"}]
-        return self._failure_alert(
+        alert = self._failure_alert(
             str(batch["routing_day"]), failures, pipeline=pipeline, batch=batch
         )
+        persisted_hash = str(batch.get("alert_message_sha256") or "")
+        if pipeline and persisted_hash:
+            current_hash = hashlib.sha256(alert.encode("utf-8")).hexdigest()
+            if current_hash != persisted_hash:
+                sampled = len(json.loads(str(batch["sample_receipt_ids_json"])))
+                legacy_alert = self._pipeline_failure_alert(
+                    str(batch["routing_day"]),
+                    batch,
+                    reviewed=len(items),
+                    sampled=sampled,
+                )
+                if hashlib.sha256(legacy_alert.encode("utf-8")).hexdigest() == persisted_hash:
+                    return legacy_alert
+        return alert
 
     def _deliver_alert(self, batch: Mapping[str, Any], alert: str) -> None:
         lease_token = secrets.token_hex(16)

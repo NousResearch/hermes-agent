@@ -33,6 +33,8 @@ def test_guide_explains_route_and_authority_boundaries() -> None:
         "no hermes tools",
         "route: sol",
         "data_classification: restricted",
+        "any unknown classification",
+        "fails closed to sol",
         "role: orchestrator",
         "short denylist",
         "no prose classifier",
@@ -69,6 +71,7 @@ def test_guide_explains_private_local_receipts() -> None:
         "never sent to gemini",
         "not stored in the routing receipt database",
         "failures and fallbacks",
+        "terminal sol provider, model, and status",
         "raw task text",
         "slack alert",
     ):

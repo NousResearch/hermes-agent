@@ -225,6 +225,13 @@ class GeminiReceiptStore:
                 usage_json TEXT,
                 raw_envelope_json TEXT,
                 fallback_used INTEGER NOT NULL DEFAULT 0,
+                terminal_worker_route TEXT,
+                terminal_provider TEXT,
+                terminal_model TEXT,
+                terminal_worker_status TEXT,
+                terminal_response_text TEXT,
+                terminal_response_sha256 TEXT,
+                terminal_error_code TEXT,
                 error_code TEXT,
                 error_message TEXT,
                 created_at_utc TEXT NOT NULL
@@ -251,6 +258,8 @@ class GeminiReceiptStore:
                 alert_delivery_key TEXT,
                 alert_lease_token TEXT,
                 alert_lease_started_at_utc TEXT,
+                review_lease_token TEXT,
+                review_lease_started_at_utc TEXT,
                 slack_channel_id TEXT,
                 slack_workspace_id TEXT,
                 slack_message_ts TEXT,
@@ -301,6 +310,41 @@ class GeminiReceiptStore:
             conn.execute(
                 "ALTER TABLE daily_review_batches ADD COLUMN alert_lease_started_at_utc TEXT"
             )
+        if "review_lease_token" not in batch_columns:
+            conn.execute(
+                "ALTER TABLE daily_review_batches ADD COLUMN review_lease_token TEXT"
+            )
+        if "review_lease_started_at_utc" not in batch_columns:
+            conn.execute(
+                "ALTER TABLE daily_review_batches ADD COLUMN review_lease_started_at_utc TEXT"
+            )
+        attempt_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(gemini_attempts)")
+        }
+        attempt_migrations = {
+            "terminal_worker_route": (
+                "ALTER TABLE gemini_attempts ADD COLUMN terminal_worker_route TEXT"
+            ),
+            "terminal_provider": (
+                "ALTER TABLE gemini_attempts ADD COLUMN terminal_provider TEXT"
+            ),
+            "terminal_model": "ALTER TABLE gemini_attempts ADD COLUMN terminal_model TEXT",
+            "terminal_worker_status": (
+                "ALTER TABLE gemini_attempts ADD COLUMN terminal_worker_status TEXT"
+            ),
+            "terminal_response_text": (
+                "ALTER TABLE gemini_attempts ADD COLUMN terminal_response_text TEXT"
+            ),
+            "terminal_response_sha256": (
+                "ALTER TABLE gemini_attempts ADD COLUMN terminal_response_sha256 TEXT"
+            ),
+            "terminal_error_code": (
+                "ALTER TABLE gemini_attempts ADD COLUMN terminal_error_code TEXT"
+            ),
+        }
+        for column, statement in attempt_migrations.items():
+            if column not in attempt_columns:
+                conn.execute(statement)
 
     def prepare_attempt(
         self,
@@ -410,7 +454,10 @@ class GeminiReceiptStore:
                 UPDATE gemini_attempts SET
                     completed_at_utc=?, response_text=?, response_sha256=?,
                     worker_status=?, process_exit_code=?, duration_ms=?, conversation_id=?,
-                    usage_json=?, raw_envelope_json=?, fallback_used=?, error_code=?, error_message=?
+                    usage_json=?, raw_envelope_json=?, fallback_used=?,
+                    terminal_worker_route='gemini', terminal_provider=requested_provider,
+                    terminal_model=requested_model, terminal_worker_status=?,
+                    error_code=?, error_message=?
                 WHERE receipt_id=?
                 """,
                 (
@@ -424,8 +471,52 @@ class GeminiReceiptStore:
                     _canonical_json(dict(usage)) if usage is not None else None,
                     _canonical_json(dict(raw_envelope)) if raw_envelope is not None else None,
                     int(bool(fallback_used)),
+                    worker_status,
                     error_code,
                     error_message,
+                    receipt_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(receipt_id)
+
+    def record_fallback_outcome(
+        self,
+        receipt_id: str,
+        *,
+        worker_route: str,
+        provider: str,
+        model: str,
+        worker_status: str,
+        response_text: str | None,
+        error_code: str | None,
+    ) -> None:
+        """Persist the actual terminal Sol identity without replacing Gemini audit data."""
+        if worker_status not in _TERMINAL_ATTEMPT_STATUSES:
+            raise ValueError(f"fallback worker_status is not terminal: {worker_status}")
+        if worker_route != "sol" or not provider or not model:
+            raise ValueError("fallback route, provider, and model must identify Sol")
+        response_sha256 = (
+            _sha256(response_text) if isinstance(response_text, str) else None
+        )
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE gemini_attempts
+                   SET terminal_worker_route=?, terminal_provider=?, terminal_model=?,
+                       terminal_worker_status=?, terminal_response_text=?,
+                       terminal_response_sha256=?, terminal_error_code=?
+                   WHERE receipt_id=? AND fallback_used=1
+                      AND completed_at_utc IS NOT NULL
+                      AND terminal_worker_route='gemini'
+                """,
+                (
+                    worker_route,
+                    provider,
+                    model,
+                    worker_status,
+                    response_text,
+                    response_sha256,
+                    error_code,
                     receipt_id,
                 ),
             )
@@ -511,15 +602,20 @@ class GeminiReceiptStore:
             ).fetchone()
         return self._row(row)
 
-    def claim_review_batch(self, batch_id: str) -> bool:
+    def claim_review_batch(
+        self, batch_id: str, *, lease_token: str, now: datetime
+    ) -> bool:
         """Atomically grant one runner authority to execute a prepared batch."""
+        if not lease_token:
+            raise ValueError("review lease_token must be non-empty")
         with self._transaction() as conn:
             cursor = conn.execute(
                 """UPDATE daily_review_batches
-                   SET status='reviewing'
+                   SET status='reviewing', review_lease_token=?,
+                       review_lease_started_at_utc=?
                    WHERE batch_id=? AND status='preparing'
                 """,
-                (batch_id,),
+                (lease_token, _iso(now), batch_id),
             )
         return cursor.rowcount == 1
 
@@ -545,7 +641,13 @@ class GeminiReceiptStore:
                        alert_delivery_key=?, slack_channel_id=?, slack_workspace_id=?
                    WHERE batch_id=?
                      AND status IN ('preparing', 'reviewing')
-                     AND started_at_utc <= ?
+                     AND (
+                         (status='preparing' AND started_at_utc <= ?)
+                         OR (
+                             status='reviewing'
+                             AND COALESCE(review_lease_started_at_utc, started_at_utc) <= ?
+                         )
+                     )
                 """,
                 (
                     _iso(completed_at),
@@ -556,6 +658,7 @@ class GeminiReceiptStore:
                     slack_channel_id,
                     slack_workspace_id,
                     batch_id,
+                    _iso(stale_before),
                     _iso(stale_before),
                 ),
             )
@@ -630,6 +733,7 @@ class GeminiReceiptStore:
         self,
         batch_id: str,
         *,
+        lease_token: str,
         status: str,
         pipeline_error: str | None = None,
         alert_status: str | None = None,
@@ -640,6 +744,8 @@ class GeminiReceiptStore:
         slack_message_ts: str | None = None,
         completed_at: datetime | None = None,
     ) -> None:
+        if not lease_token:
+            raise ValueError("review lease_token must be non-empty")
         if status not in {"preparing", "reviewing", *_TERMINAL_BATCH_STATUSES}:
             raise ValueError(f"invalid batch status: {status}")
         terminal_at = _iso(completed_at) if status in _TERMINAL_BATCH_STATUSES else None
@@ -653,8 +759,9 @@ class GeminiReceiptStore:
                        alert_delivery_key=COALESCE(?, alert_delivery_key),
                        slack_channel_id=COALESCE(?, slack_channel_id),
                        slack_workspace_id=COALESCE(?, slack_workspace_id),
-                       slack_message_ts=COALESCE(?, slack_message_ts)
-                   WHERE batch_id=?
+                       slack_message_ts=COALESCE(?, slack_message_ts),
+                       review_lease_token=NULL, review_lease_started_at_utc=NULL
+                   WHERE batch_id=? AND status='reviewing' AND review_lease_token=?
                 """,
                 (
                     status,
@@ -668,10 +775,11 @@ class GeminiReceiptStore:
                     slack_workspace_id,
                     slack_message_ts,
                     batch_id,
+                    lease_token,
                 ),
             )
             if cursor.rowcount != 1:
-                raise KeyError(batch_id)
+                raise KeyError(f"review batch missing or review authority lost: {batch_id}")
 
     def initialize_alert_outbox(
         self,
@@ -783,11 +891,13 @@ class GeminiReceiptStore:
             raw_cursor = conn.execute(
                 """UPDATE gemini_attempts SET
                        goal_text='', context_text='', response_text=NULL,
-                       usage_json=NULL, raw_envelope_json=NULL, error_message=NULL
+                       usage_json=NULL, raw_envelope_json=NULL, error_message=NULL,
+                       terminal_response_text=NULL
                    WHERE started_at_utc < ?
-                     AND (goal_text != '' OR context_text != '' OR response_text IS NOT NULL
-                          OR usage_json IS NOT NULL OR raw_envelope_json IS NOT NULL
-                          OR error_message IS NOT NULL)
+                      AND (goal_text != '' OR context_text != '' OR response_text IS NOT NULL
+                           OR usage_json IS NOT NULL OR raw_envelope_json IS NOT NULL
+                           OR error_message IS NOT NULL
+                           OR terminal_response_text IS NOT NULL)
                 """,
                 (raw_cutoff,),
             )

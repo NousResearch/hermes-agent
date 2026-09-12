@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -103,7 +104,9 @@ def test_schema_exposes_only_bounded_routing_metadata():
         assert name in properties
         assert name in properties["tasks"]["items"]["properties"]
     assert properties["route"]["enum"] == ["auto", "gemini", "sol"]
-    assert properties["data_classification"]["enum"] == ["standard", "restricted"]
+    assert "enum" not in properties["data_classification"]
+    assert "any other value" in properties["data_classification"]["description"]
+    assert "enum" not in properties["tasks"]["items"]["properties"]["data_classification"]
     assert properties["output_contract"]["enum"] == ["text", "json"]
 
 
@@ -316,6 +319,50 @@ def test_omitted_classification_uses_restricted_profile_default_and_blocks_expli
     assert result["results"][0]["route_receipt_id"] is None
     assert "route_receipt_id" in stops[0]
     assert stops[0]["route_receipt_id"] is None
+    assert "restricted" in result["results"][0]["route_reason"]
+    build_gemini.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "classification",
+    ["restricted", "sensitive", "local-only", "secret", "ambiguous", "unknown-value"],
+)
+@pytest.mark.parametrize("batch", [False, True], ids=["single", "batch"])
+def test_nonstandard_classification_fails_closed_to_sol(
+    classification: str, batch: bool
+):
+    sol = fake_child()
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
+        patch("tools.delegate_tool._build_antigravity_delegate_child") as build_gemini,
+    ):
+        if batch:
+            response = delegate_task(
+                tasks=[{
+                    "goal": "summarize",
+                    "route": "gemini",
+                    "data_classification": classification,
+                }],
+                parent_agent=parent(),
+            )
+        else:
+            response = delegate_task(
+                goal="summarize",
+                route="gemini",
+                data_classification=classification,
+                parent_agent=parent(),
+            )
+        result = json.loads(response)
+
+    assert result["results"][0]["summary"] == "sol answer"
+    assert result["results"][0]["worker_route"] == "sol"
     assert "restricted" in result["results"][0]["route_reason"]
     build_gemini.assert_not_called()
 
@@ -696,11 +743,11 @@ def test_invalid_routing_metadata_fails_before_child_construction():
     with patch("tools.delegate_tool._build_child_preserving_parent_tools") as builder:
         result = json.loads(
             delegate_task(
-                tasks=[{"goal": "x", "data_classification": "secret"}],
+                tasks=[{"goal": "x", "output_contract": "xml"}],
                 parent_agent=parent(),
             )
         )
-    assert "data_classification" in result["error"]
+    assert "output_contract" in result["error"]
     builder.assert_not_called()
 
 
@@ -814,6 +861,43 @@ def test_adapter_records_failure_then_runs_prebuilt_sol_fallback(tmp_path: Path)
     assert row["worker_status"] == "failed"
     assert row["fallback_used"] == 1
     assert row["error_code"] == "nonzero_exit"
+    assert row["terminal_worker_route"] == "sol"
+    assert row["terminal_provider"] == "openai-codex"
+    assert row["terminal_model"] == "gpt-5.6-sol"
+    assert row["terminal_worker_status"] == "completed"
+    assert row["terminal_response_text"] == "fallback answer"
+    assert row["terminal_response_sha256"] == hashlib.sha256(
+        b"fallback answer"
+    ).hexdigest()
+    assert row["terminal_error_code"] is None
+
+
+def test_sol_fallback_reports_and_records_post_run_runtime_identity(tmp_path: Path):
+    adapter = make_adapter(tmp_path, FakeWorker(worker_result(ok=False)))
+    fallback_child = adapter.fallback_child
+    assert fallback_child is not None
+
+    def activate_internal_fallback(**_kwargs):
+        fallback_child.provider = "anthropic"
+        fallback_child.model = "claude-sonnet-4-6"
+        return {
+            "final_response": "fallback answer",
+            "completed": True,
+            "api_calls": 2,
+            "messages": [],
+        }
+
+    fallback_child.run_conversation.side_effect = activate_internal_fallback
+
+    result = adapter.run_conversation("summarize", task_id="child-task")
+
+    assert result["worker_provider"] == "anthropic"
+    assert result["worker_model_requested"] == "claude-sonnet-4-6"
+    row = adapter.store.get_attempt(adapter.receipt_id)
+    assert row["terminal_worker_route"] == "sol"
+    assert row["terminal_provider"] == "anthropic"
+    assert row["terminal_model"] == "claude-sonnet-4-6"
+    assert row["terminal_worker_status"] == "completed"
 
 
 def test_adapter_returns_structured_metadata_when_sol_fallback_raises(tmp_path: Path):
@@ -835,6 +919,11 @@ def test_adapter_returns_structured_metadata_when_sol_fallback_raises(tmp_path: 
     assert result["route_receipt_id"] == adapter.receipt_id
     assert result["fallback_used"] is True
     assert result["gemini_error_code"] == "nonzero_exit"
+    row = adapter.store.get_attempt(adapter.receipt_id)
+    assert row["terminal_worker_status"] == "failed"
+    assert row["terminal_response_text"] is None
+    assert row["terminal_response_sha256"] is None
+    assert row["terminal_error_code"] == "sol_fallback_failed"
 
 
 def test_receipt_completion_failure_without_fallback_preserves_gemini_worker_truth(

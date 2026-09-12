@@ -29,7 +29,7 @@ Three optional task fields control routing:
 ```
 
 - `route` accepts `auto`, `gemini`, or `sol`.
-- `data_classification` accepts `standard` or `restricted`.
+- Only `data_classification: standard` is eligible for Gemini. `restricted`, `sensitive`, `local-only`, `secret`, `ambiguous`, and any unknown classification fails closed to Sol.
 - `output_contract` accepts `text` or `json`.
 
 Hermes routes to Sol or Astra when any hard exclusion applies:
@@ -117,7 +117,7 @@ Every started Gemini attempt receives one profile-local receipt, including failu
 $HERMES_HOME/routing/gemini-routing.sqlite3
 ```
 
-The database file and SQLite sidecars use mode `0600`; its parent directory uses mode `0700`. Receipt and reviewer prose is redacted after the configured 30-day raw-data window while hashes and aggregate verdicts remain available for the 180-day aggregate window. Receipts include the original goal, context, result or worker-failure evidence, hashes, route decision, model alias, timestamps, byte counts, and duration. Raw content is necessary for the independent review, so access to the profile home is the privacy boundary.
+The database file and SQLite sidecars use mode `0600`; its parent directory uses mode `0700`. Receipt and reviewer prose is redacted after the configured 30-day raw-data window while hashes and aggregate verdicts remain available for the 180-day aggregate window. Receipts include the original goal, context, result or worker-failure evidence, hashes, route decision, model alias, timestamps, byte counts, and duration. When Gemini falls back, the same receipt also records the terminal Sol provider, model, and status. Raw content is necessary for the independent review, so access to the profile home is the privacy boundary.
 
 Raw task text and model output do not go to ordinary gateway logs or a Slack alert. Logs use metadata such as receipt IDs, status, byte counts, and duration. Slack alerts contain counts, the routing day, pipeline status, a batch ID, and the local receipt path.
 
@@ -125,7 +125,7 @@ Do not delete the receipt database during rollback. It is the evidence needed to
 
 ## Daily review
 
-The review is postdeployment operational assurance, not a model-evaluation program. The approved schedule contract is one hourly no-agent cron tick. On each tick, the reviewer must stay idle until 00:15 local time, then process the previous `America/Los_Angeles` day once. The job is not installed by this documentation change.
+The review is postdeployment operational assurance, not a model-evaluation program. The approved schedule contract is one hourly no-agent cron tick. On each tick, the reviewer must stay idle until 00:15 local time, then process the previous `America/Los_Angeles` day once. Runtime validation rejects a different timezone or a configured sample size other than five. The job is not installed by this documentation change.
 
 For each routing day, the reviewer:
 

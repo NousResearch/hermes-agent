@@ -253,6 +253,40 @@ class AntigravityDelegateChild:
                     "error": "Sol fallback returned an invalid result",
                 }
             result = dict(result)
+            fallback_metadata["worker_provider"] = str(
+                result.get("worker_provider")
+                or getattr(self.fallback_child, "provider", "delegation-model")
+            )
+            fallback_metadata["worker_model_requested"] = str(
+                result.get("worker_model_requested")
+                or getattr(self.fallback_child, "model", "")
+            )
+            fallback_status = (
+                "completed"
+                if result.get("completed") is True and result.get("final_response")
+                else "failed"
+            )
+            if self.receipt_id:
+                try:
+                    self.store.record_fallback_outcome(
+                        self.receipt_id,
+                        worker_route="sol",
+                        provider=str(fallback_metadata["worker_provider"]),
+                        model=str(fallback_metadata["worker_model_requested"]),
+                        worker_status=fallback_status,
+                        response_text=(
+                            str(result["final_response"])
+                            if isinstance(result.get("final_response"), str)
+                            and result.get("final_response")
+                            else None
+                        ),
+                        error_code=(
+                            None if fallback_status == "completed" else "sol_fallback_failed"
+                        ),
+                    )
+                except Exception:
+                    result["route_receipt_error"] = "fallback_outcome_not_recorded"
+            self._route_metadata = dict(fallback_metadata)
             result.update(fallback_metadata)
             if self.receipt_id:
                 result["receipt_id"] = self.receipt_id

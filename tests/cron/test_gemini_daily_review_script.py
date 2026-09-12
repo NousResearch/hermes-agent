@@ -146,10 +146,14 @@ def test_configured_review_retry_binds_sender_to_persisted_channel(
         sample_seed_hex="51" * 32,
         sample_receipt_ids=[],
     )
-    assert store.claim_review_batch(batch["batch_id"])
+    review_lease = "review-lease"
+    assert store.claim_review_batch(
+        batch["batch_id"], lease_token=review_lease, now=datetime.now(timezone.utc)
+    )
     message = "persisted alert bytes"
     store.update_review_batch(
         batch["batch_id"],
+        lease_token=review_lease,
         status="pipeline_failed",
         pipeline_error="reviewer_unavailable",
         alert_status="pending",
@@ -261,6 +265,32 @@ def test_runtime_fails_closed_on_malformed_security_config(tmp_path: Path, mutat
         )
 
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sample_size", 4),
+        ("timezone", "UTC"),
+        ("timezone", ""),
+        ("timezone", None),
+        ("timezone", False),
+        ("timezone", 0),
+    ],
+)
+def test_runtime_rejects_noncanonical_daily_review_contract(
+    tmp_path: Path, field: str, value: object
+):
+    config = _config(tmp_path / "routing.sqlite3")
+    config["delegation"]["gemini_routing"]["review"][field] = value
+
+    with pytest.raises(ValueError, match=field):
+        run_configured_review(
+            config=config,
+            now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
+            reviewer_factory=lambda: pytest.fail("invalid contract must not construct reviewer"),
+            alert_sender=lambda _message: pytest.fail("invalid contract must not construct sender"),
+        )
 
 
 def test_configured_review_stays_idle_before_local_not_before(tmp_path: Path):

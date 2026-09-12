@@ -116,6 +116,8 @@ def test_explicit_profile_scope_is_preserved(tmp_path, monkeypatch):
         ({"retention": {"raw_days": 30, "aggregate_days": False}}, "retention.aggregate_days"),
         ({"extra_args": "--sandbox"}, "extra_args"),
         ({"review": {**EXPECTED_GEMINI_ROUTING_DEFAULTS["review"], "sample_size": 0}}, "review.sample_size"),
+        ({"review": {**EXPECTED_GEMINI_ROUTING_DEFAULTS["review"], "sample_size": 4}}, "review.sample_size"),
+        ({"review": {**EXPECTED_GEMINI_ROUTING_DEFAULTS["review"], "timezone": "UTC"}}, "review.timezone"),
     ],
 )
 def test_gemini_routing_rejects_invalid_types_and_bounds(overrides, field):

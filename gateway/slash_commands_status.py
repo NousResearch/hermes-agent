@@ -82,7 +82,7 @@ def _quiet_sync(call, default=None):
 def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
     """``(model, provider, context_used, context_total)`` for /status.
 
-    Order: live/cached agent route -> persisted dominant route -> SessionDB row -> gateway config
+    Order: live/cached agent route -> persisted recent route -> SessionDB row -> gateway config
     (only loaded when something is still missing).
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
@@ -303,7 +303,7 @@ class GatewayStatusCommandsMixin:
             _int_value(session_row.get(k))
             for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
         )
-        route = await _quiet(lambda: db.get_dominant_session_model_route(session_id))
+        route = await _quiet(lambda: db.get_recent_session_model_route(session_id))
         return title, session_row, db_total_tokens, route if isinstance(route, dict) else {}
 
     @staticmethod

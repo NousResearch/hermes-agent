@@ -765,6 +765,23 @@ class SessionSessionsMixin:
         )
         return dict(row) if row else None
 
+    def get_recent_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Most recently used main-loop model route as one coherent per-call tuple."""
+        self.flush_token_counts()
+        row = self._read_one(
+            """SELECT model, billing_provider, billing_base_url, billing_mode,
+                      api_call_count
+                 FROM session_model_usage
+                WHERE session_id = ?
+                  AND task = ''
+                  AND model <> 'unknown'
+                  AND billing_provider <> ''
+                ORDER BY last_seen DESC
+                LIMIT 1""",
+            (session_id,),
+        )
+        return dict(row) if row else None
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Exact id, else the single unambiguous prefix match, else None."""
         exact = self.get_session(session_id_or_prefix)

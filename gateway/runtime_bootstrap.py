@@ -43,6 +43,8 @@ class TicketStore:
             return ticket
 
     def redeem(self, ticket, *, profile_id, purpose) -> dict:
+        """``profile_id=None`` accepts a ticket minted for ANY served profile; the returned grant's
+        ``profile_id`` then selects the authority. A named profile must match exactly."""
         if not isinstance(ticket, str) or len(ticket) > 256:
             raise PermissionError('invalid bootstrap ticket')
         key = hashlib.sha256(ticket.encode()).hexdigest()
@@ -54,7 +56,8 @@ class TicketStore:
             if expires <= time.monotonic():
                 del self._entries[key]
                 raise PermissionError('expired bootstrap ticket')
-            if grant['profile_id'] != profile_id or grant['purpose'] != purpose:
+            served = grant['profile_id'] in self.profile_ids if profile_id is None else grant['profile_id'] == profile_id
+            if not served or grant['purpose'] != purpose:
                 raise PermissionError('bootstrap binding rejected')
             del self._entries[key]
             return dict(grant)

@@ -12,6 +12,7 @@ import logging
 import collections
 import math
 import os
+import threading
 import time
 import uuid
 from contextlib import contextmanager, suppress
@@ -193,22 +194,57 @@ def _flock(fh, *, lock: bool) -> None:
 
 
 class _FileLock:
+    # msvcrt.locking is per-FILE*-handle, NOT per-process: two handles in the same
+    # process (e.g. a registry snapshot nested inside a liveness guard) self-deadlock
+    # with "Resource deadlock avoided" (errno 36) once LK_LOCK's ~10s retry loop
+    # gives up, taking down every registry reader with it. Two mitigations:
+    # (a) thread-local reentrancy — the first acquisition holds the msvcrt byte lock;
+    #     nested acquisitions in the same thread return immediately;
+    # (b) non-blocking acquisition with bounded retry, so a stuck holder surfaces
+    #     promptly instead of blocking every caller for ~10s per attempt.
+    _tls = threading.local()
+    _depth = 0
+
     def __init__(self, path: Path):
         self.path = path
         self._fh = None
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        held = getattr(_FileLock._tls, "depth", 0)
+        if held:
+            # Reentrant: this thread already owns the msvcrt lock on its first handle.
+            _FileLock._tls.depth = held + 1
+            return self
         self._fh = open(self.path, "a+b")
         try:
-            _flock(self._fh, lock=True)
+            if os.name == "nt":
+                import msvcrt
+                self._fh.seek(0)
+                deadline = time.monotonic() + 10.0
+                while True:
+                    try:
+                        msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.05)
+            else:
+                _flock(self._fh, lock=True)
         except Exception as exc:
             self._fh.close()
             self._fh = None
             raise RuntimeError("active session file lock unavailable") from exc
+        _FileLock._tls.depth = 1
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        held = getattr(_FileLock._tls, "depth", 0)
+        if held > 1:
+            _FileLock._tls.depth = held - 1
+            return
+        _FileLock._tls.depth = 0
         fh, self._fh = self._fh, None
         if fh is not None:
             with suppress(Exception):

@@ -514,10 +514,22 @@ def _oauth_provider_disconnect_command(provider: Dict[str, Any]) -> Optional[str
     """
     if provider.get("flow") != "external" or provider.get("id") != "claude-code":
         return None
-    rm_file = "rm -f ~/.claude/.credentials.json"
+    # macOS gets the keychain + POSIX rm combo (unchanged).
     if sys.platform == "darwin":
-        return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
-    return rm_file
+        return 'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; rm -f ~/.claude/.credentials.json'
+    # Windows: the embedded terminal cannot run `rm -f`, so we hand it
+    # PowerShell's Remove-Item with -Force (handles read-only files) and
+    # -ErrorAction SilentlyContinue (no-op when missing, mirroring `rm -f`
+    # semantics). $env:USERPROFILE is expanded by the child PowerShell
+    # process, not the parent shell, so the literal `$` must survive
+    # whatever quoting the embedded terminal applies.
+    if sys.platform == "win32":
+        return (
+            "powershell -NoProfile -Command "
+            "\"Remove-Item -LiteralPath \\\"$env:USERPROFILE\\.claude\\credentials.json\\\" "
+            "-Force -ErrorAction SilentlyContinue\""
+        )
+    return "rm -f ~/.claude/.credentials.json"
 
 
 def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:

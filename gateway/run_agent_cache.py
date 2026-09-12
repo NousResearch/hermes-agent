@@ -159,12 +159,34 @@ class GatewayAgentCacheMixin:
             # Re-resolve credentials for the persisted provider. On failure (e.g. credentials removed
             # since the switch) keep the credential-less override — _resolve_session_agent_runtime
             # falls back to env resolution and layers model/provider.
+            #
+            # Crucially, pass the persisted model as target_model: OpenCode Zen/Go route different
+            # models through different API surfaces (anthropic_messages vs chat_completions), so
+            # re-resolving without the model derives api_mode from the stale config default and
+            # produces a mismatched combo (e.g. chat_completions api_mode with a /v1-stripped
+            # base_url) that 404s against opencode.ai. #100854.
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                runtime = _resolve_runtime_agent_kwargs_for_provider(
+                    provider, target_model=persisted.get("model") or None
+                )
                 for k in ("api_key", "api_mode", "credential_pool", "requested_provider", "max_tokens"):
                     override[k] = runtime.get(k)
                 override["request_overrides"] = dict(runtime.get("request_overrides") or {})
                 override["capabilities"] = dict(runtime.get("capabilities") or {})
+                # A persisted stripped /v1 URL (saved while an anthropic-routed model was active)
+                # must be re-normalized against the api_mode re-derived for the target model;
+                # otherwise a chat_completions model inherits the stripped URL and 404s. Refs #57585.
+                from hermes_cli.models import (
+                    normalize_opencode_base_url as _oc_norm,
+                    opencode_provider_family as _oc_fam,
+                )
+
+                if _oc_fam(provider) is not None and override.get("base_url"):
+                    override["base_url"] = _oc_norm(
+                        provider,
+                        override.get("api_mode"),
+                        override["base_url"],
+                    )
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:

@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from hermes_cli.gateway_client import _session_ticket
 request = json.loads(sys.stdin.buffer.read(65537))
-endpoint = SimpleNamespace(**request['endpoint'])
+endpoint = SimpleNamespace(**{'control_home': None, **request['endpoint']})
 home = Path(endpoint.profile_id)
 if str(home.resolve()) != endpoint.profile_id or endpoint.runtime_protocol != 1:
     raise ValueError('invalid ticket endpoint')

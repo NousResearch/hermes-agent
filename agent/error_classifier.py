@@ -72,6 +72,13 @@ class ClassifiedError:
     should_fallback: bool = False
 
     @property
+    def display_reason(self) -> FailoverReason:
+        """Presentation only; never use this value for recovery decisions."""
+        if "this request was blocked by our safety systems" in self.message.lower():
+            return FailoverReason.content_policy_blocked
+        return self.reason
+
+    @property
     def is_auth(self) -> bool:
         return self.reason in {FailoverReason.auth, FailoverReason.auth_permanent}
 

@@ -688,7 +688,7 @@ def nonretryable_client_error_result(
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
     # collapsed here or they leak verbatim via the ``error`` field.
     _nonretryable_summary = agent._summarize_api_error(api_error)
-    _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
+    _label = _NONRETRYABLE_LABELS.get(classified.display_reason, f"Non-retryable error (HTTP {status_code})")
     agent._emit_status(f"❌ {_label}: {_nonretryable_summary}")
     _vlines(
         agent,
@@ -1450,7 +1450,9 @@ def route_classified_error(
         )
         if not pool_may_recover:
             agent._buffer_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
-            if agent._try_activate_fallback(reason=classified.reason):
+            if agent._try_activate_fallback(
+                reason=classified.reason, display_reason=classified.display_reason,
+            ):
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
@@ -1465,7 +1467,9 @@ def route_classified_error(
             "🔐 Authentication failed and could not be refreshed — "
             "switching to fallback provider..."
         )
-        if agent._try_activate_fallback(reason=classified.reason):
+        if agent._try_activate_fallback(
+            reason=classified.reason, display_reason=classified.display_reason,
+        ):
             return _fallback_break()
 
     # Nous Portal: a genuine account-level 429 is recorded to a shared file so ALL

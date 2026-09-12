@@ -1825,7 +1825,10 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+def try_activate_fallback(
+    agent, reason: "FailoverReason | None" = None, *,
+    display_reason: "FailoverReason | None" = None,
+) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
@@ -1909,7 +1912,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-                f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
+                f"({_fallback_reason_text(display_reason if display_reason is not None else reason)}); using {fb_model} via {fb_provider}.")
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."

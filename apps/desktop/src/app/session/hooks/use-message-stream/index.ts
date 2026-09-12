@@ -35,6 +35,14 @@ import type { ClientSessionState } from '../../../types'
 import { useGatewayEventHandler } from './gateway-event'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
+// When a turn goes live (message.start) but the backend dies before producing
+// ANY assistant payload, no message.complete ever arrives and the gateway may
+// stop heartbeating entirely. The existing 15s pre-start grace gate only covers
+// turns that never went live; once turnLive=true, a dead backend leaves the
+// spinner pinned until the 5-min session watchdog fires. This constant bounds
+// that wait: if a live turn has produced nothing for this long, force-settle.
+export const NO_PAYLOAD_WATCHDOG_MS = 60_000
+
 interface MessageStreamOptions {
   activeGatewayProfile?: string
   activeSessionIdRef: MutableRefObject<string | null>
@@ -858,6 +866,117 @@ export function useMessageStream({
     [updateSessionState]
   )
 
+  // No-payload watchdog: a turn that went live (message.start) but whose
+  // backend died before producing any assistant text leaves turnLive=busy=true
+  // forever — no message.complete arrives, and a dead gateway stops
+  // heartbeating, so the existing session.info running=false settle never
+  // fires. The 5-min session watchdog is the only existing backstop; this
+  // bounds the wait to NO_PAYLOAD_WATCHDOG_MS.
+  //
+  // Lazy-armed, not a global interval: a permanent window timer would break
+  // consumers that count outstanding timers (vi.getTimerCount) and cost a
+  // tick per window forever. The single bounded timer exists only while some
+  // session sits in the stuck shape, and it re-checks every guard at fire time
+  // (plus under the settle updater), so a payload that arrives late or a turn
+  // settled by any other path between arm and fire is left untouched.
+  const watchdogTimerRef = useRef<null | number>(null)
+  const armNoPayloadWatchdogRef = useRef<() => void>(() => undefined)
+
+  useEffect(() => {
+    const fire = () => {
+      watchdogTimerRef.current = null
+      const now = Date.now()
+      let stillStuck = false
+
+      for (const [sid, state] of sessionStateByRuntimeIdRef.current.entries()) {
+        if (
+          state.turnLive &&
+          !state.sawAssistantPayload &&
+          state.busy &&
+          state.awaitingResponse &&
+          typeof state.turnStartedAt === 'number'
+        ) {
+          if (now - state.turnStartedAt > NO_PAYLOAD_WATCHDOG_MS) {
+            updateSessionState(sid, s => {
+              // Re-check under the updater — state may have advanced since
+              // the scan above (a late payload, a settle, a Stop).
+              if (!s.turnLive || s.sawAssistantPayload || !s.busy || !s.awaitingResponse) {
+                return s
+              }
+
+              return {
+                ...s,
+                awaitingResponse: false,
+                busy: false,
+                pendingBranchGroup: null,
+                streamId: null,
+                turnStartedAt: null,
+                turnLive: false
+              }
+            })
+            scheduleSessionsRefresh()
+          } else {
+            stillStuck = true
+          }
+        }
+      }
+
+      // A candidate is still inside the grace window — rearm once, bounded.
+      if (stillStuck) {
+        armNoPayloadWatchdogRef.current()
+      }
+    }
+
+    const arm = () => {
+      if (watchdogTimerRef.current !== null) {
+        return
+      }
+
+      watchdogTimerRef.current = window.setTimeout(fire, NO_PAYLOAD_WATCHDOG_MS)
+    }
+
+    armNoPayloadWatchdogRef.current = arm
+
+    return () => {
+      armNoPayloadWatchdogRef.current = () => undefined
+
+      if (watchdogTimerRef.current !== null) {
+        window.clearTimeout(watchdogTimerRef.current)
+        watchdogTimerRef.current = null
+      }
+    }
+  }, [scheduleSessionsRefresh, sessionStateByRuntimeIdRef, updateSessionState])
+
+  // Arming rides updateSessionState — the one chokepoint every stuck-shape
+  // write flows through. message.start / the session.info running=true edge /
+  // the optimistic submit arm all produce the shape (turnLive, no payload,
+  // busy, awaiting a response, clock seeded); every settle path produces a
+  // state that fails the predicate, so the timer never re-arms itself after
+  // its own settle. The watchdog's own settle write intentionally bypasses
+  // the wrapper (raw updateSessionState inside the effect above).
+  const watchfulUpdateSessionState = useCallback(
+    (
+      sessionId: string,
+      updater: (state: ClientSessionState) => ClientSessionState,
+      storedSessionId?: string | null
+    ): ClientSessionState => {
+      const next = updateSessionState(sessionId, updater, storedSessionId)
+
+      if (
+        next.turnLive &&
+        !next.sawAssistantPayload &&
+        next.busy &&
+        next.awaitingResponse &&
+        typeof next.turnStartedAt === 'number'
+      ) {
+        armNoPayloadWatchdogRef.current()
+      }
+
+      return next
+    },
+    [updateSessionState]
+  )
+
   const handleGatewayEvent = useGatewayEventHandler({
     activeGatewayProfile,
     appendAssistantDelta,
@@ -876,7 +995,7 @@ export function useMessageStream({
     scheduleSessionsRefresh,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
-    updateSessionState,
+    updateSessionState: watchfulUpdateSessionState,
     upsertToolCall
   })
 

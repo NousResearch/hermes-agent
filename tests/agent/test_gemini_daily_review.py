@@ -238,6 +238,67 @@ def test_runner_reviews_full_cohort_but_worker_failures_fail_closed(tmp_path: Pa
     }
 
 
+def test_stale_runner_cannot_persist_item_after_review_lease_is_terminalized(
+    tmp_path: Path,
+):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    old = datetime(2026, 9, 11, 12, tzinfo=UTC)
+    add_attempt(store, "grt_stale_runner", started_at=old)
+    reviewer_entered = threading.Event()
+    release_reviewer = threading.Event()
+    results: list[dict] = []
+    errors: list[BaseException] = []
+    alerts: list[str] = []
+
+    def reviewer(_prompt: str) -> dict[str, str]:
+        reviewer_entered.set()
+        assert release_reviewer.wait(timeout=5)
+        return {"verdict": "pass", "reason": "late result", "failure_kind": "none"}
+
+    runner = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: reviewer,
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda message: alerts.append(message) or {"success": True},
+        alert_channel_id="C_ROUTE_FAILURES",
+        alert_workspace_id="T_ROUTE_FAILURES",
+        clock=lambda: old,
+        lease_timeout_seconds=1,
+    )
+
+    def run_review() -> None:
+        try:
+            results.append(
+                runner.run(target_day="2026-09-11", seed=bytes.fromhex("58" * 32))
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_review)
+    thread.start()
+    assert reviewer_entered.wait(timeout=5)
+    batch = store.get_review_batch("2026-09-11")
+    assert batch is not None
+    assert store.fail_stale_review_batch(
+        batch["batch_id"],
+        stale_before=old + timedelta(seconds=1),
+        pipeline_error="stale_review_lease",
+        alert_message="authoritative stale-lease alert",
+        slack_channel_id="C_AUTH",
+        slack_workspace_id="T_AUTH",
+        completed_at=old + timedelta(seconds=2),
+    )
+    release_reviewer.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert results[0]["status"] == "pipeline_failed"
+    assert store.list_review_items(batch["batch_id"]) == []
+    assert alerts == []
+
+
 def test_runner_alerts_only_sanitized_receipt_ids_and_reasons_on_quality_failure(tmp_path: Path):
     store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
     add_attempt(store, "grt_a")

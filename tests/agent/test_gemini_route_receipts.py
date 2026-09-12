@@ -227,6 +227,56 @@ def test_stale_reviewer_cannot_overwrite_terminal_batch_or_outbox(tmp_path: Path
     assert current["slack_workspace_id"] == "T_AUTH"
 
 
+def test_stale_reviewer_cannot_append_item_after_lease_terminalization(tmp_path: Path):
+    store = make_store(tmp_path)
+    old = datetime(2026, 9, 11, 12, tzinfo=UTC)
+    receipt_id = prepare(store, receipt_id="grt_stale_item", started_at=old)
+    batch = store.create_or_get_review_batch(
+        routing_day="2026-09-11",
+        timezone_name="America/Los_Angeles",
+        sample_size_requested=1,
+        eligible_count=1,
+        sample_seed_hex="13" * 32,
+        sample_receipt_ids=[receipt_id],
+        started_at=old,
+    )
+    review_lease = "stale-runner"
+    assert store.claim_review_batch(
+        batch["batch_id"], lease_token=review_lease, now=old
+    )
+    assert store.fail_stale_review_batch(
+        batch["batch_id"],
+        stale_before=old + timedelta(seconds=1),
+        pipeline_error="stale_review_lease",
+        alert_message="authoritative stale-lease alert",
+        slack_channel_id="C_AUTH",
+        slack_workspace_id="T_AUTH",
+        completed_at=old + timedelta(seconds=2),
+    )
+
+    with pytest.raises(KeyError, match="review authority lost"):
+        store.add_review_item(
+            batch_id=batch["batch_id"],
+            lease_token=review_lease,
+            receipt_id=receipt_id,
+            ordinal=0,
+            reviewer_provider="openai-codex",
+            reviewer_model="gpt-5.6-sol",
+            review_status="completed",
+            verdict="pass",
+            failure_kind="none",
+            reason="late reviewer payload",
+            review_json={
+                "verdict": "pass",
+                "reason": "late reviewer payload",
+                "failure_kind": "none",
+            },
+            completed_at=old + timedelta(seconds=3),
+        )
+
+    assert store.list_review_items(batch["batch_id"]) == []
+
+
 def test_review_batch_update_requires_current_lease_token(tmp_path: Path):
     store = make_store(tmp_path)
     now = datetime(2026, 9, 11, 12, tzinfo=UTC)
@@ -599,8 +649,13 @@ def test_review_items_are_append_only(tmp_path: Path):
         sample_seed_hex="ab" * 32,
         sample_receipt_ids=["grt_test"],
     )
+    review_lease = "append-only-reviewer"
+    assert store.claim_review_batch(
+        batch["batch_id"], lease_token=review_lease, now=datetime.now(UTC)
+    )
     store.add_review_item(
         batch_id=batch["batch_id"],
+        lease_token=review_lease,
         receipt_id="grt_test",
         ordinal=0,
         reviewer_provider="openai-codex",
@@ -612,7 +667,8 @@ def test_review_items_are_append_only(tmp_path: Path):
     )
     with pytest.raises(sqlite3.IntegrityError):
         store.add_review_item(
-            batch_id=batch["batch_id"], receipt_id="grt_test", ordinal=0,
+            batch_id=batch["batch_id"], lease_token=review_lease,
+            receipt_id="grt_test", ordinal=0,
             reviewer_provider="openai-codex", reviewer_model="gpt-5.6-sol",
             review_status="completed", verdict="fail", reason="rewrite",
         )
@@ -665,8 +721,13 @@ def test_retention_redacts_raw_reviewer_prose_at_raw_cutoff(tmp_path: Path):
         sample_receipt_ids=["grt_test"],
         started_at=old,
     )
+    review_lease = "retention-reviewer"
+    assert store.claim_review_batch(
+        batch["batch_id"], lease_token=review_lease, now=old
+    )
     store.add_review_item(
         batch_id=batch["batch_id"],
+        lease_token=review_lease,
         receipt_id="grt_test",
         ordinal=0,
         reviewer_provider="openai-codex",

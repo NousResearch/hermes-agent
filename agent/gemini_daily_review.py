@@ -329,17 +329,22 @@ class DailyReviewRunner:
             attempt = self.store.get_attempt(receipt_id)
             if attempt.get("completed_at_utc") is None:
                 pipeline_error = "stale_started_attempt"
-                self.store.add_review_item(
-                    batch_id=batch["batch_id"],
-                    receipt_id=receipt_id,
-                    ordinal=ordinal,
-                    reviewer_provider=self.reviewer_provider,
-                    reviewer_model=self.reviewer_model,
-                    review_status="failed",
-                    error_code="stale_started_attempt",
-                    error_message=pipeline_error,
-                    completed_at=self.clock(),
-                )
+                try:
+                    self.store.add_review_item(
+                        batch_id=batch["batch_id"],
+                        lease_token=review_lease_token,
+                        receipt_id=receipt_id,
+                        ordinal=ordinal,
+                        reviewer_provider=self.reviewer_provider,
+                        reviewer_model=self.reviewer_model,
+                        review_status="failed",
+                        error_code="stale_started_attempt",
+                        error_message=pipeline_error,
+                        completed_at=self.clock(),
+                    )
+                except KeyError:
+                    current = self.store.get_review_batch(day) or batch
+                    return self._result_from_batch(current)
                 break
             try:
                 reviewer = self.reviewer_factory()
@@ -353,6 +358,7 @@ class DailyReviewRunner:
                     }
                 self.store.add_review_item(
                     batch_id=batch["batch_id"],
+                    lease_token=review_lease_token,
                     receipt_id=receipt_id,
                     ordinal=ordinal,
                     reviewer_provider=self.reviewer_provider,
@@ -370,21 +376,26 @@ class DailyReviewRunner:
                     )
             except Exception as exc:
                 pipeline_error = _safe_fragment(exc)
-                self.store.add_review_item(
-                    batch_id=batch["batch_id"],
-                    receipt_id=receipt_id,
-                    ordinal=ordinal,
-                    reviewer_provider=self.reviewer_provider,
-                    reviewer_model=self.reviewer_model,
-                    review_status="failed",
-                    error_code=(
-                        "reviewer_output_invalid"
-                        if "reviewer_output_invalid" in pipeline_error
-                        else "reviewer_failed"
-                    ),
-                    error_message=pipeline_error,
-                    completed_at=self.clock(),
-                )
+                try:
+                    self.store.add_review_item(
+                        batch_id=batch["batch_id"],
+                        lease_token=review_lease_token,
+                        receipt_id=receipt_id,
+                        ordinal=ordinal,
+                        reviewer_provider=self.reviewer_provider,
+                        reviewer_model=self.reviewer_model,
+                        review_status="failed",
+                        error_code=(
+                            "reviewer_output_invalid"
+                            if "reviewer_output_invalid" in pipeline_error
+                            else "reviewer_failed"
+                        ),
+                        error_message=pipeline_error,
+                        completed_at=self.clock(),
+                    )
+                except KeyError:
+                    current = self.store.get_review_batch(day) or batch
+                    return self._result_from_batch(current)
                 break
 
         if pipeline_error is not None:

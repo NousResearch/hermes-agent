@@ -1049,6 +1049,7 @@ class GeminiReceiptStore:
         self,
         *,
         batch_id: str,
+        lease_token: str,
         receipt_id: str,
         ordinal: int,
         reviewer_provider: str,
@@ -1063,14 +1064,19 @@ class GeminiReceiptStore:
         started_at: datetime | None = None,
         completed_at: datetime | None = None,
     ) -> None:
+        if not lease_token:
+            raise ValueError("review lease_token must be non-empty")
         raw = _canonical_json(dict(review_json)) if review_json is not None else None
         with self._transaction() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO daily_review_items (
                        batch_id, receipt_id, ordinal, reviewer_provider, reviewer_model,
                        review_status, verdict, failure_kind, reason, review_json, review_sha256,
                        started_at_utc, completed_at_utc, error_code, error_message
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   )
+                   SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                   FROM daily_review_batches
+                   WHERE batch_id=? AND status='reviewing' AND review_lease_token=?
                 """,
                 (
                     batch_id,
@@ -1088,8 +1094,12 @@ class GeminiReceiptStore:
                     _iso(completed_at) if completed_at is not None else None,
                     error_code,
                     error_message,
+                    batch_id,
+                    lease_token,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise KeyError(f"review batch missing or review authority lost: {batch_id}")
 
     def list_review_items(self, batch_id: str) -> list[dict[str, Any]]:
         with self._read_connection() as conn:

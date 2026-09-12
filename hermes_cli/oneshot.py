@@ -540,11 +540,12 @@ def _close_agent(agent, session_db) -> None:
 
 
 def _oneshot_clarify_callback(question: str, choices=None, multi_select=False) -> str:
-    """Clarify is disabled in oneshot mode — tell the agent to pick a default and proceed."""
-    if choices:
-        what = "subset" if multi_select else "option"
-        return (
-            f"[oneshot mode: no user available. Pick the best {what} from "
-            f"{choices} using your own judgment and continue.]"
-        )
-    return "[oneshot mode: no user available. Make the most reasonable assumption you can and continue.]"
+    """Clarify is disabled in oneshot mode — tell the agent to pick a default and proceed.
+
+    Consent-semantic options are never auto-picked: without a human they are
+    explicitly DECLINED, never treated as consent (#107068).
+    """
+    from tools.clarify_tool import headless_clarify_guidance
+
+    return headless_clarify_guidance(
+        question, choices, multi_select, "[oneshot mode: no user available. ")

@@ -4,6 +4,7 @@ callback (cli.py, gateway/run.py, tui_gateway)."""
 
 import inspect
 import json
+import re
 from typing import Dict, List, Optional, Callable
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
@@ -47,6 +48,50 @@ def strip_recommended(text: str) -> str:
     if stripped.casefold().endswith(RECOMMENDED_LABEL.casefold()):
         return stripped[: -len(RECOMMENDED_LABEL)].strip()
     return stripped
+
+
+# Authorization verbs that make a clarify option consent-semantic: picking one
+# without a human is self-authorization, not a routing default (#107068).
+# Deliberately narrow (fail-closed only on explicit consent phrasing, EN + ZH);
+# innocuous options ("json", "Rebase", "Improve performance") must not match.
+_CONSENT_RE = re.compile(
+    r"authori[sz]|consent|permit|permission|\ballow\s+me\b|\blet\s+me\b"
+    r"|approv|grant\s+me|self-?approv|bypass|授权|批准|准许",
+    re.IGNORECASE,
+)
+
+
+def is_authorization_semantic(text: object) -> bool:
+    """True when a clarify option asks for human authorization (consent-semantic)."""
+    return bool(text) and bool(_CONSENT_RE.search(strip_recommended(str(text))))
+
+
+def headless_clarify_guidance(question: str, choices, multi_select: bool, prefix: str) -> str:
+    """Headless (no-human) clarify answer shared by the -q and -z callbacks.
+
+    Consent-semantic options are explicitly DECLINED and excluded from the
+    auto-pick list; when every option needs a human, the agent must stop and
+    report instead of picking. Consent-free questions keep the legacy guidance
+    byte-identical.
+    """
+    if not choices:
+        return f"{prefix}Make the most reasonable assumption you can and continue.]"
+    declined = [c for c in choices if is_authorization_semantic(c)]
+    if not declined:
+        what = "subset" if multi_select else "option"
+        return f"{prefix}Pick the best {what} from {choices} using your own judgment and continue.]"
+    safe = [c for c in choices if c not in declined]
+    if safe:
+        what = "subset" if multi_select else "option"
+        return (
+            f"{prefix}Options {declined} require a human and are DECLINED without one — "
+            f"do NOT pick them. Pick the best {what} from {safe} "
+            "using your own judgment and continue.]"
+        )
+    return (
+        f"{prefix}Every option {choices} requires a human and is DECLINED without one — "
+        "do NOT pick any. Stop and report that human input is needed.]"
+    )
 
 
 def _accepts_kwarg(callback, name: str) -> bool:

@@ -21,12 +21,14 @@ def _single_query_clarify_callback(question: str, choices=None, multi_select=Fal
 
     The oneshot path answers immediately via ``_oneshot_clarify_callback``; single-query turns need the same
     headless behavior (#94943).
+
+    Consent-semantic options are never auto-picked: without a human they are
+    explicitly DECLINED, never treated as consent (#107068).
     """
+    from tools.clarify_tool import headless_clarify_guidance
+
     prefix = f"[single-query mode: no user available to answer {question!r}. "
-    if choices:
-        what = "subset" if multi_select else "option"
-        return f"{prefix}Pick the best {what} from {choices} using your own judgment and continue.]"
-    return f"{prefix}Make the most reasonable assumption you can and continue.]"
+    return headless_clarify_guidance(question, choices, multi_select, prefix)
 
 
 def _current_runtime(cli) -> dict:

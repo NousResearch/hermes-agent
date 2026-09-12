@@ -11,6 +11,7 @@ from hermes_cli import kanban_completion_facts as facts
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli.kanban import run_slash
 
 
 @pytest.fixture
@@ -74,10 +75,11 @@ def test_worktree_completion_rejects_zero_commit_and_dirty_claims_but_audits_ove
             conn, dirty, summary="Investigation complete", expected_run_id=dirty_run,
         )
         assert "uncommitted file" in kb.get_task(conn, dirty).last_failure_error
-        assert kb.complete_task(
-            conn, dirty, summary="Intentional local-only investigation",
-            expected_run_id=dirty_run, override_git_facts="operator accepted an uncommitted probe",
+        output = run_slash(
+            f'complete {dirty} --summary "Intentional local-only investigation" '
+            '--override-git-facts "operator accepted an uncommitted probe"'
         )
+        assert output == f"Completed {dirty}"
         run = kb.latest_run(conn, dirty)
         receipt = run.metadata["completion_facts"]
         assert receipt["dirty_file_count"] == 1

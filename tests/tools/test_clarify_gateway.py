@@ -340,6 +340,54 @@ class TestMultiSelectTextFallback:
         assert cm._coerce_text_response(entry, "b") == "B"
 
 
+class TestStructuredChoicesGateway:
+    """Structured {label, description} choices resolve to labels gateway-side.
+
+    Phase 1 contract: the pending entry stores the dicts (future UI reads the
+    descriptions off the wire); every typed/button resolution returns the
+    label string, so the agent never sees a dict repr.
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_numeric_pick_resolves_label(self):
+        from tools import clarify_gateway as cm
+        entry = cm.register("g1", "sk", "Pick?", [
+            {"label": "Rebase", "description": "Linear history"},
+            {"label": "Merge", "description": "Keep context"},
+        ])
+        assert cm._coerce_text_response(entry, "2") == "Merge"
+
+    def test_label_match_ignores_description(self):
+        from tools import clarify_gateway as cm
+        entry = cm.register("g2", "sk", "Pick?", [
+            {"label": "Rebase", "description": "Linear history"},
+            {"label": "Merge", "description": "Keep context"},
+        ])
+        assert cm._coerce_text_response(entry, "merge") == "Merge"
+        # a description is NOT an answer: it stays armed for a retry
+        assert cm.attempt_text_response_for_session("sk", "Linear history") in (
+            "rejected_prose", "rejected_selection")
+
+    def test_multi_select_numeric_resolves_labels(self):
+        import json
+        from tools import clarify_gateway as cm
+        entry = cm.register("g3", "sk", "Pick some?", [
+            {"label": "A", "description": "Does A"},
+            {"label": "B", "description": "Does B"},
+        ], multi_select=True)
+        cm.mark_awaiting_text("g3")
+        assert json.loads(cm._coerce_text_response(entry, "1,2")) == ["A", "B"]
+
+    def test_register_copies_structured_choices(self):
+        from tools import clarify_gateway as cm
+        src = [{"label": "A", "description": "Does A"}]
+        entry = cm.register("g4", "sk", "Pick?", src)
+        src[0]["label"] = "MUTATED"
+        assert entry.choices == [{"label": "A", "description": "Does A"}]
+
+
 class TestNativeRejectClassification:
     """Rejected typed replies must distinguish free prose from bad selections.
 

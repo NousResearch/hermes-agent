@@ -1050,3 +1050,101 @@ describe('ClarifyTool visible-card scoping', () => {
     })
   })
 })
+
+describe('ClarifyTool structured choices', () => {
+  const structuredChoices = [
+    { description: 'Linear history', label: 'Rebase' },
+    { description: 'Keep context', label: 'Merge' }
+  ]
+
+  function renderStructuredLive() {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+    const args = { choices: structuredChoices, question: 'Which strategy?' }
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    setClarifyRequest({
+      choices: structuredChoices,
+      multiSelect: false,
+      question: 'Which strategy?',
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+    // The live card answers the gateway request only when the tool args
+    // question matches it, so the args carry the same question.
+    renderClarify(
+      <ClarifyTool
+        addResult={vi.fn()}
+        args={args}
+        argsText={JSON.stringify(args)}
+        isError={false}
+        respondToApproval={vi.fn()}
+        result={undefined}
+        resume={vi.fn()}
+        status={{ type: 'running' }}
+        toolCallId="clarify-structured-live"
+        toolName="clarify"
+        type="tool-call"
+      />
+    )
+
+    return { request }
+  }
+
+  it('renders each description as a subtitle under its label', () => {
+    renderStructuredLive()
+
+    expect(screen.getByText('Linear history')).toBeTruthy()
+    expect(screen.getByText('Keep context')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Rebase/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Merge/ })).toBeTruthy()
+  })
+
+  it('answers with the label, never the description', async () => {
+    const { request } = renderStructuredLive()
+
+    fireEvent.click(screen.getByRole('button', { name: /Merge/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'Merge',
+        request_id: 'request-1'
+      })
+    })
+  })
+
+  it('keeps the recommendation mark on the label above the subtitle', () => {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    setClarifyRequest({
+      choices: [{ description: 'Linear history', label: 'Rebase (Recommended)' }, structuredChoices[1]],
+      multiSelect: false,
+      question: 'Which deployment target?',
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+    expect(screen.getByText('Linear history')).toBeTruthy()
+    expect(screen.getByText('(Recommended)')).toBeTruthy()
+  })
+
+  it('shows subtitles on the settled skip card too', () => {
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          { question: 'Which strategy?', choices: structuredChoices },
+          { question: 'Which strategy?', user_response: '' },
+          'clarify-structured-skip'
+        )}
+      />
+    )
+
+    expect(screen.getByText('Skipped')).toBeTruthy()
+    expect(screen.getByText('Linear history')).toBeTruthy()
+    expect(screen.getByText('Keep context')).toBeTruthy()
+  })
+})

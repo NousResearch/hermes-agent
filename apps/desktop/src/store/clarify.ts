@@ -3,18 +3,29 @@ import { atom, computed } from 'nanostores'
 import { $gateway } from './gateway'
 import { $activeSessionId } from './session'
 
+export interface ClarifyChoiceOption {
+  /** One-line subtitle rendered under the label (Claude Code style). */
+  description?: string
+  label: string
+}
+
+/** One selectable row: a plain label string, or a label with a description.
+ * Mirrors the backend contract (tools/clarify_tool.py::_normalize_choice):
+ * both fields present -> the object survives; exactly one -> a bare string. */
+export type ClarifyChoice = string | ClarifyChoiceOption
+
 export interface ClarifyQuestion {
   /** Server-generated wire id (q0..qN) — clarify.respond keys answers by it. */
   qid: string
   question: string
-  choices: string[] | null
+  choices: ClarifyChoice[] | null
   multiSelect: boolean
 }
 
 export interface ClarifyRequest {
   requestId: string
   question: string
-  choices: string[] | null
+  choices: ClarifyChoice[] | null
   multiSelect: boolean
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
@@ -33,24 +44,68 @@ export interface ClarifyRequest {
  */
 export const RECOMMENDED_LABEL = '(Recommended)'
 
-export const bareChoice = (choice: string): string =>
-  choice.endsWith(RECOMMENDED_LABEL) ? choice.slice(0, -RECOMMENDED_LABEL.length).trim() : choice
+export const bareChoice = (choice: ClarifyChoice): string => {
+  const label = typeof choice === 'string' ? choice : choice.label
+
+  return label.endsWith(RECOMMENDED_LABEL) ? label.slice(0, -RECOMMENDED_LABEL.length).trim() : label
+}
+
+/** Label text of one choice (with any recommendation suffix intact). */
+export const choiceLabel = (choice: ClarifyChoice): string =>
+  typeof choice === 'string' ? choice : choice.label
+
+/** Subtitle of a structured choice; undefined for plain labels. */
+export const choiceDescription = (choice: ClarifyChoice): string | undefined => {
+  if (typeof choice === 'string') {
+    return undefined
+  }
+
+  const description = choice.description?.trim()
+
+  return description ? description : undefined
+}
 
 /**
  * Validate and normalize a choices array.
  *
- * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
+ * Keeps non-blank, newline-free labels of length ≤ 200; drops everything else
  * and returns an empty array when nothing usable survives — the caller then
  * falls back to a free-text answer instead of dead buttons.
+ *
+ * Structured {label, description} choices (Claude Code style) survive as
+ * objects so the card can render the subtitle; label-only rows stay bare
+ * strings, mirroring the backend contract.
  */
-export function normalizeChoices(choices: unknown): string[] {
+export function normalizeChoices(choices: unknown): ClarifyChoice[] {
   if (!Array.isArray(choices)) {
     return []
   }
 
-  return choices.filter(
-    (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
-  )
+  const normalized: ClarifyChoice[] = []
+
+  for (const entry of choices) {
+    if (typeof entry === 'string') {
+      if (entry.trim().length > 0 && bareChoice(entry).length <= 200 && !entry.includes('\n')) {
+        normalized.push(entry)
+      }
+
+      continue
+    }
+
+    if (typeof entry === 'object' && entry !== null) {
+      const row = entry as Record<string, unknown>
+      const label = typeof row.label === 'string' ? row.label.trim() : ''
+      const description = typeof row.description === 'string' ? row.description.trim() : ''
+
+      if (!label || label.includes('\n') || bareChoice(label).length > 200) {
+        continue
+      }
+
+      normalized.push(description ? { description, label } : label)
+    }
+  }
+
+  return normalized
 }
 
 /**

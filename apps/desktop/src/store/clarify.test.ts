@@ -165,6 +165,28 @@ describe('normalizeChoices', () => {
     expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
     expect(normalizeChoices([])).toEqual([])
   })
+
+  it('preserves structured {label, description} choices as objects', () => {
+    expect(
+      normalizeChoices([
+        { description: 'Linear history', label: 'Rebase' },
+        { description: 'Keep context', label: 'Merge' },
+        'Plain',
+      ])
+    ).toEqual([
+      { description: 'Linear history', label: 'Rebase' },
+      { description: 'Keep context', label: 'Merge' },
+      'Plain',
+    ])
+  })
+
+  it('reduces label-only objects to bare strings', () => {
+    expect(normalizeChoices([{ label: 'Just a label' }, 'ok'])).toEqual(['Just a label', 'ok'])
+  })
+
+  it('drops structured choices with a blank label', () => {
+    expect(normalizeChoices([{ description: 'no label', label: '   ' }, 'ok'])).toEqual(['ok'])
+  })
 })
 
 describe('normalizeQuestions', () => {

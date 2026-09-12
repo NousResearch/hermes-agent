@@ -4,7 +4,12 @@ callback (cli.py, gateway/run.py, tui_gateway)."""
 
 import inspect
 import json
-from typing import Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Union
+
+# A choice is a plain label string, or a structured {label, description} object
+# (Claude Code style). Descriptions ride the wire for future UI; all matching
+# and answers resolve to the label so old surfaces keep working.
+Choice = Union[str, Dict[str, str]]
 
 MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
 MAX_QUESTIONS = 5  # independent questions per batch call
@@ -17,28 +22,83 @@ RECOMMENDED_LABEL = "(Recommended)"
 _UNAVAILABLE = "Clarify tool is not available in this execution context."
 
 
-def _flatten_choice(c) -> str:
-    """Coerce one choice to display text. LLMs sometimes emit dict-shaped choices and ``str(c)``
-    would leak the repr onto every surface and back as the answer; unwrap order ``label`` >
-    ``description`` > ``text`` > ``title`` (``name``/``value`` excluded: raw component enums,
-    not labels). No match -> "" and dropped: no choice beats a garbage label."""
+# Keys LLMs actually emit for a choice label / description. ``name``/``value``
+# stay excluded: raw component enums, not labels (a {name, value} dict with no
+# label-ish key is dropped, not leaked).
+_LABEL_KEYS = ("label", "text", "title", "choice")
+_DESC_KEYS = ("description", "detail", "hint")
+
+# Description length cap: labels stay short (desktop drops >200 / newlines);
+# descriptions are one-liners, truncated rather than dropped.
+MAX_DESCRIPTION_LEN = 500
+
+
+def choice_label(choice: Choice) -> str:
+    """Display/match text of one choice: the label, never the repr."""
+    if isinstance(choice, dict):
+        return str(choice.get("label") or "").strip()
+    return str(choice).strip() if choice is not None else ""
+
+
+def choice_description(choice: Choice) -> Optional[str]:
+    """Description of a structured choice; None for plain strings."""
+    if isinstance(choice, dict):
+        desc = choice.get("description")
+        return str(desc).strip() or None if isinstance(desc, str) else None
+    return None
+
+
+def _normalize_choice(c: Any) -> Optional[Choice]:
+    """Coerce one raw choice to a label string or a {label, description} dict.
+
+    Both fields present -> structured (descriptions ride the wire; Phase 2
+    renders them). Exactly one present -> that bare string (legacy unwrap).
+    No match -> None and dropped: no choice beats a garbage label.
+    """
     if isinstance(c, str):
-        return c.strip()
+        return c.strip() or None
     if isinstance(c, dict):
-        return next((v.strip() for k in ("label", "description", "text", "title")
+        label = next((v.strip() for k in _LABEL_KEYS
+                      if isinstance(v := c.get(k), str) and v.strip()), "")
+        desc = next((v.strip() for k in _DESC_KEYS
                      if isinstance(v := c.get(k), str) and v.strip()), "")
+        if label and desc:
+            if len(desc) > MAX_DESCRIPTION_LEN:
+                desc = desc[:MAX_DESCRIPTION_LEN].rstrip()
+            return {"label": label, "description": desc}
+        return label or desc or None
     if isinstance(c, (list, tuple)):
-        return " ".join(_flatten_choice(x) for x in c).strip()
-    return "" if c is None else str(c).strip()
+        labels = [choice_label(p) for p in (_normalize_choice(x) for x in c)]
+        return " ".join(l for l in labels if l).strip() or None
+    return "" if c is None else str(c).strip() or None
 
 
-def mark_recommended(choices: List[str]) -> List[str]:
+def _flatten_choice(c) -> str:
+    """Display text of one choice (legacy entry point, now label-only).
+
+    Kept by name: tests and sibling modules import it. Dicts resolve to their
+    label so no repr ever reaches a surface or comes back as the answer.
+    """
+    return choice_label(_normalize_choice(c) or "")
+
+
+def _with_recommended(choice: Choice) -> Choice:
+    """Return ``choice`` with the recommendation suffix on its label (copied)."""
+    if isinstance(choice, dict):
+        return {"label": f"{choice.get('label', '')} {RECOMMENDED_LABEL}",
+                "description": choice.get("description", "")}
+    return f"{choice} {RECOMMENDED_LABEL}"
+
+
+def mark_recommended(choices: List[Choice]) -> List[Choice]:
     """Suffix the first choice (schema says best-first) with RECOMMENDED_LABEL; idempotent,
     and a lone choice is left untouched (nothing to prefer it over)."""
-    first = str(choices[0]).strip() if choices else ""
-    if len(choices) < 2 or first != strip_recommended(first):
+    if len(choices) < 2:
         return choices
-    return [f"{first} {RECOMMENDED_LABEL}"] + list(choices[1:])
+    first_label = choice_label(choices[0])
+    if first_label == strip_recommended(first_label):
+        return [_with_recommended(choices[0])] + list(choices[1:])
+    return choices
 
 
 def strip_recommended(text: str) -> str:
@@ -75,25 +135,54 @@ def _json_as(raw: str, kind):
     return parsed if isinstance(parsed, kind) else None
 
 
+def _answer_text(raw) -> str:
+    """One answer value as text: a callback echoing the choice object itself
+    (a structured dict) resolves to its label, never the repr."""
+    if isinstance(raw, dict):
+        return choice_label(raw)
+    return str(raw)
+
+
 def _parse_multi_select_response(raw_response) -> List[str]:
     """Parse a list / JSON array / comma-separated reply into stripped non-empty strings."""
     items = raw_response
     if not isinstance(items, list):
+        if isinstance(items, dict):
+            return [choice_label(items)] if choice_label(items) else []
         raw = str(items).strip()
         items = _json_as(raw, list) if raw.startswith("[") else None
         if items is None:
             items = raw.split(",")
-    return [str(r).strip() for r in items if str(r).strip()]
+    return [_answer_text(r).strip() for r in items if _answer_text(r).strip()]
+
+
+def _bare_choice(choice: Choice) -> Choice:
+    """Copy of ``choice`` without the recommendation suffix on its label."""
+    if isinstance(choice, dict):
+        return {"label": strip_recommended(choice.get("label") or ""),
+                "description": choice.get("description", "")}
+    return strip_recommended(choice)
+
+
+def _bare_choices(choices: list) -> List[Choice]:
+    """Choices as the agent sees them back (presentation never leaks)."""
+    return [_bare_choice(c) for c in choices]
 
 
 def _clean_answer(raw, multi: bool):
     """Strip presentation (the label, multi-select JSON) from a locked answer."""
+    if isinstance(raw, dict):
+        raw = choice_label(raw)
     return [strip_recommended(r) for r in _parse_multi_select_response(raw)] if multi else strip_recommended(raw)
 
 
-def _clean_choices(choices: list) -> Optional[List[str]]:
-    """Flatten, drop empties, cap at MAX_CHOICES; None when nothing survives (open-ended)."""
-    cleaned = [s for s in (_flatten_choice(c) for c in choices) if s]
+def _clean_choices(choices: list) -> Optional[List[Choice]]:
+    """Normalize, drop empties, cap at MAX_CHOICES; None when nothing survives (open-ended).
+
+    Structured {label, description} choices survive as dicts so descriptions
+    ride the wire; plain labels stay bare strings (legacy payloads unchanged).
+    """
+    cleaned = [c for c in (_normalize_choice(x) for x in choices) if c and choice_label(c)]
     return cleaned[:MAX_CHOICES] or None
 
 
@@ -179,7 +268,7 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
     return _batch_result(normalized, answers, timed_out)
 
 
-def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_select: bool = False,
+def clarify_tool(question: str, choices: Optional[List[Any]] = None, multi_select: bool = False,
                  questions: Optional[List[dict]] = None, callback: Optional[Callable] = None) -> str:
     """Ask one question (``question``/``choices``/``multi_select``) or a batch (``questions``
     wins when non-empty). ``callback(question, choices, multi_select=False) -> str`` is
@@ -215,7 +304,7 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     question = question.strip()
     if choices is not None:
         if not isinstance(choices, list):
-            return tool_error("choices must be a list of strings.")
+            return tool_error("choices must be a list of strings or {label, description} objects.")
         choices = _clean_choices(choices)
     if callback is None:
         return tool_error(_UNAVAILABLE)
@@ -247,7 +336,9 @@ CLARIFY_SCHEMA = {
         f"single-select (up to {MAX_CHOICES} choices — put your recommended "
         "option FIRST, the UI marks it '(Recommended)' and auto-appends an "
         "'Other' free-text row), multi-select (multi_select=true), or "
-        "open-ended (omit choices). Options go ONLY in `choices`, never "
+        "open-ended (omit choices). A choice is a label string or a "
+        "{label, description} object — use the object when the label alone "
+        "is ambiguous (the description renders as a subtitle). Options go ONLY in `choices`, never "
         "enumerated inside the question text (choices render as pickable "
         "rows; options written into the question are dead prose the user "
         "can't click). Result: {responses: [...]} in question order (plus "
@@ -265,7 +356,9 @@ CLARIFY_SCHEMA = {
                 "description": (
                     "The question(s). Each: question text (options excluded), "
                     "optional choices (recommended first; omit for free-text), "
-                    "optional multi_select. Responses come back in question "
+                    "optional multi_select. A choice is a label string or a "
+                    "{label, description} object (description = one-line "
+                    "subtitle). Responses come back in question "
                     "order with the question text echoed."
                 ),
                 "items": {
@@ -274,7 +367,19 @@ CLARIFY_SCHEMA = {
                         "question": {"type": "string"},
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string"},
+                                            "description": {"type": "string"},
+                                        },
+                                        "required": ["label"],
+                                    },
+                                ]
+                            },
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

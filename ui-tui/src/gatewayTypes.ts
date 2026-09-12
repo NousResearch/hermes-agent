@@ -746,9 +746,9 @@ export type GatewayEvent =
   | {
       payload: {
         answers?: Record<string, string>
-        choices?: string[] | null
+        choices?: (string | { description?: string; label: string })[] | null
         question?: string
-        questions?: { choices?: string[] | null; multi_select?: boolean; qid: string; question: string }[]
+        questions?: { choices?: (string | { description?: string; label: string })[] | null; multi_select?: boolean; qid: string; question: string }[]
         request_id: string
       }
       session_id?: string

@@ -5313,7 +5313,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     ) -> SendResult:
         """Clarify prompt: one button per choice plus ``✏️ Other`` (text-capture); with no choices the
         gateway's text-intercept captures the next message. Dict choices (LLMs emit
-        ``[{"description": ...}]``) are unwrapped via ``label``/``description``/``text``/``title``."""
+        ``[{"description": ...}]``) are unwrapped via ``label``/``description``/``text``/``title``;
+        structured {label, description} choices resolve to their label (Phase 2 renders subtitles)."""
         def _flatten_choice(c):
             if c is None:
                 return ""
@@ -5321,7 +5322,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return c.strip()
             if isinstance(c, dict):
                 # 'name'/'value' excluded: Discord-component-shaped fields would leak raw enum values.
-                for key in ("label", "description", "text", "title"):
+                for key in ("label", "text", "title", "choice", "description"):
                     v = c.get(key)
                     if isinstance(v, str) and v.strip():
                         return v.strip()

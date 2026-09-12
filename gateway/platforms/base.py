@@ -2556,7 +2556,15 @@ class BasePlatformAdapter(ABC):
             if _is_multi:
                 hint = ("Multiple selections allowed — reply with the numbers separated by commas "
                         "or spaces (e.g. \"1, 3\"), the option text, or your own answer.")
-            numbered = [f"  {i}. {choice}" for i, choice in enumerate(choices, start=1)]
+            # Structured {label, description} choices render as "label — description"
+            # in the text fallback (Phase 2 gives buttons a real subtitle row).
+            def _fallback_label(choice):
+                if isinstance(choice, dict):
+                    label = str(choice.get("label") or "").strip()
+                    desc = str(choice.get("description") or "").strip()
+                    return f"{label} — {desc}" if label and desc else (label or desc)
+                return str(choice).strip() if choice is not None else ""
+            numbered = [f"  {i}. {_fallback_label(choice)}" for i, choice in enumerate(choices, start=1)]
             text = "\n".join([f"❓ {question}", "", *numbered, "", hint])
             # Text fallback: let the gateway intercept capture the typed reply.
             from tools.clarify_gateway import mark_awaiting_text

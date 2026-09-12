@@ -3846,11 +3846,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
         text-capture mode); without choices, plain question and the gateway text-intercept captures."""
         def build():
+            from tools.clarify_tool import choice_label
             text = f"❓ {_html.escape(question)}"
             keyboard = None
             if choices:
                 # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
-                text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
+                text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(choice_label(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
                 rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
                 rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])

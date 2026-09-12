@@ -86,6 +86,66 @@ class TestCreateTitledSession:
             db.close()
 
 
+class TestMintedSessionWorkspaceStamping:
+    """Regression for #106334: a --create-if-missing mint must record the
+    invocation directory, otherwise the session lands in Desktop's top-level
+    Home bucket (projectIdForCwd has no cwd to match) and workspace-scoped
+    lookups ("--resume latest --in <dir>") never find it."""
+
+    def test_minted_session_records_invocation_cwd(
+        self, isolated_home, tmp_path, monkeypatch
+    ):
+        work = tmp_path / "projectdir"
+        work.mkdir()
+        monkeypatch.chdir(work)
+
+        sid = _create_titled_session("my-stream")
+        assert sid
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            row = db.get_session(sid)
+            assert row is not None
+            assert (row.get("cwd") or "").strip(), "minted session should record cwd"
+            import os
+
+            assert os.path.realpath(row["cwd"]) == os.path.realpath(str(work))
+        finally:
+            db.close()
+
+    def test_minted_session_records_git_repo_root(
+        self, isolated_home, tmp_path, monkeypatch
+    ):
+        """Inside a git repo the mint carries git_repo_root too, so workspace
+        grouping (workspace_key prefers git_repo_root over cwd) matches a
+        normal new session created from the same directory."""
+        import subprocess
+
+        repo = tmp_path / "projrepo"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        monkeypatch.chdir(repo)
+
+        sid = _create_titled_session("my-stream")
+        assert sid
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            row = db.get_session(sid)
+            assert row is not None
+            import os
+
+            assert os.path.realpath(row.get("git_repo_root")) == os.path.realpath(
+                str(repo)
+            )
+        finally:
+            db.close()
+
+
 class TestChatCFailLoudlyOnStderr:
     """Behavior-level: run the real cmd_chat path and inspect channels."""
 

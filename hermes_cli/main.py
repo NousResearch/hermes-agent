@@ -1346,7 +1346,25 @@ def _create_titled_session(title: str) -> Optional[str]:
 
         new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
         db = SessionDB()
-        db.create_session(new_session_id, source="cli")
+        # Same workspace stamping as a normal new session: the mint must carry the
+        # invocation directory, otherwise the session lands in Desktop's top-level
+        # Home bucket instead of the project that owns it, and workspace-scoped
+        # lookups ("--resume latest --in <dir>") never find it. os.getcwd() is
+        # correct here: _apply_in_dir() runs before _resolve_continue_arg(), so
+        # it already reflects --in <dir>.
+        # git_repo_root parity: normal new sessions stamp the repo root so
+        # workspace grouping keys off the repo, not the leaf directory; the
+        # mint must not fragment history the same way. Fail-soft: outside a
+        # repo the column stays NULL and cwd carries the grouping.
+        try:
+            from hermes_cli.worktree_ops import _git_repo_root
+
+            _repo_root = _git_repo_root()
+        except Exception:
+            _repo_root = None
+        db.create_session(
+            new_session_id, source="cli", cwd=os.getcwd(), git_repo_root=_repo_root
+        )
         db.set_session_title(new_session_id, title)
         return new_session_id
     except Exception:

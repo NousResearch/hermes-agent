@@ -271,3 +271,26 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
+
+
+class TestCoalesceSessionNameArgs:
+    def test_subcommand_terminates_name_collection(self):
+        import hermes_cli.main as main_mod
+
+        coalesce = main_mod._coalesce_session_name_args
+        # Multi-word names still join ...
+        assert coalesce(["-c", "Pokemon", "Agent", "Dev"]) == ["-c", "Pokemon Agent Dev"]
+        # ... but a subcommand token ends the name (previously "send" and
+        # other newer subcommands were swallowed into the session name).
+        assert coalesce(["-c", "a", "send", "x"]) == ["-c", "a", "send", "x"]
+        assert coalesce(["-c", "a", "cron", "x"]) == ["-c", "a", "cron", "x"]
+
+    def test_every_builtin_subcommand_terminates_coalescing(self):
+        """The terminator set must track the parser: no builtin subcommand
+        may be absorbed into a -c/-r session name."""
+        import hermes_cli.main as main_mod
+
+        coalesce = main_mod._coalesce_session_name_args
+        for cmd in sorted(main_mod._BUILTIN_SUBCOMMANDS):
+            out = coalesce(["-c", "session name", cmd, "rest"])
+            assert out == ["-c", "session name", cmd, "rest"], cmd

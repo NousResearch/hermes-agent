@@ -180,6 +180,43 @@ class TestHandleVisionAnalyze:
             config={"auxiliary": {"vision": {}}}, env_model="fallback-model",
         ) == "fallback-model"
 
+    @pytest.mark.asyncio
+    async def test_aux_prompt_with_question(self):
+        """A supplied question narrows the default describe-everything prompt."""
+        with ExitStack() as st:
+            mock_tool = st.enter_context(
+                patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock)
+            )
+            st.enter_context(patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ))
+            mock_tool.return_value = json.dumps({"result": "ok"})
+            await _handle_vision_analyze(
+                {"image_url": "https://example.com/img.png", "question": "how many cats?"}
+            )
+            prompt = mock_tool.call_args[0][1]
+        assert "following question" in prompt
+        assert "how many cats?" in prompt
+
+    @pytest.mark.asyncio
+    async def test_aux_prompt_without_question_is_complete(self):
+        """No dangling question section when the question is omitted."""
+        with ExitStack() as st:
+            mock_tool = st.enter_context(
+                patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock)
+            )
+            st.enter_context(patch(
+                "tools.vision_tools._should_use_native_vision_fast_path",
+                return_value=False,
+            ))
+            mock_tool.return_value = json.dumps({"result": "ok"})
+            await _handle_vision_analyze({"image_url": "https://example.com/img.png"})
+            prompt = mock_tool.call_args[0][1]
+        assert "following question" not in prompt
+        assert prompt.strip().endswith(".")
+        assert "Fully describe" in prompt
+
 
 # ---------------------------------------------------------------------------
 # Error logging with exc_info — verify tracebacks are logged
@@ -351,7 +388,7 @@ class TestVisionSafetyGuards:
         secret = tmp_path / ".env"
         secret.write_text("OPENAI_API_KEY=sk-super-secret\n", encoding="utf-8")
 
-        result = json.loads(await _vision_analyze_native(str(secret), "extract text"))
+        result = json.loads(await _vision_analyze_native(str(secret)))
 
         assert result["success"] is False
         assert "secret-bearing environment file" in result["error"]
@@ -1090,7 +1127,7 @@ class TestVisionCpuBurstCap:
                     enc_inflight -= 1
             return "data:image/jpeg;base64,AAAA"
 
-        async def fake_native(image_url, question, task_id=None, **_kw):
+        async def fake_native(image_url, task_id=None, **_kw):
             nonlocal calls_inflight, calls_peak
             calls_inflight += 1
             calls_peak = max(calls_peak, calls_inflight)

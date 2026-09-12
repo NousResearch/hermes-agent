@@ -122,7 +122,6 @@ class TestBuildNativeVisionToolResult:
     def test_envelope_shape(self):
         env = _build_native_vision_tool_result(
             image_url="/tmp/foo.png",
-            question="what does it say?",
             image_data_url="data:image/png;base64,XYZ",
             image_size_bytes=1024,
         )
@@ -132,13 +131,14 @@ class TestBuildNativeVisionToolResult:
         assert env["content"][0]["type"] == "text"
         assert env["content"][1]["type"] == "image_url"
         assert env["content"][1]["image_url"]["url"] == "data:image/png;base64,XYZ"
-        assert "what does it say?" in env["content"][0]["text"]
+        assert "Image loaded" in env["content"][0]["text"]
         assert "Image attached natively" in env["text_summary"]
 
-    def test_no_question_omits_question_section(self):
+    def test_envelope_never_echoes_a_question(self):
+        """The original request is already in the conversation; pixels must not
+        carry a restatement of it."""
         env = _build_native_vision_tool_result(
             image_url="/tmp/foo.png",
-            question="",
             image_data_url="data:image/png;base64,XYZ",
             image_size_bytes=512,
         )
@@ -155,7 +155,7 @@ class TestVisionAnalyzeNative:
         img = tmp_path / "test.png"
         img.write_bytes(_TINY_PNG)
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(img), "what is this?")
+            _vision_analyze_native(str(img))
         )
         assert isinstance(result, dict)
         assert result.get("_multimodal") is True
@@ -183,7 +183,7 @@ class TestVisionAnalyzeNative:
                 image.load()
 
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(truncated), "describe")
+            _vision_analyze_native(str(truncated))
         )
 
         assert isinstance(result, str), "corrupt image must not return a multimodal envelope"
@@ -223,7 +223,7 @@ class TestVisionAnalyzeNative:
                     frame.load()
 
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(truncated), "describe")
+            _vision_analyze_native(str(truncated))
         )
 
         assert isinstance(result, str), "corrupt animation must not return a multimodal envelope"
@@ -248,7 +248,7 @@ class TestVisionAnalyzeNative:
         loaded_frames = _track_validated_frame_loads(monkeypatch)
 
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(animation), "describe")
+            _vision_analyze_native(str(animation))
         )
 
         assert isinstance(result, str)
@@ -275,7 +275,7 @@ class TestVisionAnalyzeNative:
         loaded_frames = _track_validated_frame_loads(monkeypatch)
 
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(animation), "describe")
+            _vision_analyze_native(str(animation))
         )
 
         assert isinstance(result, str)
@@ -290,7 +290,7 @@ class TestVisionAnalyzeNative:
         img = tmp_path / "t.png"
         img.write_bytes(_TINY_PNG)
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(f"file://{img}", "?")
+            _vision_analyze_native(f"file://{img}")
         )
         assert isinstance(result, dict)
         assert result.get("_multimodal") is True
@@ -300,7 +300,7 @@ class TestVisionAnalyzeNative:
         img = tmp_path / "bad.png"
         img.write_bytes(_CORRUPT_PNG)
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(img), "what is this?")
+            _vision_analyze_native(str(img))
         )
         assert isinstance(result, str)
         parsed = json.loads(result)
@@ -331,7 +331,7 @@ class TestVisionAnalyzeNative:
         assert big.stat().st_size * 4 // 3 > 5 * 1024 * 1024, "test image not big enough"
 
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(big), "describe")
+            _vision_analyze_native(str(big))
         )
         assert isinstance(result, dict) and result.get("_multimodal") is True
         url = next(

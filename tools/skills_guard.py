@@ -391,7 +391,7 @@ def _compute_docstring_lines(lines: list) -> set:
     return doc_lines
 
 
-def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
+def scan_file(file_path: Path, rel_path: str = "", *, scanned_files: set[str] | None = None) -> List[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
     rel_path = rel_path or file_path.name
@@ -401,6 +401,8 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         lines = file_path.read_text(encoding='utf-8').split('\n')
     except (UnicodeDecodeError, OSError):
         return []
+    if scanned_files is not None:
+        scanned_files.add(rel_path)
     findings = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
@@ -418,20 +420,21 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     return findings
 
 
-def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
+def scan_skill(skill_path: Path, source: str = "community", *, scanned_files: set[str] | None = None) -> ScanResult:
     """Structural checks + pattern scan of every text file in a skill dir (or a single file). A gitignore-style
     `.skillignore` / `.clawhubignore` excludes dev/docs artifacts from BOTH passes; the ignore file itself is
-    always excluded and `SKILL.md` can never be un-ignored. *source* (e.g. "openai/skills") sets the trust level."""
+    always excluded and `SKILL.md` can never be un-ignored. *source* (e.g. "openai/skills") sets the trust level.
+    If supplied, *scanned_files* records relative paths actually read by the content scanner."""
     name, trust = skill_path.name, _resolve_trust_level(source)
     findings: List[Finding] = []
     if skill_path.is_dir():
         ignore = _load_skill_ignore(skill_path)
         findings.extend(_check_structure(skill_path, ignore=ignore))
         for f in skill_path.rglob("*"):
-            if f.is_file() and not ignore(rel := str(f.relative_to(skill_path))):
-                findings.extend(scan_file(f, rel))
+            if f.is_file() and not ignore(rel := f.relative_to(skill_path).as_posix()):
+                findings.extend(scan_file(f, rel, scanned_files=scanned_files))
     elif skill_path.is_file():
-        findings.extend(scan_file(skill_path, skill_path.name))
+        findings.extend(scan_file(skill_path, skill_path.name, scanned_files=scanned_files))
     verdict = _determine_verdict(findings)
     return ScanResult(name, source, trust, verdict, findings, datetime.now(timezone.utc).isoformat(),
                       _build_summary(name, source, trust, verdict, findings))

@@ -1317,7 +1317,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> Dict[str, Any]:
         """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
         escaping destroys table pipes."""
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        from .rich_markdown import escape_literal_hash_prefixes
+
+        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(escape_literal_hash_prefixes(content))}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

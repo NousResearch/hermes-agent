@@ -154,7 +154,6 @@ def test_save_config_refuses_policy_payload_without_proof_byte_identical(monkeyp
     before = path.read_bytes()
     with pytest.raises(PolicyMutationDenied) as exc_info:
         config.save_config({"approvals": {"mode": "off"}, "display": {"skin": "default"}})
-    print(str(exc_info.value))
     assert str(exc_info.value) == "operator confirmation proof required"
     assert path.read_bytes() == before
 

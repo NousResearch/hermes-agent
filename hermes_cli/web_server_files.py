@@ -7,7 +7,7 @@ import urllib.request
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
@@ -178,7 +178,15 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
     return {"root": locked_root, "locked_root": locked_root, "can_change_path": policy.can_change_path}
 
 
-def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
+def _managed_file_entry(
+    policy: ManagedFilesPolicy, target: Path, *, skip_unstattable: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Describe one managed path for the UI.
+
+    ``skip_unstattable`` returns None instead of raising when the path cannot be
+    stat'd. Directory listings pass it: a dangling symlink is an ordinary thing
+    to meet in a home directory, and one dead name must not fail the listing.
+    """
     try:
         resolved = target.resolve()
     except (OSError, RuntimeError):
@@ -189,6 +197,8 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
     try:
         st = resolved.stat()
     except OSError as exc:
+        if skip_unstattable:
+            return None
         raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
 
     is_dir = resolved.is_dir()

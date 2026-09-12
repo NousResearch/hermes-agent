@@ -362,12 +362,15 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
+    entries = []
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
-        entries = [
-            _managed_file_entry(policy, Path(entry.path))
-            for entry in scan
-            if not _is_sensitive_path(Path(entry.path))
-        ]
+        for entry in scan:
+            entry_path = Path(entry.path)
+            if _is_sensitive_path(entry_path):
+                continue
+            meta = _managed_file_entry(policy, entry_path, skip_unstattable=True)
+            if meta is not None:
+                entries.append(meta)
 
     entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
     locked_root = policy.locked_root

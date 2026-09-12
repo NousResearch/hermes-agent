@@ -3177,6 +3177,8 @@ export const ja = defineLocale({
     lastTabKeptTitle: '最後のタブは残ります',
     lastTabKeptBody:
       'このゾーンには少なくとも 1 つの表示タブが必要です。先に別のタブを表示するか、サイドバー全体を折りたたんでください。',
+    enforcedDockLockedTitle: '配置は管理されています',
+    enforcedDockLockedBody: 'このパネルはここにドッキングされたままです。ドラッグしても次回起動時には保持されません。',
     toggleStripTab: title => `${title} タブを切り替え`,
     minimize: '最小化',
     restore: '復元',

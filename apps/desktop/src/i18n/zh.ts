@@ -3852,6 +3852,8 @@ export const zh = defineLocale({
     hideStripTab: title => `隐藏 ${title}`,
     lastTabKeptTitle: '保留最后一个标签',
     lastTabKeptBody: '该区域至少需要一个可见标签。请先显示另一个标签，或折叠整个侧边栏。',
+    enforcedDockLockedTitle: '位置由系统管理',
+    enforcedDockLockedBody: '此面板会固定停靠在此处。将其拖走不会在下次启动后保留。',
     toggleStripTab: title => `切换 ${title} 标签`,
     minimize: '最小化',
     restore: '还原',

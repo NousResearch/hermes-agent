@@ -1321,6 +1321,67 @@ writeKey('hermes.desktop.paneDockHeals.v1', null)
 // until the next launch, so there is never a tug-of-war.
 const enforcedDocksThisBoot = new Set<string>()
 
+function paneDockHint(paneId: string): PaneDockHint | undefined {
+  const pane = registry.getArea('panes').find(c => c.id === paneId)
+  const data = pane?.data as { dock?: PaneDockHint } | undefined
+
+  return data?.dock
+}
+
+/** True only when the pane is registered with `dock.enforce === true`. Missing
+ *  registry data, a missing hint, or `enforce` false all fail open. */
+export function isDockEnforced(paneId: string): boolean {
+  return paneDockHint(paneId)?.enforce === true
+}
+
+function paneSatisfiesDock(tree: LayoutNode, paneId: string, dock: PaneDockHint): boolean {
+  const from = findGroupOfPane(tree, paneId)
+  const anchor = findGroupOfPane(tree, dock.pane)
+
+  if (!from || !anchor) {
+    return false
+  }
+
+  if (dock.pos === 'center') {
+    return from.id === anchor.id
+  }
+
+  // Same no-op the boot re-home uses: already in the declared edge split.
+  return movePaneOp(tree, paneId, { before: dock.before, groupId: anchor.id, pos: dock.pos }) === tree
+}
+
+/** True when `next` would place an `enforce: true` pane outside its declared
+ *  dock (center = leave the anchor's group; edge = leave the declared split). */
+export function wouldBreakEnforcedDock(paneId: string, next: LayoutNode): boolean {
+  const dock = paneDockHint(paneId)
+
+  if (!dock?.enforce) {
+    return false
+  }
+
+  return !paneSatisfiesDock(next, paneId, dock)
+}
+
+export function notifyEnforcedDockLocked() {
+  notify({
+    kind: 'info',
+    title: translateNow('zones.enforcedDockLockedTitle'),
+    message: translateNow('zones.enforcedDockLockedBody')
+  })
+}
+
+/** Refuse a user placement that would break any enforced dock in `paneIds`.
+ *  One notify per refused call. No-op / fail-open destinations return false. */
+function refuseEnforcedDockMove(tree: LayoutNode, next: LayoutNode, paneIds: readonly string[]): boolean {
+  if (next === tree || !paneIds.some(id => wouldBreakEnforcedDock(id, next))) {
+    return false
+  }
+
+  notifyEnforcedDockLocked()
+
+  return true
+}
+
 /**
  * Reopen the enforcement window. The ledger protects a user's mid-session
  * drags, but a wholesale tree replacement has no drags left to protect — and
@@ -1605,6 +1666,10 @@ export function moveTreePane(paneId: string, target: { groupId: string; pos: Dro
 
   const next = movePaneOp(tree, paneId, target)
 
+  if (refuseEnforcedDockMove(tree, next, [paneId])) {
+    return
+  }
+
   // movePane returns the SAME root for no-op drops ("stays here") — only a
   // real move customizes the preset or pins the pane as user-placed.
   if (next !== tree) {
@@ -1666,6 +1731,10 @@ export function moveTreePanes(
 
   const next = movePanesOp(tree, paneIds, target, activeId)
 
+  if (refuseEnforcedDockMove(tree, next, paneIds)) {
+    return
+  }
+
   if (next !== tree) {
     commit(next)
     markActivePreset('custom')
@@ -1692,6 +1761,10 @@ export function mergeTreeZones(groupIds: string[], paneId: string | readonly str
   const merged = mergeZonesWithPaneOp(tree, groupIds, paneId)
 
   if (merged) {
+    if (refuseEnforcedDockMove(tree, merged, paneIds)) {
+      return
+    }
+
     commit(merged)
     markActivePreset('custom')
 

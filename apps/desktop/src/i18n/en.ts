@@ -3722,6 +3722,8 @@ export const en: Translations = {
     hideStripTab: title => `Hide ${title}`,
     lastTabKeptTitle: 'Last tab stays',
     lastTabKeptBody: 'This zone needs at least one visible tab. Show another tab first, or collapse the whole sidebar.',
+    enforcedDockLockedTitle: 'Placement is managed',
+    enforcedDockLockedBody: 'This panel stays docked here. Dragging it away is not kept across launches.',
     toggleStripTab: title => `Toggle ${title} tab`,
     minimize: 'Minimize',
     restore: 'Restore',

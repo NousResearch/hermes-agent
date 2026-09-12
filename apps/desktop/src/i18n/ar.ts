@@ -2716,6 +2716,8 @@ export const ar = defineLocale({
     lastTabKeptTitle: 'يبقى آخر تبويب',
     lastTabKeptBody:
       'تحتاج هذه المنطقة إلى تبويب مرئي واحد على الأقل. أظهر تبويبا آخر أولا، أو اطو الشريط الجانبي بأكمله.',
+    enforcedDockLockedTitle: 'يتم إدارة الموضع',
+    enforcedDockLockedBody: 'تبقى هذه اللوحة مثبتة هنا. سحبها بعيدًا لا يُحفظ عبر عمليات التشغيل.',
     toggleStripTab: title => `تبديل تبويب ${title}`,
     minimize: 'تصغير',
     restore: 'استعادة',

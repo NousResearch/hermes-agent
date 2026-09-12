@@ -3064,6 +3064,8 @@ export const zhHant = defineLocale({
     hideStripTab: title => `隱藏 ${title}`,
     lastTabKeptTitle: '保留最後一個分頁',
     lastTabKeptBody: '此區域至少需要一個可見分頁。請先顯示另一個分頁，或收合整個側邊欄。',
+    enforcedDockLockedTitle: '位置由系統管理',
+    enforcedDockLockedBody: '此面板會固定停靠在此處。將其拖走不會在下次啟動後保留。',
     toggleStripTab: title => `切換 ${title} 分頁`,
     minimize: '最小化',
     restore: '還原',

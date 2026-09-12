@@ -743,6 +743,16 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
     await response.prepare(request)
+    # Flush the response head before waiting on the queue. aiohttp holds the
+    # headers in the socket buffer until the first body write, so a subscriber
+    # that connects before the run's first event sees no bytes at all —
+    # fetch()/EventSource never resolve and the client looks dead. The approval
+    # flow is the worst case: `approval.request` is only emitted after the model
+    # thinks, so a UI that subscribes right after POST /v1/runs waits the full
+    # think time (or the 30s keepalive below) for headers that were ready
+    # immediately. A comment frame is ignored by every conforming SSE consumer
+    # and costs one small write.
+    await response.write(b": open\n\n")
     try:
         while True:
             try:

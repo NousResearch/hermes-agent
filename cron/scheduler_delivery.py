@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
@@ -653,6 +654,75 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+def _get_bot_chat_busy_retries() -> int:
+    """Extra attempts when the recipient's Bot Chat is BUSY (not when it errors).
+
+    ``cron.bot_chat_busy_retries``; default 3. Bot-chat has no durable delivery
+    queue, so without this a finding delivered while the recipient is mid-turn is
+    lost outright. 0 restores the old drop-on-busy behaviour.
+    """
+    try:
+        cfg = _sched.load_config()
+        value = int(cfg.get("cron", {}).get("bot_chat_busy_retries", 3))
+        return max(0, value)
+    except Exception:
+        return 3
+
+
+def _get_bot_chat_busy_backoff_seconds() -> float:
+    """Base seconds for exponential backoff between busy retries.
+
+    ``cron.bot_chat_busy_backoff_seconds``; default 30. Doubles per attempt, so
+    the default ladder waits 30s, 60s, 120s — sized for a recipient's agent turn.
+    """
+    try:
+        cfg = _sched.load_config()
+        value = float(cfg.get("cron", {}).get("bot_chat_busy_backoff_seconds", 30.0))
+        return value if value > 0 else 30.0
+    except Exception:
+        return 30.0
+
+
+def _get_bot_chat_busy_budget_seconds() -> float:
+    """Overall wall-clock ceiling for one bot-chat delivery, retries included.
+
+    ``cron.bot_chat_busy_budget_seconds``; default 900. A refusal returns in
+    seconds (measured ~3.4s), so the realistic retry ladder costs ~4 minutes.
+    But each attempt carries its own delivery timeout, so a recipient whose
+    turns HANG could otherwise stack 4x600s + 210s of backoff ~= 44 minutes in
+    one delivery. The budget is checked before starting another attempt and
+    before sleeping, so it bounds the pathological case without truncating a
+    delivery that is actually progressing. 0 disables the ceiling.
+    """
+    try:
+        cfg = _sched.load_config()
+        value = float(cfg.get("cron", {}).get("bot_chat_busy_budget_seconds", 900.0))
+        return max(0.0, value)
+    except Exception:
+        return 900.0
+
+
+def _sleep_unless_interrupted(
+    delay: float, job_id: str, token: Optional[object] = None,
+) -> bool:
+    """Sleep ``delay`` in slices; return True if shutdown interrupted this execution.
+
+    Gateway stop marks in-flight cron executions interrupted and drains for
+    ``agent.cron_drain_timeout`` (default 30s). A bare ``time.sleep`` of up to
+    210s ignores that signal, so the worker is still sleeping when the drain
+    gives up and is SIGKILLed — leaving a wedged job instead of a cleanly
+    interrupted one. Slicing lets the ladder abandon itself promptly.
+    """
+    deadline = time.monotonic() + delay
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if _sched._is_interrupted(job_id, token):
+            return True
+        time.sleep(min(1.0, remaining))
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
@@ -732,6 +802,35 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)
         return msg
 
+    # A live Bot Chat owner refuses a concurrent write with the typed
+    # SESSION_NOT_OWNED refusal, which means "busy, come back later" — capacity,
+    # not failure. Bot-chat is deliberately excluded from the durable delivery
+    # queue below (a bot turn costs money and must not be replayed by a second
+    # writer), so a dropped refusal loses the payload with no retry anywhere:
+    # a scheduled bot finding vanishes while the sender records a bare failure.
+    # Retrying here is the only place that recoverable refusal can be honoured.
+    # A refusal is issued at lease acquisition, BEFORE any turn runs, so it
+    # writes nothing to the recipient and a retry cannot duplicate a delivery.
+    # Genuine errors are NOT retried — they stay terminal and loud.
+    #
+    # SESSION_COORDINATION_UNAVAILABLE is deliberately NOT here: it means
+    # ownership could not be PROVEN, and retrying an unprovable state is the
+    # fail-open hole that lets two writers share one session.
+    _CAPACITY_REFUSALS = frozenset({"SESSION_NOT_OWNED", "MAX_CONCURRENT_SESSIONS"})
+
+    def _is_capacity_refusal(text: str) -> bool:
+        """True only when the CLI emitted a typed capacity refusal marker.
+
+        Parses the ``hermes-refusal-reason:`` line rather than substring-matching
+        the output: a job whose own payload merely mentions a reason name must
+        never be mistaken for a refusal.
+        """
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith(_REFUSAL_REASON_PREFIX):
+                return line.removeprefix(_REFUSAL_REASON_PREFIX).strip() in _CAPACITY_REFUSALS
+        return False
+
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import strip_launch_profile_env
     env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
@@ -755,16 +854,73 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
             "-Q", "--query-file", query_file,
         ]
-        result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
-            creationflags=windows_hide_flags())
-        if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
-            return _fail(
-                f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode})"
-                + (f": {tail}" if tail else ""))
-        logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
-        return None
+        attempts = max(1, _get_bot_chat_busy_retries() + 1)
+        backoff = _get_bot_chat_busy_backoff_seconds()
+        budget = _get_bot_chat_busy_budget_seconds()
+        started = time.monotonic()
+        # The budget is a DEADLINE, not just a gate on sleeping. Clamping each
+        # attempt's timeout to the time actually left is what makes the ceiling
+        # real: checking only before a sleep lets the NEXT attempt start with a
+        # full per-attempt timeout and overshoot by up to that timeout again
+        # (measured: 1230s elapsed against a 900s budget).
+        for attempt in range(attempts):
+            per_attempt = _get_bot_chat_delivery_timeout()
+            if budget:
+                remaining = budget - (time.monotonic() - started)
+                if remaining <= 0:
+                    return _fail(
+                        f"bot-chat delivery to profile '{profile_label}' gave up after "
+                        f"{time.monotonic() - started:.0f}s (budget {budget:.0f}s); "
+                        f"recipient stayed busy")
+                per_attempt = min(per_attempt, remaining)
+            budget_deadline = budget and per_attempt < _get_bot_chat_delivery_timeout()
+            try:
+                result = subprocess.run(
+                    argv, capture_output=True, text=True,
+                    timeout=per_attempt, env=env,
+                    creationflags=windows_hide_flags())
+            except subprocess.TimeoutExpired:
+                # A timeout caused by the BUDGET deadline is budget exhaustion, not
+                # evidence the recipient hung for the full configured timeout.
+                if budget_deadline:
+                    return _fail(
+                        f"bot-chat delivery to profile '{profile_label}' gave up after "
+                        f"{time.monotonic() - started:.0f}s (budget {budget:.0f}s); "
+                        f"recipient stayed busy")
+                raise
+            if result.returncode == 0:
+                logger.info(
+                    "Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
+                return None
+            output = (result.stderr or result.stdout or "").strip()
+            tail = output[-500:]
+            last_attempt = attempt == attempts - 1
+            if last_attempt or not _is_capacity_refusal(output):
+                return _fail(
+                    f"bot-chat delivery to profile '{profile_label}' failed "
+                    f"(exit {result.returncode})" + (f": {tail}" if tail else ""))
+            delay = backoff * (2 ** attempt)
+            # Stop before sleeping into a budget we cannot honour: an attempt that
+            # cannot start is wasted wall time held by the worker for nothing.
+            if budget and (time.monotonic() - started) + delay >= budget:
+                return _fail(
+                    f"bot-chat delivery to profile '{profile_label}' gave up after "
+                    f"{time.monotonic() - started:.0f}s (budget {budget:.0f}s); "
+                    f"recipient stayed busy" + (f": {tail}" if tail else ""))
+            logger.info(
+                "Job '%s': Bot Chat of profile '%s' busy; retrying in %.1fs (%d/%d)",
+                job_id, profile_label, delay, attempt + 1, attempts - 1)
+            # Sleep in slices and abandon the ladder when shutdown marks this
+            # execution interrupted. Gateway stop drains cron for
+            # agent.cron_drain_timeout (default 30s); an uninterruptible sleep of
+            # up to 210s outlives that drain, so the worker gets SIGKILLed while
+            # merely WAITING to retry and the job is left wedged rather than
+            # cleanly interrupted.
+            if _sleep_unless_interrupted(delay, job_id, job.get("_fire_token")):
+                return _fail(
+                    f"bot-chat delivery to profile '{profile_label}' abandoned: "
+                    f"shutdown interrupted the retry wait"
+                    + (f" (last: {tail})" if tail else ""))
     except subprocess.TimeoutExpired:
         return _fail(
             f"bot-chat delivery to profile '{profile_label}' timed out "
@@ -798,6 +954,9 @@ _ROUTING_TOKENS = frozenset({"all"})
 # Pseudo-platform: deliver output as a real inbound turn into a profile's "Bot Chat" (not a mirror).
 # ``bot-chat`` = own profile; ``bot-chat:<name>`` = named profile on THIS machine.
 BOT_CHAT_PLATFORM = "bot-chat"
+
+# Marker the CLI prints ahead of a typed refusal reason (hermes_cli/active_sessions.py).
+_REFUSAL_REASON_PREFIX = "hermes-refusal-reason:"
 
 
 def parse_bot_chat_deliver_token(part: str) -> Optional[str]:

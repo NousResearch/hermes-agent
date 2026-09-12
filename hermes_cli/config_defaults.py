@@ -1639,6 +1639,23 @@ DEFAULT_CONFIG = {
         # created this way are user-owned in the same flat jobs table. Interactive toolsets
         # (messaging/clarify) stay denied in cron regardless.
         "allow_agent_scheduling": False,
+        # Bot Chat has no durable delivery queue: a bot turn costs money and must never be
+        # replayed by a second writer, so a delivery refused because the recipient is
+        # MID-TURN is otherwise dropped and the finding is lost with only a bare
+        # delivery_outcome=failed on the sender. These retry only the typed capacity
+        # refusals (SESSION_NOT_OWNED / MAX_CONCURRENT_SESSIONS); genuine errors stay
+        # terminal and loud. 0 restores the old drop-on-busy behaviour.
+        "bot_chat_busy_retries": 3,
+        # Base seconds between busy retries; doubles per attempt (30s, 60s, 120s), sized
+        # for a recipient agent turn rather than a network blip.
+        "bot_chat_busy_backoff_seconds": 30.0,
+        # Overall wall-clock ceiling for one bot-chat delivery including retries. A refusal
+        # returns in seconds, so the realistic ladder costs ~4 min; but each attempt carries
+        # its own delivery timeout, so a recipient whose turns HANG could otherwise stack
+        # 4x600s + 210s of backoff (~44 min) inside a single delivery while holding a cron
+        # worker. Checked before starting another attempt, so it never truncates a delivery
+        # that is progressing. 0 disables the ceiling.
+        "bot_chat_busy_budget_seconds": 900.0,
         # Pre-dispatch validation: before building any agent machinery, verify the provider API key
         # resolves (unless a fallback chain exists), attached skills are ready, and delivery
         # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.

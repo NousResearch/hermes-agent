@@ -122,7 +122,12 @@ def _remove_server_scope(key, scope: str) -> None:
     from tools.registry import registry
 
     server_name = _key_name(key)
-    for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}"):
+    with _core._lock:
+        server = _core._servers.get(key)
+        tool_names = list(getattr(server, "_registered_tool_names", ()) or ())
+        if not tool_names:
+            tool_names = list(_core._lazy_server_tool_names.get(key, ()))
+    for tool_name in tool_names:
         registry.deregister(tool_name, scope=scope)
     with _core._lock:
         scopes = set(_core._server_tool_scopes.get(key, ()))
@@ -463,6 +468,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             # Any other profile's live connection with the same route AND credentials is shareable.
             shared = [(key, live) for key, live in _core._servers.items()
                       if _key_name(key) == name and getattr(live, "session", None) is not None
+                      and not getattr(live, "_retired_from_config", False)
                       and _same_server_route(live, config)]
         if not shared:
             continue

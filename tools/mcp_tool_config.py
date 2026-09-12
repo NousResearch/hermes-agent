@@ -15,6 +15,7 @@ from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
+
 class _MCPServerConfig(dict):
     """A server snapshot carrying its immutable discovery provenance."""
 
@@ -371,7 +372,20 @@ def _native_mcp_server_config(name: str) -> Tuple[bool, Optional[dict]]:
         # defaults/LKG fallback is correct for serving, but cannot prove a
         # destructive retirement on a first unreadable load.
         require_readable_config_before_write(get_config_path())
-        managed_dir = managed_scope.get_managed_dir()
+        managed_override = os.environ.get("HERMES_MANAGED_DIR", "").strip()
+        if managed_override:
+            from pathlib import Path
+            override_path = Path(managed_override)
+            try:
+                override_path.stat()
+            except FileNotFoundError:
+                managed_dir = None
+            except OSError:
+                return False, None
+            else:
+                managed_dir = override_path if override_path.is_dir() else None
+        else:
+            managed_dir = managed_scope.get_managed_dir()
         managed_path = managed_dir / "config.yaml" if managed_dir is not None else None
         if managed_path is not None and managed_path.exists():
             with open(managed_path, encoding="utf-8") as fh:

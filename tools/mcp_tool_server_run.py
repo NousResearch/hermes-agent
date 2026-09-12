@@ -85,6 +85,13 @@ class MCPServerRunMixin:
         # Any unreadable authority makes destructive reconciliation unsafe.
         if any(not known for known, _cfg in authorities.values()):
             return False
+        with _core._lock:
+            current_owner = _core._server_scope_keys.get(key)
+            current_scopes = set(_core._server_tool_scopes.get(key, ()))
+            if current_owner is not None:
+                current_scopes.add(current_owner)
+        if current_owner != owner_scope or current_scopes != scopes:
+            return False
         surviving = {
             scope for scope, (_known, cfg) in authorities.items()
             if cfg is not None and _registration._same_server_route(self, cfg)
@@ -97,8 +104,17 @@ class MCPServerRunMixin:
                     with _core._lock:
                         _core._server_scope_keys[key] = next(iter(surviving))
             return False
+        with _core._lock:
+            final_owner = _core._server_scope_keys.get(key)
+            final_scopes = set(_core._server_tool_scopes.get(key, ()))
+            if final_owner is not None:
+                final_scopes.add(final_owner)
+            if final_owner != owner_scope or final_scopes != scopes:
+                return False
+            self._retired_from_config = True
+            if _core._servers.get(key) is self:
+                _core._servers.pop(key, None)
         logger.info("MCP server '%s': removed or disabled in config; stopping live connection", self.name)
-        self._retired_from_config = True
         self._shutdown_event.set()
         # A task can retire before its first transport starts. Complete start()'s
         # handshake so discovery can treat that as an intentional no-op.
@@ -106,8 +122,6 @@ class MCPServerRunMixin:
         self._fail_inflight_calls("config removal")
         self._deregister_tools()
         with _core._lock:
-            if _core._servers.get(key) is self:
-                _core._servers.pop(key, None)
             for ledger in (
                 _core._server_scope_keys, _core._server_tool_scopes,
                 _core._server_connect_errors, _core._server_connect_failures,
@@ -189,15 +203,29 @@ class MCPServerRunMixin:
     async def _wait_for_reconnect_or_shutdown(self, timeout: Optional[float] = None) -> str:
         """Parked wait: ``"shutdown"`` or ``"reconnect"`` (explicit, or the ``timeout`` self-probe;
         event cleared first). Shutdown wins a tie."""
-        shutdown_task, reconnect_task = self._event_waiters()
-        try:
-            await asyncio.wait({shutdown_task, reconnect_task}, return_when=asyncio.FIRST_COMPLETED, timeout=timeout)
-        finally:
-            await self._cancel_waiters(shutdown_task, reconnect_task)
-        if self._shutdown_event.is_set():
-            return "shutdown"
-        self._reconnect_event.clear()
-        return "reconnect"
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            wait_timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if self._native_config_managed:
+                wait_timeout = (_core._MCP_CONFIG_POLL_INTERVAL if wait_timeout is None
+                                else min(wait_timeout, _core._MCP_CONFIG_POLL_INTERVAL))
+            shutdown_task, reconnect_task = self._event_waiters()
+            try:
+                done, _pending = await asyncio.wait(
+                    {shutdown_task, reconnect_task}, return_when=asyncio.FIRST_COMPLETED,
+                    timeout=wait_timeout)
+            finally:
+                await self._cancel_waiters(shutdown_task, reconnect_task)
+            if self._shutdown_event.is_set():
+                return "shutdown"
+            if done:
+                self._reconnect_event.clear()
+                return "reconnect"
+            if self._retire_if_removed_from_config():
+                return "shutdown"
+            if deadline is not None and time.monotonic() >= deadline:
+                self._reconnect_event.clear()
+                return "reconnect"
 
     async def _park(self, revival_reason: str) -> bool:
         """Drop this server's tools and wait for a reconnect request; True when shutdown came instead.
@@ -366,7 +394,14 @@ class MCPServerRunMixin:
         return True
 
     async def _backoff_sleep(self, budget: "_RetryBudget") -> None:
-        await asyncio.sleep(_jittered(budget.backoff))
+        deadline = time.monotonic() + _jittered(budget.backoff)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(remaining, _core._MCP_CONFIG_POLL_INTERVAL))
+            if self._retire_if_removed_from_config():
+                break
         budget.backoff = min(budget.backoff * 2, _core._MAX_BACKOFF_SECONDS)
 
     async def _on_transport_error(self, exc: Exception, budget: "_RetryBudget") -> bool:

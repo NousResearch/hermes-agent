@@ -1,5 +1,6 @@
 """Live MCP tasks stop when another process removes their native config."""
 
+import asyncio
 import time
 from types import SimpleNamespace
 
@@ -238,3 +239,125 @@ def test_owner_removal_preserves_authorized_adopter(tmp_path, monkeypatch):
             ):
                 ledger.clear()
             mcp_tool._server_connecting.clear()
+
+
+def test_adopter_removal_deregisters_its_filtered_tools(tmp_path, monkeypatch):
+    """A revoked adopter loses tools not present in the launch owner's filter."""
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools import mcp_tool_registration
+    from tools.registry import registry
+
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    for home in homes.values():
+        home.mkdir()
+    cfg = {"url": "https://mcp.example/shared"}
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+    server = mcp_tool.MCPServerTask("shared")
+    server._config = cfg
+    server._native_config_managed = True
+    server.session = object()
+    server._registered_tool_names = ["mcp__shared__owner", "mcp__shared__adopter"]
+    tokens = []
+    try:
+        tokens.append(set_hermes_home_override(homes["a"]))
+        scope_a = hermes_home_key(homes["a"])
+        mcp_tool_discovery._adopt_server("shared", server)
+        registry.register(
+            name="mcp__shared__owner", toolset="mcp-shared",
+            schema={"name": "mcp__shared__owner", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda _args: "ok", scope=scope_a)
+        with mcp_tool._lock:
+            key = (scope_a, "shared")
+            mcp_tool._server_tool_scopes[key] = {scope_a}
+
+        tokens.append(set_hermes_home_override(homes["b"]))
+        scope_b = hermes_home_key(homes["b"])
+        registry.register(
+            name="mcp__shared__adopter", toolset="mcp-shared",
+            schema={"name": "mcp__shared__adopter", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda _args: "ok", scope=scope_b)
+        with mcp_tool._lock:
+            mcp_tool._server_tool_scopes[key].add(scope_b)
+
+        monkeypatch.setattr(
+            mcp_tool_config, "_native_mcp_server_config",
+            lambda _name: (True, cfg if mcp_tool._mcp_registry_scope() == scope_a else None))
+        assert server._retire_if_removed_from_config() is False
+        assert registry.snapshot_registration("mcp__shared__owner", scope=scope_a) is not None
+        assert registry.snapshot_registration("mcp__shared__adopter", scope=scope_b) is None
+    finally:
+        for tool_name in server._registered_tool_names:
+            for scope in (locals().get("scope_a"), locals().get("scope_b")):
+                if scope is not None:
+                    registry.deregister(tool_name, scope=scope)
+        for token in reversed(tokens):
+            reset_hermes_home_override(token)
+        with mcp_tool._lock:
+            mcp_tool._servers.clear()
+            mcp_tool._server_scope_keys.clear()
+            mcp_tool._server_tool_scopes.clear()
+
+
+def test_scope_change_during_poll_defers_retirement(monkeypatch):
+    """A concurrent adopter prevents retirement from a stale authority snapshot."""
+    server = mcp_tool.MCPServerTask("shared")
+    server._config = {"command": "fake"}
+    server._native_config_managed = True
+    with mcp_tool._lock:
+        mcp_tool._servers[server.name] = server
+        mcp_tool._server_scope_keys[server.name] = None
+
+    def changed_authority(_name):
+        with mcp_tool._lock:
+            mcp_tool._server_tool_scopes[server.name] = {"new-scope"}
+        return True, None
+
+    monkeypatch.setattr(mcp_tool_config, "_native_mcp_server_config", changed_authority)
+    try:
+        assert server._retire_if_removed_from_config() is False
+        assert server._retired_from_config is False
+        assert mcp_tool._servers[server.name] is server
+    finally:
+        with mcp_tool._lock:
+            mcp_tool._servers.pop(server.name, None)
+            mcp_tool._server_scope_keys.pop(server.name, None)
+            mcp_tool._server_tool_scopes.pop(server.name, None)
+
+
+def test_discard_retired_lazy_candidate_removes_cached_overlay(monkeypatch):
+    """Removal before first lazy spawn deletes its schema registration and ledgers."""
+    from tools.registry import registry
+
+    name = "lazy-removed"
+    tool_name = "mcp__lazy_removed__ping"
+    registry.register(
+        name=tool_name, toolset=f"mcp-{name}",
+        schema={"name": tool_name, "parameters": {"type": "object", "properties": {}}},
+        handler=lambda _args: "ok")
+    with mcp_tool._lock:
+        mcp_tool._lazy_server_configs[name] = {"command": "fake"}
+        mcp_tool._lazy_server_fingerprints[name] = "fingerprint"
+        mcp_tool._lazy_server_tool_names[name] = [tool_name]
+    try:
+        mcp_tool_discovery._discard_retired_candidate(name, mcp_tool.MCPServerTask(name))
+        assert registry.snapshot_registration(tool_name) is None
+        assert name not in mcp_tool._lazy_server_configs
+        assert name not in mcp_tool._lazy_server_fingerprints
+        assert name not in mcp_tool._lazy_server_tool_names
+    finally:
+        registry.deregister(tool_name)
+
+
+@pytest.mark.asyncio
+async def test_parked_native_task_polls_config_without_waiting_for_revival(monkeypatch):
+    """An untimed recycled/parked wait still observes native removal promptly."""
+    server = mcp_tool.MCPServerTask("parked")
+    server._config = {"command": "fake"}
+    server._native_config_managed = True
+    monkeypatch.setattr(mcp_tool, "_MCP_CONFIG_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(mcp_tool_config, "_native_mcp_server_config", lambda _name: (True, None))
+    monkeypatch.setattr(mcp_tool.MCPServerTask, "_deregister_tools", lambda _server: None)
+
+    result = await asyncio.wait_for(server._wait_for_reconnect_or_shutdown(), timeout=0.5)
+    assert result == "shutdown"
+    assert server._retired_from_config is True

@@ -152,8 +152,13 @@ def _discard_retired_candidate(name: str, server: _core.MCPServerTask) -> None:
         _core._server_tool_scopes.pop(key, None)
         _core._server_connecting.discard(key)
         _core._server_connect_errors.pop(key, None)
+        lazy_names = list(_core._lazy_server_tool_names.pop(key, ()))
+        _core._lazy_server_configs.pop(key, None)
+        _core._lazy_server_fingerprints.pop(key, None)
         _clear_connect_failure(name)
         _core._parallel_safe_servers.discard(name)
+    for tool_name in lazy_names:
+        _registration._deregister_mcp_tool_all_scopes(key, tool_name)
 
 
 def _ensure_lazy_server_connected(server_name: str) -> bool:

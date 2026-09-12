@@ -36,6 +36,26 @@ A paid [Nous Portal](/user-guide/features/tool-gateway) subscription supplies th
 | **Auto Voice Reply** | Telegram, Discord | Agent sends spoken audio alongside text responses |
 | **Voice Channel** | Discord | Bot joins VC, listens to users speaking, speaks replies back |
 
+## Realtime duplex voice (plugin)
+
+Voice mode in core is turn-based: you speak, Hermes transcribes, thinks, then
+speaks back. If you want a live, interruptible conversation instead — the agent
+listens while it talks, you can cut it off mid-sentence, and it can call tools
+mid-conversation — that is available today through the community plugin
+[hermes-talk](https://github.com/TheSmokeDev/hermes-talk):
+
+```bash
+hermes plugins install TheSmokeDev/hermes-talk --enable
+pip install "hermes-talk[audio]"
+hermes talk
+```
+
+hermes-talk streams duplex speech-to-speech through your choice of provider —
+OpenAI Realtime (API key or an existing Codex/ChatGPT sign-in), xAI Grok Voice,
+or Gemini Live (a free AI Studio key works). Tools, memory, and approvals stay
+with Hermes; the realtime model is only the ears, mouth, and turn-taking.
+Discord voice channels work too: `/voice join`, then `/talk join`.
+
 ## Requirements
 
 ### Python Packages

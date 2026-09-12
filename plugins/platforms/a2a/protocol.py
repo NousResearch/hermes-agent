@@ -414,11 +414,26 @@ class TaskStore:
         next_offset = offset + page_size if offset + page_size < total else 0
         return (page, next_offset, total) if with_total else (page, next_offset)
 
-    def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
+    def fail_orphans(
+        self,
+        timeout_seconds: int = 300,
+        active_task_ids: Optional[set[str]] = None,
+    ) -> list[str]:
+        """Fail stale non-terminal tasks that no live executor still owns."""
+        active = active_task_ids or set()
         with self._lock:
-            stale = [tid for tid, rec in self._tasks.items()
-                     if rec["state"] not in TERMINAL_STATES and time.time() - rec["created_at"] > timeout_seconds]
-        return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
+            now = time.time()
+            stale = [
+                tid for tid, rec in self._tasks.items()
+                if rec["state"] not in TERMINAL_STATES
+                and tid not in active
+                and now - rec["created_at"] > timeout_seconds
+            ]
+        failed = []
+        for tid in stale:
+            if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]"):
+                failed.append(tid)
+        return failed
 
     def _trim_locked(self) -> None:
         terminal = [tid for tid, rec in self._tasks.items() if rec["state"] in TERMINAL_STATES]
@@ -440,21 +455,69 @@ def _conv_path(context_id: str) -> Path:
     return _hermes_home() / "a2a_conversations" / f"{safe}.jsonl"
 
 
+# Detached polls can arrive on multiple worker threads. Keep the identity check
+# and append together so two polls cannot both persist the same task reply.
+_CONVERSATION_LOCK = threading.RLock()
+
+
+def _message_line(role: str, text: str, task_id: str) -> str:
+    return json.dumps(
+        {"ts": time.time(), "role": role, "text": text, "task_id": task_id},
+        ensure_ascii=False,
+    ) + "\n"
+
+
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
     """Append one message to the context's on-disk conversation log. Never raises."""
     try:
         path = _conv_path(context_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "role": role, "text": text, "task_id": task_id}, ensure_ascii=False) + "\n")
+        with _CONVERSATION_LOCK:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(_message_line(role, text, task_id))
     except Exception:
         pass
+
+
+def persist_message_once(
+    context_id: str, role: str, text: str, task_id: str = ""
+) -> bool:
+    """Append only when ``(context_id, task_id, role)`` is absent from JSONL.
+
+    The context id is represented by the selected JSONL path; the lock covers
+    the streamed read-before-append transaction without loading history into
+    memory or changing the persisted schema.
+    """
+    try:
+        path = _conv_path(context_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _CONVERSATION_LOCK:
+            with path.open("a+", encoding="utf-8") as fh:
+                fh.seek(0)
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    try:
+                        message = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        message.get("role") == role
+                        and message.get("task_id") == task_id
+                    ):
+                        return False
+                fh.seek(0, 2)
+                fh.write(_message_line(role, text, task_id))
+        return True
+    except Exception:
+        return False
 
 
 def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
     """Last *limit* messages for a context (empty list if none / unreadable)."""
     try:
-        lines = _conv_path(context_id).read_text(encoding="utf-8").splitlines()
+        with _CONVERSATION_LOCK:
+            lines = _conv_path(context_id).read_text(encoding="utf-8").splitlines()
     except Exception:
         return []
     out: list[dict] = []

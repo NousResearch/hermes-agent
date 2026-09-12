@@ -52,4 +52,5 @@ def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
         "agent",
         "message",
         "context_id",
+        "wait",
     }

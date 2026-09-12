@@ -109,6 +109,7 @@ import type { SessionMutationSnapshot } from '../../../shared/src/session-http-m
 
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
+import { createConfirmedSubmitPrompt, type PluginFocusedSessionOwner } from './confirmed-submit'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { dropLeftoverProfilePrefs, warmProfile } from './profile-local'
@@ -156,11 +157,6 @@ const $focusedAwaitingResponse = focusedTurnFlag(
   state => state.awaitingResponse,
   PRIMARY_SESSION_VIEW.$awaitingResponse
 )
-
-export interface PluginFocusedSessionOwner {
-  connectionId: string
-  profile: string
-}
 
 /**
  * Connection-qualified owner of the FOCUSED chat. The gateway-routing atom
@@ -1498,6 +1494,9 @@ export const host = {
         })
     )
   },
+
+  /** Confirmed text, native FIFO and receipts; never navigate or replay. */
+  submitPrompt: createConfirmedSubmitPrompt($focusedRuntimeId, $focusedSessionOwner),
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`

@@ -605,51 +605,6 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         proc.stdout.close()
 
 
-_RELEASE_TAG_RE = re.compile(r"^v(0|[1-9]\d{0,2})\.(\d+)\.(\d+)$")
-def _parse_release_tag(tag: str):
-    """Parse ``vX.Y.Z`` into a sortable (X, Y, Z) tuple, or return None.
-
-    Tags with a pre-release or build suffix (``v1.2.3-rc1``) return None.
-    Tags that do not have the shape of a final release also return None.
-    The stable channel only moves between final releases.
-    """
-    m = _RELEASE_TAG_RE.match(tag.strip())
-    if not m:
-        return None
-    return tuple(int(g) for g in m.groups())
-def _latest_release_tag_from_ls_remote(output: str):
-    """Select the newest final-release tag from ``git ls-remote --tags`` output.
-
-    Returns ``(tag, sha)`` or ``(None, None)``. Peeled entries (``^{}``) have
-    priority over the tag-object SHA. Thus annotated tags and lightweight tags
-    both give the commit SHA.
-    """
-    best = None          # (version_tuple, tag)
-    shas = {}            # tag -> commit sha (peeled wins)
-    for line in output.splitlines():
-        parts = line.split("\t")
-        if len(parts) != 2:
-            continue
-        sha, ref = parts
-        if not ref.startswith("refs/tags/"):
-            continue
-        name = ref[len("refs/tags/"):]
-        peeled = name.endswith("^{}")
-        if peeled:
-            name = name[:-3]
-        version = _parse_release_tag(name)
-        if version is None:
-            continue
-        if peeled or name not in shas:
-            shas[name] = sha.strip()
-        if best is None or version > best[0]:
-            best = (version, name)
-    if best is None:
-        return None, None
-    tag = best[1]
-    return tag, shas.get(tag)
-
-
 def _source_update_channel(args=None, *, channel=None, branch_explicit=False) -> str:
     """Explicit branches win; otherwise transient channel, then this install's record."""
     if branch_explicit or getattr(args, "branch", None):

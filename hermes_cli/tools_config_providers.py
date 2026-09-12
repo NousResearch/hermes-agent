@@ -293,7 +293,9 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
         sub_marker = ""
         if not reconfigure and p.get("managed_nous_feature"):
             sub_marker = "  ★ Included with your Nous subscription" if _nous_logged_in else "  ★ via Nous Portal (login on select)"
-        provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
+        # A row can be the stored selection and still be inert on this model (see _provider_unusable_note) — say
+        # so instead of showing a bare "[active]".
+        provider_choices.append(f"{p['name']}{badge}{tag}{configured}{_provider_unusable_note(p)}{sub_marker}")
 
     if not reconfigure:
         provider_choices.append("Skip — keep defaults / configure later")
@@ -464,6 +466,30 @@ def _is_provider_active(provider: dict, config: dict, *, force_fresh: bool = Fal
         if _has_marker(provider, marker):
             return check(provider, config)
     return False
+
+
+def _provider_unusable_note(provider: dict) -> str:
+    """Picker marker for a row the current setup cannot actually run, else ``""``.
+    ``_is_provider_active`` answers "is this row the stored selection?", and for the Anthropic web row that stays
+    yes even when nothing can execute it. Anthropic's ``web_search``/``web_fetch`` are not a credential and have no
+    client-side provider to fall back to: they run inside the Anthropic Messages API request, so the row is usable
+    only while the configured model is served by Anthropic. On any other model the binding is stripped before the
+    request goes out and the ``web`` toolset reports unconfigured, so a bare ``[active]`` would say the opposite.
+    A label marker (same shape as the Nous ``★`` marker) rather than part of ``_is_provider_active``, which also
+    drives the default cursor and the GUI's current-provider lookup — those must keep pointing at the stored
+    selection. The endpoint test comes from ``tools.web_tools`` so the picker, doctor and the tool gate all answer
+    from one predicate."""
+    if provider.get("web_backend") != "anthropic":
+        return ""
+    try:
+        from tools.web_tools import _anthropic_native_endpoint_selected
+
+        if _anthropic_native_endpoint_selected():
+            return ""
+    except Exception:
+        # An annotation must never be the thing that breaks the picker.
+        return ""
+    return "  ⚠ Not usable on the current model — needs an Anthropic-served model"
 
 
 def _detect_active_provider_index(providers: list, config: dict, *, force_fresh: bool = False) -> int:

@@ -488,6 +488,10 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
                 text = text.replace(old, new)
             block["text"] = _apply_oauth_prose_aliases(text)
     for tool in anthropic_tools or []:
+        # Server tools carry a versioned ``type`` and a canonical name Anthropic itself intercepts;
+        # renaming one turns it back into an ordinary client tool and breaks execution.
+        if "type" in tool:
+            continue
         if "name" in tool:
             tool["name"] = to_wire(tool["name"])
         if isinstance(tool.get("description"), str):
@@ -545,7 +549,7 @@ def build_anthropic_kwargs(
     dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
-    anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
+    anthropic_tools = convert_tools_to_anthropic(tools, base_url=base_url) if tools else []
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
     # make the model unresolvable there (prefix AND dots kept).
     if not _is_nous_portal_endpoint(base_url):
@@ -567,8 +571,11 @@ def build_anthropic_kwargs(
         elif tool_choice is None or isinstance(tool_choice, str):
             # A forced tool name goes through the OAuth normalizer too: every tools[] entry is
             # mcp__-prefixed/aliased there, so the literal would leak and name a nonexistent tool.
+            # Server tools are the exception — they keep their canonical name in tools[] (see
+            # _apply_claude_code_identity), so forcing one must name it verbatim.
+            forced_server_tool = any("type" in t and t.get("name") == tool_choice for t in anthropic_tools)
             kwargs["tool_choice"] = _TOOL_CHOICE_MAP.get(tool_choice) or {
-                "type": "tool", "name": to_wire(tool_choice) if to_wire else tool_choice
+                "type": "tool", "name": to_wire(tool_choice) if to_wire and not forced_server_tool else tool_choice
             }
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat

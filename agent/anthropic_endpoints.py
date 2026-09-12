@@ -26,10 +26,11 @@ def _normalized_lower(base_url) -> str:
 
 
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
-    """Any non-anthropic.com endpoint (own x-api-key keys; skip OAuth detection). No base_url =
-    direct Anthropic API."""
-    normalized = _normalized_lower(base_url)
-    return bool(normalized) and "anthropic.com" not in normalized
+    """Any endpoint not hosted on anthropic.com or a subdomain of it (own x-api-key keys; skip
+    OAuth detection). Hostname match, not substring, so ``api.anthropic.com.example`` and
+    ``proxy.example/api.anthropic.com`` are third-party. No base_url = direct Anthropic API."""
+    normalized = _normalize_base_url_text(base_url)
+    return bool(normalized) and not base_url_host_matches(normalized, "anthropic.com")
 
 
 def _is_kimi_coding_endpoint(base_url: str | None) -> bool:

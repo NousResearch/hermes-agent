@@ -1,7 +1,8 @@
 """Response intake for the conversation turn loop: normalize the raw provider response into
 the assistant message, splice agent-as-provider projections, fire ``post_api_request``, relay
-reasoning to the progress callback, and apply the incomplete-scratchpad / Codex-incomplete
-continuation guards. Nothing here imports ``agent.conversation_loop`` at module level (cycle).
+reasoning to the progress callback, and apply the Anthropic ``pause_turn``, incomplete-scratchpad
+and Codex-incomplete continuation guards. Nothing here imports ``agent.conversation_loop`` at
+module level (cycle).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
+from agent.message_metadata import append_message
 from agent.provider_projection import splice_provider_projection
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import continue_codex_incomplete, normalize_response_for_agent, partial_result
@@ -24,12 +26,15 @@ _REASONING_TAG_RE = re.compile(r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>')
 @dataclass
 class ResponseIntakeVerdict:
     """``action``: ``"fallthrough"`` (process ``assistant_message``), ``"continue"`` (retry the
-    iteration: incomplete scratchpad / Codex continuation) or ``"return"`` (``result`` is the
-    turn's result dict). ``assistant_message``/``finish_reason`` are the normalized outputs."""
+    iteration: incomplete scratchpad / Codex or Anthropic ``pause_turn`` continuation / fallback
+    switch) or ``"return"`` (``result`` is the turn's result dict). ``assistant_message``/
+    ``finish_reason`` are the normalized outputs; the other fields are the loop locals rebound."""
 
     action: str
     assistant_message: Any
     finish_reason: Any
+    active_system_prompt: Any
+    anthropic_pause_continuations: int
     result: Optional[Dict[str, Any]] = None
 
 
@@ -115,7 +120,7 @@ def _relay_thinking(agent: Any, content: str) -> None:
 def normalize_model_response(
     agent: Any, *, response: Any, messages: Any, api_messages: Any, conversation_history: Any,
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
-    effective_task_id: Any, turn_id: Any,
+    effective_task_id: Any, turn_id: Any, active_system_prompt: Any, anthropic_pause_continuations: int,
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
@@ -125,7 +130,8 @@ def normalize_model_response(
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ResponseIntakeVerdict:
         return ResponseIntakeVerdict(
             action=action, assistant_message=assistant_message, finish_reason=finish_reason,
-            result=result,
+            active_system_prompt=active_system_prompt,
+            anthropic_pause_continuations=anthropic_pause_continuations, result=result,
         )
 
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
@@ -140,6 +146,43 @@ def normalize_model_response(
         api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
     )
+
+    # Anthropic server tools may pause their internal agentic loop and require the exact
+    # assistant content to be submitted again. This is provider continuation state, not a
+    # client tool call: append no synthetic user/tool message, preserve the native blocks, and
+    # let the next loop iteration rebuild the request. Bound the consecutive continuations so a
+    # pathological upstream cannot consume the whole agent budget without giving the fallback
+    # chain a chance.
+    if agent.api_mode == "anthropic_messages" and finish_reason == "pause_turn":
+        anthropic_pause_continuations += 1
+        paused_msg = agent._build_assistant_message(assistant_message, finish_reason)
+        append_message(messages, paused_msg)
+        agent._emit_interim_assistant_message(paused_msg)
+        try:
+            agent._flush_messages_to_session_db(messages, conversation_history)
+        except Exception as exc:
+            logger.warning(
+                "Anthropic pause_turn persistence failed (session=%s): %s", agent.session_id or "none", exc,
+            )
+        if anthropic_pause_continuations < 3:
+            agent._buffer_vprint(
+                f"↻ Anthropic server tool paused; continuing turn ({anthropic_pause_continuations}/3)"
+            )
+            return _verdict("continue")
+        if agent._has_pending_fallback():
+            agent._buffer_status("⚠️ Anthropic server tool paused repeatedly — trying fallback...")
+        if agent._try_activate_fallback():
+            from agent.conversation_loop import _sync_failover_system_message
+            active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
+            anthropic_pause_continuations = 0
+            return _verdict("continue")
+        agent._flush_status_buffer()
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        return _verdict("return", partial_result(
+            messages, api_call_count, "Anthropic server tool did not finish after 3 pause_turn continuations."
+        ))
+    anthropic_pause_continuations = 0
 
     content = assistant_message.content
     if content and not agent.quiet_mode:

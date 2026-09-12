@@ -74,6 +74,16 @@ interface SubmitDetail {
   /** `hidden` types the persisted user row so no bubble renders — the
    *  off-screen path for widget intents. Omit for normal visible sends. */
   displayKind?: 'hidden'
+  native?: {
+    sessionId: string
+    claim: () => ((result: NativeComposerSubmitResult) => void) | null
+  }
+}
+
+export interface NativeComposerSubmitResult {
+  /** Acceptance is not completion. Unknown must never be retried automatically. */
+  status: 'accepted' | 'queued' | 'rejected' | 'unknown'
+  queueId?: string
 }
 
 let activeTarget: ComposerTarget = 'main'
@@ -328,6 +338,52 @@ export const requestComposerSubmit = (
   })
 
   return true
+}
+
+/** Confirmed plain text only. Claims synchronously so a missing/disabled or
+ * stale composer is an explicit refusal, not a successful fire-and-forget. */
+export function requestNativeComposerSubmit(
+  text: string,
+  { sessionId, target = 'active' }: { sessionId: string; target?: ComposerTarget | 'active' }
+): Promise<NativeComposerSubmitResult> {
+  const trimmed = text.trim()
+  const resolvedTarget = resolve(target)
+  const surfaceId = getVisibleComposerSurfaceId(resolvedTarget)
+
+  if (!sessionId || !trimmed || trimmed.startsWith('/') || !surfaceId) {
+    return Promise.resolve({ status: 'rejected' })
+  }
+
+  return new Promise(resolveResult => {
+    let claimed = false
+    const timeout = window.setTimeout(() => resolveResult({ status: 'unknown' }), 30_000)
+
+    const finish = (result: NativeComposerSubmitResult) => {
+      window.clearTimeout(timeout)
+      resolveResult(result)
+    }
+
+    dispatchNow<SubmitDetail>(SUBMIT_EVENT, {
+      surfaceId,
+      target: resolvedTarget,
+      text: trimmed,
+      native: {
+        sessionId,
+        claim: () => {
+          if (claimed) {
+            return null
+          }
+          claimed = true
+
+          return finish
+        }
+      }
+    })
+
+    if (!claimed) {
+      finish({ status: 'rejected' })
+    }
+  })
 }
 
 export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void) =>

@@ -427,6 +427,63 @@ function renderedSeedTexts(seeds: Record<string, unknown>[]): string[] {
 // The HUD floats over the app the user is really working in, so the gateway
 // turns this flag into a per-turn hint: read the window underneath and work in
 // it, rather than reaching for Hermes's own browser and panes.
+describe('usePromptActions confirmed external submission', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+  it.each(['accepted', 'timeout'])('sends once, with server FIFO and native projection: %s', async outcome => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method !== 'prompt.submit') {
+        throw new Error('unexpected RPC: ' + method)
+      }
+
+      if (outcome === 'timeout') {
+        throw new Error('request timed out')
+      }
+
+      return { status: 'queued' } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    const projection = vi.fn()
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onUpdateState={projection}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    const acknowledgement = vi.fn()
+    const send = handle!.submitText('confirmed companion text', {
+      attachments: [],
+      confirmedExternal: true,
+      onExternalAccepted: acknowledgement
+    })
+
+    if (outcome === 'timeout') {
+      await expect(send).rejects.toThrow('request timed out')
+      expect(acknowledgement).not.toHaveBeenCalled()
+    } else {
+      await expect(send).resolves.toBe(true)
+      expect(acknowledgement).toHaveBeenCalledWith(true)
+    }
+
+    expect(requestGateway).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ queued: true, session_id: RUNTIME_SESSION_ID }),
+      expect.any(Number)
+    )
+    expect(
+      projection.mock.calls.some(
+        ([, , state]) => state.messages?.filter((message: { role: string }) => message.role === 'user').length === 1
+      )
+    ).toBe(true)
+  })
+})
+
 describe('usePromptActions HUD surface', () => {
   afterEach(() => {
     cleanup()

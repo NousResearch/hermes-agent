@@ -22,6 +22,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { capabilityScoped } from '@/api/client'
+import { type NativeComposerSubmitResult, requestNativeComposerSubmit } from '@/app/chat/composer/focus'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
@@ -136,6 +137,14 @@ export interface PluginFocusedSessionOwner {
   connectionId: string
   profile: string
 }
+
+export interface PluginSubmitPromptOptions extends PluginFocusedSessionOwner {
+  /** Exact runtime id of the focused, already hydrated conversation. */
+  sessionId: string
+  text: string
+}
+
+export type PluginSubmitPromptResult = NativeComposerSubmitResult
 
 /**
  * Connection-qualified owner of the FOCUSED chat. The gateway-routing atom
@@ -1419,6 +1428,27 @@ export const host = {
       method: 'PATCH',
       body: { hidden: options.hidden, profile }
     })
+  },
+
+  /** Submit confirmed plain text through the visible conversation's native
+   * composer. Never navigates, inherits attachments, or interrupts a turn.
+   * A busy conversation queues it. Acceptance is NOT agent completion;
+   * unknown means possibly sent, and must not be retried automatically. */
+  submitPrompt: (options: PluginSubmitPromptOptions): Promise<PluginSubmitPromptResult> => {
+    const owner = $focusedSessionOwner.get()
+
+    if (
+      !owner ||
+      !options.sessionId ||
+      options.sessionId !== $focusedRuntimeId.get() ||
+      options.connectionId !== owner.connectionId ||
+      options.profile !== owner.profile ||
+      typeof options.text !== 'string'
+    ) {
+      return Promise.resolve({ status: 'rejected' })
+    }
+
+    return requestNativeComposerSubmit(options.text, { sessionId: options.sessionId })
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything

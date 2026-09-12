@@ -309,15 +309,52 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     )
 
 
+# xAI's authoritative "this bearer is stale" signals: the 403 JSON body from
+# ``api.x.ai`` (``unauthenticated:bad-credentials`` / "The OAuth2 access token could
+# not be validated.") and the status-less SSE variant (``[WKE=unauthenticated:...]``).
+# These are exactly the phrases ``_is_entitlement_403`` keeps refreshable (#29344) —
+# refresh is the recoverable path for them.
+_XAI_OAUTH_STALE_TOKEN_MARKERS = (
+    "unauthenticated:bad-credentials",
+    "oauth2 access token could not be validated",
+    "[wke=unauthenticated:",
+)
+
+
+def _is_stale_xai_oauth_error(status_code: Optional[int], error_message: str) -> bool:
+    """Detect an xAI 403 that is really a STALE / rejected OAuth bearer (status 403 AND a
+    stale-token marker, so entitlement/subscription 403s never trigger the single-shot
+    refresh). Caller enforces provider scoping. Markers are lowercase and the message is
+    lowercased before matching — xAI's SSE variant spells the tag ``[WKE=...``."""
+    lowered = (error_message or "").lower()
+    if status_code != 403 and "error code: 403" not in lowered:
+        # Status-less SSE stream errors carry the stale-token marker without any
+        # status attribute at all — those still qualify when the marker matches.
+        if status_code is not None:
+            return False
+    return any(marker in lowered for marker in _XAI_OAUTH_STALE_TOKEN_MARKERS)
+
+
 def _refresh_credentials_after_401(
     agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int]
 ) -> bool:
     """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, copilot,
     anthropic), printing user-facing diagnostics when the nous/anthropic refresh fails.
-    Returns True when a refresh succeeded and the call should be retried."""
+    Also fires for xAI OAuth stale-token 403s (see below). Returns True when a refresh
+    succeeded and the call should be retried."""
     from agent.conversation_loop import _is_copilot_provider
 
-    if status_code != 401:
+    # xAI signals a stale/rejected OAuth bearer as HTTP 403, not 401: the classifier
+    # keeps those bodies refreshable (#29344), so the one-shot refresh+retry must fire on
+    # them too. Without this, a long-lived gateway turn aborts as non-retryable while the
+    # auth store holds a working grant — observed on a profile borrowing the root's
+    # xai-oauth grant, where replaying the dumped request with the stored token returned
+    # 200 seconds after the 403 (intermittent edge rejection of a freshly rotated JWT).
+    xai_oauth_stale_403 = (
+        agent.provider == "xai-oauth"
+        and _is_stale_xai_oauth_error(status_code, str(api_error))
+    )
+    if status_code != 401 and not xai_oauth_stale_403:
         return False
     if (
         agent.api_mode == "codex_responses"
@@ -327,7 +364,9 @@ def _refresh_credentials_after_401(
         _retry.codex_auth_retry_attempted = True
         if agent._try_refresh_codex_client_credentials(force=True):
             _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-            agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
+            agent._buffer_vprint(
+                f"🔐 {_label} auth refreshed after {status_code or 'error'}. Retrying request..."
+            )
             return True
     if agent.api_mode == "chat_completions" and agent.provider == "vertex" and not _retry.vertex_auth_retry_attempted:
         _retry.vertex_auth_retry_attempted = True

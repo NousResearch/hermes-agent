@@ -64,6 +64,21 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def _same_account_jwt_subject(token_a: str, token_b: str) -> bool:
+    """True when both JWTs carry the same non-empty ``sub`` claim (same issuing account).
+
+    A missing/unparseable ``sub`` on either side means "cannot prove same account" —
+    callers treat that as NOT same-account and keep the conservative no-swap path.
+    """
+    try:
+        from hermes_cli.auth_constants import _decode_jwt_claims
+        sub_a = (_decode_jwt_claims(token_a) or {}).get("sub")
+        sub_b = (_decode_jwt_claims(token_b) or {}).get("sub")
+        return bool(sub_a and sub_b and sub_a == sub_b)
+    except Exception:
+        return False
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -556,6 +571,10 @@ class ClientLifecycleMixin:
             return False
         # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
         # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
+        # EXCEPTION: when both JWTs carry the same ``sub`` the singleton is the SAME account with a
+        # NEWER token (a sibling process or a later rotation refreshed it). Adopting it is not a swap —
+        # and refusing it wedges a long-lived cached agent onto a bearer that died hours ago while the
+        # auth store holds a working grant. Mirror of the nous ``require_account`` check.
         try:
             from hermes_cli import auth as _auth
             resolve = (
@@ -569,11 +588,20 @@ class ClientLifecycleMixin:
         singleton_key = str(singleton_now.get("api_key") or "").strip()
         old_key = str(self.api_key or "").strip()
         if singleton_key and old_key and singleton_key != old_key:
+            if not _same_account_jwt_subject(singleton_key, old_key):
+                logger.debug(
+                    "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
+                    "silent account swap. Reactive credential rotation should go through the pool.", self.provider,
+                )
+                return False
             logger.debug(
-                "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
-                "silent account swap. Reactive credential rotation should go through the pool.", self.provider,
+                "%s singleton holds a newer token for the SAME account (matching JWT subject); adopting it.",
+                self.provider,
             )
-            return False
+            return self._adopt_openai_credentials(
+                singleton_key, str(singleton_now.get("base_url") or self.base_url or ""),
+                reason=f"{self.provider}_same_account_adoption",
+            )
         try:
             creds = resolve(force_refresh=force)
         except Exception as exc:

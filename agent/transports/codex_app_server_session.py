@@ -584,18 +584,30 @@ class CodexAppServerSession:
 
         Approval mode/timeout resolution lives upstream (codex_runtime.py derives the
         auto flags; the callback runs the shared gate). Do not re-read config here.
+
+        The prompt path wraps the callback in the documented observer hooks
+        (pre_approval_request / post_approval_response, see hooks.md) so a Codex approval is
+        observable like every other approval surface. The hooks cannot change the decision: the
+        returned choice is the callback's, and hook failures are swallowed. A callback that raises
+        produced no approval response at all, so its post event reports the documented no-decision
+        failure (``notify_failed``, same as a gateway notification that never arrived) rather than a
+        denial the user never gave.
         """
         if auto_approve:
             return "accept"
         if self._approval_callback is None:
             return "decline"
         command, description = prompt()
+        _fire_codex_approval_hook("pre_approval_request", command, description)
         try:
             choice = self._approval_callback(command, description, allow_permanent=False)
-            return _approval_choice_to_codex_decision(choice)
         except Exception:
             logger.exception("approval_callback raised on %s", log_label)
+            _fire_codex_approval_hook("post_approval_response", command, description,
+                                      choice="notify_failed")
             return "decline"
+        _fire_codex_approval_hook("post_approval_response", command, description, choice=choice)
+        return _approval_choice_to_codex_decision(choice)
 
     def _decide_exec_approval(self, params: dict) -> str:
         def prompt() -> tuple[str, str]:
@@ -679,6 +691,47 @@ def _apply_accounting_notification(result: TurnResult, note: dict) -> None:
 # Hermes approval choice -> codex decision (app-server-protocol v2). "deny" and
 # "timeout" both decline — codex has no "prompt expired" wire value.
 _APPROVAL_CHOICE_TO_DECISION = {"once": "accept", "session": "acceptForSession", "always": "acceptForSession"}
+
+
+# Synthetic pattern key for codex approvals: the transport asks about one concrete action (an exec
+# command or an apply_patch) that Hermes never matched a dangerous-command pattern against, so
+# observers get a stable key rather than an empty one — the same convention the other non-pattern
+# approval subjects use ("mcp_elicitation", "protected_instruction_file", "plugin_rule:<key>";
+# tools/approval*.py).
+_CODEX_APPROVAL_PATTERN_KEY = "codex_runtime"
+
+
+def _fire_codex_approval_hook(hook_name: str, command: str, description: str, **extra) -> None:
+    """Dispatch a documented approval lifecycle hook (pre_approval_request/post_approval_response).
+
+    Codex approvals are answered by the session's callback and never reach ``tools/approval*.py``,
+    so the pair is dispatched here — the transport's single approval seam — with the kwargs the
+    other surfaces send, letting an observer keyed on the hook see Codex approvals too.
+
+    Never raises, and never dispatches unredacted text: the approval decision is safety-critical,
+    plugin observability is not (same fail-closed rule as the plugin-transport presenter in
+    tools/approval_prompt.py). Observer return values are ignored — hooks cannot veto.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+        from tools.approval_context import _fire_approval_hook, get_current_session_key
+
+        _fire_approval_hook(
+            hook_name,
+            command=redact_sensitive_text(command, force=True),
+            description=redact_sensitive_text(description, force=True),
+            pattern_key=_CODEX_APPROVAL_PATTERN_KEY,
+            pattern_keys=[_CODEX_APPROVAL_PATTERN_KEY],
+            session_key=get_current_session_key(),
+            # The asking surface is the host prompt callback (``set_approval_callback`` — the
+            # interactive CLI/TUI/ACP prompt), which upstream's local prompt block reports as "cli"
+            # (tools/approval.py). ``surface`` names the surface that asks, never the runtime that
+            # raised the request, so the codex transport does not invent a value here.
+            surface="cli",
+            **extra,
+        )
+    except Exception:
+        logger.debug("codex approval hook %s dispatch failed", hook_name, exc_info=True)
 
 
 def _approval_choice_to_codex_decision(choice: str) -> str:

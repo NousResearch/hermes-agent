@@ -327,11 +327,13 @@ class RetainDBMemoryProvider(MemoryProvider):
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        # Non-secret fields resolve env -> config.yaml (written by the Dashboard) -> default.
+        # Non-secret fields resolve env (profile-scoped) -> config.yaml (written by the Dashboard) -> default.
         cfg = {k: v.strip() for k, v in _load_retaindb_config().items() if isinstance(v, str)}
-        base_url = re.sub(r"/+$", "", os.environ.get("RETAINDB_BASE_URL") or cfg.get("base_url") or _DEFAULT_BASE_URL)
+        base_url = re.sub(r"/+$", "", get_secret("RETAINDB_BASE_URL", "") or cfg.get("base_url") or _DEFAULT_BASE_URL)
         # Project: RETAINDB_PROJECT > config.yaml > hermes-<profile> > "default" (API auto-creates "default").
-        project = os.environ.get("RETAINDB_PROJECT") or cfg.get("project")
+        # The project is the data partition: read through the secret scope so a multiplexed secondary's
+        # memories never land in the default profile's project.
+        project = get_secret("RETAINDB_PROJECT", "") or cfg.get("project")
         if not project:
             profile_name = os.path.basename(str(kwargs.get("hermes_home", "")))
             project = f"hermes-{profile_name}" if profile_name not in {"", ".hermes"} else "default"

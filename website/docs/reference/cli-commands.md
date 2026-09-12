@@ -146,6 +146,27 @@ hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal se
 hermes chat --safe-mode -q "Is this bug mine or Hermes'?"
 ```
 
+#### Delegation in finite chat runs
+
+When chat answers and exits (`-Q`, `chat --oneshot`, or a query with non-TTY
+stdio), `delegate_task` waits for its children and returns their results to the
+parent in the same turn. Batch children still run in parallel, subject to
+`delegation.max_concurrent_children`. The parent can use those results in its
+final response before the CLI exits.
+
+- **Automatic joining:** no opt-in or background-mode override is needed.
+  Interactive TTY chat and messaging sessions keep background delegation.
+- **Existing safeguards:** delegation limits, timeouts, cancellation, and
+  `approvals.single_query_mode` still apply. Joining does not auto-approve commands
+  or guarantee successful child outcomes. Inspect results and verify artifacts.
+- **Terminal completions:** this does not change background terminal notification
+  behavior or the bounded `terminal.oneshot_completion_wait_seconds` exit wait.
+  That setting is not a delegation timeout.
+
+Delegation remains process-local. Interrupting or terminating the parent can
+cancel unfinished children. Use a durable scheduler for work that must survive
+the initiating process.
+
 ### `hermes -z <prompt>` — scripted one-shot
 
 For programmatic callers (shell scripts, CI, cron, parent processes piping in a prompt), `hermes -z` is the purest one-shot entry point: **single prompt in, final response text out, nothing else on stdout or stderr.** No banner, no spinner, no tool previews, no `Session:` line — just the agent's final reply as plain text.
@@ -252,6 +273,7 @@ Subcommands:
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
+| `migrate` | Move per-profile standalone gateways onto one multiplexed default gateway (`--multiplex`, the default) or roll back from the recorded manifest (`--standalone`). Runs a preflight (duplicate bot tokens, secondary port-binders without a `/p/<profile>/` ingress) and changes nothing when blocked. Flags: `--dry-run`, `-y`/`--yes`. See [Migrating from per-profile gateways](/user-guide/multi-profile-gateways#migrating-from-per-profile-gateways). |
 | `migrate-legacy` | Remove legacy `hermes.service` units left over from pre-rename installs. Profile units (`hermes-gateway-<profile>.service`) and unrelated services are never touched. Flags: `--dry-run`, `-y`/`--yes`. |
 | `enroll` | Experimental: enroll this gateway with a relay connector and save relay credentials for connector-backed platforms. See [Hermes Relay](/user-guide/messaging/relay). |
 
@@ -958,6 +980,9 @@ The backup uses SQLite's `backup()` API for safe copying, so it works correctly 
 
 - `*.db-wal`, `*.db-shm`, `*.db-journal` — SQLite's WAL / shared-memory / journal sidecars. The `*.db` file already got a consistent snapshot via `sqlite3.backup()`; shipping the live sidecars alongside it would let a restore see a half-committed state.
 - `checkpoints/` — per-session trajectory caches. Hash-keyed and regenerated per session; wouldn't port cleanly to another install anyway.
+- `models/`, `runtimes/`, `node/` at the root of `~/.hermes` (and of each `profiles/<name>/`) — regenerable runtime downloads, often tens of GB. Deeper directories with the same names (a skill's `models/`) are kept.
+- Regenerable entries of `cache/` at those same roots — model/plugin catalogs, stamps, browser profiles, tool-output spill. Durable artifacts stay in: `cache/images`, `cache/audio`, `cache/videos`, `cache/documents`, `cache/screenshots` (media delivered to or received from you) and `cache/citations` (the grounded-citations ledger). A deeper `cache/` (inside a skill) is kept whole.
+- Unix sockets, devices, and symlinks — a zip cannot hold them; before they were excluded, a stray `gateway.sock` made every full backup report `Backup incomplete`.
 - The `hermes-agent` code itself (this is a user-data backup, not a repo snapshot).
 
 ### Examples
@@ -1733,7 +1758,7 @@ Manage profiles — multiple isolated Hermes instances, each with its own config
 |------------|-------------|
 | `list` | List all profiles. |
 | `use <name>` | Set a sticky default profile. |
-| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, `SOUL.md`, and skills from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile and implies config clone unless paired with `--clone-all`. |
+| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, `SOUL.md`, skills, and the curated `MEMORY.md`/`USER.md` memory files from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile and implies config clone unless paired with `--clone-all`. |
 | `delete <name> [-y]` | Delete a profile. |
 | `show <name>` | Show profile details (home directory, config, etc.). |
 | `alias <name> [--remove] [--name NAME]` | Manage wrapper scripts for quick profile access. |

@@ -841,8 +841,8 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
 
     seen = []
 
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", False)
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", set())
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
     # ensure_mcp_discovery_started flips this module global; monkeypatch it so
     # the enablement doesn't leak into sibling tests in this file.
     monkeypatch.setattr(entry, "_mcp_discovery_enabled", False)
@@ -854,13 +854,11 @@ def test_profile_scoped_mcp_discovery_uses_target_home(monkeypatch, tmp_path):
 
     try:
         entry.ensure_mcp_discovery_started()
-        thread = mcp_startup._mcp_discovery_thread
+        thread = mcp_startup._current_home_thread()
         assert thread is not None
         thread.join(timeout=2)
     finally:
         reset_hermes_home_override(token)
-        mcp_startup._mcp_discovery_thread = None
-        mcp_startup._mcp_discovery_started = False
 
     assert seen == [str(profile_home)]
 
@@ -2607,17 +2605,18 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["kanban", "memory", "project"]. `kanban` is auto-recovered by
-    # _get_platform_tools (a non-configurable platform toolset in hermes-cli's
-    # universe); `project` is GUI-only, folded in by _load_enabled_toolsets.
-    # Toolsets inside their first release (_RECENTLY_SHIPPED_TOOLSETS) are
-    # back-filled onto saved lists that never offered them — allow those too.
+    # Sorted: ["memory", "project"]. `kanban` is a configurable opt-in and is
+    # never recovered onto a saved list; `project` is GUI-only, folded in by
+    # _load_enabled_toolsets. Toolsets inside their first release
+    # (_RECENTLY_SHIPPED_TOOLSETS) are back-filled onto saved lists that never
+    # offered them — allow those too.
     from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"memory", "project"} <= set(result)
+    assert "kanban" not in result
+    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -2642,8 +2641,9 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     result = server._load_enabled_toolsets()
     assert result is not None
-    assert {"kanban", "memory", "project"} <= set(result)
-    assert set(result) - {"kanban", "memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
+    assert {"memory", "project"} <= set(result)
+    assert "kanban" not in result
+    assert set(result) - {"memory", "project"} <= _RECENTLY_SHIPPED_TOOLSETS
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -8972,6 +8972,36 @@ def test_setup_status_reports_provider_config(monkeypatch):
     resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
 
     assert resp["result"]["provider_configured"] is False
+
+
+def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypatch):
+    """Under ``hermes serve`` the boot bootstrap owns the free-tier identity; ``setup.status`` reports
+    its record (blocking for it while it is in flight) instead of re-probing, so a client's first poll
+    sees the identity that exists rather than racing the mint."""
+    import threading
+    from hermes_cli import free_tier_bootstrap as fb
+    fb.reset_for_tests()
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured",
+                        lambda **_kw: pytest.fail("setup.status must read the record, not re-probe"))
+    release = threading.Event()
+
+    def slow_bootstrap():
+        release.wait(5)
+        with fb._lock:
+            fb._record = fb.SetupRecord(provider_configured=True, inference_provider="nous", free_tier=True,
+                                        has_identity=True, other_providers=False)
+            fb._done.set()
+    with fb._lock:
+        fb._started = True
+    threading.Thread(target=slow_bootstrap, daemon=True).start()
+    try:
+        release.set()
+        resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
+        assert resp["result"]["provider_configured"] is True
+        assert resp["result"]["ready"] is True and resp["result"]["free_tier"] is True
+        assert resp["result"]["inference_provider"] == "nous"
+    finally:
+        fb.reset_for_tests()
 
 
 def test_probe_credentials_emits_exact_empty_key_warning():
@@ -20973,6 +21003,7 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
         session_key="branch-key",
         parent_session_id="parent-key",
         history=_branch_history(),
+        seeded=True,  # stamped by session.create: this history exists only in memory
     )
     try:
         db.create_session("branch-key", source="tui")

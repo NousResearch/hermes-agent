@@ -35,6 +35,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -725,7 +726,7 @@ def _slack_dedup_ttl_seconds() -> float:
 
     See #4777.
     """
-    raw = os.getenv("SLACK_DEDUP_TTL_SECONDS", "")
+    raw = _get_scoped_secret("SLACK_DEDUP_TTL_SECONDS", "")
     if raw:
         try:
             value = float(raw)
@@ -2536,7 +2537,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _slack_allow_bots(self) -> str:
         """Return normalized Slack bot-message policy."""
-        raw = self.config.extra.get("allow_bots", "") or os.getenv("SLACK_ALLOW_BOTS", "none")
+        # Scoped read: under multiplex os.environ is the DEFAULT profile's bot-admission policy.
+        raw = self.config.extra.get("allow_bots", "") or _get_scoped_secret("SLACK_ALLOW_BOTS", "none")
         value = str(raw).lower().strip()
         if value not in {"none", "mentions", "all"}:
             logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
@@ -2558,7 +2560,7 @@ class SlackAdapter(BasePlatformAdapter):
         if cached is None:
             raw = self.config.extra.get("api_human_users")
             if raw is None:
-                raw = os.getenv("SLACK_API_HUMAN_USERS", "")
+                raw = _get_scoped_secret("SLACK_API_HUMAN_USERS", "")
             parts = raw if isinstance(raw, (list, tuple, set)) else str(raw).split(",")
             cached = self._api_human_users_cache = frozenset(
                 str(p).strip() for p in parts if str(p).strip())
@@ -2936,8 +2938,11 @@ class SlackAdapter(BasePlatformAdapter):
         return await self._react(channel, timestamp, emoji, team_id, remove=True)
 
     def _reactions_enabled(self) -> bool:
-        """Whether message reactions are enabled (``SLACK_REACTIONS`` env)."""
-        return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Whether message reactions are enabled (``extra.reactions`` / ``SLACK_REACTIONS``)."""
+        configured = self.config.extra.get("reactions")
+        if configured is None:
+            configured = _get_scoped_secret("SLACK_REACTIONS", "true")
+        return str(configured).lower() not in {"false", "0", "no"}
 
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
         """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""
@@ -3641,7 +3646,7 @@ class SlackAdapter(BasePlatformAdapter):
         any message. From ``slack.reaction_triggers`` or ``SLACK_REACTION_TRIGGERS``."""
         raw = self.config.extra.get("reaction_triggers")
         if raw is None:
-            raw = os.getenv("SLACK_REACTION_TRIGGERS") or None
+            raw = _get_scoped_secret("SLACK_REACTION_TRIGGERS") or None
         if raw is None:
             return None
         if isinstance(raw, bool):
@@ -3660,7 +3665,7 @@ class SlackAdapter(BasePlatformAdapter):
         Empty (default) routes into the reacted-to message's thread."""
         raw = self.config.extra.get("reaction_trigger_target")
         if raw is None:
-            raw = os.getenv("SLACK_REACTION_TRIGGER_TARGET", "")
+            raw = _get_scoped_secret("SLACK_REACTION_TRIGGER_TARGET", "")
         channel, _, thread = str(raw or "").strip().partition(":")
         return channel.strip(), thread.strip()
 
@@ -4355,6 +4360,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_ts,
             scope_id=str(team_id) if team_id else None,
+            message_id=ts,
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
             # authorize them. Same predicate as the drop gate (api_human_users stay human).
             is_bot=self._event_declares_bot_sender(event))
@@ -5922,7 +5928,7 @@ class SlackAdapter(BasePlatformAdapter):
         or empty values keep gating enabled (safe default True)."""
         configured = self.config.extra.get("require_mention")
         if configured is None:
-            configured = os.getenv("SLACK_REQUIRE_MENTION", "true")
+            configured = _get_scoped_secret("SLACK_REQUIRE_MENTION", "true")
         if isinstance(configured, str):
             return configured.lower() not in {"false", "0", "no", "off"}
         return bool(configured)
@@ -5931,7 +5937,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Opt-in boolean: ``config.extra[key]`` wins, else ``env_var`` (default false)."""
         configured = self.config.extra.get(key)
         if configured is None:
-            configured = os.getenv(env_var, "false")
+            configured = _get_scoped_secret(env_var, "false")
         if isinstance(configured, str):
             if strip:
                 configured = configured.strip()
@@ -5967,7 +5973,7 @@ class SlackAdapter(BasePlatformAdapter):
         ``coerce_scalar`` accepts non-str scalars (a bare numeric YAML value loads as int)."""
         raw = self.config.extra.get(key)
         if raw is None:
-            raw = os.getenv(env_var, "")
+            raw = _get_scoped_secret(env_var, "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         if coerce_scalar:
@@ -5997,7 +6003,7 @@ class SlackAdapter(BasePlatformAdapter):
             return cached
         patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
         if patterns is None:
-            raw = os.getenv("SLACK_MENTION_PATTERNS", "").strip()
+            raw = (_get_scoped_secret("SLACK_MENTION_PATTERNS", "") or "").strip()
             if raw:
                 try:
                     import json as _json
@@ -6450,22 +6456,27 @@ _YAML_LIST_KEYS = (
 
 
 def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
-    """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (the adapter reads
-    ``os.getenv()``; explicit env wins). Returns None: nothing is seeded into ``extra``.
+    """``apply_yaml_config_fn`` hook: ``slack:`` YAML keys → ``SLACK_*`` env vars (explicit env wins) and
+    ``PlatformConfig.extra`` (extra-first readers; the env write is skipped under a multiplexed
+    secondary profile's scope so its policy never becomes the default profile's).
 
     Implements the ``apply_yaml_config_fn`` contract (#24849). Mirrors the legacy ``slack_cfg`` block that
     used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
     """
+    _set_env = _yaml_env_setter()
+    seeded: dict = {}
     for key, env in _YAML_BOOL_KEYS:
-        if key in slack_cfg and not os.getenv(env):
-            os.environ[env] = str(slack_cfg[key]).lower()
+        if key in slack_cfg:
+            seeded[key] = slack_cfg[key]  # original type: the shared-key loop already seeded bools as bools
+            _set_env(env, str(slack_cfg[key]).lower())
     for key, env, list_types in _YAML_LIST_KEYS:
         val = slack_cfg.get(key)
-        if val is not None and not os.getenv(env):
+        if val is not None:
+            seeded[key] = val
             if list_types and isinstance(val, list_types):
                 val = ",".join(str(v) for v in val)
-            os.environ[env] = str(val)
-    return None
+            _set_env(env, str(val))
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

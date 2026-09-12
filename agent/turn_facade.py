@@ -85,7 +85,12 @@ class TurnFacadeMixin:
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )
-                return admission.early_result
+                # The loop never ran, so bind this invocation's id here: the early
+                # envelope carries the same contract as every other one (no row proven).
+                from agent.turn_context import export_current_turn_boundary
+
+                self._current_turn_id = relay_turn_id
+                return export_current_turn_boundary(self, admission.early_result)
             lease = admission.lease
             conversation_history = admission.conversation_history
 

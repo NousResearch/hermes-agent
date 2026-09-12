@@ -117,7 +117,7 @@ def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
     api_content stamp, injection site and persist-override row hit the same dict."""
     from agent.turn_context import reanchor_current_turn_user_idx
 
-    idx = reanchor_current_turn_user_idx(messages, user_message)
+    idx = reanchor_current_turn_user_idx(messages, user_message, turn_id=getattr(agent, "_current_turn_id", ""))
     agent._persist_user_message_idx = idx
     return idx
 

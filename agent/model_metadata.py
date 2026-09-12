@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -532,6 +533,49 @@ def _server_root(base_url: str) -> str:
     """Probe root for a local server: IPv4-resolved, ``/v1`` suffix stripped."""
     server_url = _localhost_to_ipv4(base_url.rstrip("/"))
     return server_url[:-3] if server_url.endswith("/v1") else server_url
+
+
+# One RLock per local backend (keyed on its normalized root), guarded by a single lock
+# since the registry itself can be touched from any request thread (#108596).
+_local_endpoint_locks: Dict[str, threading.RLock] = {}
+_local_endpoint_locks_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def local_endpoint_lock(agent, base_url: Optional[str]):
+    """Serialize concurrent requests to the same local/self-hosted backend (#108596).
+
+    Two independent requests against one Ollama/llama.cpp/LM Studio box — e.g. the main
+    conversation thread and a ``background_review`` fork — contend for the same single-GPU
+    KV-cache slot instead of queueing, and both stall past any stream-stale timeout with no
+    actual provider/network failure. A non-blocking probe first, so a losing caller gets an
+    immediate wait notice instead of one poll interval later.
+
+    Cloud backends never engage (``is_local_endpoint`` gates it), and ``base_url``-less
+    stand-ins (bedrock, moa) pass through untouched.
+
+    Uses ``RLock``, not ``Lock``: codex responses streaming re-enters the non-streaming
+    entry point on the SAME thread (``_stream_codex_passthrough`` -> ``agent._interruptible_api_call``),
+    which would self-deadlock on a plain ``Lock`` — the inner acquire would block forever
+    behind the outer one it already holds.
+    """
+    if not base_url or not is_local_endpoint(base_url):
+        yield
+        return
+    key = _server_root(_normalize_base_url(base_url)).lower()
+    with _local_endpoint_locks_guard:
+        lock = _local_endpoint_locks.setdefault(key, threading.RLock())
+    if not lock.acquire(blocking=False):
+        agent._emit_wait_notice(f"⏳ another request is already using the local backend ({base_url})...")
+        while not lock.acquire(timeout=0.5):
+            agent._touch_activity("waiting for local backend lock")
+            if getattr(agent, "_interrupt_requested", False):
+                raise InterruptedError("Agent interrupted while waiting for local backend lock")
+        agent._emit_wait_notice("")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _catalog_key_matches(key: str, model_lower: str) -> bool:

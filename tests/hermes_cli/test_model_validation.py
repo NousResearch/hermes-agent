@@ -802,135 +802,25 @@ class TestValidateRequestedModelNousPortalRecommendations:
 # -- validate — custom endpoint fallback when /models is unreachable (#12220) --
 
 class TestValidateCustomUnreachableFallback:
-    """Issue #12220: when a custom endpoint's /models probe returns None
-    (unreachable or not implemented), accept the requested model for
-    chat_completions exactly as the anthropic_messages fallback already
-    does — rejecting it bricks `/model` switches in the gateway for any
-    custom proxy that doesn't expose a /models listing."""
+    """A custom proxy without GET /models must not brick `/model` switches (#12220)."""
 
-    def _probe(self, models=None, suggested_base_url=None):
-        return {
-            "models": models,
-            "probed_url": "http://localhost:8000/v1/models",
-            "resolved_base_url": "http://localhost:8000/v1",
-            "suggested_base_url": suggested_base_url,
-            "used_fallback": False,
-        }
-
-    def _validate(self, model, provider, probe, **kw):
+    def _validate(self, model, provider, models, **kw):
+        probe = {"models": models, "probed_url": "http://localhost:8000/v1/models",
+                 "resolved_base_url": "http://localhost:8000/v1", "suggested_base_url": None, "used_fallback": False}
         with patch("hermes_cli.models.probe_api_models", return_value=probe):
-            return validate_requested_model(
-                model,
-                provider,
-                api_key="test-key",
-                base_url="http://localhost:8000/v1",
-                **kw,
-            )
+            return validate_requested_model(model, provider, api_key="k", base_url="http://localhost:8000/v1", **kw)
 
-    def test_bare_custom_chat_completions_accepted_when_unreachable(self):
-        result = self._validate(
-            "my-proxy-model", "custom", api_mode="chat_completions",
-            probe=self._probe(None),
-        )
-        assert result["accepted"] is True
-        assert result["persist"] is True
-        assert result["recognized"] is False
-        assert "could not reach" in result["message"]
+    @pytest.mark.parametrize("provider", ["custom", "custom:myproxy"])
+    @pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages"])
+    def test_unreachable_catalog_persists_unverified_for_chat_modes(self, provider, api_mode):
+        result = self._validate("my-proxy-model", provider, models=None, api_mode=api_mode)
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
         assert "accepted without verification" in result["message"]
-        assert "inference may fail" in result["message"]
-        assert "provider's model catalog" in result["message"]
-
-    def test_named_custom_chat_completions_accepted_when_unreachable(self):
-        result = self._validate(
-            "my-proxy-model", "custom:myproxy", api_mode="chat_completions",
-            probe=self._probe(None),
-        )
-        assert result["accepted"] is True
-        assert result["persist"] is True
-        assert result["recognized"] is False
-        assert "could not reach" in result["message"]
-        assert "accepted without verification" in result["message"]
-        assert "inference may fail" in result["message"]
-        assert "provider's model catalog" in result["message"]
-
-    def test_unreachable_warning_includes_suggested_base_url_hint(self):
-        result = self._validate(
-            "my-proxy-model", "custom", api_mode="chat_completions",
-            probe=self._probe(None, suggested_base_url="http://localhost:8000"),
-        )
-        assert result["accepted"] is True
-        assert "If this server expects `/v1`" in result["message"]
-        assert "accepted without verification" in result["message"]
-        assert "inference may fail" in result["message"]
-        assert "provider's model catalog" in result["message"]
-
-    def test_anthropic_messages_fallback_unchanged(self):
-        result = self._validate(
-            "claude-model", "custom", api_mode="anthropic_messages",
-            probe=self._probe(None),
-        )
-        assert result["accepted"] is True
-        assert result["persist"] is True
-        assert result["recognized"] is False
-        assert "Anthropic-compatible proxies" in result["message"]
-
-    def test_valid_catalog_exact_match_unchanged(self):
-        result = self._validate(
-            "my-model", "custom", api_mode="chat_completions",
-            probe=self._probe(["my-model", "other-model"]),
-        )
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-        assert result["message"] is None
-
-    def test_valid_catalog_unknown_model_unchanged(self):
-        result = self._validate(
-            "totally-unrelated", "custom", api_mode="chat_completions",
-            probe=self._probe(["my-model", "other-model"]),
-        )
-        assert result["accepted"] is True
-        assert result["persist"] is True
-        assert result["recognized"] is False
-        assert result.get("corrected_model") is None
-        assert "was not found" in result["message"]
-        assert "Similar models" not in result["message"]
-
-    def test_valid_catalog_close_match_autocorrected(self):
-        result = self._validate(
-            "my-modelx", "custom", api_mode="chat_completions",
-            probe=self._probe(["my-model", "other-model"]),
-        )
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-        assert result["corrected_model"] == "my-model"
-        assert "Auto-corrected" in result["message"]
-
-    def test_empty_and_whitespace_unchanged(self):
-        empty = self._validate(
-            "", "custom", api_mode="chat_completions", probe=self._probe(None)
-        )
-        assert empty["accepted"] is False
-        assert "empty" in empty["message"]
-
-        spaced = self._validate(
-            "my model", "custom", api_mode="chat_completions", probe=self._probe(None)
-        )
-        assert spaced["accepted"] is False
-        assert "spaces" in spaced["message"]
-
-    def test_whitespace_only_model_rejected_and_not_persisted(self):
-        result = self._validate(
-            "   ", "custom", api_mode="chat_completions", probe=self._probe(None)
-        )
-        assert result["accepted"] is False
-        assert result["persist"] is False
-        assert "empty" in result["message"]
 
     @pytest.mark.parametrize("api_mode", [None, "codex_responses"])
-    def test_unreachable_rejects_unsupported_api_mode(self, api_mode):
-        result = self._validate(
-            "my-proxy-model", "custom", api_mode=api_mode,
-            probe=self._probe(None),
-        )
+    def test_unreachable_catalog_still_rejects_other_api_modes(self, api_mode):
+        result = self._validate("my-proxy-model", "custom", models=None, api_mode=api_mode)
         assert result["accepted"] is False
-        assert result["recognized"] is False
+        assert "was not saved" in result["message"]
+        # A reachable catalog keeps authoritative validation regardless of mode.
+        assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True

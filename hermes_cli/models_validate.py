@@ -269,23 +269,19 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
                         "Consider saving that as your base URL.")
         return _soft_accept(message)
 
-    message = (
-        f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
-        f"Hermes will still save `{req.requested}`, but the endpoint should expose `/models` for verification."
-    )
-    if anthropic_style:
-        message += ("\n  Many Anthropic-compatible proxies do not implement the Models API (GET /v1/models).  "
-                    "The model name has been accepted without verification.")
-    if req.api_mode == "chat_completions":
-        message += (
-            "\n  The model name was accepted without verification — inference may fail "
-            "if this provider does not serve it.  Check the provider's model catalog "
-            "or model name."
-        )
+    # Many OpenAI-compatible and Anthropic-compatible proxies (DashScope coding plan, Cline,
+    # MiniMax) never implement GET /models; /chat/completions works fine. Rejecting the switch
+    # here bricked `/model` for them (#12220), so both chat modes persist the name unverified.
+    accepted = req.api_mode in ("chat_completions", "anthropic_messages")
+    message = f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
+    if accepted:
+        message += (f"`{req.requested}` was accepted without verification — if this endpoint does not "
+                    "serve it, inference will fail; check the provider's model catalog or the model name.")
+    else:
+        message += f"`{req.requested}` was not saved; the endpoint should expose `/models` for verification."
     if probe.get("suggested_base_url"):
         message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
-    # Chat-completions and Anthropic-style proxies may both omit /v1/models.
-    return _verdict(req.api_mode in ("chat_completions", "anthropic_messages"), True, False, message)
+    return _verdict(accepted, True, False, message)
 
 
 def _static_catalog(normalized: str) -> list[str]:

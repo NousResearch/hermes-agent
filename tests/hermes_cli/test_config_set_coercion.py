@@ -78,6 +78,9 @@ class TestStringTypedGuardPreserved:
         from hermes_cli.policy_mutation import PolicyMutationBroker
         broker = PolicyMutationBroker()
         request = broker.request("local", "approvals.mode", "set")
-        cfg.set_config_value("approvals.mode", "off", proof=broker.operator_confirm(request.request_id))
+        from hermes_cli.policy_mutation import _operator_settlement_scope
+        with _operator_settlement_scope():
+            proof = broker.operator_confirm(request.request_id)
+        cfg.set_config_value("approvals.mode", "off", proof=proof)
         v = _read(tmp_path, "approvals", "mode")
         assert v == "off" and isinstance(v, str)  # not bool False

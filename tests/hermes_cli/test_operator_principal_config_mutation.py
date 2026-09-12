@@ -82,7 +82,9 @@ def test_operator_proof_allows_writer_then_cache_is_fresh(monkeypatch, tmp_path)
     assert config.load_config_readonly()["approvals"]["mode"] == "manual"
     broker = PolicyMutationBroker()
     request = broker.request("session-3", "approvals.mode", "set")
-    proof = broker.operator_confirm(request.request_id)
+    from hermes_cli.policy_mutation import _operator_settlement_scope
+    with _operator_settlement_scope():
+        proof = broker.operator_confirm(request.request_id)
     config.set_config_value("approvals.mode", "off", proof=proof, session_id="session-3")
     assert config.load_config_readonly()["approvals"]["mode"] == "off"
 

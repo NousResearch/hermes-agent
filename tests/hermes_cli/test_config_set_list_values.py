@@ -115,7 +115,10 @@ def test_string_typed_key_bracket_value_stays_string(user_home):
     from hermes_cli.policy_mutation import PolicyMutationBroker
     broker = PolicyMutationBroker()
     request = broker.request("local", "approvals.mode", "set")
-    set_config_value("approvals.mode", "[off]", proof=broker.operator_confirm(request.request_id))
+    from hermes_cli.policy_mutation import _operator_settlement_scope
+    with _operator_settlement_scope():
+        proof = broker.operator_confirm(request.request_id)
+    set_config_value("approvals.mode", "[off]", proof=proof)
     raw = read_raw_config()
     assert raw["approvals"]["mode"] == "[off]"
     assert isinstance(raw["approvals"]["mode"], str)
@@ -128,7 +131,10 @@ def test_string_typed_key_negative_number_stays_string(user_home):
     from hermes_cli.policy_mutation import PolicyMutationBroker
     broker = PolicyMutationBroker()
     request = broker.request("local", "approvals.mode", "set")
-    set_config_value("approvals.mode", "-5", proof=broker.operator_confirm(request.request_id))
+    from hermes_cli.policy_mutation import _operator_settlement_scope
+    with _operator_settlement_scope():
+        proof = broker.operator_confirm(request.request_id)
+    set_config_value("approvals.mode", "-5", proof=proof)
     raw = read_raw_config()
     assert raw["approvals"]["mode"] == "-5"
 

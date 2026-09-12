@@ -1,0 +1,15 @@
+name: plugin-llm-async-example
+repo: https://github.com/NousResearch/hermes-example-plugins
+sha: 38fe0fb53eff98d477f807432e965429e665ca33
+subdir: plugin-llm-async-example
+description: Async reference plugin for ctx.llm — registers /translate, running forward and back translations
+  concurrently via acomplete().
+maintainer: NousResearch
+tier: official
+docs_url: https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

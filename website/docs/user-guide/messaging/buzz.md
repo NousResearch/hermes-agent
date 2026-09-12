@@ -2,7 +2,9 @@
 
 The Buzz adapter connects Hermes to a [Buzz](https://github.com/block/buzz) community — Block's open-source human+agent collaboration platform built on the Nostr protocol — and relays messages between Buzz channels (or DMs) and the agent. Outbound traffic shells out to the `buzz` CLI binary ("JSON in, JSON out"); inbound uses a native Nostr WebSocket subscription (via the already-bundled `websockets` package) with CLI polling as fallback. **No extra Python packages are required** — just the `buzz` binary.
 
-Buzz renders markdown, so agent replies keep their formatting. Images are delivered as uploads (local files) or links (URLs). Replies can thread onto an existing message via its event id.
+Buzz renders markdown, so agent replies keep their formatting. Images are delivered as uploads (local files) or links (URLs). Replies can thread onto an existing message via its event id. When progress or status messages are enabled, they inherit the triggering Buzz event as their reply anchor instead of appearing as unrelated top-level channel posts.
+
+Files sent **to** the agent are fetched back off the relay with the agent's authenticated identity and cached locally, so tools receive a real file path rather than a `/media/…` URL that anonymous requests cannot read. Images, audio, video, and documents (PDFs and the like) are all handled.
 
 Inbound messages arrive over a persistent NIP-42-authenticated Nostr WebSocket subscription by default (near-instant delivery), with automatic fallback to CLI polling when the WebSocket can't be established. Outbound messages always go through the `buzz` CLI. Control it with `transport` / `BUZZ_TRANSPORT`: `auto` (default), `websocket` (require WS, fail otherwise), or `poll`. If your relay membership uses NIP-OA owner attestation, set `BUZZ_AUTH_TAG` to the four-string auth tag JSON.
 
@@ -27,6 +29,7 @@ gateway:
       enabled: true
       extra:
         relay_url: https://mycommunity.communities.buzz.xyz
+        attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                  # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
@@ -72,6 +75,7 @@ gateway:
       enabled: true
       extra:
         relay_url: https://mycommunity.communities.buzz.xyz
+        attachment_hosts: []         # additional exact HTTPS host[:port] origins for inbound files
         channels:                         # channel UUIDs to watch (empty = all joined)
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
@@ -101,11 +105,45 @@ gateway:
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 
+## Reply threading
+
+Replies are threaded by default: the agent's answer (and any enabled progress/status messages) is anchored to the message that triggered it. Anchoring is NIP-10 aware — when the triggering message was already **inside** a thread, the agent replies to that thread's *root*, so the answer joins the existing thread instead of nesting a new one-message sub-thread under every turn.
+
+To post replies flat at the channel level instead, set either of these (they are equivalent; `reply_in_thread` matches the key Slack uses):
+
+```yaml
+gateway:
+  platforms:
+    buzz:
+      reply_to_mode: off          # PlatformConfig-level, like Discord/Telegram
+      extra:
+        reply_in_thread: false    # Slack-style key; env: BUZZ_REPLY_IN_THREAD
+```
+
+The opt-out applies to **all** send paths — final answers, streamed updates, interim commentary, tool-progress bubbles, and out-of-process cron delivery (`deliver=buzz`).
+
 ## Access control
 
 By default the allow-list is empty, which means every community member who mentions the agent gets a response only if `BUZZ_ALLOW_ALL_USERS=true`; otherwise restrict access by listing npubs or hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). Community membership itself is enforced by the relay — only members can post.
 
+The allow-list also gates **inbound attachments**: relay media is fetched with the agent's own Buzz credentials, so a download only happens for a sender the gateway explicitly authorizes. A denied, missing, or failed authorization leaves the message text untouched and makes no credentialed request.
+
 Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel** — `BUZZ_HOME_CHANNEL` if set, otherwise the first watched channel — and work even when cron runs outside the gateway process.
+
+## Inbound attachments
+
+Buzz messages with native NIP-94 `imeta` tags can deliver images, audio,
+video, and documents to the agent. Hermes downloads attachments only after
+the message has passed self-echo, addressing, and sender authorization checks.
+Each file must use HTTPS and declare an exact byte size and SHA-256 digest;
+redirects, URL credentials, fragments, oversized payloads, and integrity
+mismatches are rejected.
+
+The relay's own HTTPS origin is trusted automatically. If a community stores
+media on another public origin, add its exact `host` or `host:port` to
+`attachment_hosts` under `gateway.platforms.buzz.extra`. Non-default ports
+must be listed explicitly. Protected media that requires authenticated
+retrieval through the Buzz CLI is not handled by this native public-URL path.
 
 ## Run the gateway
 
@@ -117,6 +155,7 @@ Check status with `hermes gateway status` — Buzz connection state is reported 
 
 ## Notes and limitations
 
+- **`BUZZ_*` env vars are available in terminal tool children for Buzz sessions** — the agent can invoke the `buzz` CLI directly (e.g. `buzz messages send ...`) because `BUZZ_PRIVATE_KEY`, `BUZZ_AUTH_TAG`, `BUZZ_RELAY_URL`, and the other `BUZZ_*` variables are passed through to terminal subprocesses when the session's platform is `buzz` or the process is a Buzz Desktop managed agent (`BUZZ_MANAGED_AGENT`). Non-Buzz sessions on the same host, `execute_code`, and other non-terminal spawns remain sealed.
 - **Inbound is polled, not streamed.** The `buzz` CLI is request/response, so the adapter polls `buzz messages get` per watched channel every `poll_interval` seconds (default 4). Expect up to one interval of latency on inbound messages. A future optimization is a websocket transport (the Buzz repo ships `buzz-ws-client` for true streaming).
 - On (re)connect the adapter seeds its high-water mark from the newest events, so channel history is never replayed into the agent.
 - New DM conversations are discovered automatically (every few poll sweeps).

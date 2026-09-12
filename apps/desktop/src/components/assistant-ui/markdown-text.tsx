@@ -33,15 +33,19 @@ import {
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from '@/lib/media'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
+import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
-import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
+import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
+
+const onboardingEnabled = isOnboardingEnabled()
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -446,9 +450,17 @@ interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
+  /** This text is the model's private scratchpad (reasoning), so nothing in it
+   *  may be promoted into app chrome: no artifact cards from fenced blocks (a
+   *  draft must not register artifact versions), and no transcript directives
+   *  (a `::onboarding{step="look"}` the model was only reminding itself about
+   *  otherwise mounted a live accent picker inside the thinking block). */
+  scratchpad?: boolean
   /** Disable artifact-card promotion for fenced blocks (reasoning text — a
    *  model's scratchpad draft must not register artifact versions). */
   disableArtifacts?: boolean
+  /** Foreign history must not load images or mount live transcript directives. */
+  previewOnly?: boolean
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -513,21 +525,49 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
 function MarkdownParagraph({
   children,
   className,
+  scratchpad,
   streaming,
   ...props
-}: ComponentProps<'p'> & { streaming?: boolean }) {
+}: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
   const plain = paragraphPlainText(children)
-  const claimed = useIsClaimedDirective(plain)
+  const resolved = useResolvedParagraph(scratchpad ? null : plain)
 
-  if (claimed && plain !== null) {
-    return <TranscriptDirectiveLeaf streaming={streaming} text={plain} />
+  // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which must
+  // out-specify Tailwind Typography's `prose` margins — so no `my-*` here.
+  const paragraphClass = cn('wrap-anywhere leading-(--dt-line-height)', className)
+
+  // A paragraph that is one directive renders as the card alone; one that
+  // ends in a directive renders as its sentence followed by the card.
+  if (resolved) {
+    return (
+      <>
+        {resolved.map((segment, index) =>
+          segment.kind === 'directive' ? (
+            <TranscriptDirectiveLeaf key={index} streaming={streaming} text={segment.source} />
+          ) : (
+            <p className={paragraphClass} key={index} {...props}>
+              {segment.text.trim()}
+            </p>
+          )
+        )}
+      </>
+    )
+  }
+
+  // Directive-in-progress: while the message is still streaming, a paragraph
+  // that begins with `::` is a directive whose closing shape hasn't fully
+  // arrived (directives always sit alone in their own paragraph — FLOW.md),
+  // so it can't be claimed yet. Rendering the plain <p> here is the raw-text
+  // flash (`::ask{question="Wha…`) that snaps into a card on settle — hold
+  // the slot empty instead. Once streaming ends this branch is dead, so a
+  // SETTLED malformed/unclaimed directive still shows as prose (an authoring
+  // bug the user should see).
+  if (onboardingEnabled && streaming && plain !== null && isDirectiveInProgress(plain)) {
+    return null
   }
 
   return (
-    // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
-    // must out-specify Tailwind Typography's `prose` margins — so no
-    // `my-*` here on purpose.
-    <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props}>
+    <p className={paragraphClass} {...props}>
       {children}
     </p>
   )
@@ -537,7 +577,9 @@ function MarkdownTextSurface({
   containerClassName,
   containerProps,
   defer,
-  disableArtifacts
+  disableArtifacts,
+  previewOnly,
+  scratchpad
 }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
@@ -564,8 +606,13 @@ function MarkdownTextSurface({
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: (props: ComponentProps<'p'>) => <MarkdownParagraph {...props} streaming={isStreaming} />,
-        a: MarkdownLink,
+        p: (props: ComponentProps<'p'>) =>
+          previewOnly ? (
+            <p {...props} />
+          ) : (
+            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming} />
+          ),
+        a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the
@@ -624,13 +671,14 @@ function MarkdownTextSurface({
         td: ({ className, ...props }: ComponentProps<'td'>) => (
           <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
         ),
-        img: MarkdownImage,
+        img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; substantial
         // html/svg/code fences promote to an artifact card that opens in the
         // right rail; every other language falls back to the Shiki-highlighted
         // code block.
         SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
-          const artifact = disableArtifacts ? null : detectArtifact(props.language, props.code)
+          const artifact =
+            disableArtifacts || previewOnly || scratchpad ? null : detectArtifact(props.language, props.code)
 
           if (artifact) {
             return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
@@ -646,7 +694,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [disableArtifacts, isStreaming]
+    [disableArtifacts, isStreaming, previewOnly, scratchpad]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {

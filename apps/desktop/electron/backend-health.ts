@@ -206,8 +206,10 @@ export function makeReauthRequiredError(detail?: string): Error {
 
 /**
  * No native token and no live cookie: boot cannot self-heal. Must carry
- * `isReauthRequired` so startHermes latches; `needsOauthLogin` alone only
- * drives Sign in copy and would retry after #88070, hiding the overlay.
+ * `isReauthRequired` so startHermes latches; a bare `needsOauthLogin` (the
+ * IPC-shaped hint) only drives Sign in copy and would retry after #88070,
+ * hiding the overlay. A confirmed ticket-mint 401/403 carries the same tag
+ * (see gatewayTicketFailure, #95701).
  */
 export function makeUnsignedOauthError(): Error {
   const error = new Error(REMOTE_UNSIGNED_OAUTH_MESSAGE) as any

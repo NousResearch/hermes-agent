@@ -69,23 +69,54 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Tick the countdown
+  // When the sign-in window lapses locally, the backend poller usually has
+  // the real story (e.g. "Portal sign-in is required before the device code
+  // can be approved") — but its next poll tick is up to 2s away. Rather than
+  // preempt it with a bare "expired", ask the poll endpoint once, then fall
+  // back to guidance that names the common cause (sign-in stalled in the
+  // opened tab) instead of a dead-end.
+  const handleLocalExpiry = async () => {
+    if (!isMounted.current) return;
+    let backendMessage: string | null = null;
+    if (start && start.flow === "device_code") {
+      try {
+        const resp = await api.pollOAuthSession(provider.id, start.session_id);
+        if (resp.error_message) backendMessage = resp.error_message;
+        else if (resp.status === "pending") {
+          // Still pending server-side: the local countdown fired early
+          // (clock skew or a stalled tab). Keep the session alive for the
+          // poller instead of killing it with a wrong "expired".
+          if (isMounted.current) setPhase("polling");
+          return;
+        }
+      } catch {
+        // Poll endpoint unreachable — fall through to generic guidance.
+      }
+    }
+    if (!isMounted.current) return;
+    setPhase("error");
+    setErrorMsg(backendMessage || t.oauth.sessionExpiredNoError);
+  };
+
+  // Tick the countdown down to zero — never further. What happens AT zero
+  // is owned by the lapse effect below, so the updater stays pure.
   useEffect(() => {
     if (secondsLeft === null) return;
+    if (secondsLeft <= 0) return;
     if (phase === "approved" || phase === "error") return;
     const tick = window.setInterval(() => {
       if (!isMounted.current) return;
-      setSecondsLeft((s) => {
-        if (s !== null && s <= 1) {
-          setPhase("error");
-          setErrorMsg(t.oauth.sessionExpired);
-          return 0;
-        }
-        return s !== null && s > 0 ? s - 1 : 0;
-      });
+      setSecondsLeft((s) => (s !== null && s > 0 ? s - 1 : 0));
     }, 1000);
     return () => window.clearInterval(tick);
-  }, [secondsLeft, phase, t]);
+  }, [secondsLeft, phase]);
+
+  useEffect(() => {
+    if (secondsLeft !== 0) return;
+    if (phase === "approved" || phase === "error") return;
+    void handleLocalExpiry();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secondsLeft, phase]);
 
   // Device-code: poll backend every 2s
   useEffect(() => {
@@ -350,6 +381,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                     setErrorMsg(null);
                     setStart(null);
                     setPkceCode("");
+                    setSecondsLeft(null);
                     setPhase("starting");
                     api
                       .startOAuthLogin(provider.id)

@@ -665,6 +665,7 @@ _PRUNE_MIN_CHARS = 200
 _CLARIFY_NON_RESPONSE_PREFIXES = (
     "The user did not provide a response", "[user did not respond",
     "[clarify prompt could not be delivered", "[oneshot mode:",
+    "[single-query mode:", "[clarify consent guard:",
 )
 
 

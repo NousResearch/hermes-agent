@@ -302,6 +302,22 @@ def _attribution_headers() -> Dict[str, str]:
     }
 
 
+def _user_model_default_headers() -> Dict[str, str]:
+    """User ``model.default_headers`` from config.yaml (``{}`` when unset or unreadable).
+
+    Anthropic-wire clients never see the provider-profile headers the OpenAI-wire paths merge,
+    so a user override (e.g. a User-Agent a gateway requires for client attribution) must be
+    merged at build time. Read-only config load; header values are never logged."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        user_headers = cfg_get(load_config_readonly(), "model", "default_headers")
+    except Exception:
+        return {}
+    if not isinstance(user_headers, dict):
+        return {}
+    return {str(k): str(v) for k, v in user_headers.items() if v is not None}
+
+
 def _client_timeout(timeout):
     """httpx.Timeout with the caller's read timeout (default 900s) and a 10s connect."""
     from httpx import Timeout
@@ -400,7 +416,8 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     kwargs["auth_token" if style in ("bearer", "oauth") else "api_key"] = api_key
     headers = _beta_header(common_betas + _OAUTH_ONLY_BETAS if style == "oauth" else common_betas)
     if style == "kimi":
-        headers = {**_attribution_headers(), **headers}
+        # User model.default_headers win over attribution, as on the OpenAI-wire paths.
+        headers = {**_attribution_headers(), **headers, **_user_model_default_headers()}
     elif style == "oauth":
         headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
         headers["x-app"] = "cli"

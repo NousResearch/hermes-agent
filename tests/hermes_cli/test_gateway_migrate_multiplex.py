@@ -52,12 +52,15 @@ def fleet(tmp_path, monkeypatch):
         elif verb == "install":
             state.services[name] = (kind, system)
         elif verb in ("start", "restart") and name == "default":
-            # What the real multiplexer does at startup: record the served set in the default home.
             (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
-            (root / "gateway_state.json").write_text(json.dumps({
-                "pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
-                "served_profiles": ["default", "coder", "ops"],
-            }))
+            runtime_path = root / "gateway_state.json"
+            runtime = json.loads(runtime_path.read_text()) if runtime_path.exists() else {}
+            runtime.update({"pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running"})
+            # Multiplex startup records ownership; standalone startup historically preserved the
+            # old key, which is the stale-state half of #109473's rollback failure.
+            if _config_flag(root):
+                runtime["served_profiles"] = ["default", "coder", "ops"]
+            runtime_path.write_text(json.dumps(runtime))
 
     monkeypatch.setattr(gm, "_installed_service", lambda home: state.services.get(_name(home)))
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: state.pids.get(_name(home)))
@@ -110,13 +113,50 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     again = gm.build_migration_plan()
     assert again.already_multiplexed and gm.apply_migration(again) is True
 
+    runtime_path = fleet.root / "gateway_state.json"
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    runtime["platforms"] = {
+        "telegram": {"state": "connected"},
+        "coder:telegram": {"state": "connected"},
+        "ops:discord": {"state": "connected"},
+    }
+    runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
     fleet.ops.clear()
     assert gm.rollback_migration(fleet.root) is True
     assert _config_flag(fleet.root) is False
     assert fleet.services == {"default": ("systemd", False), "coder": ("systemd", False), "ops": ("systemd", False)}
     assert [op for op in fleet.ops if op[0] != "default"] == [
         ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
+    assert fleet.ops[-1] == ("default", "restart")
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    assert runtime["served_profiles"] == []
+    assert runtime["platforms"] == {"telegram": {"state": "connected"}}
+    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    assert named_profile_served_by_running_multiplexer("coder") is False
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_standalone_dry_run_prints_rollback_plan_without_mutation(fleet, capsys):
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=5.0) is True
+    capsys.readouterr()
+    fleet.ops.clear()
+    before = {
+        path: path.read_bytes()
+        for path in (
+            fleet.root / "config.yaml",
+            fleet.root / gm.MANIFEST_NAME,
+            fleet.root / "gateway_state.json",
+        )
+    }
+    services_before = dict(fleet.services)
+    pids_before = dict(fleet.pids)
+
+    gm.cmd_migrate(SimpleNamespace(multiplex=False, standalone=True, dry_run=True, yes=True))
+
+    out = capsys.readouterr().out
+    assert "Rollback plan (dry run" in out and "coder" in out and "ops" in out
+    assert all(path.read_bytes() == contents for path, contents in before.items())
+    assert fleet.services == services_before and fleet.pids == pids_before and fleet.ops == []
 
 
 def test_secondary_port_binder_is_notice_with_ingress_and_blocker_without(fleet, monkeypatch):

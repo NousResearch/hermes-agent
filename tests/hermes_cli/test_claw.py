@@ -350,17 +350,43 @@ class TestPrintMigrationReport:
 
 
 class TestDetectOpenclawProcesses:
-    def test_returns_match_when_pgrep_finds_openclaw(self):
+    def test_reports_union_of_exact_and_node_matches(self):
         with patch.object(claw_mod, "subprocess") as mock_subprocess:
-            # systemd check misses, pgrep finds openclaw
             mock_subprocess.run.side_effect = [
                 MagicMock(returncode=1, stdout=""),  # systemctl
-                MagicMock(returncode=0, stdout="1234\n"),  # pgrep
+                MagicMock(returncode=0, stdout="1234\n"),  # pgrep -x openclaw
+                MagicMock(returncode=1, stdout=""),  # pgrep -x clawd
+                MagicMock(returncode=0, stdout="1234\n5678\n"),  # node cmdline probe
             ]
             mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
             result = claw_mod._detect_openclaw_processes()
+        assert result == ["openclaw process(es) (PIDs: 1234, 5678)"]
+
+    @pytest.mark.linux_only
+    def test_live_pgrep_ignores_argv_mentions_but_finds_node_openclaw(self, tmp_path):
+        """A process that merely mentions "openclaw" in argv (the #12648 false positive) is not
+        OpenClaw; a node interpreter running an openclaw script is."""
+        import sys
+        import time
+
+        idle = f'{sys.executable} -c "import time; time.sleep(30)"'
+        # argv mentions openclaw but the binary is not one.
+        bystander = subprocess.Popen(["bash", "-c", f"exec {idle} {tmp_path}/openclaw-notes.txt"])
+        # argv[0] renamed to ``node`` running an openclaw script: the real launch shape.
+        node_like = subprocess.Popen(["bash", "-c", f"exec -a node {idle} {tmp_path}/openclaw/entry.js"])
+        try:
+            time.sleep(0.3)
+            with patch.object(claw_mod, "_posix_probe", wraps=claw_mod._posix_probe) as probe:
+                result = claw_mod._detect_openclaw_processes()
+            assert not any(a[0][:2] == ["pgrep", "-f"] and a[0][2] == "openclaw" for a, _ in probe.call_args_list)
             assert len(result) == 1
-            assert "1234" in result[0]
+            pids = result[0].split("PIDs: ")[1].rstrip(")").split(", ")
+            assert str(node_like.pid) in pids
+            assert str(bystander.pid) not in pids
+        finally:
+            for proc in (bystander, node_like):
+                proc.kill()
+                proc.wait()
 
 
     @pytest.mark.windows_only

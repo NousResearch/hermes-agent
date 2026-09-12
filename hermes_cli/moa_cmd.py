@@ -144,7 +144,8 @@ _SUBCOMMANDS = {
     "ls": _cmd_list,
     "config": _cmd_configure,
     "configure": _cmd_configure,
-    "delete": _cmd_delete}
+    "delete": _cmd_delete,
+    "rm": _cmd_delete}
 
 
 def cmd_moa(args) -> None:

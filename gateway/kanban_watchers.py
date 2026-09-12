@@ -101,9 +101,18 @@ class GatewayKanbanWatchersMixin:
                     notifier_profile=notifier_profile, gc_due=_gc_due, gc_retention_days=_retention,
                 )
                 for d in deliveries:
-                    await _KanbanNotification(
-                        self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
-                    ).deliver()
+                    try:
+                        await _KanbanNotification(
+                            self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
+                        ).deliver()
+                    except Exception as delivery_exc:
+                        # Keep later, still-unattempted rows progressing. The failed
+                        # row retains any live lease; expiry then conservatively
+                        # quarantines a possibly completed transport effect.
+                        logger.warning(
+                            "kanban notifier delivery %s failed independently: %s",
+                            d.get("outbox", {}).get("delivery_key", "<unknown>"), delivery_exc,
+                        )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             await self._sleep_between_ticks(interval)

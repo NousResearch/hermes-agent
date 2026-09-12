@@ -1002,7 +1002,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Format BEFORE chunking so the size limit applies to the rendered form.
             chunks = self._chunk_text(self.format_message(content))
             if not chunks:
-                return SendResult(success=False, error="empty message")
+                return SendResult(success=False, error="empty message", delivery_attempted=False)
             last_result: Optional[SendResult] = None
             typing_msg_name = self._typing_messages.pop(chat_id, None)
             if typing_msg_name == _TYPING_CONSUMED_SENTINEL:
@@ -1430,7 +1430,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         ``messages.patch`` cannot add attachments, so the typing card is patched with the
         caption (or a single space) to retire it without a tombstone."""
         if not os.path.exists(path):
-            return SendResult(success=False, error=f"file not found: {path}")
+            return SendResult(
+                success=False, error=f"file not found: {path}", delivery_attempted=False)
         filename = override_filename or os.path.basename(path) or "upload.bin"
         mime = mime_hint or "application/octet-stream"
         chat_api, identity = await self._acquire_user_chat_api(self._last_sender_by_chat.get(chat_id))

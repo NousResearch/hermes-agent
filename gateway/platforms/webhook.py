@@ -268,7 +268,8 @@ class WebhookAdapter(BasePlatformAdapter):
         if self.gateway_runner and _is_known_platform(deliver_type):
             return await self._deliver_cross_platform(deliver_type, content, delivery)
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
-        return SendResult(success=False, error=f"Unknown deliver type: {deliver_type}")
+        return SendResult(
+            success=False, error=f"Unknown deliver type: {deliver_type}", delivery_attempted=False)
 
     def _prune_delivery_info(self, now: float) -> None:
         """Drop delivery_info entries older than the idempotency TTL (bounds the dict by ``rate_limit * TTL``

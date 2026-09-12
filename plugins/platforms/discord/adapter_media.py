@@ -26,9 +26,10 @@ class DiscordMediaMixin:
         from plugins.platforms.discord.adapter import _prompt_target_id, discord
 
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not os.path.isfile(file_path):
-            return SendResult(success=False, error=f"File not found: {file_path}")
+            return SendResult(
+                success=False, error=f"File not found: {file_path}", delivery_attempted=False)
         channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
@@ -71,9 +72,9 @@ class DiscordMediaMixin:
         from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
 
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not images:
-            return SendResult(success=False, error="no images to send")
+            return SendResult(success=False, error="no images to send", delivery_attempted=False)
         try:
             import discord as _discord_mod
             import io as _io
@@ -265,7 +266,7 @@ class DiscordMediaMixin:
         from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, discord, is_safe_url
 
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not is_safe_url(url):
             logger.warning("[%s] Blocked unsafe %s URL during Discord send_%s", self.name, kind, kind)
             return await fallback(metadata)

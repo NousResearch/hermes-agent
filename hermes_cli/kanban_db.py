@@ -3865,7 +3865,12 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
+            "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' "
+            "AND NOT EXISTS ("
+            " SELECT 1 FROM kanban_delivery_outbox o"
+            " WHERE o.event_id = task_events.id"
+            " AND o.state IN ('pending','retry_wait','sending','delivery_unknown','dead_letter')"
+            ") AND task_id IN "
             "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
         )
     return int(cur.rowcount or 0)

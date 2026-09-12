@@ -563,7 +563,7 @@ class SimplexAdapter(BasePlatformAdapter):
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             filename: Optional[str] = None, **kwargs) -> SendResult:
         if not Path(file_path).exists():
-            return SendResult(success=False, error="File not found")
+            return SendResult(success=False, error="File not found", delivery_attempted=False)
         item = {"filePath": file_path, "msgContent": {"type": "file", "text": caption or ""}}
         return await self._send_items(chat_id, [item], "Failed to send document")
 
@@ -571,7 +571,7 @@ class SimplexAdapter(BasePlatformAdapter):
                          reply_to: Optional[str] = None, duration: int = 0, **kwargs) -> SendResult:
         """Send an audio file as an inline SimpleX voice note (``msgContent.type == "voice"``)."""
         if not Path(audio_path).exists():
-            return SendResult(success=False, error="Voice file not found")
+            return SendResult(success=False, error="Voice file not found", delivery_attempted=False)
         item = {"msgContent": {"type": "voice", "text": caption or "", "duration": duration},
                 "fileSource": {"filePath": audio_path}}
         return await self._send_items(chat_id, [item], "Failed to send voice message")

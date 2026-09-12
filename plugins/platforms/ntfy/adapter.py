@@ -287,7 +287,8 @@ class NtfyAdapter(BasePlatformAdapter):
         """Publish a message to the configured publish topic."""
         publish_topic = (metadata or {}).get("publish_topic") or self._publish_topic or chat_id
         if not self._http_client:
-            return SendResult(success=False, error="HTTP client not initialized")
+            return SendResult(
+                success=False, error="HTTP client not initialized", delivery_attempted=False)
         headers = _publish_headers(self._token, bool((self.config.extra or {}).get("markdown", False)))
         if len(content) > self.MAX_MESSAGE_LENGTH:
             logger.warning(

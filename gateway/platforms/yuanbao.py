@@ -2191,7 +2191,8 @@ class MediaSendHandler(ABC):
     async def handle(self, adapter: "YuanbaoAdapter", chat_id: str, reply_to: Optional[str] = None,
                      caption: Optional[str] = None, **kwargs: Any) -> "SendResult":
         if adapter._connection.ws is None:
-            return SendResult(success=False, error="Not connected", retryable=True)
+            return SendResult(
+                success=False, error="Not connected", retryable=True, delivery_attempted=False)
         adapter._outbound.slow_notifier.cancel(chat_id)
         try:
             file_bytes, filename, content_type = await self.acquire_file(adapter, **kwargs)
@@ -2412,7 +2413,8 @@ class MessageSender:
         """Send text with auto-chunking and per-chat-id ordering guarantee."""
         adapter = self._adapter
         if adapter._connection.ws is None:
-            return SendResult(success=False, error="Not connected", retryable=True)
+            return SendResult(
+                success=False, error="Not connected", retryable=True, delivery_attempted=False)
         adapter._outbound.slow_notifier.cancel(chat_id)
         async with self.get_chat_lock(chat_id):
             content_to_send = self.strip_cron_wrapper(content)
@@ -2431,7 +2433,9 @@ class MessageSender:
                          caption: Optional[str] = None, **kwargs: Any) -> "SendResult":
         handler = self._media_handlers.get(handler_name)
         if handler is None:
-            return SendResult(success=False, error=f"Unknown media handler: {handler_name!r}")
+            return SendResult(
+                success=False, error=f"Unknown media handler: {handler_name!r}",
+                delivery_attempted=False)
         return await handler.handle(self._adapter, chat_id, reply_to=reply_to, caption=caption, **kwargs)
 
     async def send_direct(self, chat_id: str, message: str, media_files: Optional[List[Tuple[str, bool]]] = None) -> Dict[str, Any]:
@@ -2799,7 +2803,8 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def send_dm(self, user_id: str, text: str, group_code: str = "") -> SendResult:
         """Proactive C2C DM (text capped at DM_MAX_CHARS); group_code marks a group-originated DM."""
         if not self._access_policy.is_dm_allowed(user_id):
-            return SendResult(success=False, error="DM access denied for this user")
+            return SendResult(
+                success=False, error="DM access denied for this user", delivery_attempted=False)
         if len(text) > self.DM_MAX_CHARS:
             text = text[:self.DM_MAX_CHARS] + "\n...(truncated)"
         return await self.send(f"direct:{user_id}", text, group_code=group_code)

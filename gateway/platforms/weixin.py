@@ -1071,7 +1071,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not self._send_session or not self._token:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery.
@@ -1142,7 +1142,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
     async def _send_file_result(self, chat_id: str, path: str, caption: str, label: str, **kwargs: Any) -> SendResult:
         if not self._send_session or not self._token:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         try:
             return SendResult(success=True, message_id=await self._send_file(chat_id, path, caption, **kwargs))
         except Exception as exc:

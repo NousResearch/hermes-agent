@@ -368,7 +368,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         text = self.format_message(content)
         if not text:
-            return SendResult(success=False, error="BlueBubbles send requires text")
+            return SendResult(
+                success=False, error="BlueBubbles send requires text", delivery_attempted=False)
         # Each paragraph becomes its own iMessage bubble; truncate any still too long.
         paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()] or [text]
         chunks = [c for para in paragraphs for c in (
@@ -393,9 +394,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                caption: Optional[str] = None, is_audio_message: bool = False) -> SendResult:
         """Send a file attachment via BlueBubbles multipart upload."""
         if not self.client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not await asyncio.to_thread(os.path.isfile, file_path):
-            return SendResult(success=False, error=f"File not found: {file_path}")
+            return SendResult(
+                success=False, error=f"File not found: {file_path}", delivery_attempted=False)
         guid = await self._resolve_chat_guid(chat_id)
         if not guid:
             return SendResult(success=False, error=f"Chat not found: {chat_id}")

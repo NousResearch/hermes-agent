@@ -786,7 +786,7 @@ class SignalAdapter(BasePlatformAdapter):
         per send); bad images are skipped with a warning; ``human_delay`` is ignored (scheduler paces).
         Returns success when at least one batch was accepted, so media-only turns report SUCCESS."""
         if not images:
-            return SendResult(success=False, error="no images to send")
+            return SendResult(success=False, error="no images to send", delivery_attempted=False)
         scheduler = get_scheduler()
         logger.info("Signal send_multiple_images: received %d image(s) for %s — scheduler state: %s", len(images),
                     chat_id[:30], scheduler.state())

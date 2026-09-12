@@ -1900,12 +1900,13 @@ class SlackAdapter(BasePlatformAdapter):
         fallback_text: Optional[str] = None) -> SendResult:
         """Start or update a Slack-native plan/task progress stream."""
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not tasks:
-            return SendResult(success=False, error="No tasks")
+            return SendResult(success=False, error="No tasks", delivery_attempted=False)
         key = self._native_task_card_key(chat_id, reply_to, metadata)
         if key is None:
-            return SendResult(success=False, error="No Slack thread target")
+            return SendResult(
+                success=False, error="No Slack thread target", delivery_attempted=False)
         stream = self._native_task_card_streams.get(key)
         if stream is None or stream.stopped:
             stream = _NativeTaskCardStream(team_id=key[0], channel=chat_id, thread_ts=key[2])
@@ -1993,9 +1994,9 @@ class SlackAdapter(BasePlatformAdapter):
     def _outbound_blocked(self, chat_id: str, what: str) -> Optional[SendResult]:
         """Failed SendResult when ``chat_id`` is ignored or the app is not connected, else None."""
         if self._suppressed_ignored(chat_id, what):
-            return SendResult(success=False, error="ignored_channel")
+            return SendResult(success=False, error="ignored_channel", delivery_attempted=False)
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         return None
 
     async def _call_with_block_fallback(
@@ -2142,7 +2143,8 @@ class SlackAdapter(BasePlatformAdapter):
         if blocked:
             return blocked
         if not chat_id or not user_id:
-            return SendResult(success=False, error="chat_id and user_id are required")
+            return SendResult(
+                success=False, error="chat_id and user_id are required", delivery_attempted=False)
         try:
             formatted = self.format_message(content)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
@@ -2282,9 +2284,10 @@ class SlackAdapter(BasePlatformAdapter):
         First frame for a (chat, draft_id) starts the stream; later frames append the delta.
         ``content`` is the full accumulated text (append-only within one text segment)."""
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if self._native_stream_unsupported:
-            return SendResult(success=False, error="native streaming unsupported")
+            return SendResult(
+                success=False, error="native streaming unsupported", delivery_attempted=False)
         text = self._strip_stream_cursor(content)
         client = self._get_client(chat_id)
         stream = self._active_streams.get(chat_id)
@@ -2642,9 +2645,9 @@ class SlackAdapter(BasePlatformAdapter):
         failure_notice: str) -> SendResult:
         """Shared body of ``send_video``/``send_document``: upload with retry, notice on failure."""
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not os.path.exists(file_path):
-            return SendResult(success=False, error=not_found_error)
+            return SendResult(success=False, error=not_found_error, delivery_attempted=False)
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
@@ -2663,11 +2666,11 @@ class SlackAdapter(BasePlatformAdapter):
         """Send a batch of images as one message via ``files_upload_v2(file_uploads=...)`` (10 per
         call, Slack cap) instead of N posts; falls back to the base per-image loop on failure."""
         if self._suppressed_ignored(chat_id, "multi-image upload in"):
-            return SendResult(success=False, error="ignored_channel")
+            return SendResult(success=False, error="ignored_channel", delivery_attempted=False)
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not images:
-            return SendResult(success=False, error="no images to send")
+            return SendResult(success=False, error="no images to send", delivery_attempted=False)
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             from urllib.parse import unquote as _unquote
@@ -3153,7 +3156,7 @@ class SlackAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an image to Slack by uploading the URL as a file."""
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(image_url):
             logger.warning("[Slack] Blocked unsafe image URL (SSRF protection)")
@@ -4569,7 +4572,7 @@ class SlackAdapter(BasePlatformAdapter):
         text, blocks)``, post, then mark the message unresolved in ``resolved`` (double-click
         guard). Any failure is logged as ``<label> failed`` and returned, never raised."""
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             text, blocks = build()
@@ -4771,7 +4774,7 @@ class SlackAdapter(BasePlatformAdapter):
         a model choice.
         """
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
 
         chat_id = await self._ensure_dm_conversation(
             chat_id, team_id=self._metadata_team_id(metadata)

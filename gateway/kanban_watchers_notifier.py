@@ -35,8 +35,8 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
-# Consecutive send failures (adapter raised OR reported SendResult(success=False))
-# before a sub is dropped as a dead chat. 12 ≈ 60s at the 5s cadence: a transient
+# Confirmed pre-side-effect failures before a delivery is dead-lettered.
+# 12 ≈ 60s at the 5s cadence: a transient
 # API outage must not permanently unsubscribe a live review-gate channel.
 # Subscriptions are removed only when the task reaches the irreversible archived status. ``done`` is
 # reversible in review/controller flows, so removing its subscription would silence a later reopen. We used
@@ -215,27 +215,46 @@ class _Collector:
         except Exception as _gc_exc:
             logger.debug("kanban notifier: stale-sub GC failed for board %s: %s", slug, _gc_exc)
 
-    def _claim_for_sub(self, conn: Any, slug: str, sub: dict) -> Optional[dict]:
-        """Claim one subscription's unseen events; None when skipped or nothing new."""
+    def _claim_for_sub(self, conn: Any, slug: str, sub: dict) -> list[dict]:
+        """Durably enqueue unseen events and list due obligations for one origin."""
+        _kbn().release_expired_delivery_leases(conn)
+        unknowns = _kbn().claim_delivery_unknown_warnings(
+            conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
+            thread_id=sub.get("thread_id") or "",
+        )
+        for unknown in unknowns:
+            logger.error(
+                "kanban notifier: delivery outcome unknown for %s (%s); quarantined without replay. "
+                "Inspect with `hermes kanban delivery-list` and reconcile explicitly",
+                sub["task_id"], unknown["delivery_key"],
+            )
         owner_profile = sub.get("notifier_profile") or None
         platform = (sub.get("platform") or "").lower()
         if platform not in self.active_platforms:
             logger.debug("kanban notifier: subscription for %s on %s skipped; adapter not connected",
                          sub.get("task_id"), platform or "<missing>")
-            return None
+            return []
         from gateway.config import Platform
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
-            return None
+            return []
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
         )
-        if not events:
-            return None
+        candidates = _kbn().list_due_deliveries_for_sub(
+            conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
+            thread_id=sub.get("thread_id") or "",
+        )
+        if not candidates:
+            return []
         task = self.kb.get_task(conn, sub["task_id"])
-        logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                     len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        logger.debug("kanban notifier: enqueued %d event(s), found %d due delivery row(s) for %s on board %s",
+                     len(events), len(candidates), sub["task_id"], slug)
+        return [
+            {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": [event],
+             "outbox": outbox, "task": task, "board": slug}
+            for outbox, event in candidates
+        ]
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -258,9 +277,7 @@ class _Collector:
                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
             for sub in subs:
                 try:
-                    claimed = self._claim_for_sub(conn, slug, sub)
-                    if claimed is not None:
-                        self.deliveries.append(claimed)
+                    self.deliveries.extend(self._claim_for_sub(conn, slug, sub))
                 except Exception as sub_exc:
                     # One bad subscription must not block the rest of the tick.
                     logger.warning("kanban notifier: subscription for %s on board %s failed: %s",
@@ -371,8 +388,12 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
 # --- Delivery of one claimed batch (one subscription, N events) ---
 
 
+class _ConfirmedSendFailure(RuntimeError):
+    """The adapter explicitly reports a retry-safe, unaccepted send."""
+
+
 class _KanbanNotification:
-    """Deliver one subscription's claimed events, then settle the cursor.
+    """Claim and deliver one subscription event, then settle the cursor.
 
     Both legs of notify+wake must succeed before settling. Sent pings have a
     separate durable checkpoint so wake retries do not resend them. Admission
@@ -385,6 +406,7 @@ class _KanbanNotification:
         self.platform_cls = platform_cls
         self.sub_fail_counts = sub_fail_counts
         self.sub = sub = d["sub"]
+        self.outbox = d["outbox"]
         self.task = task = d["task"]
         self.board_slug = d.get("board")
         self.platform_str = (sub["platform"] or "").lower()
@@ -407,6 +429,7 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+        self.transport_receipts: list[str] = []
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
@@ -421,20 +444,44 @@ class _KanbanNotification:
     async def unsub(self) -> None:
         await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
 
+    async def outbox_op(self, op: str, **extra: Any) -> Any:
+        def _run() -> Any:
+            conn = _kbc().connect(board=self.board_slug)
+            try:
+                return getattr(_kbn(), op)(conn, delivery_key=self.outbox["delivery_key"], **extra)
+            finally:
+                conn.close()
+        return await _to_thread_process_service(_run)
+
+    async def quarantine_unknown(self, exc: Exception) -> None:
+        marked = await self.outbox_op(
+            "mark_delivery_ambiguous", lease_token=self.outbox["lease_token"], error=exc,
+            transport_receipt=";".join(self.transport_receipts) or None,
+        )
+        if marked and await self.outbox_op("mark_delivery_exception_recorded"):
+            logger.error(
+                "kanban notifier: delivery outcome unknown for %s (%s); quarantined without replay. "
+                "Inspect with `hermes kanban delivery-list` and reconcile explicitly",
+                self.task_id, self.outbox["delivery_key"],
+            )
+
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
 
     async def delivery_failed(self, fmt: str, prefix: tuple, drop_fmt: str, exc: Exception, exc_info: bool) -> None:
-        """Bump the failure counter; drop the sub past the limit, else rewind the claim so the next tick retries."""
-        fails = self.sub_fail_counts.get(self.sub_key, 0) + 1
-        self.sub_fail_counts[self.sub_key] = fails
+        """Persist retry/dead-letter state; the exact-origin subscription survives."""
+        state = await self.outbox_op(
+            "fail_delivery", lease_token=self.outbox["lease_token"], error=exc,
+        )
+        fails = int(self.outbox.get("attempts", 0)) + 1
         logger.warning(fmt, *prefix, fails, MAX_SEND_FAILURES, exc, exc_info=exc_info)
-        if fails >= MAX_SEND_FAILURES:
-            logger.warning(drop_fmt, self.task_id, self.platform_str, fails)
-            await self.unsub()
-            self.clear_failures()
-        else:
-            await self.rewind()
+        if state == "dead_letter":
+            first = await self.outbox_op("mark_delivery_exception_recorded")
+            if first:
+                logger.error(
+                    "kanban notifier: durable delivery exception for %s on %s after %d attempts; subscription retained",
+                    self.task_id, self.platform_str, fails,
+                )
 
     async def _wake_failed(self, fmt: str, exc: Exception) -> None:
         drop_fmt = "kanban notifier: dropping subscription %s on %s after %d consecutive wake failures"
@@ -528,24 +575,29 @@ class _KanbanNotification:
         if self.sub_profile and getattr(getattr(self.runner, "config", None), "multiplex_profiles", False):
             from hermes_cli.profiles import profile_exists
             if not profile_exists(self.sub_profile):
-                raise RuntimeError(f"Kanban wake profile {self.sub_profile!r} no longer exists")
+                from gateway.wake import WakeNotAccepted
+                raise WakeNotAccepted(f"Kanban wake profile {self.sub_profile!r} no longer exists")
         async with _async_profile_runtime_scope(self.runner._resolve_profile_home_for_source(_source)):
             await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key, source=_source)
         self._log_woke()
 
-    async def _send_event(self, ev: Any, msg: str) -> None:
-        """Send one text ping; raises on adapter exception or SendResult(success=False)."""
+    async def _send_event(self, ev: Any, msg: str) -> str:
+        """Send one text ping and require a typed, unambiguous outcome."""
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
         _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
-        # SendResult(success=False) without an exception is a FAILED delivery
-        # (else the event is lost); None / non-SendResult keeps the
-        # "no exception == delivered" contract.
-        if getattr(_send_res, "success", True) is False:
-            raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
+        from gateway.platforms.base import SendResult
+        if not isinstance(_send_res, SendResult):
+            raise RuntimeError("adapter returned an untyped send outcome")
+        if _send_res.success is False and _send_res.delivery_attempted is False:
+            error = getattr(_send_res, 'error', None) or 'unknown error'
+            raise _ConfirmedSendFailure(f"adapter rejected send: {error}")
+        if _send_res.success is False:
+            raise RuntimeError(f"adapter returned an ambiguous send failure: {_send_res.error or 'unknown error'}")
+        message_id = getattr(_send_res, "message_id", None) or getattr(_send_res, "id", None)
         logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
                      ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
         # Upload artifact paths from the completion payload / legacy result as
@@ -558,6 +610,7 @@ class _KanbanNotification:
                 )
             except Exception as art_exc:
                 logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
+        return f"transport:{message_id}" if message_id else f"adapter-accepted:event-{ev.id}"
 
     async def _send_pings(self) -> bool:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""
@@ -578,35 +631,64 @@ class _KanbanNotification:
             if not self.send_passive:
                 # Wake-only: the wake path is the sole delivery and resolves the counter.
                 continue
-            if ev.id <= self.sub.get("last_ping_event_id", 0):
+            if self.outbox.get("ping_delivered_at") is not None:
+                if self.outbox.get("ping_receipt"):
+                    self.transport_receipts.append(str(self.outbox["ping_receipt"]))
                 continue
             try:
-                await self._send_event(ev, msg)
+                receipt = await self._send_event(ev, msg)
+                self.transport_receipts.append(receipt)
                 await _to_thread_process_service(partial(
                     self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
                     event_id=ev.id,
                 ))
+                checkpointed = await self.outbox_op(
+                    "mark_delivery_ping_delivered",
+                    lease_token=self.outbox["lease_token"],
+                    transport_receipt=receipt,
+                )
+                if not checkpointed:
+                    raise RuntimeError("passive ping checkpoint lost its delivery lease")
+                self.outbox["ping_delivered_at"] = True
+                self.outbox["ping_receipt"] = receipt
                 self.clear_failures()
-            except Exception as exc:
+            except _ConfirmedSendFailure as exc:
                 await self.delivery_failed(
                     "kanban notifier: send failed for %s on %s (attempt %d/%d): %s", (self.task_id, self.platform_str),
                     "kanban notifier: dropping subscription %s on %s after %d consecutive send failures", exc, False,
                 )
                 return False
+            except Exception as exc:
+                # Includes local checkpoint failures AFTER a successful send.
+                # If this persistence also fails, retain the sending lease: its
+                # expiry follows the same ambiguous/reconciliation path.
+                await self.quarantine_unknown(exc)
+                return False
         return True
 
     async def deliver(self) -> None:
+        claimed = await self.outbox_op("claim_delivery")
+        if claimed is None:
+            # Another watcher won the CAS claim, or an operator reconciled it.
+            return
+        self.outbox = claimed
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:
-            await self.advance()
+            await self.delivery_failed(
+                "kanban notifier: invalid platform for %s (attempt %d/%d): %s",
+                (self.task_id,), "", ValueError(self.platform_str), False,
+            )
             return
         # Recheck the exact route after claiming: config/adapters can change between ticks.
         adapter = _adapter_for_subscription(self.runner, self.plat, self.sub, self.sub_profile or None)
         if adapter is None:
-            logger.debug("kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
+            logger.debug("kanban notifier: adapter %s disconnected before delivery for %s; scheduling retry",
                          self.platform_str, self.task_id)
-            await self.rewind()
+            await self.delivery_failed(
+                "kanban notifier: adapter unavailable for %s (attempt %d/%d): %s",
+                (self.task_id,), "", RuntimeError("adapter unavailable before send"), False,
+            )
             return
         self.adapter = adapter
         from gateway.wake import adapter_supports_push
@@ -626,22 +708,33 @@ class _KanbanNotification:
         if wake_kinds:
             try:
                 await self.wake()
+                self.transport_receipts.append("wake-accepted")
                 self.clear_failures()
-            except WakeNotAccepted:
-                # Startup / full queue is not a dead destination. Keep the durable
-                # subscription alive regardless of how long admission takes.
-                await self.rewind()
+            except WakeNotAccepted as exc:
+                # Admission was explicitly rejected before any wake side effect.
+                # Retry within the durable bounded budget; exhaustion is retained
+                # as dead-letter state for operator escalation without deleting
+                # the exact-origin subscription.
+                await self.delivery_failed(
+                    "kanban notifier: wake admission deferred for %s (attempt %d/%d): %s",
+                    (self.task_id,), "", exc, False,
+                )
                 return
             except Exception as _wk_err:
-                await self._wake_failed(
-                    "kanban notifier: wake-only delivery failed for %s (attempt %d/%d): %s" if is_push
-                    else "kanban notifier: wake self-post failed for %s (attempt %d/%d): %s",
-                    _wk_err,
-                )
+                # Generic failures do not prove that admission failed before
+                # enqueue/acceptance. Fence the obligation instead of replaying
+                # a potentially delivered originating-group wake.
+                await self.quarantine_unknown(_wk_err)
                 return
 
         # Delivery complete: advance the cursor (the dedup mechanism).
         await self.advance()
+        receipt = "+".join(self.transport_receipts) or "no-op-event-acknowledged"
+        if not await self.outbox_op(
+            "acknowledge_delivery", lease_token=self.outbox["lease_token"], transport_receipt=receipt,
+        ):
+            logger.error("kanban notifier: lost outbox lease while acknowledging %s; delivery remains unresolved", self.task_id)
+            return
         if not is_push:
             self.clear_failures()
         # Unsubscribe only on archive; ``done`` is reversible.

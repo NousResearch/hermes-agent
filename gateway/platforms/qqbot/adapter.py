@@ -1344,7 +1344,8 @@ class QQAdapter(BasePlatformAdapter):
 
     @property
     def _NOT_CONNECTED(self) -> SendResult:
-        return SendResult(success=False, error="Not connected", retryable=True)
+        return SendResult(
+            success=False, error="Not connected", retryable=True, delivery_attempted=False)
 
     async def _ensure_connected(self) -> bool:
         """True when connected now or after waiting for the listener to reconnect."""
@@ -1375,7 +1376,8 @@ class QQAdapter(BasePlatformAdapter):
         last_exc: Optional[Exception] = None
         sender = self._text_sender(self._guess_chat_type(chat_id))
         if sender is None:
-            return SendResult(success=False, error=f"Unknown chat type for {chat_id}")
+            return SendResult(
+                success=False, error=f"Unknown chat type for {chat_id}", delivery_attempted=False)
         for attempt in range(3):
             try:
                 return await sender(chat_id, content, reply_to)
@@ -1454,7 +1456,8 @@ class QQAdapter(BasePlatformAdapter):
         sender = self._text_sender(chat_type, keyboard_ok=True)
         if sender is None:
             return SendResult(
-                success=False, error=f"Inline keyboards not supported for chat_type {chat_type!r}", retryable=False)
+                success=False, error=f"Inline keyboards not supported for chat_type {chat_type!r}",
+                retryable=False, delivery_attempted=False)
         truncated = self.format_message(content)[: self.MAX_MESSAGE_LENGTH]
         try:
             return await sender(chat_id, truncated, reply_to, keyboard=keyboard)

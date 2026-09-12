@@ -185,7 +185,7 @@ def test_apiserver_subscriptions_have_independent_wake_destinations(
     assert _unseen_terminal_events(tid, "api_server", "origin-b") == []
 
 
-def test_apiserver_wake_failure_rewinds_then_retries_destination(
+def test_apiserver_wake_generic_failure_becomes_unknown_without_redelivery(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver-retry.db"))
@@ -210,12 +210,29 @@ def test_apiserver_wake_failure_rewinds_then_retries_destination(
     runner = _make_runner({Platform.API_SERVER: ApiServerLikeAdapter()})
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
-    assert _unseen_terminal_events(tid, "api_server", "origin-session")
+    assert _unseen_terminal_events(tid, "api_server", "origin-session") == []
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT state,attempts FROM kanban_delivery_outbox WHERE task_id=?", (tid,),
+        ).fetchone()
+        assert tuple(row) == ("delivery_unknown", 0)
+        conn.execute("UPDATE kanban_delivery_outbox SET next_attempt_at=0 WHERE task_id=?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
 
     runner._running = True
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    assert attempted_sessions == ["origin-session", "origin-session"]
+    assert attempted_sessions == ["origin-session"]
     assert "worker-session" not in attempted_sessions
     assert _unseen_terminal_events(tid, "api_server", "origin-session") == []
+    conn = kbc.connect()
+    try:
+        assert conn.execute(
+            "SELECT state FROM kanban_delivery_outbox WHERE task_id=?", (tid,),
+        ).fetchone()[0] == "delivery_unknown"
+    finally:
+        conn.close()
 

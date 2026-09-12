@@ -628,7 +628,8 @@ class TeamsAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False) -> SendResult:
         if not self._app:
-            return SendResult(success=False, error="Teams app not initialized")
+            return SendResult(
+                success=False, error="Teams app not initialized", delivery_attempted=False)
         # Button data carries a truncated cmd — just enough to reconstruct the card body.
         btn_data_base = {"session_key": session_key, "cmd": _truncate(command, 200), "desc": description}
 
@@ -657,7 +658,8 @@ class TeamsAdapter(BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         if not self._app:
-            return SendResult(success=False, error="Teams app not initialized")
+            return SendResult(
+                success=False, error="Teams app not initialized", delivery_attempted=False)
         last_message_id = None
         for chunk in self.truncate_message(self.format_message(content)):
             try:
@@ -687,7 +689,8 @@ class TeamsAdapter(BasePlatformAdapter):
         Remote ``http(s)://`` URLs are attached by reference; local paths (optional ``file://`` prefix)
         are base64-encoded into a data URI. MIME is guessed from the path, else ``default_mime``."""
         if not self._app:
-            return SendResult(success=False, error="Teams app not initialized")
+            return SendResult(
+                success=False, error="Teams app not initialized", delivery_attempted=False)
         try:
             import base64
             import mimetypes

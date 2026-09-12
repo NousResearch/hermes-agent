@@ -633,7 +633,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         """Send standalone markdown (never touches active streams); serialized per chat for the 30 msgs/min
         limit (846607). ``metadata["is_approval_prompt"]`` uses the control lane."""
         if not chat_id:
-            return SendResult(success=False, error="chat_id is required")
+            return SendResult(success=False, error="chat_id is required", delivery_attempted=False)
         metadata = metadata or {}  # pops mutate the caller's dict on purpose (consumed flags)
         is_control = metadata.pop("is_approval_prompt", False)
         # Approval *confirmations* must not consume the req_id the stream consumer still needs.
@@ -653,7 +653,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
                     response = await self._send_proactive_markdown(chat_id, content)
             elif chat_id in self._group_chat_ids:
                 logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)
-                return SendResult(success=False, error="No req_id available for group chat (passive reply required)")
+                return SendResult(
+                    success=False,
+                    error="No req_id available for group chat (passive reply required)",
+                    delivery_attempted=False)
             else:
                 response = await self._send_proactive_markdown(chat_id, content)
         except asyncio.TimeoutError:

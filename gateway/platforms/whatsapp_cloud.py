@@ -336,7 +336,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _post_message_result(self, payload: Dict[str, Any], **log_kwargs) -> SendResult:
         """``_post_messages`` → SendResult with the first returned message id; guards disconnected state."""
         if self._http_client is None:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         ids, err = await self._post_messages(payload, **log_kwargs)
         return SendResult(success=False, error=err) if err is not None else SendResult(success=True, message_id=ids[0].get("id") if ids else None)
 
@@ -351,7 +351,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a text message via Graph API. ``chat_id`` is the recipient's ``wa_id``."""
         if self._http_client is None:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         formatted = self.format_message(content)
@@ -533,9 +533,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """POST a media message referencing exactly one of an uploaded ``media_id`` or a public
         ``link``. Caption is accepted on image/video/document; filename on document only."""
         if self._http_client is None:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if bool(media_id) == bool(media_link):
-            return SendResult(success=False, error="Exactly one of media_id or media_link must be set")
+            return SendResult(
+                success=False, error="Exactly one of media_id or media_link must be set",
+                delivery_attempted=False)
         media_block: Dict[str, Any] = {"id": media_id} if media_id else {"link": media_link}
         if caption and media_kind in {"image", "video", "document"}:
             media_block["caption"] = caption

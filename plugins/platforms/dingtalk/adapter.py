@@ -387,9 +387,13 @@ class DingTalkAdapter(BasePlatformAdapter):
         session_webhook = metadata.get("session_webhook") or (self._get_valid_webhook(chat_id) or ("",))[0]
         if not session_webhook:
             logger.warning("[%s] No valid session_webhook for chat_id=%s", self.name, chat_id)
-            return SendResult(success=False, error="No valid session_webhook available. Reply must follow an incoming message.")
+            return SendResult(
+                success=False,
+                error="No valid session_webhook available. Reply must follow an incoming message.",
+                delivery_attempted=False)
         if not self._http_client:
-            return SendResult(success=False, error="HTTP client not initialized")
+            return SendResult(
+                success=False, error="HTTP client not initialized", delivery_attempted=False)
         current_message = self._message_contexts.get(chat_id)
         # ``reply_to`` is only set by base.py:_send_with_retry for the FINAL reply to an inbound message;
         # tool-progress, commentary and stream first-sends leave it None. It decides (1) finalize-on-create
@@ -431,11 +435,15 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, metadata=None, **kwargs) -> SendResult:
         """Webhook replies cannot upload local images."""
-        return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("image uploads", "media upload"))
+        return SendResult(
+            success=False, error=_NO_LOCAL_UPLOAD % ("image uploads", "media upload"),
+            delivery_attempted=False)
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
         """Webhook replies cannot upload local files."""
-        return SendResult(success=False, error=_NO_LOCAL_UPLOAD % ("file attachments", "message send"))
+        return SendResult(
+            success=False, error=_NO_LOCAL_UPLOAD % ("file attachments", "message send"),
+            delivery_attempted=False)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""

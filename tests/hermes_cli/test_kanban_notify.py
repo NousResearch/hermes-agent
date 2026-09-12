@@ -248,6 +248,8 @@ async def test_notifier_notify_plus_wake_sends_and_wakes(kanban_home):
 
     async def _send(chat_id, msg, metadata=None):
         sent_msgs.append(msg)
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id=f"sent-{len(sent_msgs)}")
 
     fake_adapter.send = AsyncMock(side_effect=_send)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
@@ -646,6 +648,8 @@ async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_ho
     async def _send(chat_id, message, metadata=None):
         delivered.append(message)
         runner._running = False
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id=f"sent-{len(delivered)}")
 
     adapter = MagicMock()
     adapter.name = "telegram"
@@ -869,6 +873,8 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     async def _send(chat_id, msg, metadata=None):
         runner._running = False
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id="sent-1")
 
     async def _send_document(chat_id, file_path, metadata=None, **_kw):
         documents_uploaded.append(file_path)

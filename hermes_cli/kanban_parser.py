@@ -387,6 +387,26 @@ _SPECS = [
     _cmd("notify-list", [_arg("task_id", nargs="?"), _json_flag()],
          help="List notification subscriptions (optionally for a single task)"),
     _cmd("notify-unsubscribe", [_TASK_ID, *_NOTIFY_TARGET], help="Remove a gateway subscription from a task"),
+    _cmd("delivery-list", [
+        _arg("--state", default="delivery_unknown",
+             choices=("delivery_unknown", "dead_letter", "pending", "sending", "retry_wait", "delivered", "all"),
+             help="Outbox state to show (default: delivery_unknown; 'all' shows every state)"),
+        _json_flag(),
+    ], help="List durable notification delivery status, including quarantined unknown outcomes"),
+    _cmd("delivery-reconcile", [
+        _arg("delivery_key"),
+        _arg("--action", required=True, choices=("retry", "mark-delivered"),
+             help="retry may duplicate an already accepted transport effect; mark-delivered suppresses replay"),
+        _arg("--reason", required=True, help="Operator reason recorded in the durable task audit"),
+        _arg("--accept-duplicate-risk", action="store_true",
+             help="Required for retry: acknowledge that the uncertain delivery may be sent twice"),
+    ], help="Explicitly reconcile a delivery_unknown row (guarded and durably audited)",
+       description=(
+           "Resolve one quarantined delivery_unknown row. Retrying can duplicate a message or wake whose "
+           "external side effect succeeded before its receipt was persisted, so --action retry requires "
+           "--accept-duplicate-risk. Use mark-delivered only after verifying the external effect; it "
+           "suppresses replay and can otherwise leave a missed delivery unsent."
+       )),
     _cmd("log", [_TASK_ID, _arg("--tail", type=int, help="Only print the last N bytes")],
          help="Print the worker log for a task (from <kanban-root>/kanban/logs/)"),
     _cmd("runs", [_TASK_ID, _json_flag(), *_run_state_args("filter runs by task_runs column")],

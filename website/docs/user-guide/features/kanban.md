@@ -969,6 +969,54 @@ session. Session lineage is not itself a notification destination: changing
 
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
+### Inspecting uncertain notification delivery
+
+Notification obligations are stored in the board's SQLite database before the
+subscription cursor advances. Each obligation is claimed immediately before its
+attempt, rather than leasing an entire batch while earlier messages are still
+sending. Confirmed pre-send failures use durable, bounded retries.
+
+An external send or agent wake and a local database commit cannot be atomic. If
+the transport may have accepted an effect but its outcome cannot be confirmed,
+the obligation becomes `delivery_unknown` and **is not automatically replayed**.
+An expired in-flight lease follows the same path. This avoids blind duplicate
+messages or agent turns; it is not an exactly-once delivery guarantee.
+
+The gateway logs a once-only error for a quarantined obligation. Inspect the
+same profile and board with:
+
+```bash
+hermes kanban delivery-list                 # delivery_unknown by default
+hermes kanban delivery-list --state all --json
+hermes kanban delivery-list --state dead_letter
+```
+
+After independently checking the destination and any agent wake admission,
+resolve an uncertain obligation using its `delivery_key`:
+
+```bash
+# Suppress replay after verifying the external effect succeeded.
+hermes kanban delivery-reconcile <delivery_key> \
+  --action mark-delivered --reason "Verified the message and wake at the destination"
+
+# Explicit override: this may duplicate a message or agent turn.
+hermes kanban delivery-reconcile <delivery_key> \
+  --action retry --accept-duplicate-risk --reason "Destination checked; retry authorized"
+```
+
+Both operations only accept `delivery_unknown` rows and append a durable
+`delivery_reconciled` task event containing the operator, reason, previous error
+and receipt, action, and duplicate-risk acknowledgement. `mark-delivered` is an
+operator assertion, not an automatic transport check. A retry preserves existing
+exact passive-ping receipt checkpoints, so an accepted ping is not repeated. It
+may duplicate an unresolved agent wake. There is no automatic reconciliation,
+per-artifact receipt guarantee, or dashboard reconciliation UI in this change.
+
+Adapter authors: return a typed `SendResult`. Set `delivery_attempted=False` on a
+failed result **only** when no externally visible delivery was attempted by that
+operation. Leave it unset for network errors, timeouts, partial sends and other
+uncertain outcomes; a generic failed result is not proof that retrying is safe.
+
 ### Output truncation in messaging
 
 Gateway platforms have practical message-length caps. If `/kanban list`, `/kanban show`, or `/kanban tail` produce more than ~3800 characters of output, the response is truncated with a `… (truncated; use \`hermes kanban …\` in your terminal for full output)` footer. The CLI surface has no such cap.

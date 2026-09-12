@@ -1597,6 +1597,10 @@ class SendResult:
     # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
+    # False is an explicit adapter attestation that no externally visible send
+    # was attempted. None (the default) is deliberately ambiguous: a failed
+    # multi-chunk/media send may already have produced a partial side effect.
+    delivery_attempted: Optional[bool] = None
 
 
 # Longest server ``retry_after`` ``_send_with_retry`` will sleep inline. Longer penalties return the
@@ -2448,7 +2452,7 @@ class BasePlatformAdapter(ABC):
         the last edit of a streamed response; surfaces with a distinct "in progress" state (DingTalk
         AI Cards) close the message on it and set ``REQUIRES_EDIT_FINALIZE`` so it's routed even
         when content is unchanged."""
-        return SendResult(success=False, error="Not supported")
+        return SendResult(success=False, error="Not supported", delivery_attempted=False)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a sent message; True on success (platforms without a deletion API return False and
@@ -2533,7 +2537,7 @@ class BasePlatformAdapter(ABC):
         ``GatewayRunner._resolve_slash_confirm(confirm_id, "once"|"always"|"cancel")``. Default (not
         supported) falls through to the gateway text fallback
         (``/approve``/``/always``/``/cancel``)."""
-        return SendResult(success=False, error="Not supported")
+        return SendResult(success=False, error="Not supported", delivery_attempted=False)
 
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,

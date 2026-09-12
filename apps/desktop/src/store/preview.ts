@@ -77,7 +77,12 @@ function isPreviewTarget(value: unknown): value is PreviewTarget {
     (r.kind === 'artifact' || r.kind === 'file' || r.kind === 'url') &&
     typeof r.label === 'string' &&
     typeof r.source === 'string' &&
-    typeof r.url === 'string'
+    typeof r.url === 'string' &&
+    // An address-less Browser tab has nothing to load and nothing to name it by:
+    // its pane mounts a webview with an empty `src`, the guest never navigates,
+    // and Chromium's default document title (`about:blank`) is what the strip
+    // shows. Drop it instead of restoring it (#89196).
+    !(r.kind === 'url' && !r.url.trim())
   )
 }
 
@@ -384,6 +389,17 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
  *  only way anything reaches a preview. */
 export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
   const resolved = previewTargetForSource(target, source)
+
+  // A Browser with no address isn't a surface you can use — there is nothing to
+  // load, so the pane sits on a webview that never navigates and the tab's name
+  // degrades to the guest's default document title (`about:blank`). Refuse it at
+  // the door, the same way `commitBrowserTabLocation` refuses an empty address
+  // (#89196). A blank VESSEL (`about:blank`) is still a real address: that one
+  // opens, and the pane's empty state invites an address.
+  if (resolved.kind === 'url' && !resolved.url.trim()) {
+    return
+  }
+
   const current = $previewTabs.get()
   const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
   const index = current.findIndex(tab => tab.id === id)

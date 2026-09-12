@@ -42,6 +42,17 @@ describe('browserTabLabel', () => {
     expect(browserTabLabel(target, { title: '', url: 'about:blank' })).toBe('Browser')
   })
 
+  // A guest that has not navigated yet reports Chromium's DEFAULT document
+  // title — `about:blank` — and a tab whose address never landed records no
+  // page URL, so the `title !== url` guard above has nothing to compare it
+  // against and the placeholder became the tab's name in the strip (#89196).
+  it('refuses the guest default document title as a label', () => {
+    expect(browserTabLabel(target, { title: 'about:blank', url: '' })).toBe('Browser')
+    expect(browserTabLabel({ ...target, url: 'https://example.com' }, { title: 'ABOUT:BLANK', url: '' })).toBe(
+      'example.com'
+    )
+  })
+
   // A tab restored from storage has reported nothing yet, so its target is all
   // there is to name it by.
   it('names an unreported tab from its target', () => {

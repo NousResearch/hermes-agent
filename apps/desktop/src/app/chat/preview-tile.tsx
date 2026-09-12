@@ -115,6 +115,11 @@ function previewTitle(tabId: string): string {
   return tail || value || 'Preview'
 }
 
+/** Chromium's DEFAULT document title — what an `<webview>` reports before its
+ *  address has landed. Not a name: a tab whose guest says this has no page
+ *  yet (#89196). */
+const BLANK_DOCUMENT_TITLE = /^about:blank\/?$/i
+
 /**
  * What to call a Browser tab. Its page title, else the host it is on, else
  * the surface — the ladder every browser walks, and the reason more than one
@@ -122,13 +127,16 @@ function previewTitle(tabId: string): string {
  *
  * A page that never set a title reports its own address as one, which is a
  * worse label than the host it came from, so an address-shaped title falls
- * through.
+ * through. Chromium's default document title falls through too: a guest that
+ * has not navigated reports `about:blank`, and with no page URL recorded yet
+ * there is nothing to compare it against — it reached the strip as a tab
+ * named ABOUT:BLANK (#89196).
  */
 export function browserTabLabel(target: PreviewTarget, page?: BrowserPage): string {
   const url = page?.url || target.url
   const title = page?.title.trim()
 
-  if (title && title !== url) {
+  if (title && title !== url && !BLANK_DOCUMENT_TITLE.test(title)) {
     return title
   }
 

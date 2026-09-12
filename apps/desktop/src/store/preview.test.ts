@@ -12,6 +12,7 @@ import {
   closeRightRail,
   closeRightRailTab,
   commitBrowserTabLocation,
+  decodePreviewTabs,
   newBrowserTab,
   openPreview,
   previewTabId,
@@ -173,6 +174,31 @@ describe('preview store', () => {
     closeRightRailTab('file:file:///nowhere.html')
 
     expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  // An address-less Browser has nothing to load: its pane mounts a webview
+  // with an empty `src`, the guest never navigates, and Chromium's default
+  // document title (`about:blank`) is what the strip ends up showing (#89196).
+  // The open door refuses it — the same rule `commitBrowserTabLocation` uses
+  // for an empty address — so no such tab ever reaches the tab strip.
+  it('refuses to open a Browser tab with no address', () => {
+    openPreview(urlTarget(''), 'tool-result')
+    openPreview({ kind: 'url', label: 'Browser', source: '   ', url: '   ' }, 'explicit-link')
+
+    expect($previewTabs.get()).toHaveLength(0)
+    expect($rightRailActiveTabId.get()).toBeNull()
+  })
+
+  // Reopening the stale persisted tab on every boot is how the stray tab came
+  // back (the issue's reporter saw it after the v0.20.4 layout heal), so the
+  // restore filter drops it the same way.
+  it('drops a persisted address-less Browser tab instead of restoring it', () => {
+    const raw = JSON.stringify([
+      { id: 'url:browser-blank', target: { kind: 'url', label: 'Browser', source: 'about:blank', url: '' } },
+      { id: 'url:browser-live', target: { kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' } }
+    ])
+
+    expect(decodePreviewTabs(raw).map(tab => tab.id)).toEqual(['url:browser-live'])
   })
 
   it('closes by the raw source the composer rows were handed', () => {

@@ -13,7 +13,7 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
@@ -45,6 +45,11 @@ const roster: RosterRow[] = [
   { connectionId: 'local', display_name: LONG_NAME, name: 'long-bot' },
   { connectionId: 'local', name: 'short' }
 ]
+
+const sevenBots: RosterRow[] = Array.from({ length: 7 }, (_, index) => ({
+  connectionId: 'local',
+  name: `bot-${index + 1}`
+}))
 
 beforeAll(async () => {
   // Radix Dialog reaches for APIs jsdom does not implement.
@@ -85,5 +90,34 @@ describe('CreateGroupChatDialog picker rows', () => {
     for (const row of labels) {
       expect(row!.className.split(/\s+/)).toContain('min-w-0')
     }
+  })
+
+  it('allows a seventh bot only after the room limit is raised', async () => {
+    const { CreateGroupChatDialog } = await import('./create-dialog')
+    const onCreated = vi.fn()
+
+    render(<CreateGroupChatDialog onClose={() => undefined} onCreated={onCreated} open roster={sevenBots} />)
+
+    const boxes = screen.getAllByRole('checkbox') as HTMLButtonElement[]
+
+    for (const box of boxes.slice(0, 6)) {
+      fireEvent.click(box)
+    }
+
+    expect(screen.getByText(/Pick 2–6 bots/)).toBeTruthy()
+    expect(boxes[6].disabled).toBe(true)
+
+    fireEvent.change(screen.getByLabelText('Maximum bots'), { target: { value: '7' } })
+    expect(screen.getByText(/Pick 2–7 bots/)).toBeTruthy()
+    expect(boxes[6].disabled).toBe(false)
+    fireEvent.click(boxes[6])
+    fireEvent.click(screen.getByRole('button', { name: 'Create Group (7)' }))
+
+    const chat = await import('./group-chat')
+    const created = Object.values(chat.$groupChats.get()).at(-1)
+
+    expect(onCreated).toHaveBeenCalledTimes(1)
+    expect(created?.members).toHaveLength(7)
+    expect(created?.memberLimit).toBe(7)
   })
 })

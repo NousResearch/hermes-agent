@@ -19,6 +19,8 @@ from agent.prompt_builder import (
     _find_git_root,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
+    skills_source_fingerprint,
+    stored_skills_prompt_sources_stale,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
@@ -81,6 +83,96 @@ class TestGuidanceConstants:
         assert "PR numbers" not in MEMORY_GUIDANCE
         assert "tool quirks" not in MEMORY_GUIDANCE
 
+
+class TestSkillSourceResumeFingerprint:
+    def test_fingerprint_covers_changes_and_legacy_prompts_are_unchanged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill = tmp_path / "skills" / "tools" / "resume-aware"
+        skill.mkdir(parents=True)
+        path = skill / "SKILL.md"
+        path.write_text("---\ndescription: first\n---\n", encoding="utf-8")
+        first = skills_source_fingerprint(skills_dir_override=tmp_path / "skills")
+        prompt = f"<!-- hermes-skills-sources:{first}-->\n## Skills\n"
+        assert not stored_skills_prompt_sources_stale(
+            prompt, skills_dir_override=tmp_path / "skills"
+        )
+        path.write_text("---\ndescription: changed\n---\n", encoding="utf-8")
+        assert stored_skills_prompt_sources_stale(
+            prompt, skills_dir_override=tmp_path / "skills"
+        )
+        assert stored_skills_prompt_sources_stale(
+            "## Skills\nlegacy prompt", skills_dir_override=tmp_path / "skills"
+        )
+
+    def test_empty_skill_roots_keep_resume_marker_for_later_additions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        first = build_skills_system_prompt(skills_dir_override=skills)
+        assert first.startswith("<!-- hermes-skills-sources:")
+        assert "## Skills" not in first
+
+        new_skill = skills / "later"
+        new_skill.mkdir()
+        (new_skill / "SKILL.md").write_text(
+            "---\nname: later\ndescription: Added after resume\n---\n",
+            encoding="utf-8",
+        )
+        assert stored_skills_prompt_sources_stale(first, skills_dir_override=skills)
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        second = build_skills_system_prompt(skills_dir_override=skills)
+        assert "later" in second
+
+    def test_local_external_and_project_additions_change_fingerprint(self, tmp_path, monkeypatch):
+        import agent.prompt_builder as pb
+
+        local = tmp_path / "skills"
+        external = tmp_path / "external"
+        project = tmp_path / "project-skills"
+        local.mkdir(); external.mkdir(); project.mkdir()
+        monkeypatch.setattr(pb, "get_all_skills_dirs", lambda: [local, external])
+        monkeypatch.setattr(pb, "get_skills_dir", lambda: local)
+        monkeypatch.setattr(pb, "get_project_skills_dirs", lambda: [project], raising=False)
+        # The helper resolves project roots through skill_utils, so patch there
+        # as well to keep this test hermetic and independent of cwd trust.
+        import agent.skill_utils as su
+        monkeypatch.setattr(su, "get_project_skills_dirs", lambda: [project])
+
+        baseline = pb.skills_source_fingerprint(skills_dir_override=local)
+        (local / "local").mkdir()
+        (local / "local" / "SKILL.md").write_text("---\n---\n")
+        assert pb.skills_source_fingerprint(skills_dir_override=local) != baseline
+        baseline = pb.skills_source_fingerprint(skills_dir_override=local)
+        (external / "ext").mkdir()
+        (external / "ext" / "SKILL.md").write_text("---\n---\n")
+        assert pb.skills_source_fingerprint(skills_dir_override=local) != baseline
+        baseline = pb.skills_source_fingerprint(skills_dir_override=local)
+        (project / "proj").mkdir()
+        (project / "proj" / "SKILL.md").write_text("---\n---\n")
+        assert pb.skills_source_fingerprint(skills_dir_override=local) != baseline
+
+    def test_disabled_platform_and_compact_inputs_change_fingerprint(self, tmp_path, monkeypatch):
+        import agent.prompt_builder as pb
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = pb.skills_source_fingerprint(skills_dir_override=skills)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        assert pb.skills_source_fingerprint(skills_dir_override=skills) != base
+        monkeypatch.setattr(pb, "get_disabled_skill_names", lambda _p=None: {"hidden"})
+        disabled = pb.skills_source_fingerprint(skills_dir_override=skills)
+        assert disabled != base
+        marker = f"<!-- hermes-skills-sources:{base}-->\n## Skills\n"
+        assert pb.stored_skills_prompt_sources_stale(marker, skills_dir_override=skills)
+        assert pb.skills_source_fingerprint(
+            skills_dir_override=skills, compact_categories=frozenset({"coding"})
+        ) != disabled
+
+        # External and project additions are covered by the preceding test.
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE

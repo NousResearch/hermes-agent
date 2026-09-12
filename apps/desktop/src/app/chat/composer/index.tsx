@@ -19,6 +19,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
+import { $automationComposer, openAutomationComposer } from '@/store/automation-composer'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
@@ -26,6 +27,7 @@ import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/st
 import { $hudMode } from '@/store/hud'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
+import { openRouteTile } from '@/store/route-tiles'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -33,6 +35,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { AutomationComposerDialog } from './automation-composer-dialog'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -92,6 +95,7 @@ import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
   busy,
+  conversationTitle = null,
   cwd,
   disabled,
   focusKey,
@@ -115,8 +119,12 @@ export function ChatBar({
   onSubmit: onSubmitProp,
   onTranscribeAudio
 }: ChatBarProps) {
+  const automationComposer = useStore($automationComposer)
   const hudMode = useStore($hudMode)
   const hudWindowing = window.hermesDesktop?.hud?.windowing
+  // The Cron scheduler is its own overlay surface; opening it from the
+  // automation dialog just reveals the existing sidebar section.
+  const openCronScheduler = () => openRouteTile('/cron')
   const hudNativeDrag = hudMode && hudWindowing?.nativeDrag === true
 
   const { grabbing: hudGrabbing, onPointerDown: onHudDragPointerDown } = useHudComposerDrag(hudMode && !hudNativeDrag, {
@@ -1008,6 +1016,7 @@ export function ChatBar({
 
   const contextMenu = (
     <ContextMenu
+      onCreateAutomation={() => openAutomationComposer('goal', sessionId)}
       onInsertText={insertText}
       onOpenUrlDialog={openUrlDialog}
       onPasteClipboardImage={onPasteClipboardImage}
@@ -1431,6 +1440,11 @@ export function ChatBar({
         open={urlOpen}
         value={urlValue}
       />
+      {automationComposer.open && automationComposer.sessionId === sessionId && <AutomationComposerDialog
+        conversationTitle={conversationTitle}
+        onOpenCron={openCronScheduler}
+        onSubmitText={onSubmit}
+      />}
     </>
   )
 }

@@ -91,7 +91,7 @@ def test_ordinary_daemon_discovery_matches_legacy_extensions(tmp_path):
     (plugin / 'plugin.yaml').write_text('name: probe_plugin\nversion: 0.1.0\ndescription: Discovery fixture\n')
     (plugin / '__init__.py').write_text(
         "def register(ctx):\n    ctx.register_command('probe-plugin', lambda args: args, description='Disposable plugin discovery')\n")
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1')
     requests = [('commands.catalog', {}), *[('complete.slash', {'text': text})

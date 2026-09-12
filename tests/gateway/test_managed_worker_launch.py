@@ -116,9 +116,6 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         'model': {'provider': 'custom', 'default': 'managed-model', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}},
         'approvals': {'mode': 'manual'},
-        # The scanner otherwise downloads its latest release into the temp home on every run, and a newer
-        # release flagging the fixture command raises an approval prompt nobody answers (CI hang).
-        'security': {'tirith_enabled': False},
         'platform_toolsets': {'cli': ['terminal']}}
     if worker_action == 'mcp':
         # A configured stdio MCP server the owner discovered must reach the worker's model too (F25).
@@ -126,7 +123,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         config['mcp_servers'] = {'owned': {'command': sys.executable, 'args': [str(home / 'peer.py')]}}
         config['platform_toolsets']['cli'] = ['terminal', 'owned']
     (home / 'config.yaml').write_text(json.dumps(config))
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     audit = tmp_path / 'sqlite-opens.jsonl'
     site = tmp_path / 'audit-site'
     site.mkdir()

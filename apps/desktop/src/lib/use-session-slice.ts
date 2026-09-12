@@ -24,10 +24,14 @@ const EMPTY: readonly never[] = []
  * there instead.
  */
 export function useSessionSlice<T>(store: SliceStore<T>, key: string | null): T[] {
-  return useSyncExternalStore(
-    onChange => store.listen(onChange),
-    () => (key ? (store.get()[key] ?? (EMPTY as unknown as T[])) : (EMPTY as unknown as T[]))
+  // ponytail: stable subscribe/snapshot — one guard here bails out all 6 per-session slices
+  // on other-session writes; inline arrows resubscribed every render and churned every stack.
+  const subscribe = useCallback((onChange: () => void) => store.listen(onChange), [store])
+  const getSnapshot = useCallback(
+    () => (key ? (store.get()[key] ?? (EMPTY as unknown as T[])) : (EMPTY as unknown as T[])),
+    [store, key]
   )
+  return useSyncExternalStore(subscribe, getSnapshot)
 }
 
 interface ReadableStore<T> {

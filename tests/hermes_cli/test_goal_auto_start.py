@@ -106,14 +106,26 @@ def test_gateway_auto_start_uses_normal_events_and_skips_internal_events(monkeyp
             return fn()
 
     runner = object.__new__(Runner)
-    event = SimpleNamespace(internal=False)
-    assert asyncio.run(runner._maybe_auto_start_goal(event, "gateway-auto-start", "Implement the new feature"))
+    event = SimpleNamespace(
+        internal=False,
+        text="Implement the new feature",
+        auto_skill="instructions that say implement unrelated work",
+    )
+    assert asyncio.run(runner._maybe_auto_start_goal(event, "gateway-auto-start", event.text))
     state = goals.load_goal("gateway-auto-start")
     assert state.goal == "Implement the new feature"
     assert state.max_turns == 3
 
-    internal_event = SimpleNamespace(internal=True)
-    assert not asyncio.run(runner._maybe_auto_start_goal(internal_event, "internal", "Implement the internal change"))
+    enriched_event = SimpleNamespace(
+        internal=False,
+        text="hello",
+        auto_skill="instructions that say implement unrelated work",
+    )
+    assert not asyncio.run(runner._maybe_auto_start_goal(enriched_event, "gateway-enriched", enriched_event.text))
+    assert goals.load_goal("gateway-enriched") is None
+
+    internal_event = SimpleNamespace(internal=True, text="Implement the internal change")
+    assert not asyncio.run(runner._maybe_auto_start_goal(internal_event, "internal", internal_event.text))
     assert goals.load_goal("internal") is None
 
 

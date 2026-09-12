@@ -45,7 +45,7 @@ class GatewayGoalsMixin:
             return 20
 
     async def _maybe_auto_start_goal(self, event: "MessageEvent", session_id: str, message) -> bool:
-        """Opt-in: draft a goal from a normal gateway message before its first turn."""
+        """Opt-in: draft a goal from raw user text before the first gateway turn."""
         if getattr(event, "internal", False) or not session_id:
             return False
 

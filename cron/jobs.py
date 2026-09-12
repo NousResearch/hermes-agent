@@ -2298,6 +2298,7 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
+    model_unreachable: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2306,6 +2307,11 @@ def mark_job_run(
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
     explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
     can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
+
+    ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
+    zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
+    earlier per ``cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
+    (Cowork-style; see cron/unreachable_retry.py).
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2318,6 +2324,13 @@ def mark_job_run(
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
         _advance_after_run(job, now)
+        from cron.unreachable_retry import clear_state, plan_retry
+
+        if not success and model_unreachable and not is_terminal_job(job):
+            plan_retry(job)
+        else:
+            # Any run that reached the model (either outcome) resets the re-run ladder.
+            clear_state(job)
         save_jobs(jobs)
         return True
 

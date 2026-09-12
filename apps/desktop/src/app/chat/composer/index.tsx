@@ -308,6 +308,7 @@ export function ChatBar({
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
+    onReorderQueue,
     queueCurrentDraft,
     queueEdit,
     queueParked,
@@ -1249,6 +1250,7 @@ export function ChatBar({
                     }
                   }}
                   onEdit={beginQueuedEdit}
+                  onReorderQueue={onReorderQueue}
                   onResume={() => {
                     unparkQueuedPrompts(activeQueueSessionKey)
 

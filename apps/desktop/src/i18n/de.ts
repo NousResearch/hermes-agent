@@ -1,43 +1,81 @@
-import { defineLocale } from './define-locale'
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-// Vollständige deutsche Übersetzung (Österreichisch) der Hermes Desktop-App.
+import { defineLocale } from './define-locale'
+
+// Deutsche Übersetzung der Hermes-Desktop-App (Du-Form, österreichische Schreibweise).
+// Struktur folgt en.ts; fehlende Keys fallen über defineLocale() auf Englisch zurück.
 export const de = defineLocale({
+  connectors: {
+    title: 'Verbinde deine Apps',
+    connect: 'Verbinden',
+    skip: 'Nicht jetzt',
+    cancel: 'Warten beenden',
+    retry: 'Erneut versuchen',
+    grant: 'Neu verbinden',
+    connected: 'Verbunden',
+    checking: 'Deine Apps werden geprüft…',
+    waitingSignIn: 'Warte, bis du die Anmeldung abgeschlossen hast…',
+    notConnected: 'Verbindung fehlgeschlagen',
+    notAvailable: 'Nicht verfügbar',
+    startWith: count => `Starte die Aufgabe mit ${count} ${count === 1 ? 'verbundener App' : 'verbundenen Apps'}`,
+    startWithout: 'Ohne Verbindungen starten',
+    skipped: 'Übersprungen',
+    disabled: 'Nicht verfügbar',
+    failed: 'Verbindung fehlgeschlagen',
+    needsAuth: 'Zugriff abgelaufen',
+    opening: 'Anmeldung wird geöffnet…',
+    waiting: 'Schließe die Verbindung im Browser ab…',
+    timeout: 'Warte noch auf die Freigabe.',
+    keepWaiting: 'Weiter warten',
+    refresh: 'Status aktualisieren',
+    statusError: 'Verbindungen konnten nicht geprüft werden. Versuche zu aktualisieren.',
+    connectError: 'Freigabe konnte nicht gestartet werden. Versuche es erneut.',
+    unavailable: 'Verbindungen sind für diese Sitzung nicht verfügbar.',
+    ownerMissing: 'Öffne diese Konversation neu, um ihre Verbindungen zu verwalten.',
+    search: 'App finden',
+    empty: 'Keine passende App',
+    disclaimer: 'Das Verbinden ist freiwillig. Gib nur den Apps Zugriff, die Hermes verwenden soll.',
+    connectTitle: app => `Mit ${app} verbinden?`,
+    describe: app =>
+      `Hermes meldet sich bei ${app} in deinem Browser an und fragt nach, bevor dort etwas gelesen wird.`,
+    execution: 'Verbindungs-Tools'
+  },
   sessionImport: {
-    title: "Von einer anderen App fortfahren",
-    subtitle: "Bring eine Konversation nach Hermes und mach dort weiter, wo du aufgehört hast.",
-    action: "Session importieren",
-    readingFrom: "Lesen von",
-    connectedComputer: "dem verbundenen Computer",
-    destination: "Importieren in",
-    all: "Alle",
-    search: "Geladene Sessions durchsuchen",
-    scanning: "Konversationen werden gesucht",
-    scanError: "Sessions konnten nicht gefunden werden",
-    scanHelp: "Überprüfe deine Backend-Verbindung und versuch es dann erneut. Ältere Backends brauchen vielleicht ein Update.",
-    empty: "Keine Konversationen gefunden",
-    emptyHelp: "Claude Code- und Codex-Sessions auf diesem Backend werden hier angezeigt.",
-    noMatches: "Keine passenden Konversationen",
-    searchHelp: "Versuchs mit einem anderen Titel oder Ordner, oder lade weitere Sessions.",
-    skipped: "Einige Protokolle waren leer, nicht lesbar oder zu groß für die Vorschau.",
-    more: "Weitere Sessions laden",
-    messages: "Nachrichten",
-    choose: "Eine Konversation, die sich lohnt",
-    chooseHelp: "Wähl eine Session, um ihre Historie zu lesen, bevor du sie nach Hermes bringst.",
-    previewLoading: "Vorschau wird geöffnet",
-    previewError: "Vorschau nicht verfügbar",
-    previewHelp: "Die Quelle wurde vielleicht verschoben oder geändert. Aktualisiere die Liste und versuchs noch einmal.",
-    previewLimit: "Vorschau für bessere Lesbarkeit gekürzt. Die vollständige Konversation wird importiert.",
-    you: "Du",
-    snapshot: "Diese Konversation ist bereits in Hermes. Öffne deine bestehende Kopie, um weiterzumachen.",
+    title: 'Von einer anderen App fortfahren',
+    subtitle: 'Bring eine Konversation nach Hermes und mach dort weiter, wo du aufgehört hast.',
+    action: 'Session importieren',
+    readingFrom: 'Lesen von',
+    connectedComputer: 'dem verbundenen Computer',
+    destination: 'Importieren in',
+    all: 'Alle',
+    search: 'Geladene Sessions durchsuchen',
+    scanning: 'Konversationen werden gesucht',
+    scanError: 'Sessions konnten nicht gefunden werden',
+    scanHelp:
+      'Überprüfe deine Backend-Verbindung und versuch es dann erneut. Ältere Backends brauchen vielleicht ein Update.',
+    empty: 'Keine Konversationen gefunden',
+    emptyHelp: 'Claude Code- und Codex-Sessions auf diesem Backend werden hier angezeigt.',
+    noMatches: 'Keine passenden Konversationen',
+    searchHelp: 'Versuchs mit einem anderen Titel oder Ordner, oder lade weitere Sessions.',
+    skipped: 'Einige Protokolle waren leer, nicht lesbar oder zu groß für die Vorschau.',
+    more: 'Weitere Sessions laden',
+    messages: 'Nachrichten',
+    choose: 'Eine Konversation, die sich lohnt',
+    chooseHelp: 'Wähl eine Session, um ihre Historie zu lesen, bevor du sie nach Hermes bringst.',
+    previewLoading: 'Vorschau wird geöffnet',
+    previewError: 'Vorschau nicht verfügbar',
+    previewHelp:
+      'Die Quelle wurde vielleicht verschoben oder geändert. Aktualisiere die Liste und versuchs noch einmal.',
+    previewLimit: 'Vorschau für bessere Lesbarkeit gekürzt. Die vollständige Konversation wird importiert.',
+    you: 'Du',
+    snapshot: 'Diese Konversation ist bereits in Hermes. Öffne deine bestehende Kopie, um weiterzumachen.',
     copyNotice:
-      "Kopiert den Konversationstext. Quelldateien bleiben unverändert. Tool-Ausgaben und Überlegungen werden nicht übernommen.",
-    importing: "Importieren…",
-    open: "In Hermes öffnen",
-    continue: "In Hermes fortfahren",
-    importError: "Diese Konversation konnte nicht importiert werden."
-  }
-  ,
+      'Kopiert den Konversationstext. Quelldateien bleiben unverändert. Tool-Ausgaben und Überlegungen werden nicht übernommen.',
+    importing: 'Importieren…',
+    open: 'In Hermes öffnen',
+    continue: 'In Hermes fortfahren',
+    importError: 'Diese Konversation konnte nicht importiert werden.'
+  },
   common: {
     apply: 'Übernehmen',
     back: 'Zurück',
@@ -78,8 +116,7 @@ export const de = defineLocale({
     tryHint: term => `Versuche „${term}“`,
     on: 'An',
     off: 'Aus'
-  }
-  ,
+  },
   fileMenu: {
     revealFinder: 'Im Finder anzeigen',
     revealExplorer: 'Im Datei-Explorer anzeigen',
@@ -97,68 +134,68 @@ export const de = defineLocale({
     deleteTitle: name => `„${name}“ löschen?`,
     deleteBody: 'Es wird in den Papierkorb verschoben — von dort kannst du es wiederherstellen.',
     pathCopied: 'Pfad kopiert'
-  }
-  ,
+  },
   boot: {
-    ready: "Hermes Desktop ist bereit",
+    ready: 'Hermes Desktop ist bereit',
     desktopBootFailedWithMessage: message => `Desktop-Start fehlgeschlagen: ${message}`,
     steps: {
-      connectingGateway: "Live-Desktop-Gateway wird verbunden",
-      loadingSettings: "Hermes-Einstellungen werden geladen",
-      loadingSessions: "Letzte Sessions werden geladen",
-      retryingRemoteBackend: "Wird mit dem Remote-Hermes-Backend neu verbunden…",
-      startingDesktopConnection: "Desktop-Verbindung wird gestartet",
-      startingHermesDesktop: "Hermes Desktop wird gestartet…"
+      connectingGateway: 'Live-Desktop-Gateway wird verbunden',
+      loadingSettings: 'Hermes-Einstellungen werden geladen',
+      loadingSessions: 'Letzte Sessions werden geladen',
+      retryingRemoteBackend: 'Wird mit dem Remote-Hermes-Backend neu verbunden…',
+      startingDesktopConnection: 'Desktop-Verbindung wird gestartet',
+      startingHermesDesktop: 'Hermes Desktop wird gestartet…'
     },
     errors: {
-      backgroundExited: "Der Hermes-Hintergrundprozess wurde beendet.",
-      backgroundExitedDuringStartup: "Der Hermes-Hintergrundprozess wurde während des Starts beendet.",
-      backendStopped: "Backend gestoppt",
-      desktopBootFailed: "Desktop-Start fehlgeschlagen",
-      gatewayConnectionLost: "Verbindung zum Gateway verloren",
+      backgroundExited: 'Der Hermes-Hintergrundprozess wurde beendet.',
+      backgroundExitedDuringStartup: 'Der Hermes-Hintergrundprozess wurde während des Starts beendet.',
+      backendStopped: 'Backend gestoppt',
+      desktopBootFailed: 'Desktop-Start fehlgeschlagen',
+      gatewayConnectionLost: 'Verbindung zum Gateway verloren',
       gatewayConnectionLostDetail:
-        "Im Hintergrund wird weiterhin erneut versucht. Du kannst weiterlesen und weiter schreiben – öffne die Gateway-Einstellungen, falls das anhält.",
-      gatewaySignInRequired: "Gateway-Sign-in erforderlich",
-      ipcBridgeUnavailable: "Der Desktop-IPC-Bridge ist nicht verfügbar."
+        'Im Hintergrund wird weiterhin erneut versucht. Du kannst weiterlesen und weiter schreiben – öffne die Gateway-Einstellungen, falls das anhält.',
+      gatewaySignInRequired: 'Gateway-Sign-in erforderlich',
+      ipcBridgeUnavailable: 'Der Desktop-IPC-Bridge ist nicht verfügbar.'
     },
     failure: {
-      title: "Hermes konnte nicht gestartet werden",
+      title: 'Hermes konnte nicht gestartet werden',
       description:
-        "Das Hintergrund-Gateway ist nicht hochgekommen. Probier einen der Wiederherstellungsschritte unten. Nichts davon löscht deine Chats oder Einstellungen.",
-      remoteTitle: "Remote-Gateway-Sign-in erforderlich",
+        'Das Hintergrund-Gateway ist nicht hochgekommen. Probier einen der Wiederherstellungsschritte unten. Nichts davon löscht deine Chats oder Einstellungen.',
+      remoteTitle: 'Remote-Gateway-Sign-in erforderlich',
       remoteDescription:
-        "Deine Remote-Gateway-Session ist abgelaufen. Melde dich erneut an, um dich neu zu verbinden. Nichts davon löscht deine Chats oder Einstellungen.",
-      retry: "Erneut versuchen",
-      repairInstall: "Installation reparieren",
-      useLocalGateway: "Lokales Gateway verwenden",
-      gatewaySettings: "Gateway-Einstellungen",
-      back: "Zurück",
-      openLogs: "Logs öffnen",
-      repairHint: "Die Reparatur führt den Installer erneut aus und kann auf einem frischen Computer ein paar Minuten dauern.",
+        'Deine Remote-Gateway-Session ist abgelaufen. Melde dich erneut an, um dich neu zu verbinden. Nichts davon löscht deine Chats oder Einstellungen.',
+      retry: 'Erneut versuchen',
+      repairInstall: 'Installation reparieren',
+      useLocalGateway: 'Lokales Gateway verwenden',
+      gatewaySettings: 'Gateway-Einstellungen',
+      back: 'Zurück',
+      openLogs: 'Logs öffnen',
+      repairHint:
+        'Die Reparatur führt den Installer erneut aus und kann auf einem frischen Computer ein paar Minuten dauern.',
       remoteSignInHint: signInLabel =>
         `Meldet dich von der gespeicherten Remote-Browser-Session ab und öffnet dann ${signInLabel}. Verwende das lokale Gateway, um stattdessen zum eingebauten Backend zu wechseln.`,
-      signOutAndSignIn: "Abmelden & anmelden",
-      remoteFailureHint: "Überprüf die Gateway-URL und das Sign-in unter Gateway-Einstellungen, oder wechsle zum lokalen Gateway.",
-      cloudDownTitle: "Nous Cloud Agent ist down",
+      signOutAndSignIn: 'Abmelden & anmelden',
+      remoteFailureHint:
+        'Überprüf die Gateway-URL und das Sign-in unter Gateway-Einstellungen, oder wechsle zum lokalen Gateway.',
+      cloudDownTitle: 'Nous Cloud Agent ist down',
       cloudDownDescription:
-        "Der von Nous verwaltete Cloud-Agent, mit dem sich dieses Gateway verbindet, liefert einen Serverfehler. Er kann von hier aus nicht neu gestartet werden – prüf seinen Status, wechsle zum lokalen Gateway oder hol dir Support.",
+        'Der von Nous verwaltete Cloud-Agent, mit dem sich dieses Gateway verbindet, liefert einen Serverfehler. Er kann von hier aus nicht neu gestartet werden – prüf seinen Status, wechsle zum lokalen Gateway oder hol dir Support.',
       cloudDownHint:
-        "Die Schaltflächen unten öffnen das Nous Portal (Instanzstatus und Steuerung) und unseren Discord für Support.",
-      cloudDownCheckPortal: "Portal-Status prüfen",
-      cloudDownDiscord: "Hilfe auf Discord holen",
-      hideRecentLogs: "Neueste Logs ausblenden",
-      showRecentLogs: "Neueste Logs anzeigen",
-      signedInTitle: "Angemeldet",
-      signedInMessage: "Wird mit dem Remote-Gateway neu verbunden…",
-      signInIncompleteTitle: "Sign-in unvollständig",
-      signInIncompleteMessage: "Das Anmeldefenster wurde geschlossen, bevor die Authentifizierung abgeschlossen war.",
-      signInFailed: "Sign-in fehlgeschlagen",
-      signInToRemoteGateway: "Beim Remote-Gateway anmelden",
+        'Die Schaltflächen unten öffnen das Nous Portal (Instanzstatus und Steuerung) und unseren Discord für Support.',
+      cloudDownCheckPortal: 'Portal-Status prüfen',
+      cloudDownDiscord: 'Hilfe auf Discord holen',
+      hideRecentLogs: 'Neueste Logs ausblenden',
+      showRecentLogs: 'Neueste Logs anzeigen',
+      signedInTitle: 'Angemeldet',
+      signedInMessage: 'Wird mit dem Remote-Gateway neu verbunden…',
+      signInIncompleteTitle: 'Sign-in unvollständig',
+      signInIncompleteMessage: 'Das Anmeldefenster wurde geschlossen, bevor die Authentifizierung abgeschlossen war.',
+      signInFailed: 'Sign-in fehlgeschlagen',
+      signInToRemoteGateway: 'Beim Remote-Gateway anmelden',
       signInWithProvider: provider => `Mit ${provider} anmelden`,
-      identityProvider: "dein Identity-Provider"
+      identityProvider: 'dein Identity-Provider'
     }
-  }
-  ,
+  },
   notifications: {
     region: 'Notifications',
     hide: 'Ausblenden',
@@ -197,7 +234,8 @@ export const de = defineLocale({
       openaiRejectedApiKey: 'OpenAI hat den API-Key abgelehnt.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI hat den API-Key abgelehnt (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'OpenAI-TTS braucht VOICE_TOOLS_OPENAI_KEY oder OPENAI_API_KEY.',
-      codeSkewRestartRequired: 'Dieses Backend läuft nach einem Update mit altem Code. Starte es neu, um den neuen Code zu laden.'
+      codeSkewRestartRequired:
+        'Dieses Backend läuft nach einem Update mit altem Code. Starte es neu, um den neuen Code zu laden.'
     },
     voice: {
       configureSpeechToText: 'Richte Speech-to-Text ein, um den Sprachmodus zu verwenden.',
@@ -217,7 +255,12 @@ export const de = defineLocale({
       transcriptionFailed: 'Sprachtranskription fehlgeschlagen',
       transcriptionUnavailable: 'Sprachtranskription ist noch nicht verfügbar.',
       tryRecordingAgain: 'Versuch es erneut mit der Aufnahme.',
-      unavailable: 'Sprache nicht verfügbar'
+      unavailable: 'Sprache nicht verfügbar',
+      liveEnded: 'Live-Sprachsitzung beendet',
+      liveError: 'Live-Sprache',
+      liveDelegationFailed: 'Anfrage konnte nicht an Hermes übergeben werden',
+      liveUnavailable: reason =>
+        `GPT-Live-Sprachchat ist nicht verfügbar: ${reason}. Stattdessen wird Sprache-zu-Text verwendet.`
     },
     native: {
       approvalTitle: 'Genehmigung erforderlich',
@@ -232,46 +275,42 @@ export const de = defineLocale({
       backgroundFailedTitle: 'Hintergrundaufgabe fehlgeschlagen',
       creditsTitle: 'Credits'
     }
-  }
-  ,
+  },
   remoteDisplayBanner: {
     message: reason =>
       `Software-Rendering aktiv — Remote-Display erkannt (${reason}). GPU-Beschleunigung ist deaktiviert, um Flackern zu verhindern.`
-  }
-  ,
+  },
   billingBlock: {
-    titleNous: "Keine Nous-Credits mehr",
+    titleNous: 'Keine Nous-Credits mehr',
     titleProvider: provider => `Keine Credits mehr — ${provider}`,
-    fallbackMessage: "Auf deinem Konto sind keine Credits mehr übrig. Füge Credits hinzu, um fortzufahren.",
-    openBilling: "Billing öffnen",
-    addCredits: "Credits hinzufügen",
-    dismiss: "Schließen"
-  }
-  ,
+    fallbackMessage: 'Auf deinem Konto sind keine Credits mehr übrig. Füge Credits hinzu, um fortzufahren.',
+    openBilling: 'Billing öffnen',
+    addCredits: 'Credits hinzufügen',
+    dismiss: 'Schließen'
+  },
   sendDiagnostics: {
-    title: "Diagnostics an Nous senden",
+    title: 'Diagnostics an Nous senden',
     privacyNotice:
-      "Damit lädst du ein Debug-Paket in den internen Nous-Speicher hoch (kein öffentliches Paste). Es enthält Systeminfos (Betriebssystem, Versionen, Provider, welche API-Keys konfiguriert sind — niemals die Keys selbst) sowie vollständige Agent-, Gateway- und Desktop-Logs (bis zu 512 KB je Datei), die aller Voraussicht nach Gesprächsinhalte, Tool-Ausgaben und Dateipfade enthalten. Geheimnisse werden vor dem Upload geschwärzt. Das Paket ist nur für Nous-Mitarbeiter und freigeschaltete Discord-Moderatoren einsehbar und wird nach 14 Tagen automatisch gelöscht.",
-    upload: "Hochladen",
-    uploading: "Wird hochgeladen…",
-    cancel: "Abbrechen",
-    close: "Schließen",
-    copyLink: "Link kopieren",
+      'Damit lädst du ein Debug-Paket in den internen Nous-Speicher hoch (kein öffentliches Paste). Es enthält Systeminfos (Betriebssystem, Versionen, Provider, welche API-Keys konfiguriert sind — niemals die Keys selbst) sowie vollständige Agent-, Gateway- und Desktop-Logs (bis zu 512 KB je Datei), die aller Voraussicht nach Gesprächsinhalte, Tool-Ausgaben und Dateipfade enthalten. Geheimnisse werden vor dem Upload geschwärzt. Das Paket ist nur für Nous-Mitarbeiter und freigeschaltete Discord-Moderatoren einsehbar und wird nach 14 Tagen automatisch gelöscht.',
+    upload: 'Hochladen',
+    uploading: 'Wird hochgeladen…',
+    cancel: 'Abbrechen',
+    close: 'Schließen',
+    copyLink: 'Link kopieren',
     uploadIdFallback: id => `Kein Link zurückgegeben — zitiere die Upload-ID ${id} im Support`,
-    doneTitle: "Diagnostics gesendet",
+    doneTitle: 'Diagnostics gesendet',
     doneDescription:
-      "Dein Paket wurde privat hochgeladen. Teile den Link unten in deinem Support-Thread, damit das Team deine Logs sehen kann.",
-    failedTitle: "Hochladen fehlgeschlagen",
+      'Dein Paket wurde privat hochgeladen. Teile den Link unten in deinem Support-Thread, damit das Team deine Logs sehen kann.',
+    failedTitle: 'Hochladen fehlgeschlagen',
     failedHint:
-      "Du kannst außerdem `hermes debug share --nous` im Terminal ausführen oder `hermes debug share --local`, um den Bericht ohne Hochladen auszugeben.",
-    handoffLead: "Diskussion hier fortsetzen:",
+      'Du kannst außerdem `hermes debug share --nous` im Terminal ausführen oder `hermes debug share --local`, um den Bericht ohne Hochladen auszugeben.',
+    handoffLead: 'Diskussion hier fortsetzen:',
     links: {
-      github: "GitHub Issues",
-      portal: "Nous-Portal-Support",
-      discord: "Discord"
+      github: 'GitHub Issues',
+      portal: 'Nous-Portal-Support',
+      discord: 'Discord'
     }
-  }
-  ,
+  },
   titlebar: {
     hideSidebar: 'Sidebar ausblenden',
     showSidebar: 'Sidebar einblenden',
@@ -290,8 +329,7 @@ export const de = defineLocale({
     resetHudLayout: 'HUD-Größe und -Position zurücksetzen',
     layoutEditor: 'Layout-Editor',
     layoutEditorTitle: mod => `Layout-Editor — ${mod}-Klick setzt das Layout zurück`
-  }
-  ,
+  },
   keybinds: {
     title: 'Tastaturkürzel',
     subtitle: open => `Klicke auf ein Kürzel, um es neu zu belegen · ${open} öffnet dieses Panel erneut.`,
@@ -325,6 +363,15 @@ export const de = defineLocale({
       'session.newWindow': 'Neues Fenster',
       'session.next': 'Nächste Sitzung',
       'session.prev': 'Vorherige Sitzung',
+      'session.slot.1': 'Zu letzter Sitzung 1 wechseln',
+      'session.slot.2': 'Zu letzter Sitzung 2 wechseln',
+      'session.slot.3': 'Zu letzter Sitzung 3 wechseln',
+      'session.slot.4': 'Zu letzter Sitzung 4 wechseln',
+      'session.slot.5': 'Zu letzter Sitzung 5 wechseln',
+      'session.slot.6': 'Zu letzter Sitzung 6 wechseln',
+      'session.slot.7': 'Zu letzter Sitzung 7 wechseln',
+      'session.slot.8': 'Zu letzter Sitzung 8 wechseln',
+      'session.slot.9': 'Zu letzter Sitzung 9 wechseln',
       'session.focusSearch': 'Sitzungen durchsuchen',
       'session.togglePin': 'Aktuelle Sitzung anheften / lösen',
       'session.archive': 'Aktuelle Sitzung archivieren',
@@ -341,6 +388,7 @@ export const de = defineLocale({
       'view.showFiles': 'Dateibrowser anzeigen',
       'view.showBrowser': 'Browser öffnen',
       'view.toggleHud': 'HUD-Modus umschalten',
+      'hud.snapToPointer': 'HUD zum Zeiger bewegen (global, während HUD offen ist)',
       'view.showTerminal': 'Terminal umschalten',
       'view.newTerminal': 'Neues Terminal',
       'view.nextTerminal': 'Nächstes Terminal',
@@ -357,6 +405,24 @@ export const de = defineLocale({
       'view.findPrevious': 'Vorherigen Treffer suchen',
       'appearance.toggleMode': 'Hell / dunkel umschalten',
       'profile.default': 'Zu Standardprofil wechseln',
+      'profile.switch.1': 'Zu Profil 1 wechseln',
+      'profile.switch.2': 'Zu Profil 2 wechseln',
+      'profile.switch.3': 'Zu Profil 3 wechseln',
+      'profile.switch.4': 'Zu Profil 4 wechseln',
+      'profile.switch.5': 'Zu Profil 5 wechseln',
+      'profile.switch.6': 'Zu Profil 6 wechseln',
+      'profile.switch.7': 'Zu Profil 7 wechseln',
+      'profile.switch.8': 'Zu Profil 8 wechseln',
+      'profile.switch.9': 'Zu Profil 9 wechseln',
+      'profile.switch.10': 'Zu Profil 10 wechseln',
+      'profile.switch.11': 'Zu Profil 11 wechseln',
+      'profile.switch.12': 'Zu Profil 12 wechseln',
+      'profile.switch.13': 'Zu Profil 13 wechseln',
+      'profile.switch.14': 'Zu Profil 14 wechseln',
+      'profile.switch.15': 'Zu Profil 15 wechseln',
+      'profile.switch.16': 'Zu Profil 16 wechseln',
+      'profile.switch.17': 'Zu Profil 17 wechseln',
+      'profile.switch.18': 'Zu Profil 18 wechseln',
       'profile.next': 'Nächstes Profil',
       'profile.prev': 'Vorheriges Profil',
       'profile.toggleAll': 'Alle-Profile-Ansicht umschalten',
@@ -372,13 +438,11 @@ export const de = defineLocale({
       'composer.history': 'Popover / Verlauf durchblättern',
       'composer.cancel': 'Popover schließen · Lauf abbrechen'
     }
-  }
-  ,
+  },
   findInPage: {
     next: 'Nächster Treffer',
     previous: 'Vorheriger Treffer'
-  }
-  ,
+  },
   language: {
     label: 'Sprache',
     description: 'Wähle die Sprache für die Desktop-Oberfläche.',
@@ -387,8 +451,7 @@ export const de = defineLocale({
     switchTo: 'Sprache wechseln',
     searchPlaceholder: 'Sprachen suchen…',
     noResults: 'Keine Sprachen gefunden'
-  }
-  ,
+  },
   settings: {
     closeSettings: 'Einstellungen schließen',
     exportConfig: 'Konfiguration exportieren',
@@ -413,7 +476,7 @@ export const de = defineLocale({
       about: 'Über',
       billing: 'Abrechnung',
       notifications: 'Benachrichtigungen',
-      plugins: 'Plugins'
+      vault: 'Passwörter & Logins'
     },
     plugins: {
       title: 'Desktop-Plugins',
@@ -426,21 +489,14 @@ export const de = defineLocale({
       disable: 'Deaktivieren',
       failed: 'fehlgeschlagen',
       empty: 'Noch keine Desktop-Plugins installiert.',
-      kinds: { bundled: 'gebündelt', disk: 'auf Datenträger', runtime: 'Laufzeit' },
-      agent: {
-        title: 'Agent-Plugins',
-        blurb:
-          'Plugins, die du im Hermes-Backend installiert hast — Tools, Fähigkeiten, MCP-Server, Hooks und Slash-Befehle. Tragbare sind Agent-Plugins-Pakete (Fähigkeiten + MCP-Bündel, die auch in anderen Agenten funktionieren). Umschalter gelten für neue Sitzungen.',
-        appliesTo: 'Gilt für:',
-        empty: 'Noch keine Agent-Plugins installiert.',
-        loadFailed: 'Agent-Plugins konnten nicht geladen werden',
-        portable: 'tragbar',
-        search: 'Plugins durchsuchen…',
-        noMatches: 'Keine Plugins passen zu deiner Suche.',
-        toggleFailed: (name: string) => `„${name}“ konnte nicht umgeschaltet werden`,
-        updateBackendToManage: 'Aktualisiere das Hermes-Backend, um dieses Plugin vom Desktop zu verwalten.',
-        sources: { bundled: 'gebündelt', user: 'Benutzer', git: 'git', project: 'Projekt', entrypoint: 'pip' }
+      kinds: {
+        bundled: 'gebündelt',
+        disk: 'auf Datenträger',
+        runtime: 'Laufzeit'
       },
+      agentHalfMissing: 'Agent-Hälfte fehlt hier',
+      agentHalfMissingTip:
+        'Das ist die Desktop-Hälfte eines gebündelten Plugins, aber seine Agent-Hälfte ist auf dem aktuell verbundenen Backend/Profil nicht installiert. Installiere sie unter Fähigkeiten → Plugins.',
       installModal: {
         installFromGit: 'Von Git installieren',
         reviewRepository: 'Repository prüfen',
@@ -453,9 +509,20 @@ export const de = defineLocale({
         desktopLabel: 'Desktop-UI',
         agentTargetLocal: profile => `Installiert in das ${profile}-Backend (~/.hermes/plugins/)`,
         agentTargetRemote: profile => `Installiert in das verbundene ${profile}-Backend`,
-        desktopTarget: "Installiert in den lokalen Desktop-Plugins-Ordner dieser App",
+        catalogPinned: (name, sha) =>
+          `Hermes-Katalog-Eintrag „${name}" — die Agent-Komponente wird am geprüften Pin installiert${sha ? ` ${sha}` : ''}, nicht an der Spitze des Branches.`,
+        reviewedHeading: 'Geprüfter Katalog-Eintrag',
+        reviewedIntro:
+          'Dieser Eintrag wurde an seinem gepinnten Commit von einem Menschen geprüft. Du kannst den genauen Code trotzdem unten ansehen.',
+        restartToApply: 'Starte das Gateway neu, damit das Plugin wirkt.',
+        restartNow: 'Gateway neu starten',
+        missingEnvAction: 'Einrichten',
+        alreadyInstalled: name => `${name} ist bereits installiert.`,
+        desktopTarget: 'Installiert in den lokalen Desktop-Plugins-Ordner dieser App',
+        desktopTargetFromPackage: 'Aus dem Paket oben in diese App geladen — gleich für jedes Profil',
         desktopOnlyNote: 'Nur-Desktop-Pakete installieren kein Backend-Agent-Plugin.',
-        insecureWarning: 'Diese URL verwendet ein unsicheres oder lokales Schema. Für Produktionsinstallationen bevorzuge https:// oder git@.',
+        insecureWarning:
+          'Diese URL verwendet ein unsicheres oder lokales Schema. Für Produktionsinstallationen bevorzuge https:// oder git@.',
         securityHeading: 'Vor der Installation',
         securityIntro:
           'Installiere nur aus Quellen, denen du vertraust — prüfe das Repository unten, wenn du sehen willst, was hinzugefügt wird.',
@@ -465,6 +532,12 @@ export const de = defineLocale({
         gitCloneLabel: 'Git-Clone-URL',
         enableAgent: 'Agent-Plugin nach der Installation aktivieren',
         forceReinstall: 'Neuinstallation erzwingen (ersetzen, falls bereits installiert)',
+        pinToCommit: 'An Commit binden (optional)',
+        pinToCommitPlaceholder: 'Vollständiger 40-stelliger Commit-SHA',
+        pinToCommitHint:
+          'Alle, die diesen SHA installieren, bekommen denselben Code; das Plugin lehnt danach Updates ab, bis es neu gepinnt wird. Leer lassen für den neuesten Commit.',
+        pinToCommitInvalid:
+          'Muss ein vollständiger 40-stelliger Commit-SHA sein (Branches und Tags werden nicht akzeptiert).',
         install: 'Installieren',
         installing: 'Wird installiert…',
         probing: 'Repository wird untersucht…',
@@ -476,6 +549,92 @@ export const de = defineLocale({
         agentFailed: 'Installation des Agent-Plugins fehlgeschlagen',
         desktopFailed: 'Installation des Desktop-Plugins fehlgeschlagen',
         missingEnv: vars => `Umgebungsvariablen fehlen: ${vars}. Füge sie unter Einstellungen → Schlüssel hinzu.`
+      }
+    },
+    vault: {
+      title: 'Passwörter & Logins',
+      blurb:
+        'Sag „melde mich bei GitHub an" und der Agent meldet sich für dich an. Beim ersten Mal auf einer Anmeldeseite fragt er dich direkt dort nach dem Login; danach läuft es einfach. Passwörter sind auf diesem Rechner verschlüsselt und werden direkt in die Seite eingetragen — das Modell sieht sie nie.',
+      count: n => `${n} gespeichert`,
+      loadFailed: 'Gespeicherte Einträge konnten nicht geladen werden',
+      empty: 'Noch nichts gespeichert',
+      emptyDesc:
+        'Du musst hier nichts eintragen. Bitte den Agenten, sich bei einer Seite anzumelden — er fragt dich dann einmal direkt dort nach dem Login. Über „Hinzufügen" kannst du einen Eintrag auch vorab anlegen.',
+      add: 'Hinzufügen',
+      addTitle: 'Login, Karte oder Adresse hinzufügen',
+      addDescription: 'Verschlüsselt auf diesem Rechner gespeichert. Der Agent sieht das Passwort nie.',
+      added: 'Gespeichert.',
+      adding: 'Wird gespeichert…',
+      addConfirm: 'Speichern',
+      kindField: 'Art',
+      kinds: {
+        login: 'Login',
+        payment: 'Zahlungskarte',
+        address: 'Adresse'
+      },
+      labelField: 'Bezeichnung',
+      labelPlaceholder: 'z. B. GitHub Firma',
+      labelRequired: 'Eine Bezeichnung ist erforderlich.',
+      originField: 'Ursprung der Seite',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
+      originInvalid: 'Gib eine gültige URL wie https://example.com ein.',
+      identifierTypeField: 'Art der Kennung',
+      identifierTypes: {
+        email: 'E-Mail',
+        phone: 'Telefon',
+        username: 'Benutzername'
+      },
+      identifierField: 'Kennung',
+      identifierShown: identifier => identifier,
+      passwordField: 'Passwort',
+      loginFieldsRequired: 'Kennung und Passwort sind erforderlich.',
+      cardNumberField: 'Kartennummer',
+      cardNameField: 'Name auf der Karte',
+      expMonthField: 'Ablaufmonat',
+      expYearField: 'Ablaufjahr',
+      cvcField: 'CVC',
+      postalField: 'Postleitzahl',
+      addressLine1Field: 'Adresszeile 1',
+      addressLine2Field: 'Adresszeile 2',
+      cityField: 'Stadt',
+      stateField: 'Bundesland / Region',
+      countryField: 'Land',
+      optional: '(optional)',
+      createdOn: date => `Hinzugefügt am ${date}`,
+      deleteAction: 'Gespeicherten Eintrag entfernen',
+      otpField: 'Authentifizierungsschlüssel',
+      otpPlaceholder: 'Base32-Geheimnis oder otpauth://-Link',
+      otpHint:
+        'Der „Einrichtungsschlüssel", den die Seite beim Aktivieren von 2FA anzeigt. Ist er gespeichert, erzeugt Hermes die Codes selbst.',
+      twoFactorBadge: '2FA automatisch',
+      deleteTitle: 'Diesen Eintrag löschen?',
+      deleteDescription: label => `„${label}" wird entfernt. Das kann nicht rückgängig gemacht werden.`,
+      deleteConfirm: 'Löschen',
+      sources: {
+        title: 'Passwortmanager',
+        blurb:
+          'Installierte Passwortmanager werden automatisch erkannt. Der Agent bittet dich, einen zu entsperren, wenn er zum ersten Mal einen Login daraus braucht (einmal pro Sitzung); nur ein Sitzungstoken bleibt im Speicher, und der Agent sieht weder dein Master-Passwort noch einen Login.',
+        toggleFailed: 'Passwortmanager konnte nicht geändert werden',
+        notInstalled: name =>
+          `Nicht erkannt. Installiere das ${name}-Kommandozeilenwerkzeug und melde dich dort an; Hermes erkennt es automatisch.`,
+        disabledDesc: 'Erkannt, aber für Hermes ausgeschaltet.',
+        lockedDesc:
+          'Erkannt. Der Agent bittet dich, ihn zu entsperren, wenn er einen Login braucht — oder entsperre ihn jetzt.',
+        unlockedDesc:
+          'Für diese Sitzung entsperrt. Sperrt automatisch nach 30 Minuten Inaktivität oder wenn Hermes geschlossen wird.',
+        statusLocked: 'Gesperrt',
+        statusNotDetected: 'Nicht erkannt',
+        statusOff: 'Aus',
+        statusUnlocked: 'Entsperrt',
+        unlock: 'Entsperren',
+        unlocking: 'Wird entsperrt…',
+        lock: 'Sperren',
+        unlocked: name => `${name} ist für diese Sitzung entsperrt.`,
+        unlockTitle: name => `${name} entsperren`,
+        unlockDescription:
+          'Gib dein Master-Passwort ein. Es geht an den Passwortmanager auf diesem Rechner und wird danach verworfen — es wird nie gespeichert, protokolliert oder dem Agenten gezeigt.',
+        masterPasswordPlaceholder: 'Master-Passwort'
       }
     },
     notifications: {
@@ -517,10 +676,12 @@ export const de = defineLocale({
       test: 'Testbenachrichtigung senden',
       testTitle: 'Hermes',
       testBody: 'Benachrichtigungen funktionieren.',
-      testSent: 'Test gesendet. Wenn nichts erscheint, überprüfe die Benachrichtigungsberechtigungen deines OS und Fokus/Nicht-stören.',
+      testSent:
+        'Test gesendet. Wenn nichts erscheint, überprüfe die Benachrichtigungsberechtigungen deines OS und Fokus/Nicht-stören.',
       testUnsupported: 'Dieses System unterstützt keine nativen Benachrichtigungen.',
       completionSoundTitle: 'Abschluss-Sound',
-      completionSoundDesc: 'Wird abgespielt, wenn ein Agent-Turn endet. Wähl einen Preset aus und sieh ihn dir hier an.',
+      completionSoundDesc:
+        'Wird abgespielt, wenn ein Agent-Turn endet. Wähl einen Preset aus und sieh ihn dir hier an.',
       completionSoundPreview: 'Vorschau'
     },
     sections: {
@@ -542,9 +703,18 @@ export const de = defineLocale({
       sessions: 'Archivierte Sitzungen durchsuchen…'
     },
     modeOptions: {
-      light: { label: 'Hell', description: 'Helle Desktop-Oberflächen' },
-      dark: { label: 'Dunkel', description: 'Arbeitsbereich mit geringer Blendung' },
-      system: { label: 'System', description: 'Der Darstellung des Systems folgen' }
+      light: {
+        label: 'Hell',
+        description: 'Helle Desktop-Oberflächen'
+      },
+      dark: {
+        label: 'Dunkel',
+        description: 'Arbeitsbereich mit geringer Blendung'
+      },
+      system: {
+        label: 'System',
+        description: 'Der Darstellung des Systems folgen'
+      }
     },
     appearance: {
       title: 'Darstellung',
@@ -564,10 +734,16 @@ export const de = defineLocale({
       sessionDensityComfortable: 'Komfortabel',
       sessionDensityDetailed: 'Detailreich',
       tabStripTitle: 'Tab-Leiste',
-      tabStripDesc: 'Zeigt Tabs über einer Zone. Blendet sie automatisch aus, wenn eine Zone nur einen einzelnen Bereich enthält.',
+      tabStripDesc:
+        'Zeigt Tabs über einer Zone. Blendet sie automatisch aus, wenn eine Zone nur einen einzelnen Bereich enthält.',
       tabStripAuto: 'Automatisch',
       tabStripAlways: 'Immer',
       tabStripNever: 'Nie',
+      appActionsTitle: 'App-Aktionen',
+      appActionsDesc:
+        'Wo Einstellungen, Layout und HUD in der Titelleiste sitzen. Rechts lässt Platz für Tabs auf der linken Seite.',
+      appActionsLeft: 'Links',
+      appActionsRight: 'Rechts',
       terminalFontTitle: 'Terminalschrift',
       terminalFontDesc:
         'Wähl eine installierte Schrift für Desktop-Terminals. Nerd Fonts rendern Powerlevel10k und Shell-Icons; lass das Feld leer, um das gebündelte JetBrains Mono zu verwenden.',
@@ -575,7 +751,8 @@ export const de = defineLocale({
       terminalFontPreview: 'Glyph-Vorschau',
       terminalFontReset: 'Standard verwenden',
       translucencyTitle: 'Fenster-Transluzenz',
-      translucencyDesc: 'Sieh deinen Desktop durch das ganze Fenster hindurch, inklusive Text. Für hell und dunkel separat abgestimmt.',
+      translucencyDesc:
+        'Sieh deinen Desktop durch das ganze Fenster hindurch, inklusive Text. Für hell und dunkel separat abgestimmt.',
       translucencyGlassDesc:
         'Mattglas: Der Desktop scheint als weicher Blur durch, während der Text scharf bleibt. Für hell und dunkel separat abgestimmt.',
       translucencyModeClear: 'Klar',
@@ -597,7 +774,8 @@ export const de = defineLocale({
       backdropTitle: 'Chat-Hintergrund',
       backdropDesc: 'Das zarte Statuenbild hinter der Konversation.',
       userBubbleTitle: 'Nachrichten-Blase',
-      userBubbleDesc: 'Wie durchsichtig deine eigenen Nachrichten sind. Bei 0 deckend; bei 100 bleibt nur die Kontur übrig.',
+      userBubbleDesc:
+        'Wie durchsichtig deine eigenen Nachrichten sind. Bei 0 deckend; bei 100 bleibt nur die Kontur übrig.',
       introSplashTitle: 'Intro-Splash',
       introSplashDesc: 'Das Wortzeichen und der Prompt, die bei einem leeren Chat angezeigt werden.',
       reactionsTitle: 'Nachrichten-Reaktionen',
@@ -609,7 +787,8 @@ export const de = defineLocale({
       toursTitle: 'Geführte Touren',
       toursDesc: 'Lass Hermes dich durch die App führen, den Bildschirm abdunkeln und jeden Schritt hervorheben.',
       composerPopoutTitle: 'Schwebender Composer',
-      composerPopoutDesc: 'Erlaube, den Composer aus seiner Ablage herauszuziehen. Schalt das aus, um ihn unten fixiert zu halten.',
+      composerPopoutDesc:
+        'Erlaube, den Composer aus seiner Ablage herauszuziehen. Schalt das aus, um ihn unten fixiert zu halten.',
       vibeHeartsTitle: 'Vibe-Herzen',
       vibeHeartsDesc:
         'Schwebende Herzen, wenn du danke, ilu, guter Bot sagst oder ein Herz sendest. Getrennt von den Nachrichten-Reaktionen oben.',
@@ -655,7 +834,8 @@ export const de = defineLocale({
         chooseTitle: 'Wähl ein Haustier',
         chooseDesc: 'Auswählen installiert eines (falls nötig) und macht es aktiv.',
         searchPlaceholder: 'Haustiere suchen…',
-        unreachable: "Die Petdex-Galerie konnte nicht erreicht werden. Prüf deine Verbindung und öffne diese Seite erneut.",
+        unreachable:
+          'Die Petdex-Galerie konnte nicht erreicht werden. Prüf deine Verbindung und öffne diese Seite erneut.',
         noMatch: query => `Keine Haustiere passen zu „${query}“.`,
         installedTag: 'installiert',
         generatedTag: 'Generiert',
@@ -664,7 +844,7 @@ export const de = defineLocale({
         uninstall: name => `${name} deinstallieren`,
         delete: name => `${name} löschen`,
         deleteTitle: name => `${name} löschen?`,
-        deleteBody: "Das löscht das Haustier endgültig — es kann nicht neu installiert werden.",
+        deleteBody: 'Das löscht das Haustier endgültig — es kann nicht neu installiert werden.',
         deleteConfirm: 'Löschen',
         rename: name => `${name} umbenennen`,
         renameTitle: 'Haustier umbenennen',
@@ -911,7 +1091,8 @@ export const de = defineLocale({
           voiceId: 'xAI-Stimm-ID (z. B. eve) oder eine benutzerdefinierte Stimm-ID.',
           language: 'Sprachcode (z. B. en, pt-BR) oder „auto“ für automatische Erkennung.',
           speed: 'Wiedergabegeschwindigkeit. 0,7 = langsamer, 1,0 = normal, 1,5 = schneller.',
-          autoSpeechTags: 'Ein LLM expressive Audio-Tags ([laughing], [sighs]) vor der Synthese in das Skript einfügen lassen.',
+          autoSpeechTags:
+            'Ein LLM expressive Audio-Tags ([laughing], [sighs]) vor der Synthese in das Skript einfügen lassen.',
           optimizeStreamingLatency: 'Latenz- vs. Qualitäts-Abwägung. 0 = beste Qualität, 2 = niedrigste Latenz.',
           sampleRate: 'Audio-Abtastrate in Hz. Höher = bessere Qualität, größere Dateien.',
           bitRate: 'MP3-Bitrate in bps. Gilt nur, wenn der Codec mp3 ist.'
@@ -988,9 +1169,11 @@ export const de = defineLocale({
       toolsetsWipeConfirm:
         'Alle aktivierten Toolsets entfernen? Das deaktiviert Speicher, Terminal, Websuche, Delegation und die meisten anderen Tools, bis du sie wieder aktivierst.',
       keepAwakeTitle: 'Computer wach halten',
-      keepAwakeDesc: 'Verhindere, dass diese Maschine schläft, damit Läufe über Nacht oder länger weitergehen. Der Bildschirm kann trotzdem abdunkeln.',
+      keepAwakeDesc:
+        'Verhindere, dass diese Maschine schläft, damit Läufe über Nacht oder länger weitergehen. Der Bildschirm kann trotzdem abdunkeln.',
       disableF12Title: 'F12-DevTools deaktivieren',
-      disableF12Desc: 'Verhindere, dass F12 die Entwickler-Tools öffnet. Strg+Umschalt+I (bzw. Cmd+Opt+I auf dem Mac) funktioniert weiterhin.',
+      disableF12Desc:
+        'Verhindere, dass F12 die Entwickler-Tools öffnet. Strg+Umschalt+I (bzw. Cmd+Opt+I auf dem Mac) funktioniert weiterhin.',
       attachmentSizeTitle: 'Maximale Vorschau-/Bildladegröße',
       attachmentSizeDesc:
         'Wie groß eine lokale Datei sein darf, die Desktop für Vorschauen und Bildanhänge lädt, in MB. Standard ist 16. Remote-Anhänge ohne Bild verwenden ein eigenes Limit von 256 MB. Wenn du das sehr hoch setzt, wird die gesamte Datei in den Speicher geladen, was die App einfrieren oder zum Absturz bringen kann.',
@@ -1029,7 +1212,8 @@ export const de = defineLocale({
     },
     connections: {
       title: 'Registrierte Gateways',
-      intro: 'Verwalte dieses Gerät und jedes Hermes Gateway, das es über Remote-, SSH- oder Cloud-Verbindungen erreichen kann.',
+      intro:
+        'Verwalte dieses Gerät und jedes Hermes Gateway, das es über Remote-, SSH- oder Cloud-Verbindungen erreichen kann.',
       stagedNote:
         'Wechsle die Gateways über Sessions. Profile, Chats, Nachrichten und Cron-Jobs bleiben bei ihrem Gateway; Arbeiten auf anderen Gateways läuft weiter.',
       launchModeTitle: 'Beim Start zu Sessions auf dem zuletzt verwendeten Gateway zurückkehren',
@@ -1066,7 +1250,8 @@ export const de = defineLocale({
       kindCloudDesc: 'Eine gehostete Instanz, die über dein Hermes Cloud Konto entdeckt wurde.',
       kindSshDesc: 'Eine Hermes-Installation, die über SSH erreicht wird.',
       labelTitle: 'Name',
-      labelDesc: 'Pflichtfeld. Wird überall angezeigt, wo diese Instanz erscheint; muss eindeutig sein (z. B. „Homelab“, „Arbeitslaptop“).',
+      labelDesc:
+        'Pflichtfeld. Wird überall angezeigt, wo diese Instanz erscheint; muss eindeutig sein (z. B. „Homelab“, „Arbeitslaptop“).',
       labelPlaceholder: 'Homelab',
       urlTitle: 'Gateway-URL',
       sshHostTitle: 'SSH-Host',
@@ -1123,9 +1308,11 @@ export const de = defineLocale({
       localDesc: 'Starte ein privates Hermes-Backend auf localhost. Das ist der Standard und funktioniert offline.',
       remoteTitle: 'Remote-Gateway',
       remoteDesc: 'Verbinde diese Desktop-Shell mit einem entfernten Hermes-Backend.',
-      remoteAuthHint: 'Gehostete Gateways verwenden OAuth oder Benutzername und Passwort; selbst gehostete können ein Session-Token verwenden.',
+      remoteAuthHint:
+        'Gehostete Gateways verwenden OAuth oder Benutzername und Passwort; selbst gehostete können ein Session-Token verwenden.',
       cloudTitle: 'Hermes Cloud',
-      cloudDesc: 'Melde dich einmal bei Hermes Cloud an und wähle aus den Agents auf deinem Account — keine URL zum Einfügen.',
+      cloudDesc:
+        'Melde dich einmal bei Hermes Cloud an und wähle aus den Agents auf deinem Account — keine URL zum Einfügen.',
       cloudSignInTitle: 'Hermes Cloud',
       cloudSignIn: 'Bei Hermes Cloud anmelden',
       cloudSignedIn: 'Bei Hermes Cloud angemeldet',
@@ -1163,7 +1350,8 @@ export const de = defineLocale({
       remoteUrlTitle: 'Remote-URL',
       remoteUrlDesc: 'Basis-URL für das Remote-Dashboard-Backend. Pfad-Präfixe werden unterstützt, z. B. /hermes.',
       probing: 'Prüfe, wie sich dieses Gateway authentifiziert…',
-      probeError: 'Dieses Gateway ist noch nicht erreichbar. Prüfe die URL — die Authentifizierungsmethode erscheint, sobald es antwortet.',
+      probeError:
+        'Dieses Gateway ist noch nicht erreichbar. Prüfe die URL — die Authentifizierungsmethode erscheint, sobald es antwortet.',
       signedIn: 'Angemeldet',
       signIn: 'Anmelden',
       signOut: 'Abmelden',
@@ -1171,11 +1359,15 @@ export const de = defineLocale({
       authTitle: 'Authentifizierung',
       authSignedInPassword:
         'Dieses Gateway verwendet Benutzername und Passwort. Du bist angemeldet; die Sitzung wird automatisch aktualisiert.',
-      authSignedInOauth: 'Dieses Gateway verwendet OAuth. Du bist angemeldet; die Sitzung wird automatisch aktualisiert.',
-      authNeedsPassword: 'Dieses Gateway verwendet Benutzername und Passwort. Melde dich an, um diese Desktop-App zu autorisieren.',
-      authNeedsOauth: provider => `Dieses Gateway verwendet OAuth. Melde dich mit ${provider} an, um diese Desktop-App zu autorisieren.`,
+      authSignedInOauth:
+        'Dieses Gateway verwendet OAuth. Du bist angemeldet; die Sitzung wird automatisch aktualisiert.',
+      authNeedsPassword:
+        'Dieses Gateway verwendet Benutzername und Passwort. Melde dich an, um diese Desktop-App zu autorisieren.',
+      authNeedsOauth: provider =>
+        `Dieses Gateway verwendet OAuth. Melde dich mit ${provider} an, um diese Desktop-App zu autorisieren.`,
       tokenTitle: 'Session-Token',
-      tokenDesc: 'Das Dashboard-Session-Token für REST- und WebSocket-Zugriff. Lass es leer, um das gespeicherte Token zu behalten.',
+      tokenDesc:
+        'Das Dashboard-Session-Token für REST- und WebSocket-Zugriff. Lass es leer, um das gespeicherte Token zu behalten.',
       existingToken: value => `Bestehendes Token ${value}`,
       savedToken: 'gespeichert',
       pasteSessionToken: 'Session-Token einfügen',
@@ -1204,7 +1396,8 @@ export const de = defineLocale({
       enterUrlFirst: 'Gib zuerst eine Remote-URL ein.',
       restartingTitle: 'Gateway-Verbindung wird neu gestartet',
       savedTitle: 'Gateway-Einstellungen gespeichert',
-      restartingMessage: 'Hermes Desktop stellt mit den gespeicherten Einstellungen die Verbindung wieder her — die Shell bleibt offen.',
+      restartingMessage:
+        'Hermes Desktop stellt mit den gespeicherten Einstellungen die Verbindung wieder her — die Shell bleibt offen.',
       savedMessage: 'Für den nächsten Neustart gespeichert.',
       connectedTo: (baseUrl, version) => `Verbunden mit ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
       reachableTitle: 'Remote-Gateway erreichbar',
@@ -1342,7 +1535,8 @@ export const de = defineLocale({
         'Dieser Server führt einen lokalen Prozess auf deinem Rechner mit dem unten angezeigten Befehl aus. Mach nur weiter, wenn du seiner Quelle vertraust.',
       deepLinkConfirm: 'Server hinzufügen',
       deepLinkNameInvalid: 'Namen verwenden 1–64 Buchstaben, Ziffern, Punkte, Striche oder Unterstriche.',
-      deepLinkNameConflict: name => `Ein Server namens ${name} existiert bereits — wähle einen anderen Namen oder brich ab.`,
+      deepLinkNameConflict: name =>
+        `Ein Server namens ${name} existiert bereits — wähle einen anderen Namen oder brich ab.`,
       deepLinkErrorTitle: 'MCP-Installationslink abgelehnt',
       deepLinkErrorName: 'Der Servername des Links fehlt oder ist ungültig.',
       deepLinkErrorConfig: 'Die Config des Links ist kein gültiges base64-kodiertes JSON.',
@@ -1350,14 +1544,16 @@ export const de = defineLocale({
       deepLinkErrorUrl: 'Nur http:// und https:// Server-URLs sind erlaubt.',
       deepLinkErrorTooLarge: 'Die Config-Payload überschreitet das 32-KB-Limit.',
       importButton: 'Importieren',
-      importPlaceholder: 'Füge einen mcp.json-Ausschnitt, einen npx/docker-Befehl, eine claude-mcp-add-Zeile, eine URL oder einen Cursor-Link ein ...',
+      importPlaceholder:
+        'Füge einen mcp.json-Ausschnitt, einen npx/docker-Befehl, eine claude-mcp-add-Zeile, eine URL oder einen Cursor-Link ein ...',
       importNoMatch: 'Im eingefügten Text wurde keine Server-Config erkannt.',
       importConfirm: 'Zu mcp.json hinzufügen',
       importConfirmMany: count => `${count} Server zu mcp.json hinzufügen`
     },
     model: {
       loading: 'Modellkonfiguration wird geladen…',
-      appliesDesc: 'Gilt für neue Sitzungen. Verwende den Modellwähler im Verfasser, um den aktiven Chat schnell zu wechseln.',
+      appliesDesc:
+        'Gilt für neue Sitzungen. Verwende den Modellwähler im Verfasser, um den aktiven Chat schnell zu wechseln.',
       provider: 'Anbieter',
       model: 'Modell',
       applying: 'Wird angewendet…',
@@ -1366,29 +1562,56 @@ export const de = defineLocale({
       reasoningOff: 'Aus',
       defaultsFailed: 'Voreinstellungen des Modells konnten nicht gespeichert werden',
       loadFailed: 'Modelle konnten nicht geladen werden',
-      restartRequired: 'Dieses Backend führt nach einem Update alten Code aus. Starte es neu, um den neuen Code zu laden.',
+      restartRequired:
+        'Dieses Backend führt nach einem Update alten Code aus. Starte es neu, um den neuen Code zu laden.',
       restartBackend: 'Backend neu starten',
       restartingBackend: 'Backend wird neu gestartet…',
       restartFailed: 'Das Backend konnte nicht neu gestartet werden',
       auxiliaryTitle: 'Hilfsmodelle',
       resetAllToMain: 'Alle auf Hauptmodell zurücksetzen',
-      auxiliaryDesc: 'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
+      auxiliaryDesc:
+        'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
       setToMain: 'Auf Hauptmodell setzen',
       change: 'Ändern',
       autoUseMain: 'automatisch · Hauptmodell verwenden',
       providerDefault: '(Anbietervorgabe)',
       fallbackAdd: 'Fallback hinzufügen',
       fallbackEmpty: 'Keine Fallback-Modelle — es wird das Standardmodell verwendet, außer es schlägt fehl.',
-      notInCatalog: 'ist nicht in der Modellliste dieses Anbieters enthalten — Aufrufe können auf ein Backup ausweichen.',
+      notInCatalog:
+        'ist nicht in der Modellliste dieses Anbieters enthalten — Aufrufe können auf ein Backup ausweichen.',
       tasks: {
-        vision: { label: 'Sehen', hint: 'Bildanalyse' },
-        compression: { label: 'Kompression', hint: 'Kontext-Verdichtung' },
-        skills_hub: { label: 'Skills-Hub', hint: 'Skill-Suche' },
-        approval: { label: 'Freigabe', hint: 'Intelligente Auto-Freigabe' },
-        mcp: { label: 'MCP', hint: 'MCP-Tool-Routing' },
-        title_generation: { label: 'Titel-Generierung', hint: 'Sitzungstitel' },
-        review: { label: 'Review', hint: '/review Bewertungs-Subagent' },
-        curator: { label: 'Kurator', hint: 'Skill-Nutzungs-Review' }
+        vision: {
+          label: 'Sehen',
+          hint: 'Bildanalyse'
+        },
+        compression: {
+          label: 'Kompression',
+          hint: 'Kontext-Verdichtung'
+        },
+        skills_hub: {
+          label: 'Skills-Hub',
+          hint: 'Skill-Suche'
+        },
+        approval: {
+          label: 'Freigabe',
+          hint: 'Intelligente Auto-Freigabe'
+        },
+        mcp: {
+          label: 'MCP',
+          hint: 'MCP-Tool-Routing'
+        },
+        title_generation: {
+          label: 'Titel-Generierung',
+          hint: 'Sitzungstitel'
+        },
+        review: {
+          label: 'Review',
+          hint: '/review Bewertungs-Subagent'
+        },
+        curator: {
+          label: 'Kurator',
+          hint: 'Skill-Nutzungs-Review'
+        }
       }
     },
     localModels: {
@@ -1412,18 +1635,18 @@ export const de = defineLocale({
       unifiedMemory: 'Kombinierter Speicher',
       modelsTitle: 'Modelle',
       recommended: 'Empfohlen',
-      /* Der Tooltip des „Empfohlen“-Badges, nach dem Resolver-Zweig
-         ausgewählt, der die Auswahl getroffen hat. Bewusst qualitativ:
-         Vorhersagen reihen Kandidaten ein, sie sind keine Zusagen. */
       recommendedReason: {
         'best-quality-resident':
           'Das Modell mit der höchsten Qualität, das komplett auf deiner GPU in voller Geschwindigkeit läuft. Die Auswahl wägt Qualität gegen die vorhergesagte Geschwindigkeit auf dieser Hardware ab.',
         'speed-gated-quality':
           'Ein besseres Modell würde auf diesen Rechner passen, aber bei seiner Speicherbandbreite zu langsam reagieren — das ist das beste Modell, das schnell bleibt.',
         'fastest-resident':
-          'Kein Modell erreicht volle Geschwindigkeit auf dieser Hardware; dieses kommt am nächsten und läuft komplett im GPU-Speicher.',
-        'least-painful-spilled': 'Kein Modell passt komplett in den GPU-Speicher hier — dieses läuft am besten aus dem Arbeitsspeicher.'
+          'Kein Modell erreicht volle Geschwindigkeit auf dieser Hardware; dieses kommt am nächsten und läuft komplett im GPU-Speicher.'
       } as Record<string, string>,
+      noRecommendationTitle: 'Keine automatische Empfehlung für diesen Rechner',
+      noRecommendationDetail:
+        'Die automatische Einrichtung braucht ein kuratiertes Modell, das vollständig in den Grafikspeicher oder den gemeinsamen Speicher passt. Du kannst unten trotzdem ein Modell wählen oder weitere Modelle durchsuchen.',
+      noRecommendationAction: 'Modelle durchsuchen',
       downloaded: 'Heruntergeladen',
       downloadAction: size => `Download · ${size}`,
       downloadProgress: (done, total) => `${done} von ${total} werden heruntergeladen`,
@@ -1449,8 +1672,10 @@ export const de = defineLocale({
       updateAction: 'Engine aktualisieren',
       updating: 'Engine wird aktualisiert…',
       upToDateTitle: 'Engine aktuell',
-      upToDateDetail: (tag, backend) => `llama.cpp ${tag} (${backend}) wird ausgeführt — der neueste Build, den Hermes mitliefert.`,
-      updateToast: next => `Ein neuerer lokaler Engine-Build (${next}) ist verfügbar. Update unter Einstellungen → Lokale Modelle.`,
+      upToDateDetail: (tag, backend) =>
+        `llama.cpp ${tag} (${backend}) wird ausgeführt — der neueste Build, den Hermes mitliefert.`,
+      updateToast: next =>
+        `Ein neuerer lokaler Engine-Build (${next}) ist verfügbar. Update unter Einstellungen → Lokale Modelle.`,
       activeDetail: 'Neue Chats verwenden dieses Modell — es wird geladen, wenn du deine erste Nachricht sendest',
       activeNotLoaded: 'Wird bei deiner ersten Nachricht geladen',
       loadedPill: 'Im Speicher',
@@ -1534,7 +1759,8 @@ export const de = defineLocale({
       noKeysMatch: 'Keine Provider entsprechen deiner Suche.',
       localEndpoint: {
         title: 'Lokaler / eigener Endpoint',
-        description: 'Richte Hermes auf einen beliebigen OpenAI-kompatiblen Endpoint aus (Zyphra, vLLM, llama.cpp, Ollama, usw.).'
+        description:
+          'Richte Hermes auf einen beliebigen OpenAI-kompatiblen Endpoint aus (Zyphra, vLLM, llama.cpp, Ollama, usw.).'
       },
       loading: 'Lade Provider...'
     },
@@ -1559,7 +1785,8 @@ export const de = defineLocale({
       defaultDirTitle: 'Standard-Projektordner',
       defaultDirDesc:
         'Neue Sitzungen starten in diesem Ordner, sofern du keinen anderen wählst. Lass es ungesetzt, um dein Home-Verzeichnis zu verwenden.',
-      defaultDirUpdated: 'Standard-Projektordner aktualisiert – starte einen neuen Chat (Strg/⌘+N), damit er wirksam wird',
+      defaultDirUpdated:
+        'Standard-Projektordner aktualisiert – starte einen neuen Chat (Strg/⌘+N), damit er wirksam wird',
       defaultsTo: label => `Standardmäßig ${label}.`,
       change: 'Ändern',
       choose: 'Auswählen',
@@ -1587,7 +1814,8 @@ export const de = defineLocale({
       selectedMessage: provider => `${provider} ist jetzt aktiv.`,
       failedSelect: provider => `${provider} konnte nicht ausgewählt werden`,
       failedLoad: 'Tool-Konfiguration konnte nicht geladen werden',
-      noProviderOptions: 'Dieses Toolset hat keine Provider-Optionen – aktiviere es und es funktioniert mit deinem aktuellen Setup.',
+      noProviderOptions:
+        'Dieses Toolset hat keine Provider-Optionen – aktiviere es und es funktioniert mit deinem aktuellen Setup.',
       noProviders: 'Für dieses Toolset sind gerade keine Provider verfügbar.',
       ready: 'Bereit',
       needsSignIn: 'Anmeldung erforderlich',
@@ -1597,7 +1825,8 @@ export const de = defineLocale({
       useBackend: 'Dieses Backend verwenden',
       nousIncluded: 'In einem Nous-Abo enthalten – melde dich im Nous Portal an, um es zu aktivieren.',
       nousAuthNeededTitle: 'Im Nous Portal anmelden',
-      nousAuthNeededMessage: provider => `${provider} ist gespeichert, wird aber erst aktiviert, wenn du dich im Nous Portal anmeldest.`,
+      nousAuthNeededMessage: provider =>
+        `${provider} ist gespeichert, wird aber erst aktiviert, wenn du dich im Nous Portal anmeldest.`,
       nousAuthSignIn: 'Anmelden',
       nousAuthDoneTitle: 'Nous Portal verbunden',
       nousAuthDoneMessage: 'Deine Abo-Backends sind jetzt aktiv.',
@@ -1645,12 +1874,13 @@ export const de = defineLocale({
         selectedTitle: 'Backend ausgewählt',
         selectedMessage: backend => `Terminal-Befehle laufen jetzt über ${backend}. Gilt für neue Sitzungen.`,
         failedSelect: backend => `${backend} konnte nicht ausgewählt werden`,
-        needsSetupHint: 'Du kannst dieses Backend jetzt auswählen – Befehle schlagen fehl, bis das Setup abgeschlossen ist.'
+        needsSetupHint:
+          'Du kannst dieses Backend jetzt auswählen – Befehle schlagen fehl, bis das Setup abgeschlossen ist.'
       },
       browserRealProfile: {
         label: 'Mein echtes Browser-Profil verwenden',
         description:
-          "Kopiert die Anmeldungen und Cookies deines Standard-Browsers in einen verwalteten Schnappschuss, mit dem der Agent browst. Dein Live-Profil wird nie direkt geöffnet. Gilt für neue Sitzungen.",
+          'Kopiert die Anmeldungen und Cookies deines Standard-Browsers in einen verwalteten Schnappschuss, mit dem der Agent browst. Dein Live-Profil wird nie direkt geöffnet. Gilt für neue Sitzungen.',
         enabledTitle: 'Echtes Profil-Browsen aktiv',
         enabledMessage: 'Neue Sitzungen browsen mit einem Schnappschuss deines Standard-Browserprofils.',
         disabledTitle: 'Echtes Profil-Browsen deaktiviert',
@@ -1668,121 +1898,168 @@ export const de = defineLocale({
         }
       }
     }
-  }
-  ,
+  },
   skills: {
-    tabSkills: "Skills",
-    tabToolsets: "Tools",
-    configuringProfile: "Konfiguriert:",
-    tabMcp: "MCP",
-    all: "Alle",
-    searchSkills: "Skills durchsuchen...",
-    searchToolsets: "Tools durchsuchen...",
-    refresh: "Skills aktualisieren",
-    refreshing: "Skills werden aktualisiert",
-    loading: "Fähigkeiten werden geladen...",
-    noSkillsTitle: "Keine Skills gefunden",
-    noSkillsDesc: "Versuche eine breitere Suche oder eine andere Kategorie.",
-    noToolsetsTitle: "Keine Toolsets gefunden",
-    noToolsetsDesc: "Versuche eine breitere Suchanfrage.",
-    noDescription: "Keine Beschreibung.",
-    configured: "Konfiguriert",
-    needsKeys: "Benötigt Keys",
+    tabSkills: 'Skills',
+    tabToolsets: 'Tools',
+    configuringProfile: 'Konfiguriert:',
+    tabMcp: 'MCP',
+    all: 'Alle',
+    searchSkills: 'Skills durchsuchen...',
+    searchToolsets: 'Tools durchsuchen...',
+    refresh: 'Skills aktualisieren',
+    refreshing: 'Skills werden aktualisiert',
+    loading: 'Fähigkeiten werden geladen...',
+    noSkillsTitle: 'Keine Skills gefunden',
+    noSkillsDesc: 'Versuche eine breitere Suche oder eine andere Kategorie.',
+    noToolsetsTitle: 'Keine Toolsets gefunden',
+    noToolsetsDesc: 'Versuche eine breitere Suchanfrage.',
+    noDescription: 'Keine Beschreibung.',
+    configured: 'Konfiguriert',
+    needsKeys: 'Benötigt Keys',
     visionModelHint:
-      "Vision verwendet deine Hilfsmodell-Konfiguration — das bildfähige Modell wird dort gewählt, nicht pro Provider hier.",
-    visionModelLink: "Vision-Modell in Einstellungen → Modelle wählen",
+      'Vision verwendet deine Hilfsmodell-Konfiguration — das bildfähige Modell wird dort gewählt, nicht pro Provider hier.',
+    visionModelLink: 'Vision-Modell in Einstellungen → Modelle wählen',
     toolsetsEnabled: (enabled, total) => `${enabled}/${total} Toolsets aktiviert`,
     configureToolset: label => `${label} konfigurieren`,
     toggleToolset: (label, enabled) => `Toolset ${label} ${enabled ? 'einschalten' : 'ausschalten'}`,
-    skillsLoadFailed: "Skills konnten nicht geladen werden",
-    toolsetsRefreshFailed: "Toolsets konnten nicht aktualisiert werden",
-    skillEnabled: "Skill aktiviert",
-    skillDisabled: "Skill deaktiviert",
-    toolsetEnabled: "Toolset aktiviert",
-    toolsetDisabled: "Toolset deaktiviert",
+    skillsLoadFailed: 'Skills konnten nicht geladen werden',
+    toolsetsRefreshFailed: 'Toolsets konnten nicht aktualisiert werden',
+    skillEnabled: 'Skill aktiviert',
+    skillDisabled: 'Skill deaktiviert',
+    toolsetEnabled: 'Toolset aktiviert',
+    toolsetDisabled: 'Toolset deaktiviert',
     appliesToNewSessions: name => `${name} gilt für neue Sessions.`,
     failedToUpdate: name => `${name} konnte nicht aktualisiert werden`,
-    sortMostUsed: "Am häufigsten genutzt",
-    sortAlpha: "A–Z",
-    sortMostUsedDesc: "↓ Am häufigsten genutzt",
-    sortLeastUsedAsc: "↑ Am seltensten genutzt",
-    enableAll: "Alle aktivieren",
-    disableAll: "Alle deaktivieren",
-    disableUnused: "Unbenutzte deaktivieren",
+    sortMostUsed: 'Am häufigsten genutzt',
+    sortAlpha: 'A–Z',
+    sortMostUsedDesc: '↓ Am häufigsten genutzt',
+    sortLeastUsedAsc: '↑ Am seltensten genutzt',
+    enableAll: 'Alle aktivieren',
+    disableAll: 'Alle deaktivieren',
+    disableUnused: 'Unbenutzte deaktivieren',
     bulkUpdated: count => `${count} ${count === 1 ? 'Element' : 'Elemente'} für neue Sessions aktualisiert.`,
-    bulkNoChange: "Nichts zu ändern.",
+    bulkNoChange: 'Nichts zu ändern.',
     usageCount: count => `${count}× verwendet`,
     provenance: {
-      agent: "Gelernt",
-      bundled: "Integriert",
-      hub: "Hub"
+      agent: 'Gelernt',
+      bundled: 'Integriert',
+      hub: 'Hub'
     },
     emptyNoneFound: noun => `Kein ${noun} gefunden`,
     emptyNothingMatches: query => `Nichts passt zu “${query}”.`,
     emptyNoneAvailable: noun => `Noch kein ${noun} verfügbar.`,
-    changesApplyNewSessions: "Änderungen gelten für neue Sessions.",
-    skillUpdated: "Skill aktualisiert",
-    edit: "Bearbeiten",
-    archive: "Archivieren",
-    skillArchivedTitle: "Skill archiviert",
-    skillArchivedMessage: "Wiederherstellbar über „hermes curator restore“.",
-    officialCatalog: "Verfügbar zum Installieren",
-    officialPill: "Offiziell",
+    changesApplyNewSessions: 'Änderungen gelten für neue Sessions.',
+    skillUpdated: 'Skill aktualisiert',
+    edit: 'Bearbeiten',
+    archive: 'Archivieren',
+    skillArchivedTitle: 'Skill archiviert',
+    skillArchivedMessage: 'Wiederherstellbar über „hermes curator restore“.',
+    tabPlugins: 'Plugins',
+    plugins: {
+      agentTitle: 'Agent-Plugins',
+      agentBlurb:
+        'Erweitert den Agenten für das gewählte Profil — Tools, Hooks, Anbieter. Wirkt nach einem Gateway-Neustart.',
+      pageBlurb:
+        'Eine Zeile pro Plugin. Ein Plugin kann diese App, den Agenten oder beides erweitern — jede Hälfte hat ihren eigenen Schalter.',
+      halfDesktop: 'Desktop',
+      halfDesktopHint: 'diese App, gleich für jedes Profil',
+      halfAgent: 'Agent',
+      halfAgentIn: profile => `Agent in ${profile}`,
+      defaultProfile: 'Hermes (Standard)',
+      kindAgent: 'Agent',
+      kindDesktop: 'Desktop',
+      kindBoth: 'Agent + Desktop',
+      installAgentHere: 'Hier installieren',
+      installAgentHereTip: profile =>
+        `Die Desktop-Hälfte ist in dieser App geladen, aber die Agent-Hälfte ist in ${profile} nicht installiert. Installiere sie dort.`,
+      installAgentHereNoOrigin:
+        'Die Agent-Hälfte ist in diesem Profil nicht installiert, und dieses Paket wurde von Hand hineinkopiert (kein Katalog-Eintrag und kein Git-Remote), daher kann es von hier aus nicht installiert werden. Kopiere seinen Ordner ins Profil oder installiere es neu aus Git.',
+      desktopHalfPending: 'wird kopiert…',
+      desktopHalfPendingTip:
+        'Dieses Paket enthält eine Desktop-Hälfte, die noch nicht in die App kopiert wurde. Verwende „Erneut scannen" oder starte die App neu.',
+      emptyAll: 'Noch keine Plugins.',
+      empty: 'Für dieses Profil sind keine Agent-Plugins installiert.',
+      emptyHint: 'Durchsuche unten den Katalog und installiere ein geprüftes Plugin mit einem Klick.',
+      loadFailed: 'Agent-Plugins konnten nicht geladen werden',
+      toggleFailed: name => `${name} konnte nicht umgeschaltet werden`,
+      legacyBackend:
+        'Dieses Backend ist älter als schlüsseladressierte Plugin-Schalter — aktualisiere Hermes, um es hier zu verwalten.',
+      portableBadge: 'tragbar',
+      catalogTitle: 'Plugin-Katalog',
+      catalogBrowse: 'Durchsuchen',
+      catalogHide: 'Katalog-Browser ausblenden',
+      catalogHint:
+        'Klicke bei einem Plugin auf „+ Zu diesem Agenten hinzufügen" — geprüfte Einträge werden an ihrem gepinnten Commit in das gewählte Profil installiert. Gebündelte Agent+Desktop-Plugins bieten beide Hälften an.',
+      alreadyInstalled: name => `${name} ist in diesem Profil bereits installiert.`,
+      catalogProvenance: sha => `Aus dem Hermes-Katalog installiert${sha ? ` am Pin ${sha}` : ''}.`,
+      pinnedProvenance: sha =>
+        `An Commit ${sha} gepinnt. Updates werden abgelehnt, bis es mit einem neuen Pin neu installiert wird.`,
+      pinnedBadge: sha => `gepinnt @ ${sha}`,
+      tierOfficial: 'offiziell',
+      tierCommunity: 'Community',
+      updateToPin: sha => `Auf ${sha} aktualisieren`,
+      updateFailed: name => `${name} konnte nicht aktualisiert werden`,
+      updated: name =>
+        `${name} wurde auf den aktuellen Katalog-Pin aktualisiert. Starte das Gateway neu, damit es wirkt.`
+    },
+    officialCatalog: 'Verfügbar zum Installieren',
+    officialPill: 'Offiziell',
     hub: {
-      searchPlaceholder: "Skill-Hub durchsuchen",
-      search: "Suchen",
-      searching: "Wird gesucht...",
-      connectingHubs: "Verbinde mit Skill-Hubs...",
-      connectedHubs: "Verbundene Hubs:",
-      featured: "Empfohlene Skills",
+      searchPlaceholder: 'Skill-Hub durchsuchen',
+      search: 'Suchen',
+      searching: 'Wird gesucht...',
+      connectingHubs: 'Verbinde mit Skill-Hubs...',
+      connectedHubs: 'Verbundene Hubs:',
+      featured: 'Empfohlene Skills',
       landingHint:
-        "Durchsuche den Hub, um installierbare Skills aus dem offiziellen Index, von GitHub und aus Community-Quellen zu stöbern.",
-      noResults: "Im Hub wurden keine passenden Skills gefunden.",
+        'Durchsuche den Hub, um installierbare Skills aus dem offiziellen Index, von GitHub und aus Community-Quellen zu stöbern.',
+      noResults: 'Im Hub wurden keine passenden Skills gefunden.',
       resultCount: (count, ms) => `${count} Result${count === 1 ? '' : 'ate'}${ms !== null ? ` in ${ms}ms` : ''}`,
       timedOut: sources => `Zeitüberschreitung: ${sources}`,
-      installed: "Installiert",
-      install: "Installieren",
-      installing: "Wird installiert...",
-      uninstall: "Deinstallieren",
-      uninstalling: "Wird deinstalliert...",
-      updateAll: "Installierte aktualisieren",
-      updating: "Wird aktualisiert...",
-      preview: "Vorschau",
-      scan: "Scannen",
-      scanning: "Wird gescannt...",
-      close: "Schließen",
-      files: "Dateien",
-      noReadme: "Dieser Skill hat keine SKILL.md-Vorschau.",
+      installed: 'Installiert',
+      install: 'Installieren',
+      installing: 'Wird installiert...',
+      uninstall: 'Deinstallieren',
+      uninstalling: 'Wird deinstalliert...',
+      updateAll: 'Installierte aktualisieren',
+      updating: 'Wird aktualisiert...',
+      preview: 'Vorschau',
+      scan: 'Scannen',
+      scanning: 'Wird gescannt...',
+      close: 'Schließen',
+      files: 'Dateien',
+      noReadme: 'Dieser Skill hat keine SKILL.md-Vorschau.',
       trust: {
-        builtin: "integriert",
-        trusted: "vertraut",
-        community: "Community"
+        builtin: 'integriert',
+        trusted: 'vertraut',
+        community: 'Community'
       },
-      verdictSafe: "Sicher",
-      verdictCaution: "Vorsicht",
-      verdictDangerous: "Gefährlich",
-      policyAllow: "Installation erlaubt",
-      policyAsk: "Vor der Installation prüfen",
-      policyBlock: "Installation durch Richtlinie blockiert",
+      verdictSafe: 'Sicher',
+      verdictCaution: 'Vorsicht',
+      verdictDangerous: 'Gefährlich',
+      policyAllow: 'Installation erlaubt',
+      policyAsk: 'Vor der Installation prüfen',
+      policyBlock: 'Installation durch Richtlinie blockiert',
       findings: count => `${count} Befund${count === 1 ? '' : 'e'}`,
-      noFindings: "Keine Sicherheitsbefunde.",
+      noFindings: 'Keine Sicherheitsbefunde.',
       installStarted: name => `${name} wird installiert...`,
       uninstallStarted: name => `${name} wird deinstalliert...`,
-      updateStarted: "Installierte Skills werden aktualisiert...",
-      actionFailed: "Skill-Aktion fehlgeschlagen",
-      actionLog: "Aktionsprotokoll",
+      updateStarted: 'Installierte Skills werden aktualisiert...',
+      actionFailed: 'Skill-Aktion fehlgeschlagen',
+      actionLog: 'Aktionsprotokoll',
       alreadyInstalled: (name: string) => `"${name}" ist bereits installiert`,
-      pickerTitle: "Skills Hub",
-      pickerBrowse: "Den ganzen Hub durchstöbern",
-      pickerHide: "Hub-Durchsucher ausblenden",
-      pickerHint: "Klicke bei einem beliebigen Skill auf „+ Zu diesem Agent hinzufügen“ — er wird installiert und erscheint in der Liste oben.",
-      loadFailed: "Skill-Hub konnte nicht geladen werden",
-      previewFailed: "Skill-Vorschau fehlgeschlagen",
-      scanFailed: "Sicherheitsscan fehlgeschlagen",
-      searchFailed: "Hub-Suche fehlgeschlagen"
+      pickerTitle: 'Skills Hub',
+      pickerBrowse: 'Den ganzen Hub durchstöbern',
+      pickerHide: 'Hub-Durchsucher ausblenden',
+      pickerHint:
+        'Klicke bei einem beliebigen Skill auf „+ Zu diesem Agent hinzufügen“ — er wird installiert und erscheint in der Liste oben.',
+      loadFailed: 'Skill-Hub konnte nicht geladen werden',
+      previewFailed: 'Skill-Vorschau fehlgeschlagen',
+      scanFailed: 'Sicherheitsscan fehlgeschlagen',
+      searchFailed: 'Hub-Suche fehlgeschlagen'
     }
-  }
-  ,
+  },
   starmap: {
     title: 'Speichergraph',
     subtitle: (nodes, clusters) => `${nodes} Skills in ${clusters} Kategorien`,
@@ -1810,42 +2087,40 @@ export const de = defineLocale({
     importSuccess: nodes => `Eine Map mit ${nodes} ${nodes === 1 ? 'Knoten' : 'Knoten'} geladen.`,
     importedBadge: 'importierte Map',
     resetToMine: 'Zurück zu meiner Map'
-  }
-  ,
+  },
   agents: {
-    extendedTranscript: "Extended Transcript",
-    transcriptTruncated: "Zeigt die letzten 16 KiB",
-    transcriptUnavailable: "Live-Transcript nicht verfügbar",
-
-    close: "Agents schließen",
-    title: "Spawn-Baum",
-    subtitle: "Live-Subagent-Aktivität für die aktuelle Runde.",
-    emptyTitle: "Keine Live-Subagents",
-    emptyDesc: "Sobald eine Runde Arbeit delegiert, streamen die Unter-Agents ihren Fortschritt hierher.",
-    running: "Läuft",
-    failed: "Fehlgeschlagen",
-    done: "Fertig",
-    streaming: "Streaming",
-    files: "Dateien",
+    extendedTranscript: 'Extended Transcript',
+    transcriptTruncated: 'Zeigt die letzten 16 KiB',
+    transcriptUnavailable: 'Live-Transcript nicht verfügbar',
+    close: 'Agents schließen',
+    title: 'Spawn-Baum',
+    subtitle: 'Live-Subagent-Aktivität für die aktuelle Runde.',
+    emptyTitle: 'Keine Live-Subagents',
+    emptyDesc: 'Sobald eine Runde Arbeit delegiert, streamen die Unter-Agents ihren Fortschritt hierher.',
+    running: 'Läuft',
+    failed: 'Fehlgeschlagen',
+    done: 'Fertig',
+    streaming: 'Streaming',
+    files: 'Dateien',
     moreFiles: count => `+${count} weitere Dateien`,
     moreAgents: count => `+${count} weitere Agents`,
-    queued: "In der Warteschlange",
-    waitingActivity: "Warte auf Aktivität",
-    steer: "Steuern",
-    steerPlaceholder: "Anweisungen für diesen Subagent",
-    steerQueued: "Für den nächsten Checkpoint eingereiht",
-    stopRequested: "Stopp angefordert",
-    requestRejected: "Der Subagent hat die Anfrage nicht angenommen",
+    queued: 'In der Warteschlange',
+    waitingActivity: 'Warte auf Aktivität',
+    steer: 'Steuern',
+    steerPlaceholder: 'Anweisungen für diesen Subagent',
+    steerQueued: 'Für den nächsten Checkpoint eingereiht',
+    stopRequested: 'Stopp angefordert',
+    requestRejected: 'Der Subagent hat die Anfrage nicht angenommen',
     delegation: index => `Delegation ${index}`,
     workers: count => `${count} Worker`,
     workersActive: count => `${count} aktiv`,
-    agentsCount: count => `${count} ${count === 1 ? "Agent" : "Agents"}`,
+    agentsCount: count => `${count} ${count === 1 ? 'Agent' : 'Agents'}`,
     activeCount: count => `${count} aktiv`,
     failedCount: count => `${count} fehlgeschlagen`,
     toolsCount: count => `${count} Tools`,
     filesCount: count => `${count} Dateien`,
     updatedAgo: age => `vor ${age} aktualisiert`,
-    ageNow: "jetzt",
+    ageNow: 'jetzt',
     ageSeconds: seconds => `vor ${seconds}s`,
     ageMinutes: minutes => `vor ${minutes}m`,
     ageHours: hours => `vor ${hours}h`,
@@ -1853,8 +2128,7 @@ export const de = defineLocale({
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
     tokens: value => `${value} Tok`
-  }
-  ,
+  },
   commandCenter: {
     close: 'Command Center schließen',
     paletteTitle: 'Befehlspalette',
@@ -1907,7 +2181,7 @@ export const de = defineLocale({
       hatchSaving: 'Fast geschafft…',
       namePlaceholder: 'Gib deinem Pet einen Namen',
       staleBackend: 'Aktualisiere Hermes, um Pets zu generieren.',
-      backgroundHint: "Du kannst das schließen — Hermes benachrichtigt dich, wenn es fertig ist.",
+      backgroundHint: 'Du kannst das schließen — Hermes benachrichtigt dich, wenn es fertig ist.',
       slowProviderHint: 'Das kann mehrere Minuten dauern',
       remix: 'Remixen',
       remixConfirmTitle: 'Dieses Design remixen?',
@@ -1934,7 +2208,12 @@ export const de = defineLocale({
     settingsFields: 'Einstellungsfelder',
     mcpServers: 'MCP-Server',
     archivedChats: 'Archivierte Chats',
-    sections: { maintenance: 'Wartung', sessions: 'Sessions', system: 'System', usage: 'Nutzung' },
+    sections: {
+      maintenance: 'Wartung',
+      sessions: 'Sessions',
+      system: 'System',
+      usage: 'Nutzung'
+    },
     sectionDescriptions: {
       maintenance: 'Diagnose, Backups, Curator und Memory-Daten',
       sessions: 'Sessions durchsuchen und verwalten',
@@ -1942,16 +2221,40 @@ export const de = defineLocale({
       usage: 'Token-, Kosten- und Skill-Aktivität im Zeitverlauf'
     },
     nav: {
-      newChat: { title: 'Neue Session', detail: 'Eine neue Session starten' },
-      settings: { title: 'Einstellungen', detail: 'Hermes Desktop konfigurieren' },
-      skills: { title: 'Fähigkeiten', detail: 'Skills, Tools und MCP-Server' },
-      messaging: { title: 'Messaging', detail: 'Telegram, Slack, Discord und mehr einrichten' },
-      artifacts: { title: 'Artefakte', detail: 'Generierte Ausgaben durchstöbern' }
+      newChat: {
+        title: 'Neue Session',
+        detail: 'Eine neue Session starten'
+      },
+      settings: {
+        title: 'Einstellungen',
+        detail: 'Hermes Desktop konfigurieren'
+      },
+      skills: {
+        title: 'Fähigkeiten',
+        detail: 'Skills, Tools und MCP-Server'
+      },
+      messaging: {
+        title: 'Messaging',
+        detail: 'Telegram, Slack, Discord und mehr einrichten'
+      },
+      artifacts: {
+        title: 'Artefakte',
+        detail: 'Generierte Ausgaben durchstöbern'
+      }
     },
     sectionEntries: {
-      sessions: { title: 'Sessions-Bereich', detail: 'Sessions durchsuchen, anpinnen und verwalten' },
-      system: { title: 'System-Bereich', detail: 'Gateway-Status, Logs, Neustart/Update' },
-      usage: { title: 'Nutzungs-Bereich', detail: 'Token-, Kosten- und Skill-Aktivität' }
+      sessions: {
+        title: 'Sessions-Bereich',
+        detail: 'Sessions durchsuchen, anpinnen und verwalten'
+      },
+      system: {
+        title: 'System-Bereich',
+        detail: 'Gateway-Status, Logs, Neustart/Update'
+      },
+      usage: {
+        title: 'Nutzungs-Bereich',
+        detail: 'Token-, Kosten- und Skill-Aktivität'
+      }
     },
     providerNavigate: 'Navigieren',
     providerSessions: 'Sessions',
@@ -1969,6 +2272,10 @@ export const de = defineLocale({
     restartGateway: 'Gateway neu starten',
     openBrowser: 'Browser öffnen',
     gatewayRestartFailed: 'Gateway-Neustart fehlgeschlagen.',
+    sharedGatewayRestartTitle: 'Gemeinsames Gateway neu starten?',
+    sharedGatewayRestartDescription: bots => `Alle Bots auf diesem Gerät verbinden sich neu: ${bots}`,
+    sharedGatewayRestartConfirm: 'Alle neu starten',
+    sharedGatewayRestarted: count => `Gemeinsames Gateway neu gestartet (${count} ${count === 1 ? 'Bot' : 'Bots'})`,
     updateHermes: 'Hermes aktualisieren',
     reloadWindow: 'Fenster neu laden',
     actionRunning: 'läuft',
@@ -2008,7 +2315,8 @@ export const de = defineLocale({
       backup: 'Backup erstellen',
       backupDesc: 'Konfiguration, Memories, Skills und Sessions als ZIP packen',
       debugShare: 'Debug-Freigabe',
-      debugShareDesc: 'Einen geschwärzten Bericht + Logs hochladen, teilbare Links erhalten (wird nach 6h automatisch gelöscht)',
+      debugShareDesc:
+        'Einen geschwärzten Bericht + Logs hochladen, teilbare Links erhalten (wird nach 6h automatisch gelöscht)',
       debugShareRunning: 'Debug-Bericht wird hochgeladen...',
       debugShareLinks: 'Freigabelinks',
       debugShareFailed: 'Debug-Freigabe fehlgeschlagen',
@@ -2043,8 +2351,7 @@ export const de = defineLocale({
       running: 'Läuft...',
       viewLog: 'Aktionslog'
     }
-  }
-  ,
+  },
   messaging: {
     search: 'Messaging durchsuchen...',
     loading: 'Messaging-Plattformen werden geladen...',
@@ -2062,6 +2369,7 @@ export const de = defineLocale({
     },
     unknown: 'Unbekannt',
     hintPendingRestart: 'Starte das Gateway über die Statusleiste neu, um diese Änderung zu übernehmen.',
+    sharedListenerUrl: 'Erreichbar über den gemeinsamen Gateway-Listener unter',
     hintGatewayStopped: 'Starte das Gateway über die Statusleiste, um zu verbinden.',
     credentialsSet: 'Zugangsdaten gesetzt',
     needsSetup: 'Einrichtung nötig',
@@ -2071,7 +2379,8 @@ export const de = defineLocale({
     required: 'Erforderlich',
     recommended: 'Empfohlen',
     advanced: count => `Erweitert (${count})`,
-    noTokenNeeded: 'Für diese Plattform brauchst du hier kein Token. Nutze die Einrichtungsanleitung oben und aktiviere es darunter.',
+    noTokenNeeded:
+      'Für diese Plattform brauchst du hier kein Token. Nutze die Einrichtungsanleitung oben und aktiviere es darunter.',
     enabled: 'Aktiviert',
     disabled: 'Deaktiviert',
     unsavedChanges: 'Ungespeicherte Änderungen',
@@ -2088,6 +2397,8 @@ export const de = defineLocale({
     restartToApply: 'Diese Änderung wird nach einem Gateway-Neustart wirksam.',
     setupSaved: name => `${name}-Einrichtung gespeichert`,
     restartToReconnect: 'Neue Zugangsdaten werden nach einem Gateway-Neustart wirksam.',
+    appliedLive: 'Auf das laufende Gateway angewendet.',
+    connectingLive: 'Das laufende Gateway verbindet sich mit den neuen Zugangsdaten.',
     keyCleared: key => `${key} gelöscht`,
     setupUpdated: name => `${name}-Einrichtung wurde aktualisiert.`,
     failedUpdate: name => `Konnte ${name} nicht aktualisieren`,
@@ -2102,14 +2413,51 @@ export const de = defineLocale({
     revoking: 'Wird entzogen...',
     revokeAria: name => `Entziehe ${name}`,
     revokeTitle: 'Zugriff entziehen',
-    revokeDesc: (name: string) => `${name} verliert den Zugriff und wird bei seiner nächsten Message nicht mehr erkannt.`,
+    revokeDesc: (name: string) =>
+      `${name} verliert den Zugriff und wird bei seiner nächsten Message nicht mehr erkannt.`,
     approvedUser: name => `${name} freigegeben`,
     approvedHint: 'Sie werden bei ihrer nächsten Message automatisch erkannt.',
     revokedUser: name => `Zugriff für ${name} entzogen`,
     failedApprove: name => `Konnte ${name} nicht freigeben`,
     failedRevoke: name => `Konnte ${name} nicht entziehen`,
-    pairingLockedOut: 'Zu viele fehlgeschlagene Freigaben – diese Plattform ist gesperrt. Versuch es später noch einmal.',
+    pairingLockedOut:
+      'Zu viele fehlgeschlagene Freigaben – diese Plattform ist gesperrt. Versuch es später noch einmal.',
     waitingSince: minutes => (minutes < 1 ? 'gerade eben' : `${minutes} Min. her`),
+    restartNeeded: 'Gespeichert. Starte das Messaging-Gateway neu, damit die neuen Einstellungen wirken.',
+    restartNow: 'Jetzt neu starten',
+    restarting: 'Wird neu gestartet…',
+    restartFailedManual: 'Gateway-Neustart fehlgeschlagen — starte es manuell neu und prüfe die Gateway-Logs.',
+    telegramQr: {
+      title: 'Wähle, wie du deinen Telegram-Bot verbindest',
+      subtitle:
+        'Beide Optionen verbinden einen Bot, den du kontrollierst, und speichern seine Zugangsdaten nur in dieser Hermes-Installation.',
+      quickSetup: 'Schnelleinrichtung',
+      recommended: 'Empfohlen',
+      quickHelp:
+        'Scanne einen QR-Code und bestätige in Telegram. Hermes legt den Bot an und erkennt deine Telegram-Benutzer-ID automatisch.',
+      createWithQr: 'Mit QR-Code anlegen',
+      starting: 'Wird gestartet…',
+      replaceWarning:
+        'Es sind bereits Telegram-Zugangsdaten konfiguriert. Eine neue QR-Einrichtung oder ein Bot-Token ersetzt beim Speichern den aktuellen Bot.',
+      scanHint: 'Scanne mit der Telegram-App auf deinem Handy oder öffne den Link auf diesem Computer.',
+      waiting: 'Warte auf Telegram…',
+      expiresIn: remaining => `Läuft ab in ${remaining}`,
+      expired: 'Abgelaufen',
+      openTelegram: 'Telegram öffnen',
+      ready: 'Bot angelegt',
+      allowedUsers: 'Erlaubte Benutzer',
+      ownerDetected: 'Eigentümer erkannt',
+      addAtLeastOne: 'Füge mindestens eine Telegram-Benutzer-ID hinzu.',
+      userIdPlaceholder: 'Telegram-Benutzer-ID',
+      add: 'Hinzufügen',
+      numericOnly: 'Erlaubte Telegram-Benutzer-IDs müssen numerisch sein.',
+      saveAndRestart: 'Speichern und neu starten',
+      applying: 'Wird gespeichert…',
+      pairingExpired: 'Telegram-Kopplung abgelaufen. Starte eine neue QR-Einrichtung, um es erneut zu versuchen.',
+      stillWaiting: detail => `Warte weiter auf Telegram. Neuer Versuch nach: ${detail}`,
+      savedRestarting: 'Telegram gespeichert; Gateway wird neu gestartet…',
+      savedRestartFailed: detail => `Telegram gespeichert; Gateway-Neustart fehlgeschlagen${detail}`
+    },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Bot-Token',
@@ -2120,7 +2468,10 @@ export const de = defineLocale({
         label: 'Erlaubte Telegram-Benutzer-IDs',
         help: 'Empfohlen. Numerische IDs, durch Kommas getrennt, von @userinfobot. Ohne diese können dir beliebige Benutzer per DM schreiben.'
       },
-      TELEGRAM_PROXY: { label: 'Proxy-URL', help: 'Nur auf Netzwerken nötig, wo Telegram blockiert ist.' },
+      TELEGRAM_PROXY: {
+        label: 'Proxy-URL',
+        help: 'Nur auf Netzwerken nötig, wo Telegram blockiert ist.'
+      },
       DISCORD_BOT_TOKEN: {
         label: 'Bot-Token',
         help: 'Erstelle im Discord Developer Portal eine Anwendung, füge einen Bot hinzu und füge sein Token ein.'
@@ -2129,7 +2480,10 @@ export const de = defineLocale({
         label: 'Erlaubte Discord-Benutzer-IDs',
         help: 'Empfohlen. Discord-Benutzer-IDs, durch Kommas getrennt.'
       },
-      DISCORD_REPLY_TO_MODE: { label: 'Antwortstil', help: 'first, all oder off.' },
+      DISCORD_REPLY_TO_MODE: {
+        label: 'Antwortstil',
+        help: 'first, all oder off.'
+      },
       DISCORD_ALLOW_ALL_USERS: {
         label: 'Alle Discord-Benutzer zulassen',
         help: 'Nur für die Entwicklung. Bei true kann jeder Benutzer dem Bot per DM schreiben, ohne Allowlist.'
@@ -2146,11 +2500,22 @@ export const de = defineLocale({
         label: 'Alle iMessage-Benutzer zulassen',
         help: 'Bei true wird die BlueBubbles-Allowlist übersprungen.'
       },
-      MATTERMOST_ALLOW_ALL_USERS: { label: 'Alle Mattermost-Benutzer zulassen' },
-      MATTERMOST_HOME_CHANNEL: { label: 'Home-Kanal' },
-      QQ_ALLOW_ALL_USERS: { label: 'Alle QQ-Benutzer zulassen' },
-      QQBOT_HOME_CHANNEL: { label: 'QQ-Home-Kanal', help: 'Standard-Kanal oder -Gruppe für die Cron-Zustellung.' },
-      QQBOT_HOME_CHANNEL_NAME: { label: 'Name des QQ-Home-Kanals' },
+      MATTERMOST_ALLOW_ALL_USERS: {
+        label: 'Alle Mattermost-Benutzer zulassen'
+      },
+      MATTERMOST_HOME_CHANNEL: {
+        label: 'Home-Kanal'
+      },
+      QQ_ALLOW_ALL_USERS: {
+        label: 'Alle QQ-Benutzer zulassen'
+      },
+      QQBOT_HOME_CHANNEL: {
+        label: 'QQ-Home-Kanal',
+        help: 'Standard-Kanal oder -Gruppe für die Cron-Zustellung.'
+      },
+      QQBOT_HOME_CHANNEL_NAME: {
+        label: 'Name des QQ-Home-Kanals'
+      },
       SLACK_BOT_TOKEN: {
         label: 'Slack-Bot-Token',
         help: 'Verwende das Bot-Token aus OAuth & Permissions, nachdem du deine Slack-App installiert hast.',
@@ -2161,16 +2526,32 @@ export const de = defineLocale({
         help: 'Verwende das App-Level-Token, das für den Socket Mode erforderlich ist.',
         placeholder: 'Slack-App-Token einfügen'
       },
-      SLACK_ALLOWED_USERS: { label: 'Erlaubte Slack-Benutzer-IDs', help: 'Empfohlen. Slack-Benutzer-IDs, durch Kommas getrennt.' },
-      MATTERMOST_URL: { label: 'Server-URL', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'Bot-Token' },
+      SLACK_ALLOWED_USERS: {
+        label: 'Erlaubte Slack-Benutzer-IDs',
+        help: 'Empfohlen. Slack-Benutzer-IDs, durch Kommas getrennt.'
+      },
+      MATTERMOST_URL: {
+        label: 'Server-URL',
+        placeholder: 'https://mattermost.example.com'
+      },
+      MATTERMOST_TOKEN: {
+        label: 'Bot-Token'
+      },
       MATTERMOST_ALLOWED_USERS: {
         label: 'Erlaubte Benutzer-IDs',
         help: 'Empfohlen. Mattermost-Benutzer-IDs, durch Kommas getrennt.'
       },
-      MATRIX_HOMESERVER: { label: 'Homeserver-URL', placeholder: 'https://matrix.org' },
-      MATRIX_ACCESS_TOKEN: { label: 'Zugriffs-Token' },
-      MATRIX_USER_ID: { label: 'Bot-Benutzer-ID', placeholder: '@hermes:example.org' },
+      MATRIX_HOMESERVER: {
+        label: 'Homeserver-URL',
+        placeholder: 'https://matrix.org'
+      },
+      MATRIX_ACCESS_TOKEN: {
+        label: 'Zugriffs-Token'
+      },
+      MATRIX_USER_ID: {
+        label: 'Bot-Benutzer-ID',
+        placeholder: '@hermes:example.org'
+      },
       MATRIX_ALLOWED_USERS: {
         label: 'Erlaubte Matrix-Benutzer-IDs',
         help: 'Empfohlen. Benutzer-IDs im Format @benutzer:server, durch Kommas getrennt.'
@@ -2180,21 +2561,28 @@ export const de = defineLocale({
         placeholder: 'http://127.0.0.1:8080',
         help: 'URL einer laufenden signal-cli-REST-Bridge.'
       },
-      SIGNAL_ACCOUNT: { label: 'Telefonnummer', help: 'Die Nummer, die bei deiner signal-cli-Bridge registriert ist.' },
-      SIGNAL_ALLOWED_USERS: { label: 'Erlaubte Signal-Benutzer', help: 'Empfohlen. Signal-Kennungen, durch Kommas getrennt.' },
+      SIGNAL_ACCOUNT: {
+        label: 'Telefonnummer',
+        help: 'Die Nummer, die bei deiner signal-cli-Bridge registriert ist.'
+      },
+      SIGNAL_ALLOWED_USERS: {
+        label: 'Erlaubte Signal-Benutzer',
+        help: 'Empfohlen. Signal-Kennungen, durch Kommas getrennt.'
+      },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp-Bridge aktivieren',
         help: 'Wird automatisch über den Schalter unten gesetzt. Lass es stehen, außer du weißt, dass du es brauchst.'
       },
-      WHATSAPP_MODE: { label: 'Bridge-Modus' },
+      WHATSAPP_MODE: {
+        label: 'Bridge-Modus'
+      },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Erlaubte WhatsApp-Benutzer',
         help: 'Empfohlen. Telefonnummern oder WhatsApp-IDs, durch Kommas getrennt.'
       }
     },
     platformIntro: {}
-  }
-  ,
+  },
   webhooks: {
     search: 'Webhooks suchen …',
     loading: 'Webhooks werden geladen …',
@@ -2218,10 +2606,12 @@ export const de = defineLocale({
     deleteDescPrefix: 'Dadurch wird ',
     deleteDescSuffix: ' endgültig entfernt. Das kann nicht rückgängig gemacht werden.',
     deleteFailed: (name: string) => `Löschen von „${name}“ fehlgeschlagen`,
-    toggleFailed: (name, enabled) => `Umschalten von „${name}“ ${enabled ? 'einschalten' : 'ausschalten'} fehlgeschlagen`,
+    toggleFailed: (name, enabled) =>
+      `Umschalten von „${name}“ ${enabled ? 'einschalten' : 'ausschalten'} fehlgeschlagen`,
     newSubscription: 'Neues Abonnement',
     restarting: 'Gateway wird neu gestartet …',
-    restartNeeded: 'Webhooks sind aktiviert, aber das Gateway braucht vor dem Onlinegehen des Empfängers noch einen Neustart.',
+    restartNeeded:
+      'Webhooks sind aktiviert, aber das Gateway braucht vor dem Onlinegehen des Empfängers noch einen Neustart.',
     restartGateway: 'Gateway neu starten',
     restartingGateway: 'Wird neu gestartet …',
     restartFailed: (detail: string) => `Gateway-Neustart fehlgeschlagen${detail}`,
@@ -2259,31 +2649,31 @@ export const de = defineLocale({
       email: 'E-Mail',
       github_comment: 'GitHub-Kommentar'
     }
-  }
-  ,
+  },
   profiles: {
-    close: "Profile schließen",
-    nameHint: "Kleinbuchstaben, Ziffern, Bindestriche und Unterstriche. Muss mit einem Buchstaben oder einer Ziffer beginnen.",
-    title: "Profile",
+    close: 'Profile schließen',
+    nameHint:
+      'Kleinbuchstaben, Ziffern, Bindestriche und Unterstriche. Muss mit einem Buchstaben oder einer Ziffer beginnen.',
+    title: 'Profile',
     count: count => `${count} ${count === 1 ? 'profile' : 'profiles'}`,
-    search: "Profile durchsuchen...",
-    loading: "Profile werden geladen...",
-    newProfile: "Neues Profil",
-    importProfile: "Profil importieren…",
-    exportProfile: "Profil exportieren…",
-    imported: "Profil importiert",
-    exported: "Profil exportiert",
-    failedImport: "Profil konnte nicht importiert werden",
-    failedExport: "Profil konnte nicht exportiert werden",
-    allProfiles: "Alle Profile",
-    showAllProfiles: "Alle Profile anzeigen",
+    search: 'Profile durchsuchen...',
+    loading: 'Profile werden geladen...',
+    newProfile: 'Neues Profil',
+    importProfile: 'Profil importieren…',
+    exportProfile: 'Profil exportieren…',
+    imported: 'Profil importiert',
+    exported: 'Profil exportiert',
+    failedImport: 'Profil konnte nicht importiert werden',
+    failedExport: 'Profil konnte nicht exportiert werden',
+    allProfiles: 'Alle Profile',
+    showAllProfiles: 'Alle Profile anzeigen',
     switchToProfile: name => `Zu ${name} wechseln`,
     switchToConnection: name => `Zu ${name} wechseln`,
     switchConnectionFailed: name => `Keine Verbindung zu ${name} möglich`,
-    manageProfiles: "Profile verwalten…",
-    connectGateway: "Gateways verwalten…",
+    manageProfiles: 'Profile verwalten…',
+    connectGateway: 'Gateways verwalten…',
     fleet: {
-      allOnGateway: "Alle Profile auf diesem Gateway",
+      allOnGateway: 'Alle Profile auf diesem Gateway',
       gateway: gateway => `Profile auf ${gateway}`,
       gatewayUnreachable: gateway => `${gateway} · nicht erreichbar`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
@@ -2291,107 +2681,109 @@ export const de = defineLocale({
       deleteOn: gateway => ` auf ${gateway}`
     },
     remoteOverride: {
-      menuItem: "Mit Remote-Host verbinden…",
+      menuItem: 'Mit Remote-Host verbinden…',
       badge: (host: string) => `Läuft auf ${host}`,
       title: (profile: string) => `${profile} mit einem Remote-Host verbinden`,
-      description: "Sessions in diesem Profil laufen auf dem Remote-Hermes, den du einstellst, statt auf diesem Computer.",
-      urlLabel: "Remote-Adresse",
-      urlPlaceholder: "https://hermes.example.com",
-      urlInvalid: "Gib eine vollständige Adresse ein, die mit http:// oder https:// beginnt",
-      tokenLabel: "Access-Token",
-      tokenPlaceholder: "Remote-Session-Token einfügen",
-      tokenSavedHint: "Ein Token ist bereits gespeichert. Leer lassen, um es zu behalten.",
+      description:
+        'Sessions in diesem Profil laufen auf dem Remote-Hermes, den du einstellst, statt auf diesem Computer.',
+      urlLabel: 'Remote-Adresse',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: 'Gib eine vollständige Adresse ein, die mit http:// oder https:// beginnt',
+      tokenLabel: 'Access-Token',
+      tokenPlaceholder: 'Remote-Session-Token einfügen',
+      tokenSavedHint: 'Ein Token ist bereits gespeichert. Leer lassen, um es zu behalten.',
       plainTextOptIn:
-        "Dieser Computer hat keine sichere Schlüssel-Ablage, daher würde das Token unverschlüsselt auf der Platte gespeichert. Trotzdem speichern?",
+        'Dieser Computer hat keine sichere Schlüssel-Ablage, daher würde das Token unverschlüsselt auf der Platte gespeichert. Trotzdem speichern?',
       collisionWarning: (label: string) =>
         `Ein Gateway mit dem Namen “${label}” existiert bereits in den Einstellungen. Diese Profil-Verbindung ist davon getrennt und ändert es nicht.`,
-      confirmTitle: "Dieses Profil mit einem Remote-Host verbinden?",
+      confirmTitle: 'Dieses Profil mit einem Remote-Host verbinden?',
       confirmNote: (profile: string, host: string) =>
         `Neue Chats in ${profile} laufen auf ${host}. Dieser Computer führt dort Befehle aus und liest dort Dateien, nicht auf diesem Rechner. Verbinde dich nur mit einem Host, dem du vertraust.`,
-      confirmBack: "Zurück",
-      connect: "Verbinden",
-      connecting: "Verbinde…",
-      disconnect: "Remote-Verbindung entfernen",
-      savedTitle: "Profil verbunden",
+      confirmBack: 'Zurück',
+      connect: 'Verbinden',
+      connecting: 'Verbinde…',
+      disconnect: 'Remote-Verbindung entfernen',
+      savedTitle: 'Profil verbunden',
       savedMessage: (profile: string, host: string) => `${profile} läuft jetzt auf ${host}`,
-      removedTitle: "Remote-Verbindung entfernt",
+      removedTitle: 'Remote-Verbindung entfernt',
       removedMessage: (profile: string) => `${profile} läuft jetzt auf diesem Computer`,
-      removeFailed: "Die Remote-Verbindung konnte nicht entfernt werden",
-      authFailedTitle: "Remote-Host hat das gespeicherte Token abgelehnt",
+      removeFailed: 'Die Remote-Verbindung konnte nicht entfernt werden',
+      authFailedTitle: 'Remote-Host hat das gespeicherte Token abgelehnt',
       authFailedMessage: (profile: string, host: string) =>
         `${host} hat das für ${profile} gespeicherte Token abgelehnt. Es könnte auf der Remote-Seite geändert worden sein.`,
-      updateToken: "Neues Token eingeben…"
+      updateToken: 'Neues Token eingeben…'
     },
-    actions: "Aktionen",
-    color: "Farbe…",
-    colorFor: "Farbe",
+    actions: 'Aktionen',
+    color: 'Farbe…',
+    colorFor: 'Farbe',
     setColor: color => `Farbe ${color} setzen`,
-    autoColor: "Auto",
-    noProfiles: "Noch keine Profile.",
-    selectPrompt: "Wähle ein Profil aus, um seine Details zu sehen.",
-    refresh: "Profile aktualisieren",
-    refreshing: "Profile werden aktualisiert",
-    default: "default",
+    autoColor: 'Auto',
+    noProfiles: 'Noch keine Profile.',
+    selectPrompt: 'Wähle ein Profil aus, um seine Details zu sehen.',
+    refresh: 'Profile aktualisieren',
+    refreshing: 'Profile werden aktualisiert',
+    default: 'default',
     skills: count => `${count} ${count === 1 ? 'skill' : 'skills'}`,
-    env: "env",
-    defaultBadge: "Standard",
-    rename: "Umbenennen",
-    renameMenu: "Umbenennen…",
-    exportMenu: "Exportieren…",
-    editSoul: "SOUL.md bearbeiten…",
-    copySetup: "Setup kopieren",
-    copying: "Wird kopiert...",
-    modelLabel: "Modell",
-    skillsLabel: "Skills",
-    notSet: "Nicht gesetzt",
-    soulDesc: "Die System-Prompt- und Personen-Anweisungen, die in diesem Profil fest eingebacken sind.",
-    soulOptional: "optional",
-    soulPlaceholder: mode => `Die System-Prompt- bzw. Personen-Anweisung für dieses Profil.\nLeer lassen, um den ${mode}-Standard zu behalten.`,
-    soulPlaceholderCloned: "geklont",
-    soulPlaceholderEmpty: "leer",
-    unsavedChanges: "Ungespeicherte Änderungen",
-    loadingSoul: "SOUL.md wird geladen...",
-    emptySoul: "Leere SOUL.md — beginne, die Persona zu schreiben...",
-    saving: "Wird gespeichert...",
-    saveSoul: "SOUL.md speichern",
-    deleteTitle: "Profil löschen?",
-    deleteDescPrefix: "Das löscht ",
-    deleteDescMid: " und entfernt sein ",
-    deleteDescSuffix: " Verzeichnis. Das kann nicht rückgängig gemacht werden.",
-    deleting: "Wird gelöscht...",
-    createDesc: "Profile sind unabhängige Hermes-Umgebungen: eigene Config, eigene Skills und eigene SOUL.md.",
-    nameLabel: "Name",
-    cloneFrom: "Klonen von",
-    cloneFromNone: "Keine (leer)",
-    cloneFromDesc: "Kopiert Config, Skills und SOUL.md aus dem gewählten Quellprofil.",
-    cloneFromDefault: "Vom Standardprofil klonen",
-    cloneFromDefaultDesc: "Config, Skills und SOUL.md aus deinem Standardprofil kopieren.",
+    env: 'env',
+    defaultBadge: 'Standard',
+    rename: 'Umbenennen',
+    renameMenu: 'Umbenennen…',
+    exportMenu: 'Exportieren…',
+    editSoul: 'SOUL.md bearbeiten…',
+    copySetup: 'Setup kopieren',
+    copying: 'Wird kopiert...',
+    modelLabel: 'Modell',
+    skillsLabel: 'Skills',
+    notSet: 'Nicht gesetzt',
+    soulDesc: 'Die System-Prompt- und Personen-Anweisungen, die in diesem Profil fest eingebacken sind.',
+    soulOptional: 'optional',
+    soulPlaceholder: mode =>
+      `Die System-Prompt- bzw. Personen-Anweisung für dieses Profil.\nLeer lassen, um den ${mode}-Standard zu behalten.`,
+    soulPlaceholderCloned: 'geklont',
+    soulPlaceholderEmpty: 'leer',
+    unsavedChanges: 'Ungespeicherte Änderungen',
+    loadingSoul: 'SOUL.md wird geladen...',
+    emptySoul: 'Leere SOUL.md — beginne, die Persona zu schreiben...',
+    saving: 'Wird gespeichert...',
+    saveSoul: 'SOUL.md speichern',
+    deleteTitle: 'Profil löschen?',
+    deleteDescPrefix: 'Das löscht ',
+    deleteDescMid: ' und entfernt sein ',
+    deleteDescSuffix: ' Verzeichnis. Das kann nicht rückgängig gemacht werden.',
+    deleting: 'Wird gelöscht...',
+    createDesc: 'Profile sind unabhängige Hermes-Umgebungen: eigene Config, eigene Skills und eigene SOUL.md.',
+    nameLabel: 'Name',
+    cloneFrom: 'Klonen von',
+    cloneFromNone: 'Keine (leer)',
+    cloneFromDesc: 'Kopiert Config, Skills und SOUL.md aus dem gewählten Quellprofil.',
+    cloneFromDefault: 'Vom Standardprofil klonen',
+    cloneFromDefaultDesc: 'Config, Skills und SOUL.md aus deinem Standardprofil kopieren.',
     invalidName: hint => `Ungültiger Name. ${hint}`,
-    nameRequired: "Name ist erforderlich.",
-    creating: "Wird erstellt...",
-    createAction: "Profil erstellen",
-    renameTitle: "Profil umbenennen",
-    renameDescPrefix: "Durch das Umbenennen werden das Profilverzeichnis und alle Wrapper-Scripts in ",
-    renameDescSuffix: " aktualisiert.",
-    displayNameTitle: "Diesen Agent benennen",
-    displayNameDesc: "Legt einen Anzeigenamen fest, der in der ganzen App angezeigt wird. Die interne Profil-ID bleibt \"default\".",
-    displayNameLabel: "Anzeigename",
-    newNameLabel: "Neuer Name",
-    renaming: "Wird umbenannt...",
-    created: "Profil erstellt",
-    renamed: "Profil umbenannt",
-    deleted: "Profil gelöscht",
-    setupCopied: "Setup-Befehl kopiert",
-    soulSaved: "SOUL.md gespeichert",
-    failedLoad: "Profile konnten nicht geladen werden",
-    failedDelete: "Profil konnte nicht gelöscht werden",
-    failedCopy: "Setup-Befehl konnte nicht kopiert werden",
-    failedLoadSoul: "SOUL.md konnte nicht geladen werden",
-    failedSaveSoul: "SOUL.md konnte nicht gespeichert werden",
-    failedCreate: "Profil konnte nicht erstellt werden",
-    failedRename: "Profil konnte nicht umbenannt werden"
-  }
-  ,
+    nameRequired: 'Name ist erforderlich.',
+    creating: 'Wird erstellt...',
+    createAction: 'Profil erstellen',
+    renameTitle: 'Profil umbenennen',
+    renameDescPrefix: 'Durch das Umbenennen werden das Profilverzeichnis und alle Wrapper-Scripts in ',
+    renameDescSuffix: ' aktualisiert.',
+    displayNameTitle: 'Diesen Agent benennen',
+    displayNameDesc:
+      'Legt einen Anzeigenamen fest, der in der ganzen App angezeigt wird. Die interne Profil-ID bleibt "default".',
+    displayNameLabel: 'Anzeigename',
+    newNameLabel: 'Neuer Name',
+    renaming: 'Wird umbenannt...',
+    created: 'Profil erstellt',
+    renamed: 'Profil umbenannt',
+    deleted: 'Profil gelöscht',
+    setupCopied: 'Setup-Befehl kopiert',
+    soulSaved: 'SOUL.md gespeichert',
+    failedLoad: 'Profile konnten nicht geladen werden',
+    failedDelete: 'Profil konnte nicht gelöscht werden',
+    failedCopy: 'Setup-Befehl konnte nicht kopiert werden',
+    failedLoadSoul: 'SOUL.md konnte nicht geladen werden',
+    failedSaveSoul: 'SOUL.md konnte nicht gespeichert werden',
+    failedCreate: 'Profil konnte nicht erstellt werden',
+    failedRename: 'Profil konnte nicht umbenannt werden'
+  },
   cron: {
     close: 'Cron schließen',
     title: 'Geplante Jobs',
@@ -2499,7 +2891,8 @@ export const de = defineLocale({
     editTitle: 'Cron-Job bearbeiten',
     createTitle: 'Neuer Cron-Job',
     editDesc: 'Aktualisiere den Zeitplan, den Prompt oder das Zustellziel. Änderungen gelten beim nächsten Lauf.',
-    createDesc: 'Plane einen Prompt, der automatisch ausgeführt wird. Nutze die Cron-Syntax oder einen natürlichen Ausdruck wie „every 15 minutes“.',
+    createDesc:
+      'Plane einen Prompt, der automatisch ausgeführt wird. Nutze die Cron-Syntax oder einen natürlichen Ausdruck wie „every 15 minutes“.',
     nameLabel: 'Name',
     namePlaceholder: 'Morgenübersicht',
     promptLabel: 'Prompt',
@@ -2537,8 +2930,7 @@ export const de = defineLocale({
       emptyTitle: 'Keine Blueprints verfügbar',
       emptyDesc: 'Auf diesem Backend sind keine Automatisierungs-Blueprints verfügbar.'
     }
-  }
-  ,
+  },
   artifacts: {
     search: 'Nach Artifacts suchen...',
     refresh: 'Artifacts aktualisieren',
@@ -2572,15 +2964,17 @@ export const de = defineLocale({
     chat: 'Chat',
     copyUrl: 'URL kopieren',
     copyPath: 'Pfad kopieren'
-  }
-  ,
+  },
   artifactCard: {
-    kind: { code: 'Code', html: 'Interaktive Seite', svg: 'Grafik' },
+    kind: {
+      code: 'Code',
+      html: 'Interaktive Seite',
+      svg: 'Grafik'
+    },
     generating: lines => `Wird generiert… ${lines} Zeilen`,
     versionBadge: count => `${count} Versionen`,
     open: 'Öffnen'
-  }
-  ,
+  },
   artifactPreview: {
     versionOf: (current, total) => `v${current} von ${total}`,
     olderVersion: 'Ältere Version',
@@ -2592,8 +2986,7 @@ export const de = defineLocale({
     openInBrowserFailed: 'Konnte nicht im Browser geöffnet werden',
     missingTitle: 'Artifact nicht verfügbar',
     missingBody: 'Dieses Artifact ist nicht mehr in der lokalen Registry.'
-  }
-  ,
+  },
   sidebar: {
     gatewayGroups: {
       grouping: 'Gateway & Profil',
@@ -2611,8 +3004,7 @@ export const de = defineLocale({
       skills: 'Fähigkeiten',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      cron: 'Geplante Jobs',
-      'session-import': 'Session importieren'
+      cron: 'Geplante Jobs'
     },
     searchAria: 'Sessions durchsuchen',
     searchPlaceholder: 'Sessions durchsuchen…',
@@ -2636,8 +3028,10 @@ export const de = defineLocale({
     noSessions: 'Noch keine Sessions',
     noFilterMatches: 'Keine Sessions passen zu diesen Filtern',
     projects: {
+      showAllSessions: 'Alle Sitzungen anzeigen',
       sectionLabel: 'Projekte',
       home: 'Start',
+      autoDiscovered: 'Automatisch erkannt',
       newButton: 'Neues Projekt',
       createTitle: 'Neues Projekt',
       createDesc: 'Gib dem Workspace einen Namen und füge ein oder mehrere Ordner hinzu.',
@@ -2673,7 +3067,8 @@ export const de = defineLocale({
       createFailed: 'Projekt konnte nicht erstellt werden',
       staleBackend:
         'Aktualisiere das Hermes-Backend, um Projekte zu erstellen – dein Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
-      deleteConfirm: 'Das entfernt das gespeicherte Projekt aus Hermes. Dateien, Git-Repos und Worktrees bleiben unberührt.',
+      deleteConfirm:
+        'Das entfernt das gespeicherte Projekt aus Hermes. Dateien, Git-Repos und Worktrees bleiben unberührt.',
       startWork: 'Neuer Worktree',
       newWorktreeTitle: 'Neuer Worktree',
       newWorktreeDesc: 'Benenne den Branch für diesen Worktree.',
@@ -2772,8 +3167,7 @@ export const de = defineLocale({
       done: 'Erledigt'
     },
     markAllRead: 'Alle als gelesen markieren'
-  }
-  ,
+  },
   composer: {
     message: 'Nachricht',
     wakingProfile: profile => `Wecke ${profile}…`,
@@ -2818,6 +3212,13 @@ export const de = defineLocale({
     stopDictation: 'Diktat stoppen',
     transcribingDictation: 'Transkribiert Diktat',
     voiceControls: 'Sprache',
+    voiceEngine: 'Sprachchat-Engine',
+    voiceEngineChained: 'Sprache-zu-Text + Hermes-Stimme',
+    voiceEngineLive: 'GPT-Live (Vollduplex, delegiert an Hermes)',
+    voiceEngineLiveNeedsKey: 'Benötigt einen OpenAI-API-Schlüssel',
+    voiceEngineChangeFailed: 'Sprachchat-Engine konnte nicht geändert werden',
+    voiceEngineChainedShort: 'Sprache-zu-Text',
+    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: 'Sprachdiktat',
     speakReplies: 'Antworten vorlesen',
     stopSpeakingReplies: 'Antworten nicht mehr vorlesen',
@@ -2858,6 +3259,7 @@ export const de = defineLocale({
     queuedPaused: count => `${count} eingereiht — pausiert`,
     attachmentOnly: 'Nur-Anhang-Turn',
     emptyTurn: 'Leerer Turn',
+    hiddenQueued: 'Einrichtungshinweis',
     attachments: count => `${count} Anhang${count === 1 ? '' : 'e'}`,
     editingInComposer: 'Bearbeitet im Composer',
     editingQueuedInComposer: 'Bearbeitet eingereihten Turn im Composer',
@@ -2869,7 +3271,8 @@ export const de = defineLocale({
     queueResume: 'Fortsetzen',
     queueResumeTip: 'Durch Stopp pausiert — fortsetzen, um die eingereihten Turns zu senden',
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
-    queueStuckBody: 'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuche, ihn erneut zu senden.',
+    queueStuckBody:
+      'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuche, ihn erneut zu senden.',
     previewUnavailable: 'Vorschau nicht verfügbar',
     previewLabel: label => `Vorschau ${label}`,
     couldNotPreview: label => `Vorschau von ${label} fehlgeschlagen`,
@@ -2949,8 +3352,7 @@ export const de = defineLocale({
         text: 'Bitte erkläre, wie das funktioniert, und zeige mir die Schlüsseldateien.'
       }
     }
-  }
-  ,
+  },
   statusStack: {
     agents: 'Agents',
     background: count => `${count} Hintergrund`,
@@ -2980,7 +3382,8 @@ export const de = defineLocale({
       resumeNow: 'Jetzt fortsetzen',
       clearGoal: 'Ziel löschen',
       clearGoalConfirmTitle: 'Ziel löschen?',
-      clearGoalConfirmBody: 'Bist du sicher, dass du das aktive Ziel löschen willst? Das kann nicht rückgängig gemacht werden.',
+      clearGoalConfirmBody:
+        'Bist du sicher, dass du das aktive Ziel löschen willst? Das kann nicht rückgängig gemacht werden.',
       copyCriterion: index => `Kriterium ${index} kopieren`,
       removeCriterion: index => `Kriterium ${index} entfernen`,
       removeCriterionConfirmTitle: index => `Kriterium ${index} entfernen?`,
@@ -3073,8 +3476,10 @@ export const de = defineLocale({
       viewAsList: 'Als Liste ansehen',
       revert: 'Zurücksetzen',
       revertAll: 'Alles zurücksetzen',
-      revertConfirm: 'Änderungen an dieser Datei verwerfen und sie in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
-      revertAllConfirm: 'Alle Änderungen verwerfen und alle Dateien in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
+      revertConfirm:
+        'Änderungen an dieser Datei verwerfen und sie in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
+      revertAllConfirm:
+        'Alle Änderungen verwerfen und alle Dateien in den committeten Zustand zurücksetzen? Das kann nicht rückgängig gemacht werden.',
       staged: 'Gestaged',
       noChanges: 'Keine Änderungen',
       notRepo: 'Kein git-Repository',
@@ -3091,7 +3496,7 @@ export const de = defineLocale({
       openPr: 'PR öffnen',
       ghMissing: 'Installiere die GitHub CLI (gh) und melde dich an, um PRs zu öffnen',
       agentShip: 'Hermes bitten, einen PR zu öffnen',
-      agentShipUnavailable: "Der Chat, der diese Änderungen besitzt, ist nicht auf dem Bildschirm.",
+      agentShipUnavailable: 'Der Chat, der diese Änderungen besitzt, ist nicht auf dem Bildschirm.',
       agentShipPrompt:
         'Überprüfe die aktuellen Änderungen, committe sie mit einer klaren Conventional-Commit-Message, pushe den Branch und öffne einen Pull Request.',
       newBranch: 'Neuer Branch',
@@ -3100,8 +3505,7 @@ export const de = defineLocale({
       switchFailed: branch => `Zu ${branch} konnte nicht gewechselt werden`,
       worktrees: 'Worktrees'
     }
-  }
-  ,
+  },
   updates: {
     stages: {
       idle: 'Wird vorbereitet…',
@@ -3130,12 +3534,14 @@ export const de = defineLocale({
     availableBody: 'Eine neue Hermes-Version ist bereit zur Installation.',
     availableTitleBackend: 'Backend-Update verfügbar',
     availableBodyBackend: 'Eine neuere Version des verbundenen Hermes-Backends ist bereit zur Installation.',
-    availableBodyNoChangelog: 'Eine neuere Version ist bereit. Release-Notizen sind für diesen Installationstyp nicht verfügbar.',
+    availableBodyNoChangelog:
+      'Eine neuere Version ist bereit. Release-Notizen sind für diesen Installationstyp nicht verfügbar.',
     updateNow: 'Jetzt aktualisieren',
     maybeLater: 'Später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
     manualTitle: 'Aus deinem Terminal aktualisieren',
-    manualBody: 'Du hast Hermes über die Befehlszeile installiert, also laufen Updates auch dort. Füge dies in dein Terminal ein:',
+    manualBody:
+      'Du hast Hermes über die Befehlszeile installiert, also laufen Updates auch dort. Füge dies in dein Terminal ein:',
     manualPickedUp: 'Hermes übernimmt die neue Version beim nächsten Start.',
     guiSkewTitle: 'Desktop-App aktualisieren',
     guiSkewBody:
@@ -3179,93 +3585,113 @@ export const de = defineLocale({
       restarting: 'Backend startet neu, um das Update zu laden…',
       notAvailable: 'Kein Update für dieses Backend verfügbar.',
       failed: 'Backend-Update fehlgeschlagen.',
-      noReturn: 'Das Backend kam nicht wieder online. Das Update wurde möglicherweise nicht abgeschlossen — prüfe den Backend-Host.'
+      noReturn:
+        'Das Backend kam nicht wieder online. Das Update wurde möglicherweise nicht abgeschlossen — prüfe den Backend-Host.'
     }
-  }
-  ,
+  },
+  handoffTour: {
+    profileTitle: 'Deine erste Aufgabe läuft im Standard-Profil',
+    profileText:
+      'Diese Leiste wechselt die Profile. Das jetzt hervorgehobene ist „Standard", wo die Aufgabensitzung lebt. Das andere ist das Einrichtungsprofil, wo der Willkommens-Chat lebt.',
+    sessionsTitle: 'Jedes Profil führt seine eigenen Sitzungen',
+    sessionsText:
+      'Diese Liste gehört zum Standard-Profil. „Neue Sitzung" startet eine im jeweils gewählten Profil. Wechsle die Profile über die Leiste, und die Liste ändert sich mit.',
+    stayTitle: 'Hermes ist einen Klick entfernt',
+    stayText:
+      'Wechsle ins Einrichtungsprofil und öffne „Willkommen bei Hermes", wenn du Hilfe brauchst. Es bleibt dort.'
+  },
+  guidedGreeting: {
+    line: 'Hey, komm rein. Ich bin Hermes. Gib mir zwei Minuten, um alles um dich herum einzurichten, dann setzen wir mich auf etwas an, das du wirklich erledigt haben willst.\n\nDoch zuerst: Wie soll ich dich nennen?',
+    nameSuggestion: name => `(Ich kann dich auch einfach ${name} nennen, wenn dir das lieber ist.)`
+  },
   install: {
     stageStates: {
-      pending: "Ausstehend",
-      running: "Am Installieren",
-      succeeded: "Fertig",
-      skipped: "Übersprungen",
-      failed: "Fehlgeschlagen"
+      pending: 'Ausstehend',
+      running: 'Am Installieren',
+      succeeded: 'Fertig',
+      skipped: 'Übersprungen',
+      failed: 'Fehlgeschlagen'
     },
-    oneTimeTitle: "Hermes braucht eine einmalige Installation",
+    oneTimeTitle: 'Hermes braucht eine einmalige Installation',
     unsupportedDesc: platform =>
       `Die automatisierte Installation beim ersten Start ist auf ${platform} noch nicht verfügbar. Öffne Terminal und führe den untenstehenden Befehl aus, und starte die App dann neu. Bei späteren Starts wird dieser Schritt übersprungen.`,
-    installCommand: "Installationsbefehl",
-    copyCommand: "Befehl kopieren",
-    viewDocs: "Installations-Doku ansehen",
-    installTo: "Wird installiert nach",
+    installCommand: 'Installationsbefehl',
+    copyCommand: 'Befehl kopieren',
+    viewDocs: 'Installations-Doku ansehen',
+    installTo: 'Wird installiert nach',
     retryAfterRun: "Ich hab's ausgeführt – erneut versuchen",
-    setupChoiceTitle: "Hermes Desktop einrichten",
+    setupChoiceTitle: 'Hermes Desktop einrichten',
     setupChoiceDesc:
-      "Verbinde diese App mit einem Hermes Gateway, das du bereits betreibst, oder installiere Hermes lokal auf diesem Computer.",
-    connectExistingTitle: "Mit bestehendem Hermes verbinden",
-    connectExistingShort: "Bestehendes verbinden",
-    connectExistingDesc: "Verwende ein Remote-Backend mit einem Session-Token oder Browser-Sign-in. Keine lokale Installation wird gestartet.",
-    installLocalTitle: "Hermes lokal installieren",
-    installLocalDesc: "Lade Hermes herunter, erstelle seine Python-Umgebung und führe das Backend auf diesem Computer aus.",
-    localStartUnavailable: "Die lokale Installation konnte nicht gestartet werden. Starte Hermes Desktop neu und versuch es erneut.",
-    remoteSetupTitle: "Mit bestehendem Hermes verbinden",
-    remoteSetupDesc: "Gib die URL deines Gateways ein. Hermes Desktop erkennt, ob ein Token oder Browser-Sign-in nötig ist.",
-    remoteUrlTitle: "Gateway-URL",
-    remoteUrlDesc: "Verwende die Basis-URL des Hermes Gateways, inklusive https:// wenn es remote ist.",
-    remoteUrlPlaceholder: "https://gateway.example.com/hermes",
-    probing: "Gateway-Authentifizierung wird erkannt...",
-    probeError: "Dieses Hermes Gateway konnte nicht erreicht werden.",
-    identityProvider: "dein Identity-Provider",
-    authTitle: "Authentifizierung",
+      'Verbinde diese App mit einem Hermes Gateway, das du bereits betreibst, oder installiere Hermes lokal auf diesem Computer.',
+    connectExistingTitle: 'Mit bestehendem Hermes verbinden',
+    connectExistingShort: 'Bestehendes verbinden',
+    connectExistingDesc:
+      'Verwende ein Remote-Backend mit einem Session-Token oder Browser-Sign-in. Keine lokale Installation wird gestartet.',
+    installLocalTitle: 'Hermes lokal installieren',
+    installLocalDesc:
+      'Lade Hermes herunter, erstelle seine Python-Umgebung und führe das Backend auf diesem Computer aus.',
+    localStartUnavailable:
+      'Die lokale Installation konnte nicht gestartet werden. Starte Hermes Desktop neu und versuch es erneut.',
+    remoteSetupTitle: 'Mit bestehendem Hermes verbinden',
+    remoteSetupDesc:
+      'Gib die URL deines Gateways ein. Hermes Desktop erkennt, ob ein Token oder Browser-Sign-in nötig ist.',
+    remoteUrlTitle: 'Gateway-URL',
+    remoteUrlDesc: 'Verwende die Basis-URL des Hermes Gateways, inklusive https:// wenn es remote ist.',
+    remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
+    probing: 'Gateway-Authentifizierung wird erkannt...',
+    probeError: 'Dieses Hermes Gateway konnte nicht erreicht werden.',
+    identityProvider: 'dein Identity-Provider',
+    authTitle: 'Authentifizierung',
     authNeedsOauth: provider => `Melde dich mit ${provider} an, bevor du dieses Gateway testest.`,
-    authSignedIn: "Browser-Sign-in abgeschlossen.",
-    connected: "Verbunden",
-    signIn: "Anmelden",
+    authSignedIn: 'Browser-Sign-in abgeschlossen.',
+    connected: 'Verbunden',
+    signIn: 'Anmelden',
     signInWith: provider => `Mit ${provider} anmelden`,
-    enterUrlFirst: "Gib zuerst eine Gateway-URL ein.",
-    signInIncomplete: "Das Anmeldefenster wurde geschlossen, bevor die Authentifizierung abgeschlossen war.",
-    tokenTitle: "Session-Token",
-    tokenDesc: "Füge das Session-Token aus der .env-Datei des Remote-Gateways ein.",
-    pasteSessionToken: "Session-Token einfügen",
-    incompleteSignInTest: "Melde dich an, bevor du dieses OAuth-geschützte Gateway testest.",
-    incompleteTokenTest: "Gib ein Session-Token ein, bevor du dieses Gateway testest.",
-    testConnection: "Verbindung testen",
-    testSucceeded: (baseUrl, version) => `Verbunden mit ${baseUrl}${version ? ` (${version})` : ""}.`,
-    applyRemote: "Übernehmen und neu verbinden",
-    backToSetup: "Zurück",
-    failedTitle: "Installation fehlgeschlagen",
-    settingUpTitle: "Hermes Agent wird eingerichtet",
-    finishingTitle: "Wird abgeschlossen",
+    enterUrlFirst: 'Gib zuerst eine Gateway-URL ein.',
+    signInIncomplete: 'Das Anmeldefenster wurde geschlossen, bevor die Authentifizierung abgeschlossen war.',
+    tokenTitle: 'Session-Token',
+    tokenDesc: 'Füge das Session-Token aus der .env-Datei des Remote-Gateways ein.',
+    pasteSessionToken: 'Session-Token einfügen',
+    incompleteSignInTest: 'Melde dich an, bevor du dieses OAuth-geschützte Gateway testest.',
+    incompleteTokenTest: 'Gib ein Session-Token ein, bevor du dieses Gateway testest.',
+    testConnection: 'Verbindung testen',
+    testSucceeded: (baseUrl, version) => `Verbunden mit ${baseUrl}${version ? ` (${version})` : ''}.`,
+    applyRemote: 'Übernehmen und neu verbinden',
+    backToSetup: 'Zurück',
+    failedTitle: 'Installation fehlgeschlagen',
+    settingUpTitle: 'Hermes Agent wird eingerichtet',
+    finishingTitle: 'Wird abgeschlossen',
     failedDesc:
-      "Einer der Installationsschritte ist fehlgeschlagen. Unter Windows kann das passieren, wenn eine andere Hermes-CLI- oder Desktop-Instanz läuft. Stoppe alle laufenden Hermes-Instanzen und versuch es dann erneut. Sieh dir die Details unten oder das Desktop-Log für das vollständige Protokoll an.",
+      'Einer der Installationsschritte ist fehlgeschlagen. Unter Windows kann das passieren, wenn eine andere Hermes-CLI- oder Desktop-Instanz läuft. Stoppe alle laufenden Hermes-Instanzen und versuch es dann erneut. Sieh dir die Details unten oder das Desktop-Log für das vollständige Protokoll an.',
     activeDesc:
-      "Das ist eine einmalige Einrichtung. Der Hermes-Installer lädt Abhängigkeiten herunter und konfiguriert deinen Computer. Bei späteren Starts wird dieser Schritt übersprungen.",
+      'Das ist eine einmalige Einrichtung. Der Hermes-Installer lädt Abhängigkeiten herunter und konfiguriert deinen Computer. Bei späteren Starts wird dieser Schritt übersprungen.',
     progress: (completed, total) => `${completed} von ${total} Schritten fertig`,
     currentStage: stage => ` – gerade: ${stage}`,
-    fetchingManifest: "Installer-Manifest wird geholt...",
-    error: "Fehler",
-    hideOutput: "Installer-Ausgabe ausblenden",
-    showOutput: "Installer-Ausgabe anzeigen",
-    lines: count => `${count} Zeile${count === 1 ? "" : "n"}`,
-    noOutput: "Noch keine Ausgabe.",
-    cancelling: "Wird abgebrochen...",
-    cancelInstall: "Installation abbrechen",
-    transcriptSaved: "Vollständiges Protokoll gespeichert unter",
-    copiedOutput: "Kopiert!",
-    copyOutput: "Ausgabe kopieren",
-    reloadRetry: "Neu laden und erneut versuchen"
-  }
-  ,
+    fetchingManifest: 'Installer-Manifest wird geholt...',
+    error: 'Fehler',
+    hideOutput: 'Installer-Ausgabe ausblenden',
+    showOutput: 'Installer-Ausgabe anzeigen',
+    lines: count => `${count} Zeile${count === 1 ? '' : 'n'}`,
+    noOutput: 'Noch keine Ausgabe.',
+    cancelling: 'Wird abgebrochen...',
+    cancelInstall: 'Installation abbrechen',
+    transcriptSaved: 'Vollständiges Protokoll gespeichert unter',
+    copiedOutput: 'Kopiert!',
+    copyOutput: 'Ausgabe kopieren',
+    reloadRetry: 'Neu laden und erneut versuchen'
+  },
   onboarding: {
-    headerTitle: "Lass uns Hermes Agent für dich einrichten",
-    headerDesc: 'Verbinde einen Model-Anbieter, um mit dem Chatten zu beginnen. Die meisten Optionen brauchen nur einen Klick.',
-    preparingInstall: 'Hermes schließt die Installation ab. Das dauert beim ersten Start normalerweise unter einer Minute.',
+    headerTitle: 'Lass uns Hermes Agent für dich einrichten',
+    headerDesc:
+      'Verbinde einen Model-Anbieter, um mit dem Chatten zu beginnen. Die meisten Optionen brauchen nur einen Klick.',
+    preparingInstall:
+      'Hermes schließt die Installation ab. Das dauert beim ersten Start normalerweise unter einer Minute.',
     starting: 'Hermes wird gestartet…',
     lookingUpProviders: 'Anbieter werden gesucht...',
     collapse: 'Einklappen',
     otherProviders: 'Andere Anbieter',
-    haveApiKey: "Ich habe bereits einen API-Key",
-    chooseLater: "Ich wähle später einen Anbieter",
+    haveApiKey: 'Ich habe bereits einen API-Key',
+    chooseLater: 'Ich wähle später einen Anbieter',
     recommended: 'Empfohlen',
     connected: 'Verbunden',
     featuredPitch: 'Ein Abo, 300+ Frontier-Modelle – die empfohlene Art, Hermes zu nutzen',
@@ -3282,18 +3708,28 @@ export const de = defineLocale({
         short: 'ein Key, viele Modelle',
         description: 'Hostet hunderte Modelle hinter einem einzigen Key. Guter Standard für neue Installationen.'
       },
-      openai: { short: 'GPT-Klasse-Modelle', description: 'Direkter Zugriff auf OpenAI-Modelle.' },
-      gemini: { short: 'Gemini-Modelle', description: 'Direkter Zugriff auf Google-Gemini-Modelle.' },
-      xai: { short: 'Grok-Modelle', description: 'Direkter Zugriff auf xAI-Grok-Modelle.' },
+      openai: {
+        short: 'GPT-Klasse-Modelle',
+        description: 'Direkter Zugriff auf OpenAI-Modelle.'
+      },
+      gemini: {
+        short: 'Gemini-Modelle',
+        description: 'Direkter Zugriff auf Google-Gemini-Modelle.'
+      },
+      xai: {
+        short: 'Grok-Modelle',
+        description: 'Direkter Zugriff auf xAI-Grok-Modelle.'
+      },
       local: {
         short: 'selbst gehostet',
-        description: 'Richte Hermes auf einen lokalen oder selbst gehosteten OpenAI-kompatiblen Endpunkt aus (vLLM, llama.cpp, Ollama usw.).'
+        description:
+          'Richte Hermes auf einen lokalen oder selbst gehosteten OpenAI-kompatiblen Endpunkt aus (vLLM, llama.cpp, Ollama usw.).'
       }
     },
     backToSignIn: 'Zurück zur Anmeldung',
     getKey: 'Einen Key holen',
     replaceCurrent: 'Aktuellen Wert ersetzen',
-    pasteApiKey: "API-Key einfügen",
+    pasteApiKey: 'API-Key einfügen',
     localApiKeyPlaceholder: 'API-Key (optional – nur falls dein Endpunkt einen braucht)',
     couldNotSave: 'Anmeldedaten konnten nicht gespeichert werden.',
     connecting: 'Verbinden',
@@ -3323,7 +3759,7 @@ export const de = defineLocale({
     waitingAuthorize: 'Warte darauf, dass du autorisierst...',
     externalPending: provider =>
       `${provider} meldet sich über sein eigenes CLI an. Führe diesen Befehl in einem Terminal aus, komm dann zurück und wähle "Ich habe mich angemeldet":`,
-    signedIn: "Ich habe mich angemeldet",
+    signedIn: 'Ich habe mich angemeldet',
     deviceCodeOpened: provider => `Wir haben ${provider} in deinem Browser geöffnet. Gib dort diesen Code ein:`,
     reopenVerification: 'Verifikationsseite erneut öffnen',
     copy: 'Kopieren',
@@ -3335,8 +3771,50 @@ export const de = defineLocale({
     change: 'Ändern',
     startChatting: 'Loslegen',
     docs: provider => `${provider}-Doku`
-  }
-  ,
+  },
+  freeTier: {
+    providerRowTitle: 'Nous · Gratis-Tarif',
+    providerRowPitch: 'Melde dich mit einem Nous-Konto an, um mehr Modelle und Tools freizuschalten.',
+    readyTitle: 'Hermes ist bereit.',
+    readyCaption: 'Kostenlos · Verbindungen inklusive',
+    begin: 'Loslegen',
+    signInInstead: 'Stattdessen mit einem Nous-Konto anmelden',
+    otherProviders: 'Andere Anbieter',
+    stripTitle: 'Kostenlose Nous-Inferenz und Verbindungen sind jetzt verfügbar.',
+    stripBody: 'Öffne die Modellauswahl, um sie zu testen, oder melde dich mit einem Nous-Konto an.',
+    openModelPicker: 'Modellauswahl öffnen',
+    dismiss: 'Ausblenden',
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
+    signIn: 'Anmelden',
+    signInHeading: 'Melde dich mit einem Nous-Konto an, um mehr Modelle und Tools freizuschalten.',
+    settingUp: 'Kostenlose Inferenz wird eingerichtet…',
+    codeBody: 'Gib diesen Code in deinem Browser ein, um die Anmeldung abzuschließen.',
+    copyLink: 'Link kopieren',
+    doNotShare: 'Diesen Code nicht weitergeben.',
+    waiting: 'Warte auf Anmeldung…',
+    finishingHeading: 'Anmeldung wird abgeschlossen…',
+    finishingBody: 'Im Browser bestätigt. Deine Kontotoken werden geholt.',
+    signedInAs: email => `Angemeldet als ${email}`,
+    signedIn: 'Angemeldet.',
+    completedBody: 'Dein Konto hat jetzt Inferenz und Tools.',
+    defaultModel: 'Standardmodell',
+    change: 'Ändern',
+    done: 'Fertig',
+    notNow: 'Nicht jetzt',
+    tryAgain: 'Erneut versuchen',
+    startAgain: 'Neu starten',
+    didNotComplete: 'Anmeldung nicht abgeschlossen',
+    rejectedBody: 'Die Anmeldung wurde im Browser abgelehnt. Du bleibst im Gratis-Tarif.',
+    supersededBody: 'Ein neuerer Anmeldecode hat diesen ersetzt.',
+    timedOutHeading: 'Anmeldung abgelaufen',
+    timedOutBody: 'Der Code wurde nicht rechtzeitig verwendet. Du bleibst im Gratis-Tarif.',
+    retiredBody:
+      'Diese Gratis-Tarif-Identität wurde bereits verwendet oder ist abgelaufen; beim nächsten Start wird eine neue eingerichtet.',
+    errorBody: 'Die Anmeldung wurde nicht abgeschlossen; starte sie erneut.',
+    alreadySignedInHeading: 'Bereits angemeldet.',
+    alreadySignedInBody: 'Dieses Hermes ist bereits mit einem Nous-Konto angemeldet.'
+  },
   modelPicker: {
     title: 'Modell wechseln',
     current: 'aktuell:',
@@ -3355,15 +3833,13 @@ export const de = defineLocale({
     freeTier: 'Kostenlose Stufe',
     priceTitle: 'Eingabe-/Ausgabepreis pro Million Tokens',
     wasPrice: 'war'
-  }
-  ,
+  },
   modelVisibility: {
     title: 'Modelle',
     search: 'Modelle suchen',
     noAuthenticatedProviders: 'Keine authentifizierten Anbieter.',
     addProvider: 'Anbieter hinzufügen…'
-  }
-  ,
+  },
   shell: {
     windowControls: 'Fenster-Bedienelemente',
     paneControls: 'Panele-Bedienelemente',
@@ -3461,8 +3937,10 @@ export const de = defineLocale({
       toggleTerminal: 'Terminal',
       toggleTokensPerSecond: 'Tokens pro Sekunde',
       toggleVersion: 'Version & Updates',
+      toggleFreeTier: 'Gratis-Tarif',
       toggleWorkspace: 'Workspace',
-      cacheHitRateTitle: 'Prompt-Cache-Trefferquote dieser Session — gecachte Tokens kosten weniger, also ist höher günstiger',
+      cacheHitRateTitle:
+        'Prompt-Cache-Trefferquote dieser Session — gecachte Tokens kosten weniger, also ist höher günstiger',
       tokensPerSecondTitle: 'Ausgabe-Tokens pro Sekunde, gemittelt über die letzten 10 Modell-Aufrufe',
       agents: 'Agents',
       closeAgents: 'Agents schließen',
@@ -3515,45 +3993,43 @@ export const de = defineLocale({
       modelTitle: (provider, model) => `Modell · ${provider}: ${model}`,
       providerModelTitle: (provider, model) => `${provider} · ${model}`
     }
-  }
-  ,
+  },
   rightSidebar: {
-    aria: "Rechte Sidebar",
-    panelsAria: "Panels der rechten Sidebar",
-    files: "Dateisystem",
-    terminal: "Terminal",
-    noFolderSelected: "Kein Ordner ausgewählt",
-    changeCwdTitle: "Arbeitsverzeichnis ändern",
-    remotePickerTitle: "Remote-Ordner wählen",
-    remotePickerDescription: "Ordner auf dem verbundenen Backend durchsuchen.",
-    remotePickerSelect: "Ordner auswählen",
+    aria: 'Rechte Sidebar',
+    panelsAria: 'Panels der rechten Sidebar',
+    files: 'Dateisystem',
+    terminal: 'Terminal',
+    noFolderSelected: 'Kein Ordner ausgewählt',
+    changeCwdTitle: 'Arbeitsverzeichnis ändern',
+    remotePickerTitle: 'Remote-Ordner wählen',
+    remotePickerDescription: 'Ordner auf dem verbundenen Backend durchsuchen.',
+    remotePickerSelect: 'Ordner auswählen',
     folderTip: cwd => cwd,
-    openFolder: "Ordner öffnen",
-    refreshTree: "Baum aktualisieren",
-    collapseAll: "Alle Ordner einklappen",
-    previewUnavailable: "Vorschau nicht verfügbar",
+    openFolder: 'Ordner öffnen',
+    refreshTree: 'Baum aktualisieren',
+    collapseAll: 'Alle Ordner einklappen',
+    previewUnavailable: 'Vorschau nicht verfügbar',
     couldNotPreview: path => `Konnte ${path} nicht vorab anzeigen`,
-    noProjectTitle: "Kein Projekt",
-    noProjectBody: "Öffne ein Projekt, um dessen Dateien zu durchsuchen und Änderungen zu prüfen.",
-    noProjectOpen: "Kein Projekt geöffnet",
-    noDiffs: "Keine Diffs",
-    unreadableTitle: "Nicht lesbar",
+    noProjectTitle: 'Kein Projekt',
+    noProjectBody: 'Öffne ein Projekt, um dessen Dateien zu durchsuchen und Änderungen zu prüfen.',
+    noProjectOpen: 'Kein Projekt geöffnet',
+    noDiffs: 'Keine Diffs',
+    unreadableTitle: 'Nicht lesbar',
     unreadableBody: error => `Dieser Ordner konnte nicht gelesen werden (${error}).`,
-    emptyTitle: "Leer",
-    emptyBody: "Dieser Ordner ist leer.",
-    treeErrorTitle: "Baumfehler",
-    treeErrorBody: "Beim Anzeigen dieses Ordners ist ein Fehler im Dateibaum aufgetreten.",
-    tryAgain: "Erneut versuchen",
-    loadingTree: "Dateibaum wird geladen",
-    loadingFiles: "Dateien werden geladen",
-    terminalHide: "Terminal ausblenden",
-    terminalsAria: "Terminals",
-    terminalNew: "Neues Terminal",
-    terminalCloseOthers: "Andere schließen",
-    terminalCloseAll: "Alle schließen",
-    addToChat: "Zum Chat hinzufügen"
-  }
-  ,
+    emptyTitle: 'Leer',
+    emptyBody: 'Dieser Ordner ist leer.',
+    treeErrorTitle: 'Baumfehler',
+    treeErrorBody: 'Beim Anzeigen dieses Ordners ist ein Fehler im Dateibaum aufgetreten.',
+    tryAgain: 'Erneut versuchen',
+    loadingTree: 'Dateibaum wird geladen',
+    loadingFiles: 'Dateien werden geladen',
+    terminalHide: 'Terminal ausblenden',
+    terminalsAria: 'Terminals',
+    terminalNew: 'Neues Terminal',
+    terminalCloseOthers: 'Andere schließen',
+    terminalCloseAll: 'Alle schließen',
+    addToChat: 'Zum Chat hinzufügen'
+  },
   preview: {
     tab: 'Vorschau',
     closePane: 'Vorschau-Fenster schließen',
@@ -3663,81 +4139,79 @@ export const de = defineLocale({
       saveComment: 'Speichern',
       cancelComment: 'Kommentar abbrechen'
     }
-  }
-  ,
+  },
   zones: {
-    showTabStrip: "Tabs anzeigen",
-    hideTabStrip: "Tabs ausblenden",
+    showTabStrip: 'Tabs anzeigen',
+    hideTabStrip: 'Tabs ausblenden',
     showStripTab: title => `Zeige ${title}`,
     hideStripTab: title => `Blende ${title} aus`,
-    lastTabKeptTitle: "Letzter Tab bleibt",
-    lastTabKeptBody: "Diese Zone braucht mindestens einen sichtbaren Tab. Zeig zuerst einen anderen Tab an oder klapp die ganze Sidebar ein.",
+    lastTabKeptTitle: 'Letzter Tab bleibt',
+    lastTabKeptBody:
+      'Diese Zone braucht mindestens einen sichtbaren Tab. Zeig zuerst einen anderen Tab an oder klapp die ganze Sidebar ein.',
     toggleStripTab: title => `${title}-Tab umschalten`,
-    minimize: "Minimieren",
-    restore: "Wiederherstellen",
-    closeRunningTitle: "Laufenden Tab schließen?",
+    minimize: 'Minimieren',
+    restore: 'Wiederherstellen',
+    closeRunningTitle: 'Laufenden Tab schließen?',
     closeRunningBody:
-      "Dieser Chat arbeitet noch (oder wartet auf deine Eingabe). Beim Schließen des Tabs wird er nur ausgeblendet — die Session behält ihren Fortschritt und kann aus der Sidebar wieder geöffnet werden.",
-    closeRunningConfirm: "Tab schließen",
-    reload: "Neu laden",
-    closeOthers: "Andere schließen",
-    closeToRight: "Nach rechts schließen",
-    closeAll: "Alle schließen",
-    newSessionTab: "Neuer Session-Tab",
-    newTab: "Neuer Tab",
-    pluginDisabled: pluginId => `Plugin \"${pluginId}\" deaktiviert`,
-    pluginDisabledBody: "Aktivier es wieder unter Einstellungen → Plugins, um das Panel zurückzuholen.",
+      'Dieser Chat arbeitet noch (oder wartet auf deine Eingabe). Beim Schließen des Tabs wird er nur ausgeblendet — die Session behält ihren Fortschritt und kann aus der Sidebar wieder geöffnet werden.',
+    closeRunningConfirm: 'Tab schließen',
+    reload: 'Neu laden',
+    closeOthers: 'Andere schließen',
+    closeToRight: 'Nach rechts schließen',
+    closeAll: 'Alle schließen',
+    newSessionTab: 'Neuer Session-Tab',
+    newTab: 'Neuer Tab',
+    pluginDisabled: pluginId => `Plugin "${pluginId}" deaktiviert`,
+    pluginDisabledBody: 'Aktivier es wieder unter Einstellungen → Plugins, um das Panel zurückzuholen.',
     missingPane: paneId => `fehlendes Panel: ${paneId}`,
-    editTitle: "Layouts",
-    editHint: "Wähl ein Layout oder zieh Panels zwischen den Zonen.",
-    reset: "Zurücksetzen",
-    templates: "Vorlagen",
-    custom: "Benutzerdefiniert",
-    newGridLayout: "Neues Grid-Layout",
-    saveCurrentAs: "Aktuelle Anordnung als Vorlage speichern",
-    nameLayoutPlaceholder: "Dieses Layout benennen…",
+    editTitle: 'Layouts',
+    editHint: 'Wähl ein Layout oder zieh Panels zwischen den Zonen.',
+    reset: 'Zurücksetzen',
+    templates: 'Vorlagen',
+    custom: 'Benutzerdefiniert',
+    newGridLayout: 'Neues Grid-Layout',
+    saveCurrentAs: 'Aktuelle Anordnung als Vorlage speichern',
+    nameLayoutPlaceholder: 'Dieses Layout benennen…',
     deletePreset: name => `${name} löschen`,
-    zoneEditorTitle: "Zonen-Editor",
-    editorHintPre: "Klicken zum Teilen · ",
-    editorHintPost: " dreht die Linie · über Zonen ziehen zum Zusammenführen · gemeinsame Kanten ziehen zum Skalieren",
-    templateColumns: "Spalten",
-    templateRows: "Zeilen",
-    templateGrid: "Grid",
-    templatePriority: "Priorität",
+    zoneEditorTitle: 'Zonen-Editor',
+    editorHintPre: 'Klicken zum Teilen · ',
+    editorHintPost: ' dreht die Linie · über Zonen ziehen zum Zusammenführen · gemeinsame Kanten ziehen zum Skalieren',
+    templateColumns: 'Spalten',
+    templateRows: 'Zeilen',
+    templateGrid: 'Grid',
+    templatePriority: 'Priorität',
     zoneTag: index => `Zone ${index}`,
     mergeZones: count => `${count} Zonen zusammenführen`,
     customZoneName: count => `Benutzerdefinierte ${count}-Zone`,
     layoutNamePlaceholder: fallback => `Layout-Name (${fallback})`,
-    saveApply: "Speichern & anwenden",
-    notExpressible: "diese Anordnung greift ineinander (Windrad) — noch nicht als verschachtelte Splits ausdrückbar",
+    saveApply: 'Speichern & anwenden',
+    notExpressible: 'diese Anordnung greift ineinander (Windrad) — noch nicht als verschachtelte Splits ausdrückbar',
     zoneCount: count => `${count} Zonen`,
     tabCount: count => `${count} Tabs`
-  }
-  ,
+  },
   contextMenu: {
     link: {
-      openInApp: "Im In-App-Browser öffnen",
-      openExternal: "Im externen Browser öffnen",
-      copyUrl: "URL kopieren",
-      copyResolvedUrl: "Aufgelöste URL kopieren"
+      openInApp: 'Im In-App-Browser öffnen',
+      openExternal: 'Im externen Browser öffnen',
+      copyUrl: 'URL kopieren',
+      copyResolvedUrl: 'Aufgelöste URL kopieren'
     },
     image: {
-      copyImage: "Bild kopieren",
-      copyImageAddress: "Bildadresse kopieren",
-      saveImageAs: "Bild speichern unter…"
+      copyImage: 'Bild kopieren',
+      copyImageAddress: 'Bildadresse kopieren',
+      saveImageAs: 'Bild speichern unter…'
     },
     edit: {
-      cut: "Ausschneiden",
-      paste: "Einfügen",
-      selectAll: "Alles auswählen",
-      addToDictionary: "Zum Wörterbuch hinzufügen"
+      cut: 'Ausschneiden',
+      paste: 'Einfügen',
+      selectAll: 'Alles auswählen',
+      addToDictionary: 'Zum Wörterbuch hinzufügen'
     },
     page: {
-      copyPageUrl: "Seiten-URL kopieren",
-      inspectElement: "Element untersuchen"
+      copyPageUrl: 'Seiten-URL kopieren',
+      inspectElement: 'Element untersuchen'
     }
-  }
-  ,
+  },
   assistant: {
     thread: {
       loadingSession: 'Lade Sitzung',
@@ -3774,7 +4248,11 @@ export const de = defineLocale({
         streaming: 'Streaming-Verbindungsfehler'
       },
       errorRetry: 'Erneut versuchen',
+      errorStartNewSession: 'Neue Sitzung starten',
       errorSwitchProvider: 'Anbieter wechseln',
+      errorSignInAgain: provider => `Melde dich erneut bei ${provider} an`,
+      errorOauthExpired: provider =>
+        `Deine Anmeldung bei ${provider} ist abgelaufen oder wurde widerrufen. Melde dich erneut an, um weiter zu chatten.`,
       errorOpenLogs: 'Logs öffnen',
       errorOpenLogsFailed: 'Der Logs-Ordner konnte nicht geöffnet werden',
       errorOpenDesktopLogs: 'Desktop-Logs öffnen',
@@ -3794,8 +4272,7 @@ export const de = defineLocale({
       restoreCheckpoint: 'Checkpoint wiederherstellen',
       restoreFromHere: 'Checkpoint wiederherstellen — von diesem Prompt erneut ausführen',
       restoreTitle: 'Zu diesem Checkpoint wiederherstellen?',
-      restoreBody:
-        'Alles nach diesem Prompt wird aus der Konversation entfernt, und der Prompt läuft von hier erneut.',
+      restoreBody: 'Alles nach diesem Prompt wird aus der Konversation entfernt, und der Prompt läuft von hier erneut.',
       restoreConfirm: 'Wiederherstellen & erneut ausführen',
       restoreNext: 'Nächsten Checkpoint wiederherstellen',
       goForward: 'Vorwärts',
@@ -3853,7 +4330,8 @@ export const de = defineLocale({
       catalogSource: 'Aus dem Nous-geprüften Katalog',
       envRequired: 'Fülle zuerst die erforderlichen Anmeldedaten aus',
       sendFailed: 'MCP-Einrichtungsantwort konnte nicht gesendet werden',
-      reloadFailed: 'Server gespeichert, aber das Neuladen der MCP-Tools schlug fehl — sie laden in der nächsten Sitzung',
+      reloadFailed:
+        'Server gespeichert, aber das Neuladen der MCP-Tools schlug fehl — sie laden in der nächsten Sitzung',
       gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden'
     },
     tool: {
@@ -3905,9 +4383,21 @@ export const de = defineLocale({
         runningTool: action => `Führe ${action.toLowerCase()} aus`
       },
       titles: {
-        browser_click: { done: 'Seitenelement geklickt', pending: 'Klickt Seitenelement', pendingAction: 'Klickt' },
-        browser_fill: { done: 'Formularfeld ausgefüllt', pending: 'Füllt Formularfeld', pendingAction: 'Füllt' },
-        browser_navigate: { done: 'Seite geöffnet', pending: 'Öffnet Seite', pendingAction: 'Öffnet' },
+        browser_click: {
+          done: 'Seitenelement geklickt',
+          pending: 'Klickt Seitenelement',
+          pendingAction: 'Klickt'
+        },
+        browser_fill: {
+          done: 'Formularfeld ausgefüllt',
+          pending: 'Füllt Formularfeld',
+          pendingAction: 'Füllt'
+        },
+        browser_navigate: {
+          done: 'Seite geöffnet',
+          pending: 'Öffnet Seite',
+          pendingAction: 'Öffnet'
+        },
         browser_snapshot: {
           done: 'Seiten-Snapshot erfasst',
           pending: 'Erfasst Seiten-Snapshot',
@@ -3918,44 +4408,137 @@ export const de = defineLocale({
           pending: 'Erfasst Screenshot',
           pendingAction: 'Erfasst'
         },
-        browser_type: { done: 'Auf Seite getippt', pending: 'Tippt auf Seite', pendingAction: 'Tippt' },
-        clarify: { done: 'Frage gestellt', pending: 'Stellt Frage', pendingAction: 'Stellt' },
-        cronjob: { done: 'Cron-Job', pending: 'Plant Cron-Job', pendingAction: 'Plant' },
-        edit_file: { done: 'Datei bearbeitet', pending: 'Bearbeitet Datei', pendingAction: 'Bearbeitet' },
-        execute_code: { done: 'Code ausgeführt', pending: 'Skriptet', pendingAction: 'Skriptet' },
-        image_generate: { done: 'Bild generiert', pending: 'Generiert Bild', pendingAction: 'Generiert' },
-        list_files: { done: 'Dateien aufgelistet', pending: 'Listet Dateien', pendingAction: 'Listet' },
-        memory: { done: 'Im Speicher gespeichert', pending: 'Speichert im Speicher', pendingAction: 'Speichert' },
-        patch: { done: 'Datei gepatcht', pending: 'Patcht Datei', pendingAction: 'PATCHT' },
-        read_file: { done: 'Datei gelesen', pending: 'Liest Datei', pendingAction: 'Liest' },
-        search_files: { done: 'Dateien durchsucht', pending: 'Durchsucht Dateien', pendingAction: 'Durchsucht' },
+        browser_type: {
+          done: 'Auf Seite getippt',
+          pending: 'Tippt auf Seite',
+          pendingAction: 'Tippt'
+        },
+        clarify: {
+          done: 'Frage gestellt',
+          pending: 'Stellt Frage',
+          pendingAction: 'Stellt'
+        },
+        cronjob: {
+          done: 'Cron-Job',
+          pending: 'Plant Cron-Job',
+          pendingAction: 'Plant'
+        },
+        edit_file: {
+          done: 'Datei bearbeitet',
+          pending: 'Bearbeitet Datei',
+          pendingAction: 'Bearbeitet'
+        },
+        execute_code: {
+          done: 'Code ausgeführt',
+          pending: 'Skriptet',
+          pendingAction: 'Skriptet'
+        },
+        image_generate: {
+          done: 'Bild generiert',
+          pending: 'Generiert Bild',
+          pendingAction: 'Generiert'
+        },
+        list_files: {
+          done: 'Dateien aufgelistet',
+          pending: 'Listet Dateien',
+          pendingAction: 'Listet'
+        },
+        memory: {
+          done: 'Im Speicher gespeichert',
+          pending: 'Speichert im Speicher',
+          pendingAction: 'Speichert'
+        },
+        patch: {
+          done: 'Datei gepatcht',
+          pending: 'Patcht Datei',
+          pendingAction: 'PATCHT'
+        },
+        read_file: {
+          done: 'Datei gelesen',
+          pending: 'Liest Datei',
+          pendingAction: 'Liest'
+        },
+        search_files: {
+          done: 'Dateien durchsucht',
+          pending: 'Durchsucht Dateien',
+          pendingAction: 'Durchsucht'
+        },
         session_search_recall: {
           done: 'Sitzungsverlauf durchsucht',
           pending: 'Durchsucht Sitzungsverlauf',
           pendingAction: 'Durchsucht'
         },
-        terminal: { done: 'Befehl ausgeführt', pending: 'Führt Befehl aus', pendingAction: 'Führt aus' },
-        todo: { done: 'Todos aktualisiert', pending: 'Aktualisiert Todos', pendingAction: 'Aktualisiert' },
-        vision_analyze: { done: 'Bild analysiert', pending: 'Analysiert Bild', pendingAction: 'Analysiert' },
-        web_extract: { done: 'Webseite gelesen', pending: 'Liest Webseite', pendingAction: 'Liest' },
-        web_search: { done: 'Web durchsucht', pending: 'Durchsucht Web', pendingAction: 'Durchsucht' },
-        write_file: { done: 'Datei bearbeitet', pending: 'Bearbeitet Datei', pendingAction: 'Bearbeitet' }
+        terminal: {
+          done: 'Befehl ausgeführt',
+          pending: 'Führt Befehl aus',
+          pendingAction: 'Führt aus'
+        },
+        todo: {
+          done: 'Todos aktualisiert',
+          pending: 'Aktualisiert Todos',
+          pendingAction: 'Aktualisiert'
+        },
+        vision_analyze: {
+          done: 'Bild analysiert',
+          pending: 'Analysiert Bild',
+          pendingAction: 'Analysiert'
+        },
+        web_extract: {
+          done: 'Webseite gelesen',
+          pending: 'Liest Webseite',
+          pendingAction: 'Liest'
+        },
+        web_search: {
+          done: 'Web durchsucht',
+          pending: 'Durchsucht Web',
+          pendingAction: 'Durchsucht'
+        },
+        write_file: {
+          done: 'Datei bearbeitet',
+          pending: 'Bearbeitet Datei',
+          pendingAction: 'Bearbeitet'
+        }
       }
     }
-  }
-  ,
+  },
   prompts: {
-    gatewayDisconnected: "Das Hermes-Gateway ist nicht verbunden",
-    sudoSendFailed: "Sudo-Passwort konnte nicht gesendet werden",
-    secretSendFailed: "Geheimnis konnte nicht gesendet werden",
-    sudoTitle: "Administrator-Passwort",
-    sudoDesc: "Hermes benötigt dein Sudo-Passwort, um einen privilegierten Befehl auszuführen. Es wird nur an deinen lokalen Agenten gesendet.",
-    sudoPlaceholder: "Sudo-Passwort",
-    secretTitle: "Geheimnis erforderlich",
-    secretDesc: "Hermes benötigt eine Zugangsdaten, um fortzufahren.",
-    secretPlaceholder: "Geheimnis-Wert"
-  }
-  ,
+    gatewayDisconnected: 'Das Hermes-Gateway ist nicht verbunden',
+    sudoSendFailed: 'Sudo-Passwort konnte nicht gesendet werden',
+    secretSendFailed: 'Geheimnis konnte nicht gesendet werden',
+    sudoTitle: 'Administrator-Passwort',
+    sudoDesc:
+      'Hermes benötigt dein Sudo-Passwort, um einen privilegierten Befehl auszuführen. Es wird nur an deinen lokalen Agenten gesendet.',
+    sudoPlaceholder: 'Sudo-Passwort',
+    secretTitle: 'Geheimnis erforderlich',
+    secretDesc: 'Hermes benötigt eine Zugangsdaten, um fortzufahren.',
+    secretPlaceholder: 'Geheimnis-Wert',
+    vaultUnlockSendFailed: 'Master-Passwort konnte nicht gesendet werden',
+    vaultUnlockTitle: name => `${name} entsperren`,
+    vaultUnlockDesc: name =>
+      `Der Agent möchte sich bei einer Seite mit einem in ${name} gespeicherten Login anmelden. Gib dein Master-Passwort ein, um ihn für diese Sitzung zu entsperren — es geht direkt an ${name} auf diesem Rechner und wird nie gespeichert oder dem Agenten gezeigt.`,
+    vaultUnlockPlaceholder: 'Master-Passwort',
+    vaultUnlockKeepLocked: 'Gesperrt lassen',
+    vaultUnlockConfirm: 'Entsperren',
+    vaultSaveSendFailed: 'Login konnte nicht gespeichert werden',
+    vaultSaveTitle: site => `${site}-Login speichern?`,
+    vaultSaveDesc: origin =>
+      `Hermes ist auf eine Anmeldeseite unter ${origin} gestoßen und hat dafür keinen Login. Gib ihn einmal hier ein; er wird auf diesem Rechner verschlüsselt und in die Seite eingetragen, ohne dass das Modell das Passwort je sieht.`,
+    vaultSaveIdentifierLabel: 'E-Mail oder Benutzername',
+    vaultSaveIdentifierPlaceholder: 'du@example.com',
+    vaultSavePasswordPlaceholder: 'Passwort',
+    vaultSaveFootnote: 'Verwalte gespeicherte Logins unter Einstellungen → Passwörter & Logins.',
+    vaultSaveDecline: 'Nicht speichern',
+    vaultSaveConfirm: 'Speichern & anmelden',
+    vaultCodeSendFailed: 'Code konnte nicht gesendet werden',
+    vaultCodeTitle: site => `Bestätigungscode für ${site}`,
+    vaultCodeDesc: site =>
+      `${site} verlangt einen Einmalcode (SMS, E-Mail oder Authenticator-App). Gib ihn hier ein, Hermes tippt ihn in die Seite; das Modell sieht ihn nie.`,
+    vaultCodeLabel: 'Code',
+    vaultCodeFootnote:
+      'Tipp: Speichere den Authentifizierungsschlüssel zusammen mit diesem Login unter Einstellungen → Passwörter & Logins, dann gibt Hermes die Codes für dich ein.',
+    vaultCodeSkip: 'Überspringen',
+    vaultCodeConfirm: 'Code eingeben'
+  },
   desktop: {
     audioReadFailed: 'Aufgenommenes Audio konnte nicht gelesen werden',
     sessionUnavailable: 'Sitzung nicht verfügbar',
@@ -3986,10 +4569,14 @@ export const de = defineLocale({
     readOnlyTranscriptTitle: 'Schreibgeschützt geöffnet',
     readOnlyTranscriptBody:
       'Noch kein verbundenes Backend beansprucht diesen älteren Chat, also wurde er als schreibgeschütztes Transkript geöffnet. Seine Historie ist intakt; Senden ist deaktiviert, bis ein Backend ihn beansprucht.',
-    readOnlyTranscriptSendBlocked: 'Dieser Chat ist als schreibgeschütztes Transkript geöffnet — Senden ist deaktiviert.',
+    readOnlyTranscriptSendBlocked:
+      'Dieser Chat ist als schreibgeschütztes Transkript geöffnet — Senden ist deaktiviert.',
     resumeStrandedTitle: 'Diese Sitzung konnte nicht geladen werden',
     resumeStrandedBody:
       'Die Verbindung zu dieser Sitzung schlug fehl und automatische Wiederholungen gaben auf. Prüfe, ob das Gateway läuft, und versuche es erneut.',
+    poolSlotTimeoutBody:
+      'Alle Backend-Plätze für lokale Profile sind belegt. Erhöhe „Warme Bot-Backends" unter Einstellungen → Erweitert, oder versuche es erneut, nachdem ein idle Backend entfernt wurde.',
+    poolSlotTimeoutOpenSettings: 'Erweiterte Einstellungen öffnen',
     resumeRetry: 'Erneut versuchen',
     nothingToBranch: 'Nichts zum Abzweigen',
     branchNeedsChat: 'Starte oder setze einen Chat fort, bevor du abzweigst.',
@@ -4020,6 +4607,8 @@ export const de = defineLocale({
     imageAttach: 'Bild anhängen',
     imageWriteFailed: 'Bild konnte nicht auf die Festplatte geschrieben werden.',
     imageAttachFailed: 'Bild-Anhängen fehlgeschlagen',
+    pastedContent: 'Eingefügter Inhalt',
+    pasteAttachFailed: 'Eingefügter Text konnte nicht angehängt werden',
     attachImages: 'Bilder anhängen',
     clipboard: 'Zwischenablage',
     noClipboardImage: 'Kein Bild in der Zwischenablage',
@@ -4032,63 +4621,60 @@ export const de = defineLocale({
       failed: error => `Übergabe fehlgeschlagen: ${error}`,
       timedOut: 'Zeitüberschreitung beim Warten auf das Gateway. Läuft `hermes gateway`?'
     }
-  }
-  ,
+  },
   tips: {
-    close: "Diesen Tip nicht mehr zeigen",
+    close: 'Diesen Tip nicht mehr zeigen',
     items: {
       'new-session': {
-        title: "Frisch loslegen",
-        text: "Ein neuer Chat bekommt seinen eigenen Context, sein eigenes Terminal und Arbeitsverzeichnis."
+        title: 'Frisch loslegen',
+        text: 'Ein neuer Chat bekommt seinen eigenen Context, sein eigenes Terminal und Arbeitsverzeichnis.'
       },
       skills: {
-        title: "Einmal beibringen",
-        text: "Skills sind Ordner mit Anweisungen, die Hermes lädt, wenn die Arbeit danach verlangt."
+        title: 'Einmal beibringen',
+        text: 'Skills sind Ordner mit Anweisungen, die Hermes lädt, wenn die Arbeit danach verlangt.'
       },
       messaging: {
-        title: "Hermes abseits deines Schreibtischs",
-        text: "Verbinde Telegram, Discord, Slack und mehr — derselbe Agent, dasselbe Gedächtnis."
+        title: 'Hermes abseits deines Schreibtischs',
+        text: 'Verbinde Telegram, Discord, Slack und mehr — derselbe Agent, dasselbe Gedächtnis.'
       },
       artifacts: {
-        title: "Alles, was Hermes gemacht hat",
-        text: "Bilder, Dateien und Links aus jeder Session, an einem Ort indexiert."
+        title: 'Alles, was Hermes gemacht hat',
+        text: 'Bilder, Dateien und Links aus jeder Session, an einem Ort indexiert.'
       },
       cron: {
-        title: "Arbeit, die von selbst läuft",
-        text: "Plane einen Prompt stündlich, nächtlich oder nach einem Cron-Ausdruck."
+        title: 'Arbeit, die von selbst läuft',
+        text: 'Plane einen Prompt stündlich, nächtlich oder nach einem Cron-Ausdruck.'
       },
       'command-palette': {
-        title: "Eine Box für alles",
-        text: "Sessions, Einstellungen, Skills und Befehle gehorchen alle der Palette."
+        title: 'Eine Box für alles',
+        text: 'Sessions, Einstellungen, Skills und Befehle gehorchen alle der Palette.'
       },
       profiles: {
-        title: "Profile sind getrennt",
-        text: "Jedes ist sein eigenes Hermes — eigene Schlüssel, eigenes Gedächtnis, eigene Sessions."
+        title: 'Profile sind getrennt',
+        text: 'Jedes ist sein eigenes Hermes — eigene Schlüssel, eigenes Gedächtnis, eigene Sessions.'
       },
       'composer-mentions': {
-        title: "Anhängen und befehlen",
-        text: "Tipp @, um eine Datei in die Konversation zu holen, /, um einen Befehl auszuführen."
+        title: 'Anhängen und befehlen',
+        text: 'Tipp @, um eine Datei in die Konversation zu holen, /, um einen Befehl auszuführen.'
       },
       'local-setup': {
-        title: "Dieses Gerät kann Modelle lokal ausführen",
-        text: "Deine Hardware kann ein lokales Modell bedienen. Chats bleiben auf deinem Computer und kosten nichts.",
-        action: "Einrichten"
+        title: 'Dieses Gerät kann Modelle lokal ausführen',
+        text: 'Deine Hardware kann ein lokales Modell bedienen. Chats bleiben auf deinem Computer und kosten nichts.',
+        action: 'Einrichten'
       },
       'right-pane': {
-        title: "Der Arbeitsbereich",
-        text: "Dateien, Terminal, Review und der In-App-Browser teilen sich die rechte Seite."
+        title: 'Der Arbeitsbereich',
+        text: 'Dateien, Terminal, Review und der In-App-Browser teilen sich die rechte Seite.'
       }
     }
-  }
-  ,
+  },
   errors: {
     genericFailure: 'Etwas ist schiefgelaufen',
     boundaryTitle: 'Etwas ist in der Oberfläche kaputtgegangen',
     boundaryDesc: 'Die Ansicht hat einen unerwarteten Fehler. Deine Chats und Einstellungen sind sicher.',
     reloadWindow: 'Fenster neu laden',
     openLogs: 'Logs öffnen'
-  }
-  ,
+  },
   ui: {
     search: {
       clear: 'Suche löschen'

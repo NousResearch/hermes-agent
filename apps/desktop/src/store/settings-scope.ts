@@ -6,9 +6,8 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 // One selection shared by every config-backed settings page (Model, Workspace,
 // Safety, Memory & Context, Voice, Tools & Keys) and the Messaging overlay, so
 // picking a profile on one page carries to the next instead of resetting per
-// page. `null` means "follow the app's active profile" — the default, which
-// keeps single-profile users on the exact pre-existing code path (requests
-// fall back to the app-wide active profile in api/client.ts `profileScoped`).
+// page. `null` means "follow the app's active profile" in selector state; the
+// request store below still resolves that choice to a concrete profile.
 export const $settingsScopeOverride = atom<null | string>(null)
 
 // The profile the settings pages are currently editing (a concrete key).
@@ -26,7 +25,7 @@ export const $settingsRequestProfile = $settingsScopeProfile
 
 // Select the profile the settings pages should edit. Picking the app's active
 // profile stores `null` (no override) so the scope keeps following the app on
-// profile switches — and requests keep their unscoped default shape.
+// profile switches; requests resolve that selection through the concrete store.
 export function setSettingsScope(name: string): void {
   const key = normalizeProfileKey(name)
 

@@ -24,7 +24,7 @@ import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsRequestProfile, $settingsScopeOverride } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -56,11 +56,13 @@ export function ConfigSettings({
   onMainModelChanged,
   importInputRef
 }: ConfigSettingsProps) {
-  // Shared "Applies to" scope (null → the app's active profile). Remount the
-  // inner page per scope so every draft/seed/autosave ref resets wholesale
+  // Requests use the concrete selected profile; override state remains separate
+  // because active-profile side effects differ from editing another profile.
+  // Remount the inner page per scope so every draft/seed/autosave ref resets wholesale
   // when the target profile changes — the same guarantee useOnProfileSwitch
   // provides for app-wide switches, without hand-clearing each piece.
   const scopeProfile = useStore($settingsRequestProfile)
+  const scopeOverridden = useStore($settingsScopeOverride) !== null
 
   return (
     <ConfigSettingsInner
@@ -69,6 +71,7 @@ export function ConfigSettings({
       key={scopeProfile ?? '__active__'}
       onConfigSaved={onConfigSaved}
       onMainModelChanged={onMainModelChanged}
+      scopeOverridden={scopeOverridden}
       scopeProfile={scopeProfile}
     />
   )
@@ -86,8 +89,9 @@ function ConfigSettingsInner({
   onConfigSaved,
   onMainModelChanged,
   importInputRef,
+  scopeOverridden,
   scopeProfile
-}: ConfigSettingsProps & { scopeProfile: string | undefined }) {
+}: ConfigSettingsProps & { scopeOverridden: boolean; scopeProfile: string }) {
   const { t } = useI18n()
   const c = t.settings.config
   const keepAwake = useStore($keepAwake)
@@ -97,8 +101,8 @@ function ConfigSettingsInner({
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord(scopeProfile)
-  // Writes land on the same cache key the query above reads (base key when
-  // following the active profile, suffixed when a scope override is set).
+  // Writes land on the same concrete, profile-partitioned cache key the query
+  // above reads.
   const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
 
   const {
@@ -106,10 +110,7 @@ function ConfigSettingsInner({
     isError: schemaFailed,
     refetch: refetchSchema
   } = useQuery({
-    // Base key when following the active profile (matches every pre-existing
-    // consumer); suffixed only for an explicit scope override.
-    queryKey:
-      scopeProfile == null ? ['hermes-config-schema'] : ['hermes-config-schema', normalizeProfileKey(scopeProfile)],
+    queryKey: ['hermes-config-schema', normalizeProfileKey(scopeProfile)],
     queryFn: () => getHermesConfigSchema(scopeProfile),
     staleTime: 5 * 60 * 1000
   })
@@ -386,7 +387,11 @@ function ConfigSettingsInner({
       <SettingsProfileScope className="mb-5" />
       {activeSectionId === 'model' && (
         <div className="mb-6">
-          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />
+          <ModelSettings
+            onMainModelChanged={onMainModelChanged}
+            scopeOverridden={scopeOverridden}
+            scopeProfile={scopeProfile}
+          />
         </div>
       )}
       {/* Device-local desktop prefs (not config.yaml) — they live here since

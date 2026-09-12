@@ -91,7 +91,10 @@ afterEach(() => {
   profileSwitchHandler = null
 })
 
-async function renderModelSettings(scopeProfile?: string) {
+async function renderModelSettings(
+  scopeProfile?: string,
+  options: { onMainModelChanged?: (provider: string, model: string) => void; scopeOverridden?: boolean } = {}
+) {
   const { ModelSettings } = await import('./model-settings')
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
@@ -100,17 +103,18 @@ async function renderModelSettings(scopeProfile?: string) {
     // needs a router context in tests (the app provides HashRouter at root).
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ModelSettings scopeProfile={scopeProfile} />
+        <ModelSettings
+          onMainModelChanged={options.onMainModelChanged}
+          scopeOverridden={options.scopeOverridden}
+          scopeProfile={scopeProfile}
+        />
       </QueryClientProvider>
     </MemoryRouter>
   )
 }
 
 describe('ModelSettings profile scope', () => {
-  // #90549: the API helpers treat `null` as "deliberately target the
-  // primary/default profile". A page following the active profile must pass
-  // `undefined`, or every read repaints the primary's model and the user's
-  // change looks reverted.
+  // Direct callers may omit scope, while ConfigSettings passes a concrete one.
   it('follows the active profile (undefined, never null) when unscoped', async () => {
     await renderModelSettings()
 
@@ -130,7 +134,8 @@ describe('ModelSettings profile scope', () => {
   })
 
   it('writes the main model through the explicit scope override', async () => {
-    await renderModelSettings('research')
+    const onMainModelChanged = vi.fn()
+    await renderModelSettings('research', { onMainModelChanged, scopeOverridden: true })
 
     fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
 
@@ -142,6 +147,17 @@ describe('ModelSettings profile scope', () => {
       })
     )
     expect(setModelAssignmentProfile).toHaveBeenCalledWith('research')
+    expect(onMainModelChanged).not.toHaveBeenCalled()
+  })
+
+  it('keeps active-profile side effects when request routing is concrete', async () => {
+    const onMainModelChanged = vi.fn()
+    await renderModelSettings('default', { onMainModelChanged })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() => expect(onMainModelChanged).toHaveBeenCalledWith('nous', 'hermes-4'))
+    expect(setModelAssignmentProfile).toHaveBeenCalledWith('default')
   })
 })
 

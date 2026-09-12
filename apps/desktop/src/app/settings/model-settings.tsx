@@ -207,14 +207,13 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
 interface ModelSettingsProps {
   /** Notified after the main model is applied, so live UI stores can sync. */
   onMainModelChanged?: (provider: string, model: string) => void
-  /** Shared settings "Applies to" scope: a concrete profile to edit instead of
-   *  the app's active one, or undefined to follow the active profile (default).
-   *  Request-shaped on purpose — the API helpers treat `null` as "deliberately
-   *  target the primary/default backend", so this prop never carries null. */
+  /** Whether the selector explicitly targets a profile other than the active one. */
+  scopeOverridden?: boolean
+  /** Concrete shared Settings profile used for API routing and cache identity. */
   scopeProfile?: string
 }
 
-export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSettingsProps) {
+export function ModelSettings({ onMainModelChanged, scopeOverridden = false, scopeProfile }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
   const [loading, setLoading] = useState(true)
@@ -664,7 +663,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           provider: selectedProvider,
           ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
         },
-        scopeProfile
+        scopeProfile,
+        { targetIsActiveProfile: !scopeOverridden }
       )
 
       if (profileEpoch.current !== epoch) {
@@ -678,7 +678,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
-      if (scopeProfile == null) {
+      if (!scopeOverridden) {
         onMainModelChanged?.(provider, model)
       }
 
@@ -692,6 +692,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     m.loadFailed,
     onMainModelChanged,
     refresh,
+    scopeOverridden,
     scopeProfile,
     selectedModel,
     selectedProvider,

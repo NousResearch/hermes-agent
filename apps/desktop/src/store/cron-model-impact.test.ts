@@ -81,6 +81,20 @@ describe('setMainModelAssignment', () => {
     expect(setModelAssignment).toHaveBeenCalledTimes(1)
   })
 
+  it('publishes active-profile impact when routing uses a concrete profile', async () => {
+    setModelAssignment.mockResolvedValue(response(positive()))
+
+    await setMainModelAssignment({ provider: 'nous', model: 'new/model' }, 'default', {
+      targetIsActiveProfile: true
+    })
+
+    expect(setModelAssignment).toHaveBeenCalledWith(
+      { scope: 'main', provider: 'nous', model: 'new/model' },
+      'default'
+    )
+    expect($notifications.get().some(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)).toBe(true)
+  })
+
   it('ignores malformed untrusted impact data', async () => {
     setModelAssignment.mockResolvedValue(
       response({

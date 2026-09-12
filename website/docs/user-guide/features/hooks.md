@@ -445,6 +445,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
+| `on_turn_interrupted` | Observer | Interrupted turn finalization — `/stop`, a mid-turn interrupt, or a new message. Fires once per interrupted turn; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `interrupt_message`, `turn_exit_reason`, `model`, `platform` | Full user message and any partial assistant text; the only hook that exposes turn content on an interrupt. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
@@ -456,7 +457,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full interim assistant text. |
 | `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
 | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
-| `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
+| `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body — use `on_turn_interrupted` for the interrupted turn's content. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
@@ -798,6 +799,55 @@ def log_response_length(session_id, assistant_response, model, **kwargs):
 
 def register(ctx):
     ctx.register_hook("post_llm_call", log_response_length)
+```
+
+---
+
+### `on_turn_interrupted`
+
+Fires **once per interrupted turn** — when the user stops the run (`/stop`, Ctrl+C), sends a new message that preempts the turn, or the turn is otherwise cut short. Unlike [`post_llm_call`](#post_llm_call), which is guarded by `if final_response and not interrupted`, this hook exists precisely for the turns that never produce a clean final response. [`on_session_end`](#on_session_end) also fires on an interrupt but carries no message body, so this is the only supported way for a plugin to capture what an interrupted turn actually said.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, task_id: str, turn_id: str, user_message: str,
+                assistant_response: str, conversation_history: list,
+                interrupt_message: str, turn_exit_reason: str,
+                model: str, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `task_id` | `str` | Task identifier for the turn |
+| `turn_id` | `str` | Turn identifier, correlating with the other turn-scoped hooks |
+| `user_message` | `str` | The user's message for the interrupted turn |
+| `assistant_response` | `str` | Assistant text produced before the interrupt (already streamed to the user). `""` when the interrupt landed before any text |
+| `conversation_history` | `list` | Copy of the message list at finalization |
+| `interrupt_message` | `str` | The message recorded with the interrupt request (for example the user's replacement text). `""` when none |
+| `turn_exit_reason` | `str` | Why the loop exited (for example `interrupted_by_user`) |
+| `model` | `str` | The model identifier |
+| `platform` | `str` | Where the session is running |
+
+**Fires:** In `agent/turn_finalizer.py` (`finalize_turn()`, called by `run_conversation()` in `agent/conversation_loop.py`), immediately after the `on_session_end` dispatch, only when the turn ended interrupted. Like `on_session_start`/`on_session_end` it runs under `plugins.hook_callback_timeout` (fail-open: a hung callback is abandoned, never joined).
+
+**Return value:** Ignored.
+
+**Use cases:** Saving an interrupted turn to a memory backend so the user's input is never silently dropped, logging dropped turns, or auditing partial deliveries.
+
+**Example — capture interrupted turns in memory:**
+
+```python
+def capture_interrupted_turn(session_id, user_message, assistant_response,
+                             interrupt_message, **kwargs):
+    # Same payload shape you would send from post_llm_call, so a backend can
+    # store the turn regardless of how it ended.
+    save_turn(session_id=session_id, user=user_message,
+              assistant=assistant_response, note=interrupt_message,
+              interrupted=True)
+
+def register(ctx):
+    ctx.register_hook("on_turn_interrupted", capture_interrupted_turn)
 ```
 
 ---

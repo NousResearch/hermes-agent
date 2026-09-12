@@ -124,6 +124,13 @@ _DEFAULT_PAYLOADS = {
         "changed_paths": ["src/app.tsx"],
     },
     "on_session_start": {"session_id": "test-session"},
+    "on_turn_interrupted": {
+        "session_id": "test-session", "task_id": "test-task", "turn_id": "test-turn",
+        "user_message": "What is the weather?", "assistant_response": "The forecast for",
+        "conversation_history": [{"role": "user", "content": "What is the weather?"}],
+        "interrupt_message": "user interrupt", "turn_exit_reason": "interrupted_by_user",
+        "model": "gpt-4", "platform": "cli",
+    },
     "on_session_end": {
         "session_id": "test-session", "task_id": "test-task", "turn_id": "test-turn",
         "completed": True, "failed": False, "interrupted": False,

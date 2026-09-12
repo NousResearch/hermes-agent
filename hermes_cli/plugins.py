@@ -125,6 +125,14 @@ VALID_HOOKS: Set[str] = {
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset",
+    # on_turn_interrupted: the one hook that carries turn CONTENT on an interruption
+    # (post_llm_call is gated on a final, non-interrupted response; on_session_end has no
+    # message body). Fired by agent.turn_finalizer.finalize_turn when a turn ends
+    # interrupted (/stop, a mid-turn interrupt, a new message). Observer; return ignored.
+    # Kwargs: session_id, task_id, turn_id, user_message, assistant_response (partial
+    # assistant text streamed before the interrupt, "" when none was produced),
+    # conversation_history, interrupt_message, turn_exit_reason, model, platform.
+    "on_turn_interrupted",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE

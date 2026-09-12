@@ -637,6 +637,28 @@ def finalize_turn(
             model=agent.model,
             platform=_platform,
         )
+        # The interrupted turn's content is only observable here: post_llm_call is gated on
+        # a final, non-interrupted response and on_session_end carries no message body
+        # (#108808). `_interrupt_message` is read off `result` because clear_interrupt()
+        # above already dropped it from the agent.
+        if interrupted:
+            _invoke_hook_safely(
+                "on_turn_interrupted", logger,
+                session_id=agent.session_id,
+                task_id=effective_task_id,
+                turn_id=turn_id,
+                user_message=original_user_message,
+                assistant_response=(
+                    final_response
+                    or getattr(agent, "_current_streamed_assistant_text", "")
+                    or ""
+                ),
+                conversation_history=list(messages),
+                interrupt_message=result.get("interrupt_message") or "",
+                turn_exit_reason=_turn_exit_reason,
+                model=agent.model,
+                platform=_platform,
+            )
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False

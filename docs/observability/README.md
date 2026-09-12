@@ -110,6 +110,7 @@ These hooks frame the user turn, not individual provider API attempts:
 | --- | --- |
 | `pre_llm_call` | Before the tool loop begins for a user turn. |
 | `post_llm_call` | After the turn completes with final assistant output. |
+| `on_turn_interrupted` | When the turn ends interrupted: the user message and any partial assistant text. |
 
 Common `pre_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`,
@@ -119,8 +120,15 @@ Common `post_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `assistant_response`, `conversation_history`, `model`, and
 `platform`.
 
-Use request-scoped API hooks for LLM span telemetry. Use `pre_llm_call` and
-`post_llm_call` for turn-level context, compatibility, and final turn summary.
+`on_turn_interrupted` is the interrupted counterpart of `post_llm_call`, which
+only fires on successful turns: it carries `session_id`, `task_id`, `turn_id`,
+`user_message`, `assistant_response` (empty when the interrupt landed before
+any text streamed), `conversation_history`, `interrupt_message`,
+`turn_exit_reason`, `model`, and `platform`.
+
+Use request-scoped API hooks for LLM span telemetry. Use `pre_llm_call`,
+`post_llm_call`, and `on_turn_interrupted` for turn-level context,
+compatibility, and turn summaries that must survive an interrupt.
 
 ### Request-Scoped API Hooks
 

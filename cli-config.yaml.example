@@ -1907,7 +1907,7 @@ display:
 # Valid events (mirror hermes_cli.plugins.VALID_HOOKS):
 #   pre_tool_call, post_tool_call, pre_llm_call, post_llm_call,
 #   pre_api_request, post_api_request, on_session_start, on_session_end,
-#   on_session_finalize, on_session_reset, subagent_stop
+#   on_session_finalize, on_session_reset, on_turn_interrupted, subagent_stop
 #
 # First-use consent: each (event, command) pair prompts once on a TTY, then
 # is persisted to ~/.hermes/shell-hooks-allowlist.json.  Non-interactive

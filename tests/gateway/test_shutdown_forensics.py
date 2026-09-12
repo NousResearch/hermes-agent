@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import signal
-import sys
 import time
 from pathlib import Path
 
@@ -89,7 +88,12 @@ class TestFormatters:
 # ---------------------------------------------------------------------------
 
 class TestSpawnAsyncDiagnostic:
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
+    # The diagnostic wraps its script in GNU coreutils ``timeout`` and the script
+    # body is Linux-only (``ps auxf --sort``, ``/proc/loadavg``, ``dmesg``,
+    # ``pstree``). On hosts without ``timeout`` (macOS) Popen raises and the
+    # producer returns None by design (fail-soft), so the spawn can only be
+    # observed on Linux.
+    @pytest.mark.linux_only
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"
         pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
@@ -117,15 +121,15 @@ class TestSpawnAsyncDiagnostic:
 
 
 # ---------------------------------------------------------------------------
-# _parse_systemd_duration_to_us
+# parse_systemd_duration_to_us
 # ---------------------------------------------------------------------------
 
 class TestParseSystemdDuration:
     def test_seconds(self):
-        assert sf._parse_systemd_duration_to_us("90s") == 90 * 1_000_000
+        assert sf.parse_systemd_duration_to_us("90s") == 90 * 1_000_000
 
     def test_minutes(self):
-        assert sf._parse_systemd_duration_to_us("3min") == 180 * 1_000_000
+        assert sf.parse_systemd_duration_to_us("3min") == 180 * 1_000_000
 
 
 # ---------------------------------------------------------------------------

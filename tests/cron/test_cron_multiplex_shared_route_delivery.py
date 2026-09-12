@@ -12,11 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
-from cron.scheduler import (
-    SharedRouteAdapters,
-    _deliver_result,
-    _primary_profile_routes_for_current_home,
-)
+from cron.scheduler import _deliver_result
+from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
 from gateway.config import Platform, PlatformConfig
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 

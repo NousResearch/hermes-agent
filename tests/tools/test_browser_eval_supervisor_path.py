@@ -11,6 +11,7 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from tools import browser_tool_session as bt_session
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +53,7 @@ class TestBrowserEvalSupervisorPath:
         _patch_supervisor(monkeypatch, sup)
         # If the subprocess path is hit we want a loud failure.
         monkeypatch.setattr(
-            bt, "_run_browser_command",
+            bt_session, "_run_browser_command",
             lambda *a, **kw: pytest.fail("subprocess path must not run when supervisor is healthy"),
         )
 
@@ -74,7 +75,7 @@ class TestBrowserEvalSupervisorPath:
         }
         _patch_supervisor(monkeypatch, sup)
         monkeypatch.setattr(
-            bt, "_run_browser_command",
+            bt_session, "_run_browser_command",
             lambda *a, **kw: pytest.fail("subprocess path must not run"),
         )
 
@@ -101,7 +102,7 @@ class TestBrowserEvalSupervisorPath:
                 "error": "Runtime.evaluate failed: Object reference chain is too long",
             }
 
-        monkeypatch.setattr(bt, "_run_browser_command", _fake_subprocess)
+        monkeypatch.setattr(bt_session, "_run_browser_command", _fake_subprocess)
 
         out = json.loads(bt._browser_eval("document.body"))
         assert out["success"] is False

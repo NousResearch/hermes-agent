@@ -74,6 +74,20 @@ logger = logging.getLogger(__name__)
 _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
 
 
+def _tolerant_text_factory(data: bytes) -> str:
+    """Decode a TEXT cell strictly when possible; undecodable bytes (e.g. a multi-byte
+    character truncated by a mid-write process death) degrade to U+FFFD in that one cell
+    instead of aborting every session-list/load query with OperationalError (#109450)."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning(
+            "state.db: undecodable UTF-8 stored text (len=%d, head=%r) degraded to U+FFFD",
+            len(data), bytes(data[:32]),
+        )
+        return data.decode("utf-8", errors="replace")
+
+
 def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -> int:
     """``sessions.<key>`` from config.yaml (lazy import: circular at load), else *fallback*; 0 disables."""
     try:
@@ -585,6 +599,7 @@ class SessionDB(
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
+        conn.text_factory = _tolerant_text_factory
         return conn
 
     def _handle_quarantine_if_invalid(self, already_locked: bool = False) -> None:
@@ -619,6 +634,7 @@ class SessionDB(
         )
         try:
             conn.row_factory = sqlite3.Row
+            conn.text_factory = _tolerant_text_factory
             mode = apply_wal_with_fallback(conn, db_label="state.db")
             # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
             # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.

@@ -57,6 +57,54 @@ def test_list_export_and_insights_survive_corrupt_timestamp_rows(corrupt_db, cap
     assert any("bad-huge" in rec.getMessage() for rec in caplog.records)
 
 
+def test_corrupt_prompt_row_degrades_instead_of_killing_session_queries(tmp_path, caplog):
+    """One truncated-UTF-8 system_prompts row must degrade to U+FFFD in that one cell, never
+    abort every session-list/load query (#109450: one bad row made the desktop session panel
+    unable to list or open ANY session)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        good_prompt = "You are Hermes ✓ 中文 round-trip"
+        db.create_session("good", "cli", system_prompt=good_prompt)
+        db.create_session("bad", "cli", system_prompt="You are Hermes truncated tail")
+
+        def _corrupt(conn):
+            row = conn.execute(
+                "SELECT hash FROM system_prompts WHERE prompt LIKE '%truncated tail%'"
+            ).fetchone()
+            # A mid-write process death left the 3-byte ✓ (e2 9c 93) missing its last byte;
+            # CAST keeps the bad value in TEXT storage so the strict decode path is exercised.
+            conn.execute(
+                "UPDATE system_prompts SET prompt = CAST(? AS TEXT) WHERE hash = ?",
+                (b"You are Hermes \xe2\x9c", row["hash"]),
+            )
+
+        db._execute_write(_corrupt)
+        kind = db._conn.execute(
+            "SELECT typeof(sp.prompt) FROM system_prompts sp"
+            " JOIN sessions s ON s.system_prompt_hash = sp.hash WHERE s.id = 'bad'"
+        ).fetchone()[0]
+        assert kind == "text"
+
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            rich = {s["id"]: s["system_prompt"] for s in db.list_sessions_rich()}
+            loaded_bad = db.get_session("bad")["system_prompt"]
+            searched = {s["id"]: s["system_prompt"] for s in db.search_sessions()}
+
+        # Every session still loads on every surface; only the corrupt cell degrades.
+        assert set(rich) == {"good", "bad"}
+        assert rich["good"] == good_prompt  # valid multi-byte text round-trips exactly
+        assert rich["bad"] == "You are Hermes \ufffd"
+        assert loaded_bad == rich["bad"]
+        assert searched == rich
+        # The warning carries the raw byte head so the corrupt row can be located on disk.
+        assert any(
+            "degraded to U+FFFD" in rec.getMessage() and "\\xe2\\x9c" in rec.getMessage()
+            for rec in caplog.records
+        )
+    finally:
+        db.close()
+
+
 def test_writers_never_persist_an_out_of_window_timestamp(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

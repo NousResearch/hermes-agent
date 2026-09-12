@@ -22,7 +22,7 @@ import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelSlugSuffix } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -470,6 +470,12 @@ export function ModelCatalogMenu({
                 >
                   <span className="truncate">
                     <HighlightMatches foldSeparators query={search} text={group.provider.name} />
+                    {group.provider.slug.toLowerCase() !== group.provider.name.toLowerCase() ? (
+                      <span className="font-normal normal-case tracking-normal text-(--ui-text-quaternary)">
+                        {' '}
+                        {group.provider.slug}
+                      </span>
+                    ) : null}
                   </span>
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
@@ -488,7 +494,8 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { name, tag } = modelDisplayParts(family.id)
+                    const slugSuffix = modelSlugSuffix(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -541,10 +548,21 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                          </span>
+                          <div className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                              {tag && (!meta || !meta.includes(tag)) ? (
+                                <span className="text-(--ui-text-tertiary)"> {tag}</span>
+                              ) : null}
+                              {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                            </span>
+                            <span
+                              className="block truncate text-[0.625rem] text-(--ui-text-quaternary)"
+                              title={family.id}
+                            >
+                              {slugSuffix}
+                            </span>
+                          </div>
                           {loadProgress ? (
                             <span
                               className="ml-auto flex shrink-0 items-center gap-1.5"

@@ -109,6 +109,19 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
+/** Provider-qualified slug for a model id (`kilo/deepseek-v4-flash-0731`).
+ *  Empty when the id carries no provider segment — bare ids need no
+ *  disambiguation. Aggregators serve the same base name under many upstream
+ *  prefixes, and the pretty display name collapses them to identical labels,
+ *  so rows render this as a subtitle beneath the display name (#58566, #94706). */
+export function modelSlugSuffix(model: string): string {
+  const trimmed = model.trim()
+  if (!trimmed || !trimmed.includes('/')) {
+    return ''
+  }
+  return trimmed
+}
+
 /** Status bar trigger label — model name plus the live session state (effort/fast).
  *  `defaultEffort` is the profile's configured level, used when the surface has
  *  no explicit effort so the label never advertises a default the agent won't use. */

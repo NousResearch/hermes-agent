@@ -406,7 +406,7 @@ class TestHermesHomeHardline:
 
         replay = json.loads(terminal_module.terminal_tool(command=command, force=True))
         assert replay["status"] == "blocked"
-        assert replay["exit_code"] == 1
+        assert replay["exit_code"] == -1
 
 
 class TestFindExecFullPathRm:

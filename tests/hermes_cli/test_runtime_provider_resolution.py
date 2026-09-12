@@ -1783,3 +1783,68 @@ def test_custom_provider_pool_target_model_wins(monkeypatch):
 
     assert resolved is not None
     assert resolved["model"] == "myproxy/gemini-flash"
+
+
+def test_resolve_runtime_provider_anthropic_respects_config_api_key(monkeypatch):
+    """Anthropic provider uses model.api_key from config.yaml when set (issue #7579),
+    without requiring ANTHROPIC_API_KEY or ANTHROPIC_TOKEN env vars."""
+
+    def _unexpected_anthropic_token():
+        raise AssertionError("resolve_anthropic_token should not be called when config api_key is set")
+
+    class _Pool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "config-anthropic-key",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.resolve_anthropic_token",
+        _unexpected_anthropic_token,
+    )
+    # Ensure no env vars are set
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["api_key"] == "config-anthropic-key"
+    assert resolved["base_url"] == "https://api.anthropic.com"
+
+
+def test_resolve_runtime_provider_anthropic_config_api_field(monkeypatch):
+    """Anthropic provider also accepts the 'api' field from config.yaml."""
+
+    class _Pool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api": "config-api-field-key",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+    assert resolved["provider"] == "anthropic"
+    assert resolved["api_key"] == "config-api-field-key"

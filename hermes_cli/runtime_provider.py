@@ -708,15 +708,22 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any]) -
     """Native Anthropic (Messages API) from env/auth store; ``model.base_url`` honoured only when
     the configured provider is anthropic (else a Codex endpoint would leak into Anthropic requests)."""
     base_url = _anthropic_cfg_base_url(model_cfg) or _ANTHROPIC_DEFAULT_BASE_URL
+    # Honour model.api_key from config.yaml before falling back to env (consistent with other providers).
+    cfg_api_key = ""
+    for k in ("api_key", "api"):
+        v = model_cfg.get(k)
+        if isinstance(v, str) and v.strip():
+            cfg_api_key = v.strip()
+            break
     # Microsoft Foundry endpoints reject Claude Code OAuth tokens, which resolve_anthropic_token()
     # would return first — use the env key directly.
     if base_url_host_matches(base_url, "azure.com"):
-        token = _azure_anthropic_env_key(model_cfg)
+        token = cfg_api_key or _azure_anthropic_env_key(model_cfg)
         if not token:
             raise AuthError("No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or ANTHROPIC_API_KEY, or point "
                             "key_env/api_key_env in your config.yaml model section at a custom env var.")
     else:
-        token = _anthropic_token_or_raise()
+        token = cfg_api_key or _anthropic_token_or_raise()
     return _runtime("anthropic", "anthropic_messages", base_url, token, source="env", requested_provider=requested_provider)
 
 

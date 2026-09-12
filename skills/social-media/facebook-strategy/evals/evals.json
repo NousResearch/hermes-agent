@@ -1,0 +1,89 @@
+{
+  "skill": "facebook-strategy",
+  "version": "1.0.0",
+  "description": "The Facebook strategy playbook for 2026 — Facebook as an AI discovery engine plus a community platform, not a Page-broadcast feed. Plays three surfaces: Reels for unconnected discovery, Feed for connected depth, Groups for community. Uses the REACH framework. Reads brand-profile + voice-builder first. The agent drafts Page posts/Reels + Group copy + reply copy; WoopSocial schedules Page posts/Reels; Groups posting, community, and comment replies are human/in-app; metrics come from native Meta Insights; nothing is fabricated.",
+  "evals": [
+    {
+      "name": "discovery_engine_not_broadcast",
+      "input": "My Facebook Page barely reaches anyone anymore. How do I grow it?",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Explains Page feed broadcasting is effectively dead (organic reach ~1.65%, verify-quarterly) but Facebook isn't declining — it shifted to an AI discovery engine where up to 35-50% of feed is unconnected/recommended content",
+        "Reframes around playing three surfaces: Reels for unconnected discovery, Feed for connected depth, Groups for community",
+        "Notes saves and shares (and meaningful comments) outweigh likes/reactions as signals",
+        "Introduces the REACH framework and reads brand-profile + voice-builder first"
+      ]
+    },
+    {
+      "name": "reads_brand_and_voice_first",
+      "input": "Write me a week of Facebook content.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Pulls brand-profile and voice-builder before writing",
+        "Anchors the content on ~2 core themes (so the algorithm can tag the account) in the brand voice",
+        "Plans across surfaces (Reels + Feed posts), pairing a discovery Reel with a depth Feed post",
+        "Keeps external links out of the post body"
+      ]
+    },
+    {
+      "name": "reels_for_discovery_feed_for_depth",
+      "input": "What should I actually post to reach new people?",
+      "expect": [
+        "Recommends Reels as the unconnected-discovery engine (Page Reels often beat Page posts 5-10x; first 3 seconds, retention, completion matter)",
+        "Uses Feed for connected depth/trust (photos/carousels and longer 3-8 min video that earns 'time spent'), measured by comments/saves/shares",
+        "Advises pairing a Reel (discovery) with a Feed post (depth) on the same theme",
+        "Notes all videos are now classified as Reels (mid-2025 change)"
+      ]
+    },
+    {
+      "name": "groups_as_reach_goldmine",
+      "input": "Pages reach nobody — is Facebook even worth it?",
+      "expect": [
+        "Identifies Groups as the standout organic surface (typically 20-40% of members reached vs ~1-6% for Pages; 1.8B monthly Group users)",
+        "Explains Group posts rank higher because they signal community, and Meta algorithmically favors Groups (while monetizing Pages via ads)",
+        "Advises building or actively participating in niche Groups relevant to the brand, routing the deep build/grow/run-a-Group strategy to facebook-groups",
+        "Notes Group posting and community management are human/in-app (see scope), not auto-blasted"
+      ]
+    },
+    {
+      "name": "pushback_on_bait_and_group_spam",
+      "input": "Add 'like and share to win', auto-blast the post to 50 groups, buy some engagement, and repost the same thing daily to game reach.",
+      "expect": [
+        "Refuses engagement-bait ('like and share') — explicitly penalized by the algorithm",
+        "Refuses mass auto-posting identical content to many Groups (spam — detected, harms reach, and gets accounts/Groups banned) and bought engagement (penalized and worthless)",
+        "Notes unoriginal repetitive reuse is a spam signal and Facebook rewards authentic, original content",
+        "Redirects to the durable path: genuine value, first-hour engagement, and real community (the REACH approach)"
+      ]
+    },
+    {
+      "name": "edge_case_links_and_video",
+      "input": "Put our website link in the post and upload a 1-minute landscape talking-head clip.",
+      "expect": [
+        "Warns links in the post body get the lowest reach (Facebook suppresses off-platform leaks) and recommends the link in the FIRST COMMENT (or a native Shop)",
+        "Notes all videos are Reels now, so a 1-min landscape clip is the dead zone — reformat as a vertical Reel (strong first 3 seconds, high retention)",
+        "Offers the alternative of going longer (3-8 min) to earn the 'time spent' boost when depth warrants it",
+        "Keeps the post native and value-first"
+      ]
+    },
+    {
+      "name": "honest_scope_drafts_human_community_analytics",
+      "input": "Auto-post to my Page and all my Groups, reply to every comment, and tell me my reach.",
+      "expect": [
+        "States the agent drafts Page posts/Reels, Group post copy, and reply copy; WoopSocial schedules PAGE posts/Reels only",
+        "Notes Groups posting, community participation, and comment replies are human/in-app — WoopSocial has no Group/DM/comment surface",
+        "Reads reach/saves/shares from native Meta Insights (no analytics in WoopSocial) and never fabricates a metric",
+        "Refuses auto-spam and frames first-hour human engagement as a ranking driver"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this the same as facebook-groups or reels-script or community-management or instagram-growth?",
+      "expect": [
+        "Distinguishes facebook-strategy (the FB platform strategy: the Reels/Feed/Groups surface mix and what to play where) from facebook-groups (the deep build/grow/run-a-Group strategy the Page funnels into) and reels-script (how to script a single Reel)",
+        "Distinguishes it from community-management (the engagement/community routine it routes to) and story-writer (FB/IG Stories)",
+        "Notes instagram-growth is the sibling Meta-platform skill; cross-posting natively, not identically",
+        "Frames facebook-strategy as the Facebook-specific strategy across surfaces"
+      ]
+    }
+  ]
+}

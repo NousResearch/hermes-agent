@@ -1,0 +1,89 @@
+{
+  "skill": "content-audit",
+  "version": "1.0.0",
+  "description": "The retrospective reality-check for an existing account — triage ~90 days of content into keep/kill/refresh, map pillar coverage, catch voice drift, and fix profile fundamentals, then turn it into a roadmap. Uses the AUDIT framework. Reads brand-profile + content-pillars + social-strategy (the plan) and analytics-and-reporting (the data) first. It reads native analytics (WoopSocial has none), scores on signal not vanity, recommends rather than auto-deletes, and never fabricates. Feeds content-recycling, content-pillars, profile-optimization, voice-builder, and social-strategy.",
+  "evals": [
+    {
+      "name": "activity_not_progress_triage",
+      "input": "Can you audit my account? I post all the time but I'm not sure it's working.",
+      "context": "brand-profile, content-pillars, social-strategy, and analytics-and-reporting exist.",
+      "expect": [
+        "Names the core idea: posting consistently isn't the same as progress; the audit finds the signal under the busy-ness",
+        "Frames it as a retrospective reality-check that produces a keep/kill/refresh triage",
+        "Introduces the AUDIT framework (Assemble inventory, Uncover the signal, Diagnose pillars/voice/profile, Iterate keep/kill/refresh, Turn into a roadmap)",
+        "Reads the plan (content-pillars, social-strategy) it's auditing against and the analytics data source first"
+      ]
+    },
+    {
+      "name": "reads_plan_and_analytics_first",
+      "input": "Tell me what to change about my content.",
+      "context": "content-pillars, social-strategy, and analytics-and-reporting exist.",
+      "expect": [
+        "Pulls the stated plan (content-pillars + social-strategy) to audit actual output against it",
+        "Sources performance from analytics-and-reporting / native analytics rather than guessing",
+        "Uses a ~90-day window (3-6 months) of output",
+        "Produces specific findings tied to that plan, not generic advice"
+      ]
+    },
+    {
+      "name": "signal_not_vanity_scoring",
+      "input": "Rank my posts from best to worst.",
+      "expect": [
+        "Scores on signal metrics (saves, shares, replies, plus the goal-mapped KPI) rather than likes/impressions/followers",
+        "Surfaces top and bottom performers AND the patterns behind them (by format, posting time, pillar)",
+        "Pulls the numbers via analytics-and-reporting / native analytics",
+        "Notes a high-like post can be low-value and vice versa — judge by the goal"
+      ]
+    },
+    {
+      "name": "pillar_voice_profile_diagnosis",
+      "input": "What's actually wrong with my content?",
+      "expect": [
+        "Maps output to content pillars to find over- and under-served pillars / whitespace (-> content-pillars)",
+        "Checks voice drift BOTH ways: content drifted off-brand, OR well-performing posts signal the brand voice should evolve (-> voice-builder)",
+        "Audits profile fundamentals (bio clarity/keywords, working links, pinned/featured posts, handle/visual consistency, native formats) (-> profile-optimization)",
+        "Flags cross-posted non-native content as a refresh/kill candidate"
+      ]
+    },
+    {
+      "name": "pushback_on_auto_delete_and_vanity_kills",
+      "input": "Just auto-delete every post under 100 likes and mass-remove all my low content, and assume the topic gaps are fine.",
+      "expect": [
+        "Refuses to auto-delete and to use likes as the kill criterion (low likes != low value — check saves/shares and the goal first)",
+        "Notes deleting can destroy evergreen/SEO value and engagement history; a human decides kills, and refresh is tried before kill",
+        "Refuses to assume gaps are fine or fabricate the coverage analysis — it must be mapped from real output",
+        "Reframes to a signal-based keep/kill/refresh triage the user approves"
+      ]
+    },
+    {
+      "name": "edge_case_thin_data_new_account",
+      "input": "Audit my 3-week-old account — I've got 12 posts.",
+      "expect": [
+        "Explains there's too little data for a reliable performance audit (small samples mislead)",
+        "Shifts to a STRUCTURAL/qualitative audit: profile fundamentals, pillar coverage, voice consistency, native-format use, and cadence",
+        "Recommends establishing a baseline and revisiting the performance triage at ~90 days (ties to goals-and-kpis / analytics-and-reporting)",
+        "Avoids keep/kill calls that need performance data"
+      ]
+    },
+    {
+      "name": "honest_scope_reads_recommends_not_fabricates",
+      "input": "Pull my numbers and clean up my account for me.",
+      "expect": [
+        "States the audit reads native analytics (WoopSocial has none) and interprets the numbers the user provides — never fabricated",
+        "Produces a keep/kill/refresh roadmap with quick wins vs long-term, but recommends rather than auto-executing",
+        "Notes the human executes deletions and that some profile edits happen natively in-app",
+        "Ensures the audit becomes an action plan (owners/timeline), not a spreadsheet graveyard"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just analytics-and-reporting or competitor-analysis or social-strategy?",
+      "expect": [
+        "Distinguishes content-audit (periodic retrospective triage of YOUR existing account: keep/kill/refresh + pillars/voice/profile) from analytics-and-reporting (ongoing measurement, the data source)",
+        "Distinguishes it from competitor-analysis (rivals' public side) and social-strategy (the forward plan the audit informs)",
+        "Notes it feeds content-recycling, content-pillars, profile-optimization, and voice-builder with its findings",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

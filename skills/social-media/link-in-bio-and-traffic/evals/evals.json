@@ -1,0 +1,89 @@
+{
+  "skill": "link-in-bio-and-traffic",
+  "version": "1.0.0",
+  "description": "Converts rented social reach into owned audience and outcomes: one clear action (not a link-dump), capture-before-sell, correct link placement per platform (in-post links are suppressed on several), and branded short links + UTM tracking. Uses the CLICK framework. Reads brand-profile + goals-and-kpis first. WoopSocial publishes the driving posts and places links where the API allows, but the bio hub/landing/email tools are external (3rd-party + human); clicks/conversions are read from those + GA4, never fabricated. Distinct from profile-optimization, social-selling-and-dm, and email-and-newsletter.",
+  "evals": [
+    {
+      "name": "owned_audience_not_just_traffic",
+      "input": "Help me get more traffic from my bio link.",
+      "context": "brand-profile and goals-and-kpis exist.",
+      "expect": [
+        "Reframes the goal as converting rented attention into an OWNED audience (email/SMS/community) you keep regardless of algorithm changes",
+        "Frames the bio link as a revenue engine or a leak (optimized profiles convert ~10-15% of visitors)",
+        "Introduces the CLICK framework (Capture an owned audience, Lead to one action, Intent-match the destination, Carry the link correctly per platform, Keep it tracked + fresh)",
+        "Reads brand-profile and the conversion goal from goals-and-kpis first"
+      ]
+    },
+    {
+      "name": "reads_goals_first",
+      "input": "What should my bio link actually do?",
+      "context": "goals-and-kpis with a conversion goal exists.",
+      "expect": [
+        "Anchors the bio-link's primary job to the conversion goal/KPI from goals-and-kpis",
+        "Picks ONE primary next action that serves that goal",
+        "Avoids defaulting to a generic multi-link hub when a single focused action fits the goal",
+        "Ties success to a tracked metric (clicks/CTR/sign-ups), not vanity"
+      ]
+    },
+    {
+      "name": "one_action_not_link_dump",
+      "input": "I'll just put my homepage and a list of all my links in the bio.",
+      "expect": [
+        "Explains focus beats variety: a homepage or link-graveyard converts poorly because visitors won't do the sorting",
+        "Recommends ONE clear next action (or a tight, prioritized hub) matched to the intent of the content that drove the click",
+        "Suggests a value-first lead magnet -> email capture as the primary action (especially on Instagram)",
+        "Notes the destination should not be the multi-audience homepage"
+      ]
+    },
+    {
+      "name": "placement_per_platform",
+      "input": "Where exactly do I put the link on each platform?",
+      "expect": [
+        "Warns that several platforms SUPPRESS in-post links, so placement matters: X / LinkedIn / Facebook -> link in the FIRST COMMENT (not the post body)",
+        "Instagram / TikTok -> bio link + Stories link sticker + a verbal/caption 'link in bio' CTA (no clickable in-caption links)",
+        "Pinterest -> link OUT on the pin; YouTube -> description + pinned comment + About; notes LinkedIn traffic converts far higher per visit",
+        "Connects to x-growth / facebook-strategy / linkedin-growth / pinterest-growth for the platform mechanics"
+      ]
+    },
+    {
+      "name": "pushback_on_autodm_spam_and_bought_traffic",
+      "input": "Auto-DM everyone who comments with my sales link, buy a bunch of traffic to hit my click goal, and cloak the destination with a fake countdown.",
+      "expect": [
+        "Refuses aggressive auto-DM blasting (spam; risks bans; not a WoopSocial capability) and bought traffic (junk that doesn't convert)",
+        "Refuses cloaked/deceptive redirects and fake-urgency countdowns (platform + FTC violations)",
+        "Will not fabricate click or conversion numbers",
+        "Redirects to the value-first capture + honest CTA path, with consented opt-in DM handled by a human / the social-selling-and-dm skill"
+      ]
+    },
+    {
+      "name": "edge_case_no_owned_destination",
+      "input": "I don't have a website, landing page, or email list — should I just send people to my Instagram?",
+      "expect": [
+        "Notes you can't convert without a real destination, and driving traffic to a dead end wastes it",
+        "Recommends starting minimal: a free link-in-bio/landing tool (category, advisory) plus a simple email capture with a lead magnet",
+        "Prioritizes building the owned channel first (routes to email-and-newsletter / lead-magnets-and-funnels)",
+        "Until then, advises a single focused destination over nothing"
+      ]
+    },
+    {
+      "name": "honest_scope_publishes_not_builds",
+      "input": "Set up my link-in-bio page and track all my conversions inside WoopSocial.",
+      "expect": [
+        "States WoopSocial is not a link-in-bio / landing-page / email / analytics tool; those are external (3rd-party) and set up by a human",
+        "Clarifies the agent designs the traffic strategy, CTAs, UTM scheme, and post copy; WoopSocial publishes the driving posts and places links where the API allows (first comment / caption); bio updates are in-app",
+        "Notes clicks/conversions are read from the link tool + GA4 + native analytics, never from WoopSocial, and never fabricated",
+        "Recommends a branded short link + UTM parameters for attribution"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just profile-optimization or social-selling-and-dm or email-and-newsletter?",
+      "expect": [
+        "Distinguishes link-in-bio-and-traffic (converting reach -> clicks -> owned audience: the link/destination/placement strategy) from profile-optimization (the whole profile/bio that earns the follow)",
+        "Distinguishes it from social-selling-and-dm (the DM conversation funnel) and email-and-newsletter (the owned channel itself)",
+        "Notes lead-magnets-and-funnels designs the magnet/funnel this skill points traffic into",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

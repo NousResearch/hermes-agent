@@ -833,7 +833,7 @@ class TestBuildOAuthAuthNonInteractive:
         monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
         with pytest.raises(OAuthNonInteractiveError, match="non-interactive"):
-            build_oauth_auth("atlassian", "https://mcp.atlassian.com/v1/mcp")
+            build_oauth_auth("atlassian", "https://mcp.atlassian.com/v2/mcp")
 
 
 class TestNonInteractiveFailFastAtCallbackBoundary:

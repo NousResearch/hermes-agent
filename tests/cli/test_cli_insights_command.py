@@ -15,6 +15,10 @@ class _InsightsEngineStub:
         self.calls.append({"days": days, "source": source})
         return {"days": days, "source": source}
 
+    def generate_fleet(self, *, days=30, source=None):
+        self.calls.append({"days": days, "source": source, "fleet": True})
+        return {"days": days, "source": source}
+
     def format_terminal(self, report):
         return f"days={report['days']} source={report['source']}"
 

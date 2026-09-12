@@ -174,11 +174,16 @@ class InsightsEngine:
 
     def generate(self, days: int = 30, source: Optional[str] = None) -> Dict[str, Any]:
         """Generate a complete insights report for the last ``days`` days, optionally filtered by source platform."""
+        return self._generate_store_report(days, source)
+
+    def generate_fleet(self, days: int = 30, source: Optional[str] = None) -> Dict[str, Any]:
+        """Aggregate local profile stores for the explicit administrative CLI surface only."""
         report = self._generate_store_report(days, source)
-        if not self._is_default_store():
+        if not self._is_canonical_default_store():
             return report
 
-        fleet_reports = [("default", report)]
+        fleet_reports = [] if report["empty"] else [("default", report)]
+        skipped = []
         for name, path in self._named_profile_stores():
             try:
                 from hermes_state import SessionDB
@@ -189,14 +194,16 @@ class InsightsEngine:
                 finally:
                     profile_db.close()
             except Exception as exc:
-                # A sibling's stale or corrupt store must not make the default
-                # profile's local insights unavailable.
-                logger.debug("Skipping profile insights store %s: %s", path, exc)
+                logger.warning("Skipping profile insights store %s: %s", path, exc)
+                skipped.append({"profile": name, "reason": str(exc)})
                 continue
             if not profile_report["empty"]:
                 fleet_reports.append((name, profile_report))
 
-        return self._aggregate_fleet_reports(fleet_reports) if len(fleet_reports) > 1 else report
+        if not fleet_reports:
+            return {**report, "fleet_skipped_profiles": skipped} if skipped else report
+        result = self._aggregate_fleet_reports(fleet_reports) if len(fleet_reports) > 1 or report["empty"] else report
+        return {**result, "fleet_skipped_profiles": skipped} if skipped else result
 
     def _generate_store_report(self, days: int, source: Optional[str] = None) -> Dict[str, Any]:
         """Build an insights report for this one store only."""
@@ -206,30 +213,31 @@ class InsightsEngine:
         flush = getattr(self.db, "flush_token_counts", None)
         if callable(flush):
             flush()
-        sessions = self._get_sessions(cutoff, source)
-        tool_usage = self._get_tool_usage(cutoff, source)
-        skill_usage = self._get_skill_usage(cutoff, source)
-        message_stats = self._get_message_stats(cutoff, source)
-        if not sessions:
-            return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [],
-                    "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": []}
-        models = self._compute_model_breakdown(sessions, cutoff, source)
-        return {
-            "days": days, "source_filter": source, "empty": False, "generated_at": time.time(),
-            "overview": self._compute_overview(sessions, message_stats, models),
-            "models": models,
-            "platforms": self._compute_platform_breakdown(sessions),
-            "tools": self._compute_tool_breakdown(tool_usage),
-            "skills": self._compute_skill_breakdown(skill_usage),
-            "activity": self._compute_activity_patterns(sessions),
-            "top_sessions": self._compute_top_sessions(sessions),
-        }
+        self._conn.execute("BEGIN")
+        try:
+            sessions = self._get_sessions(cutoff, source)
+            tool_usage = self._get_tool_usage(cutoff, source)
+            skill_usage = self._get_skill_usage(cutoff, source)
+            message_stats = self._get_message_stats(cutoff, source)
+            if not sessions:
+                return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [],
+                        "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": []}
+            models = self._compute_model_breakdown(sessions, cutoff, source)
+            return {
+                "days": days, "source_filter": source, "empty": False, "generated_at": time.time(),
+                "overview": self._compute_overview(sessions, message_stats, models),
+                "models": models, "platforms": self._compute_platform_breakdown(sessions),
+                "tools": self._compute_tool_breakdown(tool_usage), "skills": self._compute_skill_breakdown(skill_usage),
+                "activity": self._compute_activity_patterns(sessions), "top_sessions": self._compute_top_sessions(sessions),
+            }
+        finally:
+            self._conn.rollback()
 
-    def _is_default_store(self) -> bool:
+    def _is_canonical_default_store(self) -> bool:
         try:
             from hermes_constants import get_default_hermes_root
 
-            return Path(self.db.db_path).resolve().parent == get_default_hermes_root().resolve()
+            return Path(self.db.db_path).resolve() == (get_default_hermes_root() / "state.db").resolve()
         except (AttributeError, OSError):
             return False
 
@@ -237,15 +245,9 @@ class InsightsEngine:
     def _named_profile_stores() -> List[tuple[str, Path]]:
         """Existing named-profile stores under the default home, in stable display order."""
         try:
-            from hermes_cli.profiles import _PROFILE_ID_RE, _get_profiles_root
+            from hermes_cli.profiles import _iter_named_profile_dirs
 
-            root = _get_profiles_root()
-            return [
-                (entry.name, entry / "state.db")
-                for entry in sorted(root.iterdir())
-                if entry.is_dir() and entry.name != "default" and _PROFILE_ID_RE.match(entry.name)
-                and (entry / "state.db").is_file()
-            ]
+            return [(entry.name, entry / "state.db") for entry in _iter_named_profile_dirs() if (entry / "state.db").is_file()]
         except OSError:
             return []
 
@@ -255,7 +257,7 @@ class InsightsEngine:
         Session ids are local to a store, so fleet insights deliberately omit
         session-derived detail rather than joining or exposing those rows.
         """
-        _, default_report = reports[0]
+        default_report = reports[0][1]
         overviews = [report["overview"] for _, report in reports]
         total_sessions = sum(overview["total_sessions"] for overview in overviews)
         total_tokens = sum(overview["total_tokens"] for overview in overviews)
@@ -265,13 +267,14 @@ class InsightsEngine:
             for key in (
                 "total_sessions", "total_messages", "total_tool_calls", "total_input_tokens",
                 "total_output_tokens", "total_cache_read_tokens", "total_cache_write_tokens",
-                "total_tokens", "estimated_cost", "actual_cost", "total_hours", "user_messages",
+                "total_tokens", "estimated_cost", "actual_cost", "total_hours", "duration_sample_count", "user_messages",
                 "assistant_messages", "tool_messages", "unknown_cost_sessions", "included_cost_sessions",
             )
         }
         overview["avg_messages_per_session"] = total_messages / total_sessions if total_sessions else 0
         overview["avg_tokens_per_session"] = total_tokens / total_sessions if total_sessions else 0
-        overview["avg_session_duration"] = overview["total_hours"] * 3600 / total_sessions if total_sessions else 0
+        duration_samples = overview["duration_sample_count"]
+        overview["avg_session_duration"] = overview["total_hours"] * 3600 / duration_samples if duration_samples else 0
         starts = [item.get("date_range_start") for item in overviews if item.get("date_range_start") is not None]
         ends = [item.get("date_range_end") for item in overviews if item.get("date_range_end") is not None]
         overview["date_range_start"] = min(starts) if starts else None
@@ -287,8 +290,6 @@ class InsightsEngine:
                  "total_tokens": item["overview"]["total_tokens"]}
                 for name, item in reports
             ],
-            "models": [], "platforms": [], "tools": [],
-            "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": [],
         }
 
     def get_usage_breakdown(self, days: int = 30, source: Optional[str] = None) -> Dict[str, Any]:
@@ -395,6 +396,7 @@ class InsightsEngine:
             "total_cache_read_tokens": total_cache_read, "total_cache_write_tokens": total_cache_write,
             "total_tokens": total_tokens, "estimated_cost": total_cost, "actual_cost": actual_cost,
             "total_hours": sum(durations) / 3600 if durations else 0,
+            "duration_sample_count": len(durations),
             "avg_session_duration": sum(durations) / len(durations) if durations else 0,
             "avg_messages_per_session": total_messages / n if sessions else 0,
             "avg_tokens_per_session": total_tokens / n if sessions else 0,
@@ -567,7 +569,9 @@ class InsightsEngine:
         """Format the insights report for terminal display (CLI)."""
         if report.get("empty"):
             src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
-            return f"  No sessions found in the last {report.get('days', 30)} days{src}."
+            skipped = report.get("fleet_skipped_profiles") or []
+            details = "".join(f"\n  Skipped {item['profile']}: {item['reason']}" for item in skipped)
+            return f"  No sessions found in the last {report.get('days', 30)} days{src}.{details}"
         o = report["overview"]
         period_label = f"Last {report['days']} days"
         if report.get("source_filter"):
@@ -596,6 +600,10 @@ class InsightsEngine:
             lines += [""] + self._section("👥 Profiles") + [
                 f"  {profile['profile']:<20} {profile['sessions']:>8} sessions  {profile['total_tokens']:>14,} tokens"
                 for profile in profile_totals
+            ]
+        if skipped := report.get("fleet_skipped_profiles"):
+            lines += [""] + self._section("⚠ Skipped profile stores") + [
+                f"  {item['profile']}: {item['reason']}" for item in skipped
             ]
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
@@ -650,7 +658,9 @@ class InsightsEngine:
     def format_gateway(self, report: Dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""
         if report.get("empty"):
-            return f"No sessions found in the last {report.get('days', 30)} days."
+            skipped = report.get("fleet_skipped_profiles") or []
+            details = "".join(f"\nSkipped {item['profile']}: {item['reason']}" for item in skipped)
+            return f"No sessions found in the last {report.get('days', 30)} days.{details}"
         o = report["overview"]
         lines = [
             f"📊 **Hermes Insights** — Last {report['days']} days\n",
@@ -661,6 +671,10 @@ class InsightsEngine:
             lines += ["", "**👥 Profiles:**"] + [
                 f"  {profile['profile']} — {profile['sessions']} sessions, {profile['total_tokens']:,} tokens"
                 for profile in profile_totals
+            ]
+        if skipped := report.get("fleet_skipped_profiles"):
+            lines += ["", "**⚠ Skipped profile stores:**"] + [
+                f"  {item['profile']}: {item['reason']}" for item in skipped
             ]
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")

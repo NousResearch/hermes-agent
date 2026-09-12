@@ -173,3 +173,98 @@ async def test_provider_is_reused_across_reconnects(tmp_path, monkeypatch):
     p2 = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
 
     assert p1 is p2, "manager must cache the provider across reconnects"
+
+
+async def _provider_with_peer_rotation(kind, tmp_path, monkeypatch):
+    """Build either public provider path with stale memory and fresh disk state."""
+    from mcp.shared.auth import OAuthToken
+    from tools.mcp_oauth import build_oauth_auth
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    _set_interactive_stdin(monkeypatch)
+    server_name = f"rotation-{kind}"
+    if kind == "legacy":
+        provider = build_oauth_auth(server_name, "https://example.com/mcp")
+    else:
+        reset_manager_for_tests()
+        provider = MCPOAuthManager().get_or_build_provider(
+            server_name, "https://example.com/mcp", None
+        )
+    assert provider is not None
+
+    stale = OAuthToken(
+        access_token="stale-access",
+        token_type="Bearer",
+        expires_in=3600,
+        refresh_token="stale-refresh",
+    )
+    fresh = OAuthToken(
+        access_token="peer-access",
+        token_type="Bearer",
+        expires_in=3600,
+        refresh_token="peer-refresh",
+    )
+    provider.context.current_tokens = stale
+    await provider.context.storage.set_tokens(fresh)
+    return provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_kind", ["legacy", "manager"])
+async def test_refresh_rejection_adopts_valid_peer_rotation(
+    provider_kind, tmp_path, monkeypatch, caplog
+):
+    """A losing refresh must adopt a peer's valid rotation on both provider paths."""
+    provider = await _provider_with_peer_rotation(
+        provider_kind, tmp_path, monkeypatch
+    )
+
+    response = type("RejectedRefresh", (), {"status_code": 400})()
+    result = await provider._handle_refresh_response(response)
+
+    assert result is True
+    assert provider.context.current_tokens.access_token == "peer-access"
+    assert provider.context.current_tokens.refresh_token == "peer-refresh"
+    assert "stale-access" not in caplog.text
+    assert "stale-refresh" not in caplog.text
+    assert "peer-access" not in caplog.text
+    assert "peer-refresh" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("candidate", ["same", "expired", "no-refresh"])
+async def test_refresh_rejection_clears_unrecoverable_disk_state(
+    candidate, tmp_path, monkeypatch
+):
+    """Only a different, live, refreshable disk token is a peer recovery."""
+    from mcp.shared.auth import OAuthToken
+
+    provider = await _provider_with_peer_rotation("manager", tmp_path, monkeypatch)
+    if candidate == "same":
+        disk_token = OAuthToken(
+            access_token="stale-access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="stale-refresh",
+        )
+    elif candidate == "expired":
+        disk_token = OAuthToken(
+            access_token="peer-access",
+            token_type="Bearer",
+            expires_in=-60,
+            refresh_token="peer-refresh",
+        )
+    else:
+        disk_token = OAuthToken(
+            access_token="peer-access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token=None,
+        )
+    await provider.context.storage.set_tokens(disk_token)
+
+    response = type("RejectedRefresh", (), {"status_code": 400})()
+    result = await provider._handle_refresh_response(response)
+
+    assert result is False
+    assert provider.context.current_tokens is None

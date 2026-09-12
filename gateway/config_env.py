@@ -151,16 +151,26 @@ def _env_extras(extra: Dict[str, Any], spec, *, strip: bool = False) -> None:
             extra[key] = fn[0](value) if fn else value
 
 
+def _set_env_home(platform_config: PlatformConfig, home: HomeChannel) -> None:
+    # /sethome writes both YAML provenance and legacy env routing. Reloading
+    # that same route must not erase its owner; a changed target must not borrow it.
+    existing = platform_config.home_channel
+    if existing and existing.chat_id == home.chat_id:
+        home.user_id = existing.user_id
+        home.scope_id = existing.scope_id
+    platform_config.home_channel = home
+
+
 def _env_home_channel(config: GatewayConfig, platform: Platform, env_base: str, *, strip: bool = False) -> None:
     """Set ``home_channel`` from ``<env_base>`` (+``_NAME``/``_THREAD_ID``) when the platform is configured."""
     chat_id = getenv(env_base)
     if strip:
         chat_id = chat_id.strip()
     if chat_id and platform in config.platforms:
-        config.platforms[platform].home_channel = HomeChannel(
+        _set_env_home(config.platforms[platform], HomeChannel(
             platform=platform, chat_id=chat_id,
             name=getenv(f"{env_base}_NAME", "Home"), thread_id=getenv(f"{env_base}_THREAD_ID") or None,
-        )
+        ))
 
 
 def _env_reply_mode(config: GatewayConfig, platform: Platform, env: str) -> None:
@@ -350,11 +360,11 @@ def _qq_home(config: GatewayConfig, qq_config: PlatformConfig) -> None:
             "in your .env for consistency with the platform key."
         )
     if qq_home:
-        qq_config.home_channel = HomeChannel(
+        _set_env_home(qq_config, HomeChannel(
             platform=Platform.QQBOT, chat_id=qq_home,
             name=getenv("QQBOT_HOME_CHANNEL_NAME") or getenv(name_env, "Home"),
             thread_id=getenv("QQBOT_HOME_CHANNEL_THREAD_ID") or getenv("QQ_HOME_CHANNEL_THREAD_ID") or None,
-        )
+        ))
 
 
 def _plugin_probe_seed(entry) -> Optional[dict]:
@@ -427,10 +437,10 @@ def _enable_plugin_platform(config: GatewayConfig, entry) -> None:
         home = seed.pop("home_channel", None)
         platform_config.extra.update(seed)
         if isinstance(home, dict) and home.get("chat_id"):
-            platform_config.home_channel = HomeChannel(
+            _set_env_home(platform_config, HomeChannel(
                 platform=platform, chat_id=str(home["chat_id"]), name=str(home.get("name") or "Home"),
                 thread_id=str(home["thread_id"]) if home.get("thread_id") else None,
-            )
+            ))
 
 
 def _enable_plugin_platforms_from_env(config: GatewayConfig) -> None:

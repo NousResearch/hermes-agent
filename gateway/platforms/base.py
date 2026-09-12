@@ -2434,6 +2434,14 @@ class BasePlatformAdapter(ABC):
         directly)."""
         return None
 
+    async def resolve_handoff_source(self, source: SessionSource) -> SessionSource:
+        """Match a handoff destination to this adapter's inbound session identity.
+
+        Adapters that can distinguish DMs, channels and existing threads should
+        resolve the destination here before the gateway binds the session.
+        """
+        return source
+
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a sent message (optional: success=False makes callers send anew). ``finalize`` marks

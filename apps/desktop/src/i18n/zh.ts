@@ -4224,6 +4224,7 @@ export const zh: Translations = {
       success: platform => `已移交到 ${platform}。随时可在此处恢复。`,
       systemNote: platform => `↻ 已移交到 ${platform} — 随时可在此处恢复。`,
       failed: error => `移交失败：${error}`,
+      stillRunning: '网关仍在转移此会话。请检查目标平台，暂时不要重试移交。',
       timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
     }
   },

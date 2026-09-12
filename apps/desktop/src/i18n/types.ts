@@ -3585,6 +3585,7 @@ export interface Translations {
       success: (platform: string) => string
       systemNote: (platform: string) => string
       failed: (error: string) => string
+      stillRunning: string
       timedOut: string
     }
   }

@@ -5158,12 +5158,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self.name, parent_chat_id,
             )
             return None
+        if isinstance(parent, discord.Thread):
+            return None
+        if str(parent_id) in (self._get_no_thread_channels() | self._discord_free_response_channels()):
+            return None
         thread_name = (name or "handoff").strip()[:80] or "handoff"
         reason = "Hermes session handoff"
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(name=thread_name, auto_archive_duration=1440, reason=reason)
+                thread = await create(
+                    name=thread_name, auto_archive_duration=1440,
+                    type=discord.ChannelType.public_thread, reason=reason,
+                )
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(
@@ -5185,6 +5192,25 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self.name, parent_chat_id, fallback_error,
             )
             return None
+
+    async def resolve_handoff_source(self, source):
+        channel = await self._resolve_channel(source.thread_id or source.chat_id)
+        if channel is None:
+            raise RuntimeError("Discord handoff destination is unavailable")
+        source.chat_id = str(channel.id)
+        if isinstance(channel, discord.DMChannel):
+            source.chat_type, source.thread_id = "dm", None
+        elif isinstance(channel, discord.Thread):
+            source.chat_type, source.thread_id = "thread", str(channel.id)
+            source.parent_chat_id = str(channel.parent_id)
+            self._threads.mark(str(channel.id))
+        else:
+            source.chat_type, source.thread_id = "group", None
+            if not source.user_id or source.user_id == "system:handoff":
+                raise RuntimeError("Run /sethome again in Discord to record the handoff owner")
+        guild = getattr(channel, "guild", None)
+        source.guild_id = str(guild.id) if guild else None
+        return source
 
     def _self_contained_prompt_content(
         self, header: str, body: str, *, code_block: bool = False, tail: str = ""

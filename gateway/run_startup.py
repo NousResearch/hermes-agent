@@ -1457,9 +1457,15 @@ class GatewayStartupMixin:
             ) else home_chat_id,
             chat_name=home.name,
             chat_type="thread" if is_thread else "dm",
-            user_id=home_chat_id if is_telegram_private_chat else "system:handoff",
+            user_id=home_chat_id if is_telegram_private_chat else (home.user_id or "system:handoff"),
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
         )
+        # Optional for older external adapters. Resolve the concrete channel
+        # shape before binding; a group keyed as a DM strands the next reply.
+        resolve_source = getattr(type(transport.adapter), "resolve_handoff_source", None)
+        if resolve_source is not None:
+            dest_source = await resolve_source(transport.adapter, dest_source)
+            effective_thread_id = dest_source.thread_id
         return self._HandoffDestination(
             platform=platform, platform_name=platform_name, transport=transport, home=home,
             home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,

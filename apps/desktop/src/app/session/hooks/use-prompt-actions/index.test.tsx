@@ -1897,6 +1897,48 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
   })
 
+  it('waits for a claimed handoff beyond the pending timeout without failing it', async () => {
+    vi.useFakeTimers()
+    const started = Date.now()
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'handoff.state') {
+        return { state: Date.now() - started < 210_000 ? 'running' : 'completed' } as never
+      }
+
+      return {} as never
+    })
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    let settled = false
+    const result = handle!.submitTextRaw('/handoff discord').then(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(61_000)
+    expect(settled).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('handoff.fail', expect.anything())
+    await vi.advanceTimersByTimeAsync(150_000)
+    await result
+    expect(settled).toBe(true)
+    expect(requestGateway).not.toHaveBeenCalledWith('handoff.fail', expect.anything())
+  })
+
+  it('leaves a long-running handoff owned by the gateway when the running wait expires', async () => {
+    vi.useFakeTimers()
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'handoff.state' ? { state: 'running' } : {}) as never
+    )
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    const result = handle!.submitTextRaw('/handoff discord')
+    await vi.advanceTimersByTimeAsync(16 * 60_000)
+    await result
+    expect(requestGateway).not.toHaveBeenCalledWith('handoff.fail', expect.anything())
+  })
+
   it('marks a timed-out handoff as failed so the next attempt can retry', async () => {
     vi.useFakeTimers()
     const calls: { method: string; params?: Record<string, unknown> }[] = []

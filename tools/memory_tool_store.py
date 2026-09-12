@@ -200,22 +200,60 @@ class MemoryStore:
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
         file) and, unless *skip_drift*, on external drift (flushing would discard
         un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
-        a failed second read used to count as "no drift"."""
+        a failed second read used to count as "no drift". The write is guarded by a
+        near-empty shrink check and an atomic CAS re-read (issue #105684)."""
         path = self._path_for(target)
         with self._file_lock(path):
-            raw, read_ok = self._read_raw_checked(path)
+            raw_initial, read_ok = self._read_raw_checked(path)
             if not read_ok:
                 return _read_failed_error(path)
-            bak = None if skip_drift else self._detect_external_drift(target, raw)
-            self._set_entries(target, list(dict.fromkeys(self._parse_entries(raw))))
+            bak = None if skip_drift else self._detect_external_drift(target, raw_initial)
+            parsed_before = list(dict.fromkeys(self._parse_entries(raw_initial)))
+            self._set_entries(target, parsed_before)
             if bak:
                 return _drift_error(path, bak)
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
                 return result
-            self._set_entries(target, result[0])
+            new_entries = result[0]
+            # Defensive shrink guard (issue #105684): refuse a write that would
+            # shrink MEMORY.md/USER.md past a sane floor unless the caller is
+            # the explicit single-remove-last-entry path.
+            new_serialized = ENTRY_DELIMITER.join(new_entries)
+            prev_bytes = len(raw_initial.encode("utf-8"))
+            new_bytes = len(new_serialized.encode("utf-8"))
+            if prev_bytes > 200 and new_bytes < 50:
+                # Explicit single-remove of the last entry is the deliberate-wipe
+                # path (batch emptying is already refused elsewhere); allow only
+                # that exact 1->0 shape.
+                if not (len(parsed_before) == 1 and len(new_entries) == 0):
+                    return _error(
+                        f"Refusing to persist near-empty {path.name} after mutation: "
+                        f"previous size was {prev_bytes} bytes, new size would be "
+                        f"{new_bytes} bytes. This guard prevents accidental wipe of "
+                        f"{path.name} (issue #105684). If you intended to empty the "
+                        f"file, remove entries one by one with single remove() calls."
+                    )
+            # Atomic CAS: re-read before write; if file changed between initial
+            # read and now, abort before touching disk (issue #105684 bullet 2).
+            if not skip_drift:
+                raw_current, read_ok2 = self._read_raw_checked(path)
+                if not read_ok2:
+                    return _read_failed_error(path)
+                if raw_current != raw_initial:
+                    bak2 = self._detect_external_drift(target, raw_current)
+                    if bak2 is None:
+                        bak2 = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
+                        try:
+                            bak2.write_text(raw_current, encoding="utf-8")
+                        except OSError:
+                            bak2 = str(bak2) + " (BACKUP FAILED — file unchanged on disk)"
+                        else:
+                            bak2 = str(bak2)
+                    return _drift_error(path, bak2)
+            self._set_entries(target, new_entries)
             path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_file(path, result[0])
+            self._write_file(path, new_entries)
             return self._success_response(target, result[1])
 
     def add(self, target: str, content: str) -> Dict[str, Any]:

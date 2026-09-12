@@ -592,7 +592,8 @@ class TestUnreadableFileDoesNotWipeMemory:
         second read as "no drift" — a read failure between the checked reload
         and the drift check let `replace` rewrite the file from a stale view,
         discarding externally added entries. Pin the invariant structurally:
-        one mutation, one read.
+        one mutation, two reads at most (initial + atomic CAS re-read before
+        write, issue #105684); the CAS read must not swallow failures.
         """
         store.add("memory", "Only entry.")
         path = store._path_for("memory")
@@ -609,9 +610,9 @@ class TestUnreadableFileDoesNotWipeMemory:
         result = store.replace("memory", "Only entry", "Replaced entry.")
 
         assert result["success"] is True
-        assert counts["n"] == 1, (
-            f"replace() read the memory file {counts['n']} times; drift "
-            f"detection must reuse the single checked-read snapshot"
+        assert counts["n"] == 2, (
+            f"replace() read the memory file {counts['n']} times; expected 2 "
+            f"(initial checked-read + atomic CAS re-read before write, issue #105684)"
         )
 
 
@@ -777,8 +778,6 @@ class TestBatchRefusesToEmptyNonEmptyStore:
         assert seed not in store._entries_for(target)
         assert "replacement entry here" in store._entries_for(target)
 
-
-# =========================================================================
 # Background-review delete gate (#105921)
 # =========================================================================
 
@@ -869,3 +868,96 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+# =========================================================================
+# Wipe guard for failed replace + shrink/CAS (issue #105684)
+#
+# A single failed replace (no old_text match) must never wipe MEMORY.md /
+# USER.md, even when the mutation path later gained defensive checks.
+# The shrink guard also prevents any successful mutation that would
+# collapse a substantially sized file to near-empty in one step.
+# =========================================================================
+
+
+class TestWipeGuard105684:
+    def test_failed_replace_does_not_emit_empty_persist(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=5000, user_char_limit=5000)
+        store.load_from_disk()
+        # Pre-populate with 13 lines ~1.8KB like the reported incident.
+        for i in range(13):
+            assert store.add("memory", f"fact {i:02d}: " + "x" * 120)["success"] is True
+        path = store._path_for("memory")
+        original_bytes = path.read_bytes()
+        assert len(original_bytes) > 200
+
+        result = store.replace("memory", "no-such-thing", "x")
+        assert result["success"] is False
+        assert "No entry matched" in result["error"]
+        # INVARIANT: disk must not have shrunk to 0 / near-0
+        assert path.read_bytes() == original_bytes
+
+    def test_failed_replace_preserves_disk_for_user_target(self, store):
+        store.add("user", "Name: Alice — developer, loves hermes")
+        store.add("user", "Prefers concise replies")
+        path = store._path_for("user")
+        before = path.read_bytes()
+        result = store.replace("user", "no-such-thing", "new entry")
+        assert result["success"] is False
+        assert path.read_bytes() == before
+
+    def test_shrink_guard_refuses_near_empty_write_and_preserves_disk(self, tmp_path, monkeypatch):
+        """A mutation that would collapse a >200-byte file to <50 bytes is refused."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=5000, user_char_limit=5000)
+        store.load_from_disk()
+        for i in range(5):
+            store.add("memory", f"entry {i} " + "y" * 80)
+        path = store._path_for("memory")
+        assert len(path.read_bytes()) > 200
+
+        # Simulate a buggy mutate that returns a near-empty list.
+        def _buggy(entries, limit):
+            return [], "buggy wipe"
+
+        result = store._mutate("memory", _buggy)
+        assert result["success"] is False
+        assert "Refusing to persist near-empty" in result["error"]
+        # File untouched
+        assert len(path.read_bytes()) > 200
+
+    def test_single_remove_last_entry_still_allowed_when_only_one_entry(self, tmp_path, monkeypatch):
+        """Deliberate wipe via single remove() of the last entry must still succeed."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=5000, user_char_limit=5000)
+        store.load_from_disk()
+        store.add("memory", "only entry")
+        path = store._path_for("memory")
+        result = store.remove("memory", "only entry")
+        assert result["success"] is True
+        assert path.read_text(encoding="utf-8") == ""
+        assert len(store.memory_entries) == 0
+
+    def test_cas_aborts_when_file_changes_between_read_and_write(self, tmp_path, monkeypatch):
+        """Atomic CAS: if file changes externally between read and write, abort."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(memory_char_limit=5000, user_char_limit=5000)
+        store.load_from_disk()
+        store.add("memory", "original entry one")
+        store.add("memory", "original entry two")
+        path = store._path_for("memory")
+        before = path.read_text(encoding="utf-8")
+
+        def _mutate_with_external_change(entries, limit):
+            # Simulate concurrent external writer appending directly (bypassing lock).
+            path.write_text(before + "\n§\nexternally added entry", encoding="utf-8")
+            return entries + ["new entry"], "added"
+
+        result = store._mutate("memory", _mutate_with_external_change)
+        # CAS should detect drift and refuse to overwrite external change.
+        assert result["success"] is False
+        assert "drift_backup" in result or "Refusing to write" in result["error"]
+        # External addition must survive (not overwritten by our stale write).
+        assert "externally added entry" in path.read_text(encoding="utf-8")
+        # Our new entry was not persisted.
+        assert "new entry" not in path.read_text(encoding="utf-8")
+

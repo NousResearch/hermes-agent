@@ -1607,7 +1607,11 @@ jobs:
   builds-table:
     name: Render the release builds table
     needs: [validate, build-win32, build-darwin, build-linux, publish-win32-updater, publish-darwin-updater, termux-deb]
-    if: inputs.build_commit == '' && inputs.upload_release == true && inputs.release-phase == ''
+    # Failed builds still get a per-tag diagnostic page. The renderer only
+    # advances the channel landing page when every prerequisite succeeded.
+    if: |
+      always() && inputs.build_commit == '' && inputs.upload_release == true && inputs.release-phase == ''
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
     runs-on: ubuntu-24.04
     environment: release-signing
     steps:
@@ -1620,18 +1624,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
         run: |
-          if ! gh release view "$HERMES_PAYLOAD_TAG" >/dev/null 2>&1; then
-            echo "::error::no release exists for $HERMES_PAYLOAD_TAG — cannot render the builds table"
-            exit 1
-          fi
           python3 scripts/render-builds-table.py \
             --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY"
+
+      # publish-canary consumes this job's result. Publish diagnostics first,
+      # then retain the original all-needs-success release gate.
+      - name: Preserve release success gate
+        env:
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from scripts.releases.stable import require_success
+          needs = json.loads(os.environ['RELEASE_NEEDS'])
+          require_success(needs, list(needs))
+          PY
 
   commit-builds-summary:
     name: Commit build summary (every binary, built or not)

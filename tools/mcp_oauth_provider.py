@@ -15,6 +15,44 @@ if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
 logger = logging.getLogger(__name__)
 
+# Authorization servers whose metadata advertises
+# ``authorization_response_iss_parameter_supported: true`` (RFC 9207) but that never
+# send ``iss`` in the authorization callback. mcp 2.0.0's
+# ``validate_authorization_response_iss`` correctly rejects the missing param per
+# spec — but that makes these connectors dead on arrival through no fault of the
+# client (#99984 for Cloudflare; api.figma.com verified live 2026-09-08: advertises
+# the flag, omits ``iss``). Matched by issuer prefix.
+_ISS_ADVERTISED_BUT_OMITTED_ISSUERS: tuple[str, ...] = (
+    "https://mcp.cloudflare.com",
+    "https://api.figma.com",
+)
+
+
+def _is_advertised_iss_but_omitted_issuer(issuer: str) -> bool:
+    """Exact scheme+host(+path) match against ``_ISS_ADVERTISED_BUT_OMITTED_ISSUERS``.
+    Not ``str.startswith`` — that would let an attacker-controlled issuer like
+    ``https://api.figma.com.attacker.example`` prefix-match and skip the RFC 9207
+    check (pinned by ``test_prefix_spoofed_issuer_is_not_suppressed``)."""
+    from urllib.parse import urlsplit
+    try:
+        parsed = urlsplit(issuer)
+    except ValueError:
+        return False
+    if not parsed.scheme or not parsed.hostname:
+        return False
+    issuer_key = (parsed.scheme.lower(), parsed.hostname.lower(), parsed.path or "/")
+    for pattern in _ISS_ADVERTISED_BUT_OMITTED_ISSUERS:
+        try:
+            pat = urlsplit(pattern)
+        except ValueError:
+            continue
+        if not pat.hostname:
+            continue
+        pattern_key = (pat.scheme.lower(), pat.hostname.lower(), pat.path or "/")
+        if issuer_key == pattern_key:
+            return True
+    return False
+
 
 class HermesProviderMixin:
     """Token-endpoint fixes layered over the SDK's ``OAuthClientProvider`` (must precede it in
@@ -45,7 +83,39 @@ class HermesProviderMixin:
             raise OAuthNonInteractiveError(
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
-        return await super()._perform_authorization()
+        return await self._perform_authorization_with_iss_workaround()
+
+    async def _perform_authorization_with_iss_workaround(self):
+        """``super()._perform_authorization()`` from the SDK class this mixin is
+        combined with — resolved late so the mixin works under any SDK base (or
+        none, when the SDK is absent and the subclass is never built)."""
+        base = getattr(super(HermesProviderMixin, self), "_perform_authorization", None)
+        if base is None:
+            raise RuntimeError("HermesProviderMixin requires an SDK OAuthClientProvider base")
+        return await self._suppress_advertised_iss_for_broken_issuers(base())
+
+    async def _suppress_advertised_iss_for_broken_issuers(self, coro):
+        """#99984 class workaround: issuers that advertise RFC 9207 ``iss`` support but
+        never send it would have mcp 2.0.0's validator kill every authorization. Drop
+        the advertised flag for the duration of the authorization and restore it after,
+        so discovered/persisted metadata stays honest and unknown issuers still fail
+        closed. ``getattr`` access keeps the mixin standalone (``context`` lives on
+        the SDK base class it is combined with)."""
+        md = getattr(getattr(self, "context", None), "oauth_metadata", None)
+        saved: Any = None
+        if md is not None and bool(getattr(md, "authorization_response_iss_parameter_supported", False)):
+            issuer = str(getattr(md, "issuer", "") or "")
+            if _is_advertised_iss_but_omitted_issuer(issuer):
+                saved = md.authorization_response_iss_parameter_supported
+                md.authorization_response_iss_parameter_supported = False
+                logger.info(
+                    "MCP OAuth: issuer %s advertises RFC 9207 iss support but omits it "
+                    "in callbacks; suppressing flag for this authorization (#99984 class)", issuer)
+        try:
+            return await coro
+        finally:
+            if saved is not None:
+                md.authorization_response_iss_parameter_supported = saved
 
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""

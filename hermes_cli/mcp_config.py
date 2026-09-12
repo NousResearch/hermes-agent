@@ -276,6 +276,14 @@ def _probe_single_server(
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
         except (TypeError, ValueError):
             connect_timeout = 30.0
+    else:
+        # An EXPLICIT probe timeout (e.g. `hermes mcp login`'s 315s floor: the 300s OAuth
+        # callback window + headroom) must bound the transport's initialize handshake too —
+        # otherwise _run_http falls back to the 60s default, fires mid-OAuth, and the retry
+        # starts a second authorization round that collides with the first round's callback
+        # listener (EADDRINUSE kills the login; #99984 bug 2, seen live vs mcp.figma.com).
+        # Explicit wins over any config value so login/headless budgets are honored as given.
+        config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []

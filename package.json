@@ -43,6 +43,8 @@
     "globals": "17.7.0"
   },
   "overrides": {
+    "colord": "2.9.4",
+    "sanitize-html": "2.17.7",
     "lodash": "4.18.1",
     "yauzl": "^3.3.1",
     "protobufjs": "^8.7.1",

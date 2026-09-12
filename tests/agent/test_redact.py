@@ -975,6 +975,21 @@ class TestTerminalOutputRedaction:
         command = f"cat <<'EOF'\n{body}\nFOO_TOKEN={secret}\nEOF"
         assert secret in redact_terminal_output(f"FOO_TOKEN={secret}", command)
 
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("cat <<EOF; cat .env\ntext\nEOF", True),
+            ("cat <<< ignored; cat .env", True),
+            ("echo $((1 << 2)); cat .env", True),
+            ("echo x # <<EOF\ncat .env", True),
+            ("cat <<EOF\ntext\nEOF\ncat .env", True),
+            ("cat <<A <<B\ntext\nA\ncat .env\nB", False),
+        ],
+    )
+    def test_heredoc_syntax_preserves_executable_commands(self, command, expected):
+        from agent.redact import _command_reads_secret_file
+        assert _command_reads_secret_file(command) is expected
+
     def test_search_pattern_named_like_secret_file_preserves_unrelated_output(self):
         from agent.redact import redact_terminal_output
         secret = "E" * 40

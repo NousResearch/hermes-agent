@@ -829,11 +829,14 @@ def _without_heredoc_bodies(command: str) -> str:
     """Remove heredoc payload lines before classifying executable commands."""
     output: list[str] = []
     pending: list[tuple[str, bool]] = []
+    in_heredoc_body = False
     quote: str | None = None
     escaped = False
+    comment = False
+    arithmetic_depth = 0
     index = 0
     while index < len(command):
-        if pending:
+        if in_heredoc_body:
             line_end = command.find("\n", index)
             if line_end < 0:
                 line_end = len(command)
@@ -844,6 +847,7 @@ def _without_heredoc_bodies(command: str) -> str:
             if line_end < len(command):
                 output.append("\n")
             index = line_end + 1
+            in_heredoc_body = bool(pending)
             continue
 
         char = command[index]
@@ -856,6 +860,11 @@ def _without_heredoc_bodies(command: str) -> str:
             escaped = True
             index += 1
             continue
+        if comment:
+            if char in "\r\n":
+                comment = False
+            index += 1
+            continue
         if char in "\"'":
             if quote == char:
                 quote = None
@@ -863,10 +872,28 @@ def _without_heredoc_bodies(command: str) -> str:
                 quote = char
             index += 1
             continue
-        if quote is None and char == "<" and command[index:index + 2] == "<<":
+        if quote is None and char == "#" and (
+            index == 0 or command[index - 1].isspace() or command[index - 1] in ";&|"
+        ):
+            comment = True
+            index += 1
+            continue
+        if quote is None and command[index:index + 3] == "$((":
+            arithmetic_depth += 1
+        elif quote is None and arithmetic_depth and command[index:index + 2] == "))":
+            arithmetic_depth -= 1
+        if (
+            quote is None
+            and not arithmetic_depth
+            and char == "<"
+            and (index == 0 or command[index - 1] != "<")
+            and command[index:index + 2] == "<<"
+        ):
             marker = _heredoc_marker(command, index)
             if marker is not None:
                 pending.append(marker)
+        if quote is None and char in "\r\n" and pending:
+            in_heredoc_body = True
         index += 1
     return "".join(output)
 

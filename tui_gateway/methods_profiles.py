@@ -419,7 +419,7 @@ def _(rid, params: dict) -> dict:
         soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
         mcp_cfg = cfg.get("mcp_servers")
         mcp_out = _try(lambda: [
-            {"name": str(srv_name), "enabled": not is_truthy_value(entry.get("disabled", False)),
+            {"name": str(srv_name), "enabled": _mcp_entry_enabled(entry),
              "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
             for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
             if isinstance(entry, dict)
@@ -517,17 +517,26 @@ def _save_toolset_pin(cfg, enabled, save_config) -> None:
     save_config(cfg)
 
 
+def _mcp_entry_enabled(entry: dict) -> bool:
+    """Editor-side twin of ``enabled_mcp_server_names``: the runtime keys off ``enabled`` (default
+    True); a legacy ``disabled: true`` (what older editors wrote) is still honoured."""
+    from hermes_cli.tools_config import _parse_enabled_flag
+    return (_parse_enabled_flag(entry.get("enabled", True), default=True)
+            and not _parse_enabled_flag(entry.get("disabled", False), default=False))
+
+
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
+    """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
+    coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:
         if not isinstance(mcp_cfg.get(srv), dict) and isinstance(launch_mcp.get(srv), dict):
             mcp_cfg[srv] = dict(launch_mcp[srv])
-        if isinstance(mcp_cfg.get(srv), dict):
-            mcp_cfg[srv].pop("disabled", None)
     for srv, entry in mcp_cfg.items():
-        if srv not in wanted and isinstance(entry, dict):
-            entry["disabled"] = True
+        if isinstance(entry, dict):
+            entry["enabled"] = srv in wanted
+            entry.pop("disabled", None)
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg
     save_config(cfg)

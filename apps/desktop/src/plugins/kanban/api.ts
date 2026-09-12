@@ -11,6 +11,7 @@
 
 import {
   atom,
+  captureGatewayFileDownload,
   type PluginOs,
   type PluginRestOptions,
   type PluginStorage,
@@ -172,7 +173,12 @@ export const ORCHESTRATION_KEY = ['kanban', 'orchestration'] as const
 export const fetchBoard = (archived: boolean) =>
   call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
 
-export const fetchTask = (id: string) => call<KanbanTaskDetail>(withBoard(`/tasks/${id}`))
+export const fetchTask = async (id: string) => {
+  const downloadAttachment = captureGatewayFileDownload()
+  const detail = await call<KanbanTaskDetail>(withBoard(`/tasks/${id}`))
+
+  return { ...detail, downloadAttachment }
+}
 
 /** Worker stdout/stderr tail (last 16 KiB — plenty for the drawer). */
 export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }))

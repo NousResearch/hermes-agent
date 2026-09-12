@@ -22,6 +22,8 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { capabilityScoped } from '@/api/client'
+
+export { captureGatewayFileDownload } from '@/api/file-download'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'

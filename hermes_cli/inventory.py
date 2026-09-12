@@ -190,6 +190,13 @@ def build_model_options_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
         capabilities=True, featured=True,
+        # #66624 fixed this for the auxiliary pickers; the main picker had the same gap.
+        # Without ``for_picker`` a provider whose credential pool is entirely in cooldown is
+        # dropped from the payload, so the *whole* provider group disappears from /model and
+        # the Desktop picker. Rate limits are per-model, so an exhausted pool does not mean
+        # every model is unusable — and hiding the row removes the only UI path to switch to
+        # one that still works, including switching away from the model that hit the limit.
+        for_picker=True,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
     )
     if not refresh:

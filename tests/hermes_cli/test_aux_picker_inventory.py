@@ -105,6 +105,28 @@ def test_aux_picker_requests_exhausted_pool_visibility(configured_home):
     assert seen.get("for_picker") is True
 
 
+def test_model_options_payload_requests_exhausted_pool_visibility():
+    """The MAIN picker needs the same visibility the aux pickers got in #66624.
+
+    ``build_model_options_payload`` backs ``/model``, ``GET /api/model/options``
+    and the Desktop ``ModelPickerDialog``. Without ``for_picker`` a provider whose
+    credential pool is entirely in cooldown is dropped, so the whole group vanishes
+    from the picker — leaving no way to switch to one of its other models, or away
+    from the model that hit the limit."""
+    from hermes_cli import inventory
+
+    seen = {}
+
+    def _capture(_ctx, **kwargs):
+        seen.update(kwargs)
+        return {"providers": []}
+
+    with patch.object(inventory, "build_models_payload", _capture):
+        inventory.build_model_options_payload(inventory.load_picker_context())
+
+    assert seen.get("for_picker") is True
+
+
 # ─── Shared rendering ───────────────────────────────────────────────────
 
 

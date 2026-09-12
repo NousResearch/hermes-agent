@@ -96,13 +96,13 @@ export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSc
 export function saveHermesConfig(
   config: HermesConfigRecord,
   profile?: null | string,
-  { preserveLanguage = false }: { preserveLanguage?: boolean } = {}
+  { preserveLanguage = false, allowDefaultsRegression = false }: { preserveLanguage?: boolean; allowDefaultsRegression?: boolean } = {}
 ): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...profileScoped(profile),
     path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
     method: 'PUT',
-    body: { config }
+    body: { config, allow_defaults_regression: allowDefaultsRegression }
   })
 }
 

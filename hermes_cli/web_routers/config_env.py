@@ -109,6 +109,51 @@ async def get_egress_status():
     return {"text": format_status_text()}
 
 
+# A settings write whose payload resets explicitly-set leaves to factory defaults
+# across this many top-level sections is a cross-machine defaults overwrite, not
+# a user edit: the desktop can write the record it read from backend A to backend
+# B after a connection switch, where every hand-tuned value on B arrives as the
+# factory default of A's pristine install (46 regressed leaves over 7+ sections
+# in #109357, vs 0 for a legitimate save — a per-tab form reset stays inside one
+# section and never trips this).
+_DEFAULTS_REGRESSION_SECTION_LIMIT = 3
+
+
+def _flatten_config_leaves(config: Dict[str, Any], _prefix: Tuple[str, ...] = ()):
+    """Yield ``(path_tuple, value)`` for every scalar leaf; nested dicts recurse,
+    every other type (lists included) is a leaf."""
+    for key, value in (config or {}).items():
+        path = _prefix + (key,)
+        if isinstance(value, dict):
+            yield from _flatten_config_leaves(value, path)
+        else:
+            yield path, value
+
+
+def _defaults_regressed_sections(existing_raw: Dict[str, Any], incoming: Dict[str, Any]) -> set:
+    """Top-level sections this write would reset from a user-set value to the factory default.
+
+    A leaf counts only when all three hold: the factory default exists, the raw
+    on-disk document explicitly holds a non-default value for it (a user choice
+    — a YAML explicit ``None`` counts as unset), and the incoming record carries
+    the factory default for it. Leaves the incoming record omits are left alone
+    by the deep-merge and never count.
+    """
+    defaults_flat = dict(_flatten_config_leaves(DEFAULT_CONFIG))
+    disk_flat = dict(_flatten_config_leaves(existing_raw))
+    incoming_flat = dict(_flatten_config_leaves(incoming))
+    sections = set()
+    for path, default_value in defaults_flat.items():
+        if path not in disk_flat or path not in incoming_flat:
+            continue
+        disk_value = disk_flat[path]
+        if disk_value is None or disk_value == default_value:
+            continue
+        if incoming_flat[path] == default_value:
+            sections.add(path[0])
+    return sections
+
+
 @router.put("/api/config")
 async def update_config(
     body: ConfigUpdate, profile: Optional[str] = None, preserve_language: bool = False
@@ -123,6 +168,24 @@ async def update_config(
             with _CONFIG_MUTATION_LOCK:
                 existing = read_raw_config()
                 incoming = _denormalize_config_from_web(body.config)
+                if not body.allow_defaults_regression:
+                    regressed = _defaults_regressed_sections(existing, incoming)
+                    if len(regressed) >= _DEFAULTS_REGRESSION_SECTION_LIMIT:
+                        # Fail closed BEFORE merging or saving: this shape is a
+                        # defaults-built document replacing a populated one —
+                        # detectable wholesale destruction (#109357). An explicit
+                        # user-confirmed reset (or the raw editor) opts in.
+                        listed = ", ".join(sorted(regressed)[:5])
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Refusing to save: this update would reset already-configured "
+                                f"settings to factory defaults across sections [{listed}]. A "
+                                "settings record from another machine/profile looks exactly like "
+                                "this. To reset on purpose, resend with "
+                                "allow_defaults_regression=true or edit the raw config."
+                            ),
+                        )
                 merged = _deep_merge(existing, incoming)
                 # Compare normalized approvals.mode across the in-memory
                 # documents, not config blocks and not cache re-reads: the page

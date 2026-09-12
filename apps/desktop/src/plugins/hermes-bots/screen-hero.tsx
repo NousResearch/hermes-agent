@@ -10,6 +10,7 @@
 import { Codicon } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { botSelectionKey } from './data'
 import { useBots } from './i18n'
 import { displayRequest } from './screen-connection'
 import { openBotScreen } from './screen-open'
@@ -100,6 +101,11 @@ const TONE_RING: Partial<Record<PortalTone, string>> = {
 }
 
 export function ScreenHero({ bot, meta }: { bot: RosterRow; meta?: BotMeta | null }) {
+  // A profile switch must discard the previous owner's pixels before painting.
+  return <ScreenHeroContent bot={bot} key={botSelectionKey(bot)} meta={meta} />
+}
+
+function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | null }) {
   const t = useBots()
   const { tone } = useScreenPortalState(bot)
   const running = tone === 'live' || tone === 'human' || tone === 'other'

@@ -14,6 +14,7 @@ behaviours that make the feature work:
 
 from __future__ import annotations
 
+import sys
 import time
 from types import SimpleNamespace
 
@@ -59,6 +60,11 @@ class TestMinting:
         with pytest.raises(CommandTokenError, match="access_token"):
             source()
 
+    def test_malformed_json_like_output_fails_closed(self):
+        source = CommandTokenSource("""printf '{"access_token":"tok"'""", "dbx")
+        with pytest.raises(CommandTokenError, match="invalid JSON"):
+            source()
+
     def test_empty_output_is_an_error(self):
         with pytest.raises(CommandTokenError, match="no output"):
             CommandTokenSource("true", "dbx")()
@@ -88,6 +94,18 @@ class TestNoCredentialLeak:
         with pytest.raises(CommandTokenError) as excinfo:
             source()
         assert "SENTINEL" not in str(excinfo.value)
+
+    def test_spawn_error_excludes_command_and_os_message(self, monkeypatch):
+        def fail_spawn(*_args, **_kwargs):
+            raise OSError("SENTINEL-COMMAND-PATH")
+
+        monkeypatch.setattr("agent.command_token_source.subprocess.run", fail_spawn)
+        source = CommandTokenSource(["SENTINEL-COMMAND-PATH", "--secret=value"], "dbx")
+        with pytest.raises(CommandTokenError) as excinfo:
+            source()
+        message = str(excinfo.value)
+        assert "SENTINEL" not in message
+        assert "dbx" in message
 
 
 class TestCaching:
@@ -153,6 +171,22 @@ class TestBuilder:
         assert callable(provider)
         assert provider() == "tok"
 
+    def test_literal_argv_preserves_metacharacters_without_a_shell(self):
+        script = (
+            "import json,sys; "
+            "assert sys.argv[1] == 'profile; $(not-a-command)'; "
+            "print(json.dumps({'access_token':'tok-argv','expires_in':3600}))"
+        )
+        provider = build_command_token_provider(
+            [sys.executable, "-c", script, "profile; $(not-a-command)"], "dbx"
+        )
+
+        assert callable(provider)
+        assert provider() == "tok-argv"
+
+    def test_malformed_literal_argv_fails_closed(self):
+        assert build_command_token_provider([sys.executable, 7]) is None  # type: ignore[list-item]
+
 
 class TestResolutionYieldsACallable:
     """The integration contract: a callable reaches the wire client."""
@@ -177,6 +211,28 @@ class TestResolutionYieldsACallable:
         api_key = runtime["api_key"]
         assert callable(api_key), "key_cmd must resolve to a per-request callable"
         assert api_key() == "minted-token"
+
+    def test_key_cmd_argv_entry_remains_literal(self, monkeypatch):
+        from hermes_cli import runtime_provider as rp
+
+        script = "import json; print(json.dumps({'access_token':'runtime-argv'}))"
+        config = {
+            "providers": {
+                "dbx": {
+                    "base_url": "https://example.invalid/v1",
+                    "api_mode": "chat_completions",
+                    "model": "m1",
+                    "key_cmd": [sys.executable, "-c", script, "profile; $(literal)"],
+                }
+            }
+        }
+        monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+        api_key = rp.resolve_runtime_provider(requested="custom:dbx")["api_key"]
+
+        assert callable(api_key)
+        assert api_key() == "runtime-argv"
 
     def test_explicit_api_key_still_wins(self, monkeypatch):
         """``--api-key`` stays the one-off recovery escape hatch."""
@@ -210,6 +266,53 @@ class TestCallableKeyGetsBearerAuth:
     Entra ID path already established. Verified against a live gateway with the
     SAME token value: static -> 401, callable -> 200.
     """
+
+    def test_primary_chat_completions_client_uses_callable_bearer(self):
+        httpx = pytest.importorskip("httpx")
+        from types import SimpleNamespace
+
+        from agent.agent_runtime_helpers import create_openai_client
+
+        seen = {}
+
+        def handler(request):
+            seen["authorization"] = request.headers.get("authorization")
+            return httpx.Response(200, json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "m1",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }],
+            })
+
+        http_client = httpx.Client(transport=httpx.MockTransport(handler))
+        agent = SimpleNamespace(
+            provider="custom",
+            model="m1",
+            requested_provider="custom:dbx",
+            _build_keepalive_http_client=lambda *_args, **_kwargs: http_client,
+            _client_log_context=lambda: "test",
+        )
+        client = create_openai_client(
+            agent,
+            {
+                "api_key": lambda: "primary-callable-token",
+                "base_url": "https://example.invalid/v1",
+            },
+            reason="test",
+            shared=True,
+        )
+
+        response = client.chat.completions.create(
+            model="m1", messages=[{"role": "user", "content": "hello"}]
+        )
+
+        assert response.choices[0].message.content == "ok"
+        assert seen["authorization"] == "Bearer primary-callable-token"
 
     def test_callable_takes_the_bearer_hook_path(self, monkeypatch):
         import agent.anthropic_adapter as aa
@@ -338,6 +441,63 @@ class TestAuxiliaryResolverHonoursKeyCmd:
             {**self.BASE, "api_key": "stale-static", "key_cmd": "printf minted-token"},
         )
         assert callable(api_key) and api_key() == "minted-token"
+
+    def test_key_cmd_argv_resolves_to_a_literal_callable(self, monkeypatch):
+        script = "import json; print(json.dumps({'access_token':'aux-argv'}))"
+        api_key = self._resolve(
+            monkeypatch,
+            {**self.BASE, "key_cmd": [sys.executable, "-c", script, "profile; $(literal)"]},
+        )
+
+        assert callable(api_key)
+        assert api_key() == "aux-argv"
+
+    def test_auto_inheritance_preserves_named_custom_identity(self, monkeypatch):
+        from agent import auxiliary_client as aux
+        httpx = pytest.importorskip("httpx")
+
+        script = "import json; print(json.dumps({'access_token':'auto-aux-argv'}))"
+        config = {
+            "model": {"provider": "custom:dbx", "default": "m1"},
+            "providers": {
+                "dbx": {
+                    "name": "DBX",
+                    "base_url": "https://example.invalid/v1",
+                    "transport": "chat_completions",
+                    "default_model": "m1",
+                    "key_cmd": [sys.executable, "-c", script],
+                }
+            },
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+        seen = {}
+
+        def handler(request):
+            seen["authorization"] = request.headers.get("Authorization")
+            return httpx.Response(200, json={
+                "id": "test", "object": "chat.completion", "created": 0, "model": "m1",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
+                             "finish_reason": "stop"}],
+            })
+
+        monkeypatch.setattr(
+            aux, "_openai_http_client_kwargs",
+            lambda *_args, **_kwargs: {"http_client": httpx.Client(transport=httpx.MockTransport(handler))},
+        )
+        from run_agent import AIAgent
+        runtime_agent = SimpleNamespace(
+            provider="custom", requested_provider="custom:dbx", model="m1",
+            base_url="https://example.invalid/v1", api_key=lambda: "runtime-token",
+            api_mode="chat_completions", auth_mode="",
+        )
+        main_runtime = AIAgent._current_main_runtime(runtime_agent)  # type: ignore[arg-type]
+
+        client, model = aux.resolve_provider_client("auto", main_runtime=main_runtime, task="title")
+
+        assert model == "m1"
+        assert client is not None
+        client.chat.completions.create(model=model, messages=[{"role": "user", "content": "hi"}])
+        assert seen["authorization"] == "Bearer auto-aux-argv"
 
     def test_static_credentials_still_resolve(self, monkeypatch):
         assert self._resolve(monkeypatch, {**self.BASE, "api_key": "static"}) == "static"

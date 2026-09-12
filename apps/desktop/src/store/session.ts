@@ -183,7 +183,8 @@ export function knownSessionProfile(sessions: readonly SessionInfo[], sessionId:
  * profile name, so returning only that name silently collapses the route back
  * to the local/profile-only path. The exact rungs are what let a session's
  * owner be reconstructed after the bounded hint map has evicted it or the app
- * relaunched.
+ * relaunched. A present row that omits `profile` is the legacy/default-profile
+ * shape from the primary backend, not an unknown owner.
  */
 export function knownSessionOwner(sessions: readonly SessionInfo[], sessionId: null | string): SessionOwnerScope {
   if (!sessionId) {
@@ -191,7 +192,7 @@ export function knownSessionOwner(sessions: readonly SessionInfo[], sessionId: n
   }
 
   const session = sessions.find(candidate => sessionMatchesStoredId(candidate, sessionId))
-  const profile = session?.profile?.trim()
+  const profile = session ? session.profile?.trim() || 'default' : undefined
   const connectionId = session?.connection_id?.trim()
   const hint = getSessionOwnerHint(sessionId)
 

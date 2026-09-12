@@ -16,17 +16,12 @@ from gateway.platforms.api_server import (
 )
 
 
-def _make_adapter(
-    multiplex: bool = True, allowlist: list[str] | None = None
-) -> APIServerAdapter:
+def _make_adapter(multiplex: bool = True) -> APIServerAdapter:
     cfg = PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 8642, "key": "test-key"})
     adapter = APIServerAdapter(cfg)
 
     class _Runner:
-        config = GatewayConfig(
-            multiplex_profiles=multiplex,
-            multiplex_profile_allowlist=allowlist,
-        )
+        config = GatewayConfig(multiplex_profiles=multiplex)
 
     adapter.gateway_runner = _Runner()
     return adapter
@@ -43,10 +38,10 @@ class TestApiServerProfileResolution:
         assert adapter._resolve_request_profile(_FakeReq(None)) is None
 
     def test_unserved_prefix_is_rejected(self, monkeypatch):
-        adapter = _make_adapter(multiplex=True, allowlist=["worker"])
+        adapter = _make_adapter(multiplex=True)
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist=None: [
+            lambda multiplex: [
                 ("default", "/profiles/default"),
                 ("worker", "/profiles/worker"),
             ],
@@ -93,3 +88,49 @@ class TestApiServerModelsUnderProfile:
             assert adapter._resolve_model_name("") == "coder"
         finally:
             _api_request_profile.reset(token_prof)
+
+
+class TestApiServerSessionProfileBinding:
+    """HERMES_SESSION_PROFILE must be bound per /p/<profile>/ request.
+
+    Regression guard for cross-profile sandbox reuse: before the fix,
+    _bind_api_server_session never passed ``profile`` to set_session_vars,
+    so every API-server turn bound HERMES_SESSION_PROFILE="" and the
+    terminal tool collapsed ALL api_server sessions (default AND org
+    profiles) onto the shared "default" container key — letting org-profile
+    turns reuse the default profile's sandbox (SSH key / secrets exposure).
+    """
+
+    def test_profile_is_bound_into_session_vars(self):
+        from gateway.session_context import clear_session_vars, get_session_env
+
+        adapter = _make_adapter(multiplex=True)
+        tokens = adapter._bind_api_server_session(
+            chat_id="chat",
+            session_key="key",
+            session_id="sess",
+            profile="nm-media",
+        )
+        try:
+            assert get_session_env("HERMES_SESSION_PROFILE") == "nm-media"
+        finally:
+            clear_session_vars(tokens)
+
+    def test_bound_profile_selects_profile_scoped_container_key(self, monkeypatch):
+        """Persistent-Docker container keys honour the api_server-bound profile (real resolver chain)."""
+        import tools.terminal_tool as tt
+        from gateway.session_context import clear_session_vars
+
+        adapter = _make_adapter(multiplex=True)
+        monkeypatch.setattr(tt, "_ensure_terminal_env_bridged", lambda: None)
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        monkeypatch.delenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", raising=False)
+
+        tokens = adapter._bind_api_server_session(
+            chat_id="chat", session_key="key", session_id="sess", profile="nm-media",
+        )
+        try:
+            assert tt._resolve_container_task_id(None) == "profile:nm-media"
+        finally:
+            clear_session_vars(tokens)

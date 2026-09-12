@@ -1,12 +1,16 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import { useContext } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
+import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { $activeSessionId, $currentModel, setCurrentModel, setCurrentModelSource } from '@/store/session'
 
+import { requestModelMenuToggle } from './focus'
 import { ModelPill } from './model-pill'
+import { RICH_INPUT_SLOT } from './rich-editor'
 
 const modelState = (over: Partial<ChatBarState['model']> = {}): ChatBarState['model'] => ({
   canSwitch: true,
@@ -80,6 +84,49 @@ describe('ModelPill pinned-override badge', () => {
   })
 })
 
+function MenuChoice() {
+  const close = useContext(ModelMenuCloseContext)
+
+  return <button onClick={() => close?.()}>Choose model</button>
+}
+
+it('returns to the exact caret or backward selection after the model menu closes', async () => {
+  const surface = document.createElement('div')
+  surface.dataset.composerTarget = 'main'
+  const editor = document.createElement('div')
+  editor.dataset.slot = RICH_INPUT_SLOT
+  editor.contentEditable = 'true'
+  editor.tabIndex = 0
+  editor.textContent = 'before and after'
+  surface.append(editor)
+  document.body.append(surface)
+
+  try {
+    render(<ModelPill disabled={false} model={modelState({ modelMenuContent: <MenuChoice /> })} />)
+
+    for (const [anchor, focus] of [
+      [3, 3],
+      [10, 4]
+    ]) {
+      editor.focus()
+      window.getSelection()!.setBaseAndExtent(editor.firstChild!, anchor, editor.firstChild!, focus)
+      await act(async () => {
+        requestModelMenuToggle()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      const choice = await screen.findByText('Choose model')
+      choice.focus()
+      window.getSelection()!.removeAllRanges()
+      fireEvent.click(choice)
+      await waitFor(() => expect(document.activeElement).toBe(editor))
+      expect(window.getSelection()!.anchorOffset).toBe(anchor)
+      expect(window.getSelection()!.focusOffset).toBe(focus)
+    }
+  } finally {
+    surface.remove()
+  }
+})
+
 describe('ModelPill per-surface model label', () => {
   it('shows the chat-bar model even when the primary global differs', () => {
     setCurrentModel('primary/model')
@@ -98,7 +145,8 @@ describe('ModelPill per-surface model label', () => {
       $provider: atom('anthropic'),
       $reasoningEffort: atom('high'),
       $runtimeId: atom('tile-runtime'),
-      $storedId: atom('stored-tile')
+      $storedId: atom('stored-tile'),
+      $turnStartedAt: atom<number | null>(null)
     }
 
     render(

@@ -2,6 +2,10 @@ export type ParentWatchdogEnv = {
   HERMES_PARENT_PID: string
   HERMES_PARENT_START_MARKER?: string
   HERMES_PARENT_NONCE?: string
+  /** Spawn tag consumed by hermes_cli.process_identity (`v1:<install>:<purpose>:<spawner_pid>:<spawner_create_s>`).
+   *  Install is `-` (unknown) from the Desktop — the Python side scopes by
+   *  venv membership, so the tag only needs lineage, not install identity. */
+  HERMES_SPAWN?: string
 }
 
 export interface ParentStartMarkerResolverOptions {
@@ -69,6 +73,7 @@ export function parentWatchdogEnv(pid: number, startMarker: string | null, nonce
   }
 
   const env: ParentWatchdogEnv = { HERMES_PARENT_PID: String(pid) }
+  env.HERMES_SPAWN = spawnTag(pid, startMarker)
 
   if (startMarker === null) {
     return env
@@ -82,4 +87,22 @@ export function parentWatchdogEnv(pid: number, startMarker: string | null, nonce
   env.HERMES_PARENT_NONCE = nonce
 
   return env
+}
+
+/** Build the `HERMES_SPAWN` tag mirrored by hermes_cli/process_identity.py.
+ *  The Desktop only ever spawns backend servers, so purpose is `serve`; the
+ *  spawner create-time is derived from the same `winms:` marker the parent
+ *  watchdog uses (seconds, 3 decimals), `-` when the marker probe failed. */
+export function spawnTag(pid: number, startMarker: string | null): string {
+  let createPart = '-'
+
+  if (startMarker?.startsWith('winms:')) {
+    const ms = Number(startMarker.slice('winms:'.length))
+
+    if (Number.isFinite(ms) && ms > 0) {
+      createPart = (ms / 1000).toFixed(3)
+    }
+  }
+
+  return `v1:-:serve:${pid}:${createPart}`
 }

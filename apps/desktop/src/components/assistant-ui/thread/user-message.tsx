@@ -41,7 +41,7 @@ export function StickyHumanMessageContainer({
     // while attachments below it scroll away.
     <>
       <div
-        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-1"
+        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible px-4 pb-(--conversation-turn-gap) pt-1"
         data-message-id={messageId}
         data-role="user"
         data-slot="aui_user-message-root"
@@ -453,6 +453,11 @@ export const UserMessage: FC<{
             >
               <div
                 className="relative w-full"
+                // The app context menu skips PLAIN right-clicks here (the
+                // attr below) so this handler keeps the picker gesture; a
+                // link/image/selection inside the bubble still gets the app
+                // menu, and this handler's selection guard keeps ⌘C flows.
+                data-context-menu-skip=""
                 onContextMenu={
                   // Right-click is the desktop stand-in for iOS touch-and-hold —
                   // but only when there's nothing selected. A live highlight

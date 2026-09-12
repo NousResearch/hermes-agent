@@ -17,6 +17,7 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
+import { $agentDockCollapsed } from './agentRoster.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type GatewayRpc,
@@ -60,6 +61,29 @@ export function handleIdleHotkeyExit(
   }
 
   return actions.die()
+}
+
+export type CtrlCComposerAction = 'clear' | 'interrupt' | 'exit'
+
+/**
+ * Ctrl+C (and terminals that rewrite Cmd+C to it) is clear / interrupt / exit
+ * in that order. A non-empty composer always wins — mid-stream, the chord
+ * used to interrupt the turn even when the user was trying to dump a draft.
+ */
+export function resolveCtrlCComposerAction(opts: {
+  busy: boolean
+  hasDraft: boolean
+  hasSession: boolean
+}): CtrlCComposerAction {
+  if (opts.hasDraft) {
+    return 'clear'
+  }
+
+  if (opts.busy && opts.hasSession) {
+    return 'interrupt'
+  }
+
+  return 'exit'
 }
 
 /**
@@ -119,7 +143,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, 'secret' | 'sudo'>,
+  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
   rpc: GatewayRpc,
   sys: (text: string) => void
 ) {
@@ -140,9 +164,22 @@ export function dismissSensitivePrompt(
 
     return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
   }
+
+  if (overlay.vaultUnlock) {
+    const requestId = overlay.vaultUnlock.requestId
+
+    patchOverlayState({ vaultUnlock: null })
+    sys(`${overlay.vaultUnlock.displayName} stays locked`)
+
+    return rpc<SecretRespondResponse>('vault.unlock.respond', { password: '', request_id: requestId })
+  }
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
+export function shouldDetachEditedHistoryInput(historyIdx: null | number, history: readonly string[], value: string) {
+  return historyIdx !== null && value !== history[historyIdx]
+}
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
@@ -196,7 +233,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
-    if (overlay.sudo || overlay.secret) {
+    if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
@@ -334,13 +371,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   }
 
   // Double-Esc discards the draft, matching Claude Code / Gemini CLI. It
-  // sits above the isBlocked early-return on purpose: Ctrl+C interrupts a
-  // running turn rather than clearing, so while the agent streams there is
-  // otherwise no way to throw away a half-typed prompt. The draft is pushed
-  // to history first so Up recalls it.
+  // sits above the isBlocked early-return so a prompt overlay cannot swallow
+  // it. Ctrl+C now clears a non-empty composer even mid-stream; Esc Esc is
+  // still the dedicated discard (pushes the draft to history so Up recalls it).
   const lastEscRef = useRef(0)
 
-  useInput((ch, key) => {
+  useInput((ch, key, event) => {
     const live = getUiState()
 
     if (key.escape) {
@@ -454,7 +490,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
+      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo || overlay.vaultUnlock))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })
@@ -605,22 +641,38 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // typed to run the command. Works mid-stream: picking a model writes the
     // session model (config.set), which the next turn reads while the in-flight
     // turn keeps streaming.
+    if (event.keypress.name === 'f7' && !key.ctrl && !key.meta && !key.shift && !key.super) {
+      $agentDockCollapsed.set(!$agentDockCollapsed.get())
+
+      return
+    }
+
+    if (isCtrl(key, ch, 't')) {
+      return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+
     if (isCtrl(key, ch, 'o')) {
       return patchOverlayState({ modelPicker: true })
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
-      if (live.busy && live.sid) {
+      const ctrlC = resolveCtrlCComposerAction({
+        busy: live.busy,
+        hasDraft: Boolean(cState.input || cState.inputBuf.length),
+        hasSession: Boolean(live.sid)
+      })
+
+      if (ctrlC === 'clear') {
+        return cActions.clearIn()
+      }
+
+      if (ctrlC === 'interrupt' && live.sid) {
         return turnController.interruptTurn({
           appendMessage: actions.appendMessage,
           gw: gateway.gw,
           sid: live.sid,
           sys: actions.sys
         })
-      }
-
-      if (cState.input || cState.inputBuf.length) {
-        return cActions.clearIn()
       }
 
       return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {

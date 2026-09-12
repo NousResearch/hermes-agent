@@ -1,5 +1,6 @@
-import { type RefObject, useEffect, useRef } from 'react'
+import { type RefObject, useLayoutEffect, useRef } from 'react'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
@@ -13,7 +14,7 @@ import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { pathifyRefs } from '../path-refs'
 import { composerPlainText } from '../rich-editor'
-import { useComposerScope } from '../scope'
+import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerSubmitArgs {
@@ -33,6 +34,7 @@ interface UseComposerSubmitArgs {
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
   onCancel: ChatBarProps['onCancel']
   onSteer: ChatBarProps['onSteer']
+  onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
   queueCurrentDraft: () => boolean
   queueEdit: QueueEditState | null
@@ -68,6 +70,7 @@ export function useComposerSubmit({
   loadIntoComposer,
   onCancel,
   onSteer,
+  onSteerHidden,
   onSubmit,
   queueCurrentDraft,
   queueEdit,
@@ -76,7 +79,9 @@ export function useComposerSubmit({
   setComposerText,
   stashAt
 }: UseComposerSubmitArgs) {
+  const paneVisible = usePaneVisible()
   const scope = useComposerScope()
+  const surfaceId = useComposerSurfaceId()
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
@@ -93,29 +98,95 @@ export function useComposerSubmit({
       stashAt(submittedScope, text, submittedAttachments)
     }
 
+    // A hidden submit is machine text (a setup note, never something the user
+    // typed), so a rejection drops it instead of loading it into the draft.
+    const rejected = displayKind ? () => {} : restore
+
     void Promise.resolve(
       attachments
         ? onSubmit(text, { attachments, composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
         : onSubmit(text, { composerScope: submittedScope, ...(displayKind ? { displayKind } : {}) })
     )
-      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
-      .catch(restore)
+      .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
+      .catch(rejected)
   }
 
   // External "submit this prompt" requests (e.g. the review pane's agent-ship
-  // button) route through the same send path. A ref keeps the listener stable
-  // while always calling the latest dispatchSubmit closure.
-  const dispatchSubmitRef = useRef(dispatchSubmit)
-  dispatchSubmitRef.current = dispatchSubmit
+  // button) route through the same send path. Match both the composer target
+  // and the exact visible surface captured at click time — every tile stays
+  // mounted, and a session can be rendered in more than one pane.
+  //
+  // Busy: a request from a card the user just clicked must not be dropped
+  // because the agent is mid-sentence — that gap is exactly when they click.
+  // Steer the live turn (the same stop-and-correct a typed message gets), and
+  // if the turn has already ended, or a steer is not possible, queue it so it
+  // runs next. This holds for hidden setup notes and for visible messages a
+  // button sends on the user's behalf alike.
+  const externalSubmitRef = useRef({ busy, compacting, dispatchSubmit, onSteer, onSteerHidden })
+  externalSubmitRef.current = { busy, compacting, dispatchSubmit, onSteer, onSteerHidden }
 
-  useEffect(
+  useLayoutEffect(
     () =>
-      onComposerSubmitRequest(({ target, text, displayKind }) => {
-        if (target === 'main' && !inputDisabled) {
-          dispatchSubmitRef.current(text, undefined, displayKind)
+      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind }) => {
+        if (
+          target === scope.target &&
+          surfaceId !== null &&
+          requestedSurfaceId === surfaceId &&
+          paneVisible &&
+          !inputDisabled
+        ) {
+          const current = externalSubmitRef.current
+
+          if (!current.busy) {
+            current.dispatchSubmit(text, undefined, displayKind)
+
+            return
+          }
+
+          const queueKey = activeQueueSessionKeyRef.current
+
+          // External requests contain only text; the unsent draft and its attachments stay in the composer.
+          const enqueue = () =>
+            void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })
+
+          // A hidden note never becomes a user turn: it rides session.steer into
+          // the model's next tool result, and keeps its kind if it has to queue.
+          if (displayKind) {
+            if (current.onSteerHidden) {
+              void Promise.resolve(current.onSteerHidden(text))
+                .then(accepted => {
+                  if (!accepted) {
+                    enqueue()
+                  }
+                })
+                .catch(enqueue)
+            } else {
+              enqueue()
+            }
+
+            return
+          }
+
+          if (
+            current.onSteer &&
+            !current.compacting &&
+            !hasBlockingPromptRequest(sessionId) &&
+            text.trim() &&
+            !SLASH_COMMAND_RE.test(text.trim())
+          ) {
+            void Promise.resolve(current.onSteer(text))
+              .then(accepted => {
+                if (!accepted) {
+                  enqueue()
+                }
+              })
+              .catch(enqueue)
+          } else {
+            enqueue()
+          }
         }
       }),
-    [inputDisabled]
+    [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
   const submitDraft = () => {

@@ -450,6 +450,10 @@ async def test_session_chat_stream_treats_pre_existing_poisoned_row_as_no_model(
                 json={"message": "hi"},
             )
             assert resp.status == 200
+            # Drain the SSE body: the 200 lands before the streaming task
+            # invokes _run_agent, so asserting on call_args without reading
+            # the body races the handler (flaked on loaded CI runners).
+            await resp.text()
 
     _, kwargs = mock_run.call_args
     assert kwargs["session_model"] is None
@@ -832,6 +836,68 @@ async def test_require_model_lock_hard_fails_when_global_default_would_be_used(a
             body = await resp.json()
             assert body["error"]["code"] in {"model_lock_unavailable", "invalid_model_lock", "missing_model"}
     mock_run.assert_not_called()
+
+
+_CHAT_REPLY = ({"final_response": "ok"}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body, expected", [
+    ({"message": "hello", "author": {"id": " bot:dixie ", "name": "dixie", "is_bot": 1, "role": "admin"}},
+     {"id": "bot:dixie", "name": "dixie", "is_bot": True}),
+    ({"message": "hello"}, None),
+    ({"message": "hello", "author": None}, None),
+], ids=["author", "no author", "null author"])
+async def test_session_chat_passes_normalized_author_to_run_agent(adapter, session_db, body, expected):
+    """A body ``author`` reaches ``_run_agent`` normalized with unknown keys dropped; absent or null is None."""
+    session_id = session_db.create_session("author-session", "api_server")
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat", json=body)
+            assert resp.status == 200, await resp.text()
+    assert mock_run.call_args.kwargs["turn_author"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
+@pytest.mark.parametrize("author", ["dixie", ["dixie"], 7])
+async def test_session_chat_rejects_non_object_author(adapter, session_db, suffix, author):
+    session_id = session_db.create_session("bad-author-session", "api_server")
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}{suffix}", json={"message": "hello", "author": author})
+            assert resp.status == 400, await resp.text()
+            body = await resp.json()
+    assert body["error"]["code"] == "invalid_author"
+    assert body["error"]["message"] == "author must be an object"
+    mock_run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_forwards_author_to_run_conversation_only_when_set(adapter, monkeypatch):
+    """``turn_author`` reaches ``run_conversation`` when set; a human turn keeps today's call shape."""
+    calls = []
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+        session_id = "author-run"
+
+        def run_conversation(self, user_message, conversation_history, task_id, **kwargs):
+            calls.append(kwargs)
+            return {"final_response": "ok", "session_id": self.session_id}
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent())
+    author = {"id": "bot:dixie", "name": "dixie", "is_bot": True}
+    await adapter._run_agent(
+        user_message="hello", conversation_history=[], session_id="author-run", turn_author=author)
+    await adapter._run_agent(user_message="hello", conversation_history=[], session_id="author-run")
+
+    assert calls == [{"turn_author": author}, {}]
 
 
 @pytest.mark.asyncio

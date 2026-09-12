@@ -9,6 +9,7 @@ profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
 import yaml
+import gateway.status as _gw_status
 
 
 _VALID_WORKER_BOT_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
@@ -100,12 +101,12 @@ class TestProfileScopedMessagingReads:
             yaml.safe_dump({"platforms": {"telegram": {"enabled": True}}}),
             encoding="utf-8",
         )
-        monkeypatch.setattr(web_server, "get_running_pid", lambda *a, **k: None)
+        monkeypatch.setattr(_gw_status, "get_running_pid", lambda *a, **k: None)
         monkeypatch.setattr(
-            web_server, "get_running_pid_cached", lambda *a, **k: None
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
         )
         monkeypatch.setattr(
-            web_server,
+            _gw_status,
             "read_runtime_status",
             # Accepts path= : the profile-scoped read now passes the
             # profile's own gateway_state.json explicitly rather than
@@ -201,13 +202,9 @@ def _enable_multiplex(default_home):
 
 
 class TestMultiplexPortBindingGuard:
-    """Enabling a port-binding channel on a secondary multiplexed profile
-    must be rejected BEFORE anything is persisted.
-
-    The gateway fail-fasts with ``MultiplexConfigError`` when a secondary
-    profile enables a port-binding platform under
-    ``gateway.multiplex_profiles`` — but the dashboard used to persist that
-    exact config, so the next gateway start died for EVERY profile (#62791).
+    """Enabling api_server/webhook on a secondary multiplexed profile is rejected BEFORE anything
+    is persisted: the default profile's listener already mirrors them at ``/p/<profile>/`` (#62791).
+    Every other inbound-port platform is allowed — the gateway serves it on the shared listener.
     """
 
     @pytest.fixture(autouse=True)
@@ -216,21 +213,25 @@ class TestMultiplexPortBindingGuard:
         # multiplex flag under test comes from the default profile's config.
         monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
 
-    def test_rejects_every_port_binding_platform_on_secondary(
+    def test_rejects_only_mirrored_listeners_on_secondary(
         self, client, isolated_profiles
     ):
-        from gateway.config import PORT_BINDING_PLATFORM_VALUES
+        from gateway.config import PORT_BINDING_PLATFORM_VALUES, SHARED_LISTENER_MIRROR_PLATFORMS
 
         _enable_multiplex(isolated_profiles["default"])
-        assert PORT_BINDING_PLATFORM_VALUES  # guard set must not be empty
-        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES):
+        assert SHARED_LISTENER_MIRROR_PLATFORMS  # guard set must not be empty
+        catalog = {p["id"] for p in client.get("/api/messaging/platforms").json()["platforms"]}
+        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES & catalog):
             resp = client.put(
                 f"/api/messaging/platforms/{platform_id}",
                 params={"profile": "worker_alpha"},
                 json={"enabled": True},
             )
-            assert resp.status_code == 409, platform_id
-            assert "default profile" in resp.json()["detail"]
+            if platform_id in SHARED_LISTENER_MIRROR_PLATFORMS:
+                assert resp.status_code == 409, platform_id
+                assert "default profile" in resp.json()["detail"]
+            else:  # served at /p/worker_alpha/<path> on the shared listener
+                assert resp.status_code == 200, (platform_id, resp.text)
 
 
 
@@ -267,3 +268,40 @@ class TestMultiplexPortBindingGuard:
             )
             assert resp.status_code == 200
 
+def test_named_current_home_matches_unscoped(client, isolated_profiles, monkeypatch):
+    from hermes_cli.web_server_profiles import _config_profile_scope, _hermes_home_scope
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    for scope in (None, "current", "default"):
+        response = client.get("/api/messaging/platforms", params={"profile": scope} if scope else {})
+        assert response.status_code == 200
+        assert _telegram(response.json())["enabled"] is True
+    with _hermes_home_scope(isolated_profiles["worker_alpha"]):
+        with _config_profile_scope("default") as scoped:
+            assert scoped is None
+            assert get_hermes_home() == isolated_profiles["default"]
+
+
+def test_scoped_enablement_uses_only_own_credentials(client, isolated_profiles, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "root-token")
+    worker = isolated_profiles["worker_alpha"]
+    params = {"profile": "worker_alpha"}
+    assert _telegram(client.get("/api/messaging/platforms", params=params).json())["enabled"] is False
+    (worker / ".env").write_text("TELEGRAM_BOT_TOKEN=worker-token\n", encoding="utf-8")
+    payload = client.get("/api/messaging/platforms", params=params).json()
+    assert _telegram(payload)["enabled"] is True
+    assert _telegram(payload)["configured"] is True
+    assert _telegram(payload)["state"] != "disabled"
+    from hermes_cli.web_server_messaging import _messaging_platform_catalog
+    empty = {entry["id"] for entry in _messaging_platform_catalog() if not entry["required_env"]}
+    for platform in payload["platforms"]:
+        if platform["id"] in empty:
+            assert platform["enabled"] is False
+            assert platform["configured"] is False
+    for enabled in (False, True):
+        (worker / "config.yaml").write_text(yaml.safe_dump({"platforms": {"telegram": {"enabled": enabled}}}), encoding="utf-8")
+        platform = _telegram(client.get("/api/messaging/platforms", params=params).json())
+        assert platform["enabled"] is enabled
+        assert platform["configured"] is True
+    assert "root-token" in (isolated_profiles["default"] / ".env").read_text(encoding="utf-8")

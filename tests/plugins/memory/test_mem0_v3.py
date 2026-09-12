@@ -5,6 +5,7 @@ import threading
 import time
 import pytest
 
+from agent import secret_scope
 import plugins.memory.mem0 as mem0_plugin
 from plugins.memory.mem0 import Mem0MemoryProvider
 
@@ -146,6 +147,77 @@ class TestMem0V3Internal:
         assert call[2]["infer"] is True
 
 
+class TestSyncTurnTruncation:
+    """sync_turn must cap messages before ingestion so small-context embedding
+    backends (OSS Ollama bge-small-zh-v1.5: 512 tokens; jina-embeddings-v3 token
+    limits) don't fail the whole extraction — a failure _try only logs."""
+
+    def _make_provider(self, monkeypatch, backend):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        provider._backend = backend
+        return provider
+
+    def test_small_context_backend_never_sees_oversized_input(self, monkeypatch):
+        """Regression for #106235/#37421: an OSS embedding backend with a small
+        context window raises on oversized input; truncation up front keeps the
+        extraction from being silently dropped (no breaker failures)."""
+
+        class SmallContextBackend(FakeBackend):
+            def add(self, messages, **kwargs):
+                if any(len(m["content"]) > mem0_plugin._SYNC_MSG_MAX_CHARS for m in messages):
+                    raise RuntimeError("HTTP 500: embedding input exceeds model context")
+                return super().add(messages, **kwargs)
+
+        backend = SmallContextBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("Short question?", "".join(f"Fact {i}. " for i in range(200)), session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        assert len(backend.captured) == 1
+        sent = backend.captured[0][1]
+        assert sent[0]["content"] == "Short question?"  # under the cap: untouched
+        assert len(sent[1]["content"]) <= mem0_plugin._SYNC_MSG_MAX_CHARS and sent[1]["content"].endswith(".")
+        assert provider._consecutive_failures == 0
+
+    def test_the_boundary_kept_is_the_last_one_in_the_window_whatever_its_script(self):
+        """A mixed-script turn must not be cut back to an early CJK stop.
+
+        The trim exists to keep as much of the turn as the embedder can take; picking the
+        first separator KIND that qualifies instead of the last boundary threw away most of
+        the allowed window whenever two kinds appeared — an early ``。`` (or ``.``, which
+        outranks ``!``/``?``) beat a boundary 240 characters later, so the facts stated in
+        the rest of the message never reached extraction.
+        """
+        cap = mem0_plugin._SYNC_MSG_MAX_CHARS
+        early, late = cap // 2, cap - 9
+
+        for early_sep, late_sep in (("。", "."), (".", "!"), ("？", "?"), ("！", ".")):
+            text = "a" * early + early_sep + "b" * (late - early - 1) + late_sep + "c" * cap
+            assert text[late] == late_sep and len(text) > cap  # both boundaries inside the window
+            kept = mem0_plugin._truncate_for_sync(text)
+            assert kept == text[:late + 1], f"{early_sep!r} before {late_sep!r} cut back to {len(kept)} chars"
+            assert kept.endswith(late_sep)
+
+    def test_a_boundary_only_in_the_first_third_still_falls_back_to_a_hard_cut(self):
+        """Unsegmented input keeps the whole window rather than a sliver of a sentence."""
+        cap = mem0_plugin._SYNC_MSG_MAX_CHARS
+        text = "a" * 10 + "." + "b" * (cap * 2)
+        assert mem0_plugin._truncate_for_sync(text) == text[:cap]
+
+    def test_sync_max_chars_config_raises_cap(self, monkeypatch, tmp_path):
+        """8k-token embedders should not be stuck at the 512-token default (#106235)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text('{"sync_max_chars": 3000}')
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("hi", "Long answer. " * 200, session_id="s1")  # 2600 chars
+        provider._sync_thread.join(timeout=2)
+        assert backend.captured[0][1][1]["content"] == "Long answer. " * 200
+
+
 class TestMem0Prefetch:
     """prefetch() must recall on the CURRENT question, synchronously.
 
@@ -262,6 +334,59 @@ class TestMem0V3Config:
 
 
 class TestMem0ModeSwitch:
+
+    def test_oss_mode_initializes_without_unscoped_platform_key(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        (tmp_path / "mem0.json").write_text(
+            json.dumps(
+                {
+                    "mode": "oss",
+                    "oss": {"vector_store": {"provider": "qdrant"}},
+                }
+            )
+        )
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            provider = Mem0MemoryProvider()
+            provider._create_backend = lambda: None  # type: ignore[method-assign]
+            provider.initialize("test")
+            available = provider.is_available()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+        assert provider._mode == "oss"
+        assert provider._api_key == ""
+        assert available is True
+
+    def test_platform_config_still_fails_closed_without_profile_scope(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            with pytest.raises(secret_scope.UnscopedSecretError):
+                Mem0MemoryProvider().is_available()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+    def test_file_api_key_still_overrides_environment(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "env-key")
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"api_key": "file-key"})
+        )
+
+        assert mem0_plugin._load_config()["api_key"] == "file-key"
 
     def test_default_mode_is_platform(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -407,5 +532,3 @@ class TestSelfHostedConfig:
     def test_load_config_reads_mem0_host_env(self, monkeypatch):
         monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
         assert mem0_plugin._load_config()["host"] == "http://localhost:8888"
-
-

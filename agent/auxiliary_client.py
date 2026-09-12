@@ -3499,7 +3499,9 @@ def _refresh_nous_credentials() -> bool:
 
 
 def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
+    from agent.anthropic_credentials import (
+        read_claude_code_credentials, _refresh_oauth_token, is_claude_code_token_valid,
+    )
     token = failed_api_key
     if not token:
         return False
@@ -3507,10 +3509,18 @@ def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
     if pool.entry_id_for_api_key(token):
         return pool.try_refresh_matching(api_key_hint=token) is not None
     creds = read_claude_code_credentials()
-    # Never spend an ambient login's refresh rotation for another request's key.
-    if isinstance(creds, dict) and creds.get("accessToken") == token and creds.get("refreshToken"):
-        return bool(_refresh_oauth_token(creds))
-    return False
+    if not isinstance(creds, dict):
+        return False
+    if creds.get("accessToken") == token:
+        # Never spend an ambient login's refresh rotation for another request's key.
+        return bool(creds.get("refreshToken")) and bool(_refresh_oauth_token(creds))
+    # The failing client holds a token that is NOT the one on disk: another process (Claude
+    # Code, the CLI, another profile) already rotated the ambient login. A long-lived gateway
+    # keeps the superseded token in its cached client, so returning False here skipped the
+    # eviction and every auxiliary call 401ed forever — silently killing context compression.
+    # There is nothing to refresh, but the disk holds a usable token: report success so the
+    # caller evicts and rebuilds the client from disk.
+    return bool(creds.get("accessToken")) and is_claude_code_token_valid(creds)
 
 
 def _refresh_xai_oauth_credentials() -> bool:

@@ -249,14 +249,43 @@ def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int
 
 
 def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optional[str] = None) -> None:
-    """Best-effort reap of stdio MCP subprocesses: SIGTERM, wait 2s, SIGKILL survivors. By
-    default only ``_orphan_stdio_pids`` are reaped so concurrent cron jobs / live sessions are
-    untouched; ``include_active=True`` also kills every ``_stdio_pids`` entry and is only for
-    final shutdown after the MCP loop has stopped. ``server_name`` limits the sweep to one
-    server (stdio reconnects cleaning up their old transport)."""
+    """Best-effort reap of stdio MCP subprocesses: Windows task tree first, otherwise
+    SIGTERM, wait 2s, SIGKILL survivors. By default only ``_orphan_stdio_pids`` are reaped so
+    concurrent cron jobs / live sessions are untouched; ``include_active=True`` also kills
+    every ``_stdio_pids`` entry and is only for final shutdown after the MCP loop has stopped.
+    ``server_name`` limits the sweep to one server (stdio reconnects cleaning up their old
+    transport)."""
     import signal as _signal
     pids, pgids = _take_reapable_pids(include_active, server_name)
     if not pids:  # skip the 2s sleep every MCP-free shutdown would otherwise pay
+        return
+
+    fallback_pids = pids
+    if os.name == "nt":
+        fallback_pids = {}
+        try:
+            from agent.deadline import kill_process_tree
+        except Exception:
+            kill_process_tree = None
+            logger.debug("Unable to load Windows MCP process-tree reaper", exc_info=True)
+        for pid, owner in pids.items():
+            if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+                logger.debug("Skipping invalid orphaned MCP process PID %r (%s)", pid, owner)
+                continue
+            tree_reaped = False
+            if kill_process_tree is not None:
+                try:
+                    tree_reaped = kill_process_tree(pid)
+                except Exception:
+                    logger.debug("Windows process-tree reap failed for MCP server '%s' pid %d",
+                                 owner, pid, exc_info=True)
+            if tree_reaped:
+                logger.debug("Reaped orphaned MCP process tree %d (%s)", pid, owner)
+            else:
+                fallback_pids[pid] = owner
+
+    if not fallback_pids:
+        _core._update_death_supervisor("unregister", pgids.values())
         return
 
     try:  # our own pgid, so we never killpg() the gateway itself
@@ -264,13 +293,13 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
     except (AttributeError, OSError):
         my_pgid = None  # Windows or restricted environment
 
-    for pid, owner in pids.items():
+    for pid, owner in fallback_pids.items():
         _signal_mcp_process(pid, _signal.SIGTERM, owner, pgids.get(pid), my_pgid)
         logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, owner)
     time.sleep(2)
     sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
     from gateway.status import _pid_exists  # ``os.kill(pid, 0)`` is NOT a no-op on Windows
-    for pid, owner in pids.items():
+    for pid, owner in fallback_pids.items():
         if _pid_exists(pid):  # survived SIGTERM
             _signal_mcp_process(pid, sigkill, owner, pgids.get(pid), my_pgid)
             logger.warning("Force-killed MCP process %d (%s) after SIGTERM timeout", pid, owner)

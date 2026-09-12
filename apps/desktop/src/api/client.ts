@@ -54,7 +54,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     try {
       const result = await super.request<T>(wireMethod, prepared, timeoutMs, signal)
 
-      return this.protocol.result(method, prepared, result) as T
+      return this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), (m, p) => this.request(m, p)) as T
     } catch (error) {
       this.protocol.failure(prepared, error)
       throw error

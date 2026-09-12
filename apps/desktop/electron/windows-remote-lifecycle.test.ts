@@ -170,6 +170,53 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   assert.ok(pythonCheck < output)
 })
 
+const CLEAN_PROBE_RESULT = JSON.stringify({
+  os: 'Windows',
+  arch: 'AMD64',
+  hermesHome: 'C:\\h',
+  hermesPath: 'C:\\h\\hermes.exe',
+  python: 'C:\\h\\python.exe'
+})
+
+const CLIXML_PROGRESS =
+  '#< CLIXML <Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/maml/2004/10"><Obj S="progress" RefId="0">正在标准配置首次使用模块</Obj></Objs>'
+
+test('Windows probe script silences the PowerShell progress stream', async () => {
+  let script = ''
+  await probeWindowsRemote(
+    sshWith(async command => {
+      script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
+      return CLEAN_PROBE_RESULT
+    })
+  )
+
+  assert.ok(script.indexOf('$ProgressPreference="SilentlyContinue"') >= 0)
+  assert.ok(script.indexOf('$ProgressPreference') < script.indexOf('$ErrorActionPreference'))
+})
+
+test('Windows probe tolerates CLIXML progress-stream pollution around the probe JSON', async () => {
+  const pollutedOutputs = [
+    `${CLIXML_PROGRESS}\r\n${CLEAN_PROBE_RESULT}`,
+    `${CLIXML_PROGRESS}${CLEAN_PROBE_RESULT}`,
+    `\uFEFF${CLEAN_PROBE_RESULT}\r\n${CLIXML_PROGRESS}`
+  ]
+
+  for (const output of pollutedOutputs) {
+    const parsed = await probeWindowsRemote(sshWith(async () => output))
+
+    assert.equal(parsed.os, 'Windows')
+    assert.equal(parsed.arch, 'AMD64')
+    assert.equal(parsed.hermesPath, 'C:\\h\\hermes.exe')
+    assert.equal(parsed.python, 'C:\\h\\python.exe')
+  }
+})
+
+test('Windows probe still rejects output that is not platform JSON', async () => {
+  await assert.rejects(probeWindowsRemote(sshWith(async () => 'hermes is not installed on this host')))
+  await assert.rejects(probeWindowsRemote(sshWith(async () => JSON.stringify({ os: 'Windows' })+'\n'+JSON.stringify({unrelated:true}) )))
+})
+
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {
   assert.deepEqual(await detectRemotePlatform(sshWith(async () => 'Linux\nx86_64\n')), { os: 'Linux', arch: 'x86_64' })
   const calls: string[] = []

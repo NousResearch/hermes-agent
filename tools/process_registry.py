@@ -1509,6 +1509,31 @@ class ProcessRegistry(ProcessCheckpointMixin):
             session = load_completed_results(session_id).get(session_id)
         return self._refresh_detached_session(session if session is not None else self._resolve_prefix(session_id))
 
+    def get_for_task(self, session_id: str, task_id: str = "", session_key: str = "") -> Optional[ProcessSession]:
+        """Get a session by ID only if the calling task may act on it.
+
+        A process is actionable when it belongs to the calling task (ownership is
+        the RAW spawning ``owner_task_id`` — the same identity ``transfer_ownership``
+        checks), or when it shares the caller's gateway ``session_key`` — mirroring
+        the cross-task exposure in ``list_sessions`` so a forgotten preview server
+        from an earlier task can still be killed (#29177). Anything else returns
+        ``None`` to avoid leaking the existence of background processes across
+        task/session boundaries. Empty task IDs keep existing direct-registry
+        behavior for tests and internal callers that do not run through the tool
+        dispatcher.
+        """
+        session = self.get(session_id)
+        if session is None:
+            return None
+        if not task_id:
+            return session
+        owner = session.owner_task_id or session.task_id
+        if not owner or owner == task_id:
+            return session
+        if session_key and session.session_key == session_key:
+            return session
+        return None
+
     def _resolve_prefix(self, session_id: str) -> Optional[ProcessSession]:
         """Resolve a unique session-ID prefix (a bare hex tail is normalized to
         ``proc_<tail>``); :meth:`get` tries exact first."""
@@ -1582,9 +1607,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def _status_head(session: ProcessSession) -> dict:
         return {"session_id": session.id, "command": session.command, "status": "exited" if session.exited else "running"}
 
-    def poll(self, session_id: str) -> dict:
+    def poll(self, session_id: str, task_id: str = "", session_key: str = "") -> dict:
         """Check status and get new output for a background process."""
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         self._reconcile_local_exit(session)  # orphaned-pipe reader guard
@@ -1603,11 +1628,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
             result.update(detached=True, note="Process recovered after restart -- output history unavailable")
         return result
 
-    def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
+    def read_log(self, session_id: str, offset: int | None = None, limit: int = 200,
+                 task_id: str = "", session_key: str = "") -> dict:
         """Read the full output log with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         with session._lock:
@@ -1634,7 +1660,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             self._completion_consumed.add(session_id)
         return result
 
-    def wait(self, session_id: str, timeout: int = None) -> dict:
+    def wait(self, session_id: str, timeout: int = None, task_id: str = "", session_key: str = "") -> dict:
         """Block until the process exits, the timeout elapses, or the user interrupts.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
@@ -1653,7 +1679,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if timeout and timeout > max_timeout:
             effective_timeout = max_timeout
             timeout_note = f"Requested wait of {timeout}s was clamped to configured limit of {max_timeout}s"
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         deadline = time.monotonic() + effective_timeout
@@ -1702,14 +1728,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
             **ProcessRegistry._exit_fields(session), "output": _output_tail(session, 2000)}
 
     def kill_process(
-        self, session_id: str, *, source: str = "process.kill", consume_output: bool = True,
+        self, session_id: str, *, task_id: str = "", session_key: str = "",
+        source: str = "process.kill", consume_output: bool = True,
     ) -> dict:
         """Kill a background process and return its output snapshot.
         ``consume_output`` is true for explicit tool/RPC kills (the caller sees the
         output). Bulk cleanup passes false so it doesn't suppress an autonomous
         completion notification — except abandoned-turn reaping (``kill_started_since``),
         which passes true so a killed abandoned process can't revive stopped work."""
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         if session.exited:
@@ -1803,10 +1830,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
             }
         return None
 
-    def _stdin_op(self, session_id: str, pty_op, pipe_op, ok: dict) -> dict:
+    def _stdin_op(self, session_id: str, pty_op, pipe_op, ok: dict,
+                  task_id: str = "", session_key: str = "") -> dict:
         """Run a stdin operation on a running session — ``pty_op(pty)`` under PTY mode,
         else ``pipe_op(stdin)`` on the Popen pipe — and return *ok* on success."""
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id, session_key=session_key)
         if session is None:
             return _not_found(session_id)
         if session.exited:
@@ -1822,7 +1850,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    def write_stdin(self, session_id: str, data: str) -> dict:
+    def write_stdin(self, session_id: str, data: str, task_id: str = "", session_key: str = "") -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
 
         def via_pty(pty):
@@ -1837,16 +1865,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
         def via_pipe(stdin):
             stdin.write(data)
             stdin.flush()
-        return self._stdin_op(session_id, via_pty, via_pipe, {"status": "ok", "bytes_written": len(data)})
+        return self._stdin_op(session_id, via_pty, via_pipe, {"status": "ok", "bytes_written": len(data)}, task_id=task_id, session_key=session_key)
 
-    def submit_stdin(self, session_id: str, data: str = "") -> dict:
+    def submit_stdin(self, session_id: str, data: str = "", task_id: str = "", session_key: str = "") -> dict:
         """Send data + newline to stdin (like pressing Enter).
         On a Windows PTY, Enter is a carriage return: ConPTY treats ``\\r`` as
         end-of-line and a bare ``\\n`` through pywinpty is NOT a line terminator — the
         child's blocking line read (``readline()``, Go ``bufio.Scanner``) never returns
         and the process hangs looking healthy. ``\\r\\n`` gives it both; POSIX keeps ``\\n``."""
-        session = self.get(session_id)
-        return self.write_stdin(session_id, data + ("\r\n" if _IS_WINDOWS and session and session._pty else "\n"))
+        session = self.get_for_task(session_id, task_id=task_id, session_key=session_key)
+        return self.write_stdin(session_id, data + ("\r\n" if _IS_WINDOWS and session and session._pty else "\n"), task_id=task_id, session_key=session_key)
 
     def request_close_terminal(self, session_id: str) -> dict:
         """Ask the desktop GUI to close this process's read-only terminal tab. Does NOT
@@ -1866,12 +1894,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     "its output remains available and the user can reopen the tab "
                     "from the status stack."}
 
-    def close_stdin(self, session_id: str) -> dict:
+    def close_stdin(self, session_id: str, task_id: str = "", session_key: str = "") -> dict:
         """Close a running process's stdin / send EOF without killing the process."""
-        session = self.get(session_id)
+        session = self.get_for_task(session_id, task_id=task_id, session_key=session_key)
         msg = "EOF sent" if session is not None and session._pty else "stdin closed"
         return self._stdin_op(
-            session_id, lambda pty: pty.sendeof(), lambda stdin: stdin.close(), {"status": "ok", "message": msg})
+            session_id, lambda pty: pty.sendeof(), lambda stdin: stdin.close(), {"status": "ok", "message": msg}, task_id=task_id, session_key=session_key)
 
     def count_running(self) -> int:
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
@@ -2132,13 +2160,13 @@ def _list_processes(task_id) -> dict:
 # action -> (handler(session_id, args) -> dict, redact output?). Output-bearing
 # actions are redacted; stdin actions return only status.
 _SESSION_ACTIONS = {
-    "poll": (lambda sid, a: process_registry.poll(sid), True),
-    "log": (lambda sid, a: process_registry.read_log(sid, offset=a.get("offset"), limit=a.get("limit", 200)), True),
-    "wait": (lambda sid, a: process_registry.wait(sid, timeout=a.get("timeout")), True),
-    "kill": (lambda sid, a: process_registry.kill_process(sid), True),
-    "write": (lambda sid, a: process_registry.write_stdin(sid, str(a.get("data", ""))), False),
-    "submit": (lambda sid, a: process_registry.submit_stdin(sid, str(a.get("data", ""))), False),
-    "close": (lambda sid, a: process_registry.close_stdin(sid), False),
+    "poll": (lambda sid, a, scope: process_registry.poll(sid, **scope), True),
+    "log": (lambda sid, a, scope: process_registry.read_log(sid, offset=a.get("offset"), limit=a.get("limit", 200), **scope), True),
+    "wait": (lambda sid, a, scope: process_registry.wait(sid, timeout=a.get("timeout"), **scope), True),
+    "kill": (lambda sid, a, scope: process_registry.kill_process(sid, **scope), True),
+    "write": (lambda sid, a, scope: process_registry.write_stdin(sid, str(a.get("data", "")), **scope), False),
+    "submit": (lambda sid, a, scope: process_registry.submit_stdin(sid, str(a.get("data", "")), **scope), False),
+    "close": (lambda sid, a, scope: process_registry.close_stdin(sid, **scope), False),
 }
 
 
@@ -2196,8 +2224,17 @@ def _handle_process(args, **kw):
     if action in _SESSION_ACTIONS:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
+        # Targeted actions are scoped to the calling task, with the same
+        # gateway-session carve-out `list` uses — so a forgotten preview server
+        # from an earlier task stays actionable (#29177).
+        try:
+            from tools.approval_context import get_current_session_key
+            session_key = get_current_session_key(default="") or ""
+        except Exception:
+            session_key = ""
+        scope = {"task_id": kw.get("task_id") or "", "session_key": session_key}
         handler, redact = _SESSION_ACTIONS[action]
-        result = handler(session_id, args)
+        result = handler(session_id, args, scope)
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 

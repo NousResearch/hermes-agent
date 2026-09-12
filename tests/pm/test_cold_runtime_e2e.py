@@ -50,7 +50,8 @@ def _bare(python, repo, code, *, env, expected=0):
 
 
 @pytest.mark.platforms("linux")
-def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path):
+@pytest.mark.parametrize("bootstrap_name", [None, "python3.11"])
+def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path, bootstrap_name):
     from pm.packages import Python, Uv
     from pm.store import current_target, tree_digest
 
@@ -63,6 +64,9 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path)
     python = Path(sys._base_executable).resolve()
     if sys.version_info[:2] != (3, 14):
         pytest.skip("the checked-in PM runtime currently requires Python 3.14")
+    bootstrap_python = shutil.which(bootstrap_name) if bootstrap_name else python
+    if bootstrap_python is None:
+        pytest.skip(f"{bootstrap_name} must be on PATH for the legacy bootstrap test")
 
     source = Path(__file__).resolve().parents[2]
     repo = tmp_path / "source"
@@ -150,9 +154,31 @@ assert importlib.util.find_spec('idna') is None
     try:
         assert not store.exists()
         assert not (hermes_home / "installs").exists()
-        result = _bare(python, repo, bootstrap + cli.format(action="install"), env=env)
+        result = _bare(bootstrap_python, repo, bootstrap + cli.format(action="install"), env=env)
         assert "✓ venv" in result.stdout
         assert "Preparing the isolated PM runtime" in result.stderr
+        if bootstrap_name:
+            # The installed launcher still starts on the old interpreter after
+            # a source swap. Completion must re-exec before importing the app.
+            (repo / ".git").mkdir()
+            (repo / "install-stamp.json").write_text(
+                json.dumps({"updateMechanism": "self"}), encoding="utf-8",
+            )
+            lock = repo / "uv.lock"
+            lock.write_bytes(lock.read_bytes() + b"\n# source update\n")
+            entry = repo / "launch_probe.py"
+            entry.write_text(
+                "import hermes_bootstrap\n"
+                "import idna, json, sys\n"
+                "print(json.dumps({'python': sys.executable, 'version': list(sys.version_info[:2]), "
+                "'idna': idna.__file__}))\n", encoding="utf-8",
+            )
+            launched = _run([str(bootstrap_python), "-B", str(entry)], cwd=repo, env=env)
+            launch_report = json.loads(launched.stdout)
+            assert Path(launch_report["python"]).is_relative_to(store)
+            assert launch_report["version"] == list(sys.version_info[:2])
+            assert Path(launch_report["idna"]).is_relative_to(hermes_home / "installs")
+            assert launched.stderr.count("completing source-update dependencies") == 1
     finally:
         server.shutdown()
         server.server_close()

@@ -13,6 +13,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from pm.filesystem import is_junction
+
 _UA = {"User-Agent": "hermes-pm"}
 
 
@@ -236,7 +238,7 @@ def tree_digest(root: Path) -> str:
         descend = []
         for name in sorted(dirnames):
             path = Path(dirpath) / name
-            if path.is_symlink() or path.is_junction():
+            if path.is_symlink() or is_junction(path):
                 files.append((path.relative_to(root).as_posix(), path))
             elif name != "__pycache__":
                 descend.append(name)
@@ -250,7 +252,7 @@ def tree_digest(root: Path) -> str:
     for rel, path in files:
         digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
-        if path.is_symlink() or path.is_junction():
+        if path.is_symlink() or is_junction(path):
             digest.update(os.readlink(path).encode("utf-8"))
         else:
             with open(path, "rb") as f:

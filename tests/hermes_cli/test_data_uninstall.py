@@ -42,6 +42,7 @@ def test_data_only_preserves_runtime_and_sibling_homes(layout, monkeypatch, mode
     import json
     from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, selected_venv
 
+    monkeypatch.delattr(Path, "is_junction", raising=False)
     home, witnesses, data = layout
     source = uninstall.get_project_root()
     generation = install_state_dir(source) / "environments" / "selected"

@@ -7,6 +7,20 @@ import pytest
 from pm.store import tree_digest
 
 
+def test_digest_without_pathlib_junction_api(tmp_path, monkeypatch):
+    # Source updates reach the store before replacing a pre-3.12 interpreter.
+    monkeypatch.delattr(Path, "is_junction", raising=False)
+    root = tmp_path / "tree"
+    nested = root / "lib"
+    nested.mkdir(parents=True)
+    payload = nested / "payload"
+    payload.write_bytes(b"before")
+    first = tree_digest(root)
+    assert tree_digest(root) == first
+    payload.write_bytes(b"after")
+    assert tree_digest(root) != first
+
+
 @pytest.mark.platforms("windows", "posix")
 def test_directory_links_bind_only_their_target_text(tmp_path):
     root = tmp_path / "tree"
@@ -39,9 +53,10 @@ def test_directory_links_bind_only_their_target_text(tmp_path):
 
 
 @pytest.mark.platforms("windows")
-def test_junctions_bind_target_text_without_walking_outside(tmp_path):
+def test_junctions_bind_target_text_without_walking_outside(tmp_path, monkeypatch):
     import subprocess
 
+    monkeypatch.delattr(Path, "is_junction", raising=False)
     root = tmp_path / "tree"
     root.mkdir()
     left, right = tmp_path / "left", tmp_path / "right"
@@ -57,7 +72,6 @@ def test_junctions_bind_target_text_without_walking_outside(tmp_path):
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert junction.is_junction()
 
     point_at(left)
     try:

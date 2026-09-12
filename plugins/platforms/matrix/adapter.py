@@ -50,7 +50,8 @@ except ImportError:
 
     EventType = type("_EventTypeStub", (), {  # type: ignore[misc,assignment]
         "ROOM_MESSAGE": "m.room.message", "REACTION": "m.reaction",
-        "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name"})
+        "ROOM_ENCRYPTED": "m.room.encrypted", "ROOM_NAME": "m.room.name",
+        "ROOM_CREATE": "m.room.create"})
     PresenceState = type("_PresenceStateStub", (), {  # type: ignore[misc,assignment]
         "ONLINE": "online", "OFFLINE": "offline", "UNAVAILABLE": "unavailable"})
     RoomCreatePreset = type("_RoomCreatePresetStub", (), {  # type: ignore[misc,assignment]
@@ -791,6 +792,11 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
+def _is_unknown_room_version_error(exc: BaseException) -> bool:
+    """mautrix rejects non-create events when the room version is not in the client store."""
+    return "unknown version" in str(exc).lower()
+
+
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
@@ -1392,7 +1398,10 @@ class MatrixAdapter(BasePlatformAdapter):
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
-                if not (self._encryption and getattr(self._client, "crypto", None)):
+                # Unknown room version is a store-hydration miss, not an E2EE key-share error.
+                if _is_unknown_room_version_error(exc) or not (
+                    self._encryption and getattr(self._client, "crypto", None)
+                ):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
                     return SendResult(success=False, error=str(exc))
                 try:  # E2EE error: retry once after sharing keys
@@ -1406,9 +1415,58 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
-        event_id = await asyncio.wait_for(
-            self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
-        return str(event_id)
+        try:
+            event_id = await asyncio.wait_for(
+                self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+            return str(event_id)
+        except Exception as exc:
+            if not _is_unknown_room_version_error(exc):
+                raise
+            try:
+                await self._hydrate_room_create_state(chat_id)
+            except Exception as hydrate_exc:
+                logger.warning("Matrix: could not hydrate room version for %s: %s", chat_id, hydrate_exc)
+                raise exc from hydrate_exc
+            event_id = await asyncio.wait_for(
+                self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+            return str(event_id)
+
+    async def _hydrate_room_create_state(self, chat_id: str) -> None:
+        """Fetch m.room.create so mautrix can cache the room version, then retry send."""
+        create_type = getattr(EventType, "ROOM_CREATE", "m.room.create")
+        event = await self._client.get_state_event(RoomID(chat_id), create_type)
+        self._apply_room_create_to_store(chat_id, event)
+
+    def _apply_room_create_to_store(self, chat_id: str, event: Any) -> None:
+        """Best-effort fill of mautrix room version fields; missing store APIs are skipped."""
+        rooms = getattr(self._client, "rooms", None)
+        if rooms is None:
+            return
+        room = None
+        with suppress(Exception):
+            if hasattr(rooms, "get"):
+                room = rooms.get(chat_id) or rooms.get(RoomID(chat_id))
+        if room is None:
+            with suppress(Exception):
+                room = rooms[chat_id]
+        if room is None:
+            return
+        content = getattr(event, "content", None)
+        if content is None and isinstance(event, dict):
+            content = event.get("content", event)
+        version = content.get("room_version") if isinstance(content, dict) else getattr(content, "room_version", None)
+        if version is None:
+            return
+        with suppress(Exception):
+            room.version = version
+        with suppress(Exception):
+            existing = getattr(room, "creation_content", None)
+            if existing is None:
+                room.creation_content = content
+            elif isinstance(existing, dict):
+                existing["room_version"] = version
+            else:
+                setattr(existing, "room_version", version)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         identity = await self._resolve_room_identity(chat_id)
@@ -2951,7 +3009,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
         # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
         # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
-        async with aiohttp.ClientSession() as session:
+        # Default ClientTimeout still constructs asyncio.timeout() on enter — disable it.
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None),
+        ) as session:
             async def _do_send():
                 async with session.put(url, headers=headers, json=payload) as resp:
                     if resp.status not in {200, 201}:

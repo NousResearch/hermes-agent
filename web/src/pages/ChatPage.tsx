@@ -72,6 +72,7 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
+import { touchScrollLines } from "@/lib/pty-touch-scroll";
 import {
   imageFilesFromTransfer,
   transferMayContainImage,
@@ -818,6 +819,55 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return false;
     });
 
+    // xterm's custom wheel hook does not receive touch drags. On a phone this
+    // otherwise leaves the browser trying to scroll its fixed dashboard chrome
+    // while the terminal history remains stuck. Keep one active finger and
+    // translate each movement into whole terminal rows.
+    let touchId: number | null = null;
+    let touchY: number | null = null;
+    const activeTouch = (list: TouchList) => {
+      for (let i = 0; i < list.length; i += 1) {
+        if (list[i].identifier === touchId) return list[i];
+      }
+      return null;
+    };
+    const onTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) {
+        touchId = null;
+        touchY = null;
+        return;
+      }
+      touchId = ev.touches[0].identifier;
+      touchY = ev.touches[0].clientY;
+    };
+    const onTouchMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1 || touchId === null || touchY === null) return;
+      const touch = activeTouch(ev.touches);
+      if (!touch) return;
+      const rowHeight = Math.max(1, host.clientHeight / Math.max(1, term.rows));
+      const lines = touchScrollLines(touchY, touch.clientY, rowHeight);
+      // Keep the fractional movement in the anchor. Updating it to every move
+      // would discard sub-row deltas and make slow Safari drags appear inert.
+      if (lines) {
+        touchY += lines * rowHeight;
+        term.scrollLines(lines);
+      }
+      // Safari otherwise hands a slow drag to the document before it crosses a
+      // full terminal row, then rubber-bands the fixed dashboard instead.
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    const onTouchEnd = (ev: TouchEvent) => {
+      if (!activeTouch(ev.touches)) {
+        touchId = null;
+        touchY = null;
+      }
+    };
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: true });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -1522,6 +1572,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       keyboardInsetSyncRef.current = null;

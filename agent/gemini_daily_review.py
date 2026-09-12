@@ -301,17 +301,23 @@ class DailyReviewRunner:
                 pipeline=True,
                 batch=batch,
             )
-            self.store.update_review_batch(
-                batch["batch_id"],
-                lease_token=review_lease_token,
-                status="pipeline_failed",
-                pipeline_error=pipeline_preflight_error,
-                alert_status="pending",
-                alert_message=alert,
-                alert_delivery_key=self._alert_delivery_key(str(batch["batch_id"]), alert),
-                slack_channel_id=self.alert_channel_id,
-                slack_workspace_id=self.alert_workspace_id,
-            )
+            try:
+                self.store.update_review_batch(
+                    batch["batch_id"],
+                    lease_token=review_lease_token,
+                    status="pipeline_failed",
+                    pipeline_error=pipeline_preflight_error,
+                    alert_status="pending",
+                    alert_message=alert,
+                    alert_delivery_key=self._alert_delivery_key(
+                        str(batch["batch_id"]), alert
+                    ),
+                    slack_channel_id=self.alert_channel_id,
+                    slack_workspace_id=self.alert_workspace_id,
+                )
+            except KeyError:
+                current = self.store.get_review_batch(day) or batch
+                return self._result_from_batch(current)
             current = self.store.get_review_batch(day) or batch
             self._deliver_alert(current, alert)
             completed = self.store.get_review_batch(day) or current
@@ -414,17 +420,21 @@ class DailyReviewRunner:
             alert = None
 
         delivery_key = self._alert_delivery_key(str(batch["batch_id"]), alert) if alert else None
-        self.store.update_review_batch(
-            batch["batch_id"],
-            lease_token=review_lease_token,
-            status=status,
-            pipeline_error=pipeline_error,
-            alert_status="pending" if alert else "not_needed",
-            alert_message=alert,
-            alert_delivery_key=delivery_key,
-            slack_channel_id=self.alert_channel_id if alert else None,
-            slack_workspace_id=self.alert_workspace_id if alert else None,
-        )
+        try:
+            self.store.update_review_batch(
+                batch["batch_id"],
+                lease_token=review_lease_token,
+                status=status,
+                pipeline_error=pipeline_error,
+                alert_status="pending" if alert else "not_needed",
+                alert_message=alert,
+                alert_delivery_key=delivery_key,
+                slack_channel_id=self.alert_channel_id if alert else None,
+                slack_workspace_id=self.alert_workspace_id if alert else None,
+            )
+        except KeyError:
+            current = self.store.get_review_batch(day) or batch
+            return self._result_from_batch(current)
         if alert:
             current_batch = self.store.get_review_batch(day) or {**batch, "status": status}
             self._deliver_alert(current_batch, alert)

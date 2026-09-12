@@ -299,6 +299,91 @@ def test_stale_runner_cannot_persist_item_after_review_lease_is_terminalized(
     assert alerts == []
 
 
+@pytest.mark.parametrize(
+    ("pipeline_preflight_error", "expected_item_count"),
+    [(None, 1), ("preflight_failed", 0)],
+)
+def test_stale_runner_losing_lease_before_terminal_update_returns_authoritative_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline_preflight_error: str | None,
+    expected_item_count: int,
+):
+    store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
+    old = datetime(2026, 9, 11, 12, tzinfo=UTC)
+    add_attempt(store, "grt_terminal_update_race", started_at=old)
+    terminal_update_reached = threading.Event()
+    release_terminal_update = threading.Event()
+    original_update = store.update_review_batch
+    results: list[dict] = []
+    errors: list[BaseException] = []
+    alerts: list[str] = []
+
+    def paused_update(*args, **kwargs):
+        terminal_update_reached.set()
+        assert release_terminal_update.wait(timeout=5)
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(store, "update_review_batch", paused_update)
+    runner = DailyReviewRunner(
+        store=store,
+        reviewer_factory=lambda: (
+            lambda _prompt: {
+                "verdict": "pass",
+                "reason": "review completed before authority changed",
+                "failure_kind": "none",
+            }
+        ),
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        alert_sender=lambda message: alerts.append(message) or {"success": True},
+        alert_channel_id="C_ROUTE_FAILURES",
+        alert_workspace_id="T_ROUTE_FAILURES",
+        clock=lambda: old,
+        lease_timeout_seconds=1,
+    )
+
+    def run_review() -> None:
+        try:
+            results.append(
+                runner.run(
+                    target_day="2026-09-11",
+                    seed=bytes.fromhex("59" * 32),
+                    pipeline_preflight_error=pipeline_preflight_error,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_review)
+    thread.start()
+    assert terminal_update_reached.wait(timeout=5)
+    batch = store.get_review_batch("2026-09-11")
+    assert batch is not None
+    assert store.fail_stale_review_batch(
+        batch["batch_id"],
+        stale_before=old + timedelta(seconds=1),
+        pipeline_error="stale_review_lease",
+        alert_message="authoritative stale-lease alert",
+        slack_channel_id="C_AUTH",
+        slack_workspace_id="T_AUTH",
+        completed_at=old + timedelta(seconds=2),
+    )
+    release_terminal_update.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert results[0]["status"] == "pipeline_failed"
+    assert len(store.list_review_items(batch["batch_id"])) == expected_item_count
+    authoritative = store.get_review_batch("2026-09-11")
+    assert authoritative is not None
+    assert authoritative["pipeline_error"] == "stale_review_lease"
+    assert authoritative["slack_channel_id"] == "C_AUTH"
+    assert authoritative["slack_workspace_id"] == "T_AUTH"
+    assert alerts == []
+
+
 def test_runner_alerts_only_sanitized_receipt_ids_and_reasons_on_quality_failure(tmp_path: Path):
     store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
     add_attempt(store, "grt_a")

@@ -125,10 +125,11 @@ it('slash attachment submission leaves a visible removable image in the cleared 
     try {
       await h.submit(command)
       expect(h.pending).toHaveLength(1)
-      expect(h.composer.state.input).toBe('')
+      // The composer clears only after the pending-input journal write settles (F36).
+      await vi.waitFor(() => expect(h.composer.state.input).toBe(''))
       h.pending[0]!.finish('/owned.png')
       await flush()
-      expect(h.composer.state.input).toContain('[[ Image 1 ]]')
+      await vi.waitFor(() => expect(h.composer.state.input).toContain('[[ Image 1 ]]'))
       expect(h.output).toContain('[[ Image 1 ]]')
       expect(h.composer.refs.tokensRef.current).toEqual([
         expect.objectContaining({ kind: 'image', path: '/owned.png' })
@@ -172,7 +173,7 @@ it('stale attachment cleanup uses its captured owner and preserves a concurrent 
             h.pending[1 - first]!.finish(first === 0 ? validPath : '/owned.png')
             await flush()
             const sid = getUiState().sid!
-            expect(h.composer.state.input).toBe('[[ Image 1 ]]')
+            await vi.waitFor(() => expect(h.composer.state.input).toBe('[[ Image 1 ]]'))
             expect(h.composer.refs.tokensRef.current).toEqual([
               expect.objectContaining({ kind: 'image', path: validPath })
             ])

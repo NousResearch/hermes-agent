@@ -393,7 +393,22 @@ _SQLITE_AUTH_DBS = frozenset({"Cookies", "Login Data", "Login Data For Account",
 
 
 def _copy_auth_file(src_file: str, dst_file: str) -> bool:
-    """Copy auth state; refuse a DB that cannot be snapshotted consistently within five seconds."""
+    """Copy auth state; refuse a DB that cannot be snapshotted consistently.
+
+    Two-tier read against a live browser, both bounded by the five-second
+    backup deadline:
+
+    1. The instant immutable=1 read — a committed snapshot of a file another
+       process owns. On POSIX this never blocks, even under the owning
+       browser's exclusive write lock, so an open Chrome cannot stall the
+       launch. Skipped when the source carries a non-empty ``-wal`` sidecar:
+       immutable ignores committed WAL frames, so a WAL-mode source must
+       coordinate instead.
+    2. The bounded coordinated online-backup (``mode=ro`` source) for
+       WAL-mode sources — and as the fallback whenever tier 1 cannot read.
+
+    Both write through SQLite so a torn journal never half-lands; the copy
+    fails closed only when both tiers fail."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
     try:
         if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
@@ -403,11 +418,26 @@ def _copy_auth_file(src_file: str, dst_file: str) -> bool:
                 if _status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
                     raise TimeoutError("auth database backup exceeded five seconds")
 
-            # SQLite must coordinate both ends: immutable ignores committed source WAL,
-            # while replacing only the destination file can replay its abandoned WAL.
-            # Connection busy timeouts do not bound backup's retry loop; its callback does.
+            src_uri = Path(src_file).resolve().as_uri()
+            src_wal = f"{src_file}-wal"
+            # Tier 1: instant committed-snapshot read (POSIX: lock-free even
+            # while the browser writes; Windows: open fails -> tier 2).
+            if not (os.path.exists(src_wal) and os.path.getsize(src_wal) > 0):
+                try:
+                    with contextlib.closing(sqlite3.connect(
+                            src_uri + "?immutable=1", uri=True, timeout=0.0)) as source:
+                        with contextlib.closing(sqlite3.connect(dst_file, timeout=0.0)) as out:
+                            source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
+                    return True
+                except (OSError, sqlite3.Error):
+                    logger.debug("real-profile: immutable snapshot of %s failed; "
+                                 "falling back to coordinated backup", src_file)
+            # Tier 2: SQLite must coordinate both ends: immutable ignores
+            # committed source WAL, while replacing only the destination file
+            # can replay its abandoned WAL. Connection busy timeouts do not
+            # bound backup's retry loop; its callback does.
             with contextlib.closing(sqlite3.connect(
-                    Path(src_file).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)) as source:
+                    src_uri + "?mode=ro", uri=True, timeout=0.0)) as source:
                 with contextlib.closing(sqlite3.connect(dst_file, timeout=0.0)) as out:
                     source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
         else:

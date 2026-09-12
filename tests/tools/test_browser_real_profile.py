@@ -1093,17 +1093,32 @@ class TestWindowsLockedProfileCopy:
                  str(src), str(dst)],
                 capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
             assert result.returncode == 0, result.stderr
-            assert result.stdout.strip() == "False"
+            if locked == "source" and sys.platform != "win32":
+                # POSIX: the immutable committed-snapshot read succeeds under the
+                # writer's exclusive lock and carries the last COMMITTED state —
+                # the property real-profile launching depends on so an open
+                # browser cannot stall or fail the copy (Sep 2026 regression:
+                # refusing here broke every launch while Chrome was running).
+                assert result.stdout.strip() == "True"
+            else:
+                # Locked destination, or any lock on Windows: the copy must
+                # refuse rather than overwrite or hang.
+                assert result.stdout.strip() == "False"
         finally:
             holder.rollback()
             holder.close()
-        with sqlite3.connect(dst) as conn:
-            assert conn.execute("select x from cookies").fetchall() == [(99,)]
-        conn.close()
-        assert bc._copy_auth_file(str(src), str(dst)) is True
-        with sqlite3.connect(dst) as conn:
-            assert conn.execute("select x from cookies").fetchall() == [(7,)]
-        conn.close()
+        if locked == "source" and sys.platform != "win32":
+            with sqlite3.connect(dst) as conn:
+                assert conn.execute("select x from cookies").fetchall() == [(7,)]
+            conn.close()
+        else:
+            with sqlite3.connect(dst) as conn:
+                assert conn.execute("select x from cookies").fetchall() == [(99,)]
+            conn.close()
+            assert bc._copy_auth_file(str(src), str(dst)) is True
+            with sqlite3.connect(dst) as conn:
+                assert conn.execute("select x from cookies").fetchall() == [(7,)]
+            conn.close()
 
     def test_copy_auth_file_preserves_source_wal_not_abandoned_destination_wal(self, tmp_path):
         import sqlite3

@@ -186,11 +186,15 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     return _callback
 
 
+# Answering a prompt the run raised is one capability whichever tool asked: approvals
+# and clarify share the grant's ``approve`` permission.
+_ROOM_CONTROL_PERMISSIONS = {"/stop": "stop", "/approval": "approve", "/clarify": "approve"}
+
+
 def _room_permission_for(request: "web.Request") -> str:
-    if request.path.endswith("/stop"):
-        return "stop"
-    if request.path.endswith("/approval"):
-        return "approve"
+    for suffix, permission in _ROOM_CONTROL_PERMISSIONS.items():
+        if request.path.endswith(suffix):
+            return permission
     return "status" if request.method == "GET" else "dispatch"
 
 
@@ -923,7 +927,7 @@ async def _respond_authority_run(self, run_id, body, *, kind, _api_server):
 
 async def _handle_run_clarify(self, request, *, _api_server):
     run_id, _, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission=None, active_fallback=False)
+        self, request, _api_server=_api_server, permission="approve", active_fallback=False)
     if err is not None:
         return err
     body, err = await self._read_json_body(request)

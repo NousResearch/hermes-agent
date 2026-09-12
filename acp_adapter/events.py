@@ -160,7 +160,12 @@ def make_step_cb(
 
             if not tool_name:
                 continue
-            queue = _upgrade_queue(tool_call_ids, tool_name)
+            queue_name = tool_name
+            if tool_name == "tool_call":
+                nested_name = coerce_tool_args(function_args).get("name")
+                if isinstance(nested_name, str) and nested_name in tool_call_ids:
+                    queue_name = nested_name
+            queue = _upgrade_queue(tool_call_ids, queue_name)
             if not queue:
                 continue
             tc_id = queue.popleft()
@@ -172,7 +177,7 @@ def make_step_cb(
             if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
             if not queue:
-                tool_call_ids.pop(tool_name, None)
+                tool_call_ids.pop(queue_name, None)
 
     return _step
 

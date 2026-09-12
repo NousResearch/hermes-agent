@@ -169,7 +169,11 @@ def _fenced_text(text: str, language: str = "") -> str:
     return f"{fence}{language}\n{text}\n{fence}"
 
 
-def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> bool:
+def _tool_result_failed(
+    result: Optional[str],
+    tool_name: str | None = None,
+    function_args: Any = None,
+) -> bool:
     """Return True when a structured Hermes tool result clearly failed.
 
     Deliberately conservative: plain text may legitimately contain "error", so
@@ -185,9 +189,22 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
     exit_code = data.get("exit_code", data.get("returncode"))
     if any(data.get(key) is False for key in ("success", "ok")) or (isinstance(exit_code, int) and exit_code != 0):
         return True
-    # Polished tools report failures as {"error": ...} without a success flag;
-    # generic/plugin payloads stay conservative so diagnostics aren't marked failed.
-    return bool(tool_name in _POLISHED_TOOLS and data.get("error") and not data.get("content"))
+    # Polished tools and MCP handlers report failures as {"error": ...}
+    # without a success flag. Unknown/plugin payloads stay conservative so a
+    # diagnostic data field named "error" is not marked failed.
+    effective_tool_name = tool_name
+    if tool_name == "tool_call":
+        nested_name = coerce_tool_args(function_args).get("name")
+        if isinstance(nested_name, str):
+            effective_tool_name = nested_name
+    is_mcp = isinstance(effective_tool_name, str) and effective_tool_name.startswith(
+        "mcp__"
+    )
+    return bool(
+        data.get("error")
+        and not data.get("content")
+        and (tool_name in _POLISHED_TOOLS or is_mcp)
+    )
 
 
 # --- tool-call titles -------------------------------------------------------
@@ -887,7 +904,7 @@ def build_tool_complete(
     structured = isinstance(_json_loads_maybe(result), (dict, list))
     return acp.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name),
-        status="failed" if _tool_result_failed(result, tool_name) else "completed", content=content,
+        status="failed" if _tool_result_failed(result, tool_name, function_args) else "completed", content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
     )
 

@@ -599,6 +599,9 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'PUT /api/model/moa',
   'GET /api/model/options',
   'POST /api/model/set',
+  // These list handlers honor ?profile=; OAuth sessions remain process-local.
+  'GET /api/providers/custom-endpoints',
+  'GET /api/providers/oauth',
   'GET /api/skills',
   'GET /api/skills/content',
   'PUT /api/skills/toggle',

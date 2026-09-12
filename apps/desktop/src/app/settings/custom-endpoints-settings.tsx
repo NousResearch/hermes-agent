@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { useSettingsOwner } from '@/app/hooks/use-settings-owner'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -18,6 +19,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
+import { SettingsProfileScope } from './profile-scope'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -76,6 +78,7 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
 }
 
 export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+  const { profile, isCurrent, isActive } = useSettingsOwner()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -86,7 +89,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
 
   async function refresh() {
-    const data = await getCustomEndpoints()
+    const data = await getCustomEndpoints(profile)
     setEndpoints(data.endpoints)
   }
 
@@ -95,9 +98,9 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     async function load() {
       try {
-        const data = await getCustomEndpoints()
+        const data = await getCustomEndpoints(profile)
 
-        if (cancelled) {
+        if (cancelled || !isCurrent()) {
           return
         }
 
@@ -122,12 +125,12 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [isCurrent, profile])
 
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
+      const response = await saveCustomEndpoint(toPayload(form, discoveredModels), profile)
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
@@ -136,7 +139,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         setDiscoveredModels(saved.models)
       }
 
-      if (saved && saved.is_current) {
+      if (isActive() && saved && saved.is_current) {
         onMainModelChanged?.(saved.id, saved.model)
       }
 
@@ -153,7 +156,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleValidate() {
     try {
       setTesting(true)
-      const response = await validateCustomEndpoint(toPayload(form))
+      const response = await validateCustomEndpoint(toPayload(form), profile)
       setDiscoveredModels(response.models)
 
       if (response.ok) {
@@ -183,10 +186,19 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleActivate(endpoint: CustomEndpoint) {
     try {
       setActivating(endpoint.id)
-      const response = await activateCustomEndpoint(endpoint.id)
+      const response = await activateCustomEndpoint(endpoint.id, profile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       await refresh()
       onConfigSaved?.()
-      onMainModelChanged?.(response.provider, response.model)
+
+      if (isActive()) {
+        onMainModelChanged?.(response.provider, response.model)
+      }
+
       triggerHaptic('success')
     } catch (err) {
       notifyError(err, 'Activation failed')
@@ -197,13 +209,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   async function handleDelete(endpoint: CustomEndpoint) {
     // This panel is not internationalized at all — keep the literal it had.
-    if (!(await confirm({ destructive: true, title: `Delete ${endpoint.name}?` }))) {
+    if (!(await confirm({ destructive: true, title: `Delete ${endpoint.name}?` })) || !isCurrent()) {
       return
     }
 
     try {
       setDeleting(endpoint.id)
-      const response = await deleteCustomEndpoint(endpoint.id)
+      const response = await deleteCustomEndpoint(endpoint.id, profile)
       setEndpoints(response.endpoints)
 
       if (form.id === endpoint.id) {
@@ -221,7 +233,14 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   }
 
   if (loading) {
-    return <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
+    return (
+      <>
+        <SettingsContent>
+          <SettingsProfileScope className="mb-5" />
+        </SettingsContent>
+        <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
+      </>
+    )
   }
 
   const allModelOptions = Array.from(new Set([...discoveredModels, form.model].filter(Boolean)))
@@ -229,6 +248,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   return (
     <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
       <div className="space-y-6">
         <section>
           <SectionHeading icon={Globe} meta={`${endpoints.length}`} title="Custom Endpoints" />

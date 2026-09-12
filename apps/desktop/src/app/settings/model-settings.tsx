@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
+import { useSettingsOwner } from '@/app/hooks/use-settings-owner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -211,10 +213,16 @@ interface ModelSettingsProps {
    *  the app's active one, or undefined to follow the active profile (default).
    *  Request-shaped on purpose — the API helpers treat `null` as "deliberately
    *  target the primary/default backend", so this prop never carries null. */
-  scopeProfile?: string
+  scopeProfile?: ProfileScope
+  scopeKey?: string
 }
 
-export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSettingsProps) {
+export function ModelSettings({
+  onMainModelChanged,
+  scopeProfile: requestedScope,
+  scopeKey: requestedKey
+}: ModelSettingsProps) {
+  const { profile: scopeProfile, scopeKey, isCurrent, isActive } = useSettingsOwner(requestedScope, requestedKey)
   const { t } = useI18n()
   const m = t.settings.model
   const [loading, setLoading] = useState(true)
@@ -231,8 +239,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   const [newMoaPresetName, setNewMoaPresetName] = useState('')
   // agent.* defaults round-trip through the shared config cache (read → write
   // back the whole record), so a save here shows in the MCP/model surfaces.
-  const { data: config } = useHermesConfigRecord(scopeProfile)
-  const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
+  const { data: config } = useHermesConfigRecord(scopeProfile, scopeKey)
+  const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile, scopeKey), [scopeProfile, scopeKey])
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
   const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
@@ -281,7 +289,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           getMoaModels(scopeProfile).catch(() => null)
         ])
 
-        if (profileEpoch.current !== epoch) {
+        if (!isCurrent() || profileEpoch.current !== epoch) {
           return
         }
 
@@ -305,18 +313,18 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
         // The config record loads via its own shared query; a model switch can
         // change it server-side (aux slots), so nudge that cache to refetch.
-        void invalidateHermesConfig(scopeProfile)
+        void invalidateHermesConfig(scopeProfile, scopeKey)
       } catch (err) {
-        if (profileEpoch.current === epoch) {
+        if (isCurrent() && profileEpoch.current === epoch) {
           setCaughtError(err, m.loadFailed)
         }
       } finally {
-        if (profileEpoch.current === epoch) {
+        if (isCurrent() && profileEpoch.current === epoch) {
           setLoading(false)
         }
       }
     },
-    [m.loadFailed, scopeProfile, setCaughtError]
+    [isCurrent, m.loadFailed, scopeKey, scopeProfile, setCaughtError]
   )
 
   useEffect(() => {
@@ -438,20 +446,24 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       }
 
       moaSaveTimer.current = window.setTimeout(() => {
+        if (!isCurrent()) {
+          return
+        }
+
         void saveMoaModels(next, scopeProfile)
           .then(saved => {
-            if (moaSaveGeneration.current === generation) {
+            if (isCurrent() && moaSaveGeneration.current === generation) {
               setMoa(saved)
             }
           })
           .catch(err => {
-            if (moaSaveGeneration.current === generation) {
+            if (isCurrent() && moaSaveGeneration.current === generation) {
               setCaughtError(err, m.loadFailed)
             }
           })
       }, 600)
     },
-    [m.loadFailed, scopeProfile, setCaughtError]
+    [isCurrent, m.loadFailed, scopeProfile, setCaughtError]
   )
 
   const updateMoaPreset = useCallback(
@@ -509,7 +521,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       try {
         const saved = await saveMoaModels(next, scopeProfile)
 
-        if (profileEpoch.current !== epoch) {
+        if (!isCurrent() || profileEpoch.current !== epoch) {
           return
         }
 
@@ -520,7 +532,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         setApplying(false)
       }
     },
-    [m.loadFailed, scopeProfile, setCaughtError]
+    [isCurrent, m.loadFailed, scopeProfile, setCaughtError]
   )
 
   const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
@@ -556,7 +568,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   // (PUT /api/config replaces it) — optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
     async (key: string, value: string) => {
-      if (!config) {
+      if (!config || !isCurrent()) {
         return
       }
 
@@ -571,7 +583,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         notifyError(err, m.defaultsFailed)
       }
     },
-    [config, m.defaultsFailed, scopeProfile, setConfig]
+    [config, isCurrent, m.defaultsFailed, scopeProfile, setConfig]
   )
 
   // Paste an API key for the selected `api_key` provider, persist it, then
@@ -591,6 +603,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
     try {
       await setEnvVar(keyEnv, apiKeyDraft.trim(), scopeProfile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       setApiKeyDraft('')
 
       // Pick a sensible default for the freshly-activated provider (mirrors
@@ -605,9 +622,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         nextModel = ''
       }
 
+      if (!isCurrent()) {
+        return
+      }
+
       const options = await getGlobalModelOptions(undefined, scopeProfile)
 
-      if (profileEpoch.current !== epoch) {
+      if (!isCurrent() || profileEpoch.current !== epoch) {
         return
       }
 
@@ -620,7 +641,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     } finally {
       setActivating(false)
     }
-  }, [apiKeyDraft, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError])
+  }, [apiKeyDraft, isCurrent, m.loadFailed, scopeProfile, selectedProviderRow, setCaughtError])
 
   // OAuth / external providers can't be activated with a pasted key — hand off
   // to the shared onboarding flow scoped to this provider's real sign-in. The
@@ -638,15 +659,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     const lower = slug.toLowerCase()
 
     if (lower === 'custom' || lower === 'local' || lower.startsWith('custom:')) {
-      startManualLocalEndpoint()
+      startManualLocalEndpoint(null, scopeProfile)
     } else if (rowSlug) {
-      startManualProviderOAuth(rowSlug)
+      startManualProviderOAuth(rowSlug, scopeProfile)
     } else {
       // An absent row has no trustworthy auth metadata. Open the generic
       // provider picker instead of deep-linking an unknown or stale slug.
-      startManualOnboarding()
+      startManualOnboarding(undefined, scopeProfile)
     }
-  }, [selectedProvider, selectedProviderRow])
+  }, [scopeProfile, selectedProvider, selectedProviderRow])
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {
@@ -667,7 +688,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         scopeProfile
       )
 
-      if (profileEpoch.current !== epoch) {
+      if (!isCurrent() || profileEpoch.current !== epoch) {
         return
       }
 
@@ -678,7 +699,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
-      if (scopeProfile == null) {
+      if (isActive()) {
         onMainModelChanged?.(provider, model)
       }
 
@@ -690,6 +711,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     }
   }, [
     m.loadFailed,
+    isActive,
+    isCurrent,
     onMainModelChanged,
     refresh,
     scopeProfile,
@@ -821,6 +844,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     setSkewRestart(false)
 
     try {
+      if (!isCurrent() || (scopeProfile && typeof scopeProfile === 'object')) {
+        throw new Error(m.restartFailed)
+      }
+
       await window.hermesDesktop?.recycleBackend?.(scopeProfile)
       await refresh({ replaceSelection: true })
     } catch (err) {
@@ -828,7 +855,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     } finally {
       setRestartingBackend(false)
     }
-  }, [m.restartFailed, refresh, scopeProfile, setCaughtError])
+  }, [isCurrent, m.restartFailed, refresh, scopeProfile, setCaughtError])
 
   if (loading && !mainModel) {
     return <ModelSettingsSkeleton />
@@ -953,7 +980,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
             <span>{error}</span>
             {skewRestart && (
               <Button
-                disabled={restartingBackend}
+                disabled={restartingBackend || Boolean(scopeProfile && typeof scopeProfile === 'object')}
                 onClick={() => void recycleStaleBackend()}
                 size="sm"
                 variant="textStrong"

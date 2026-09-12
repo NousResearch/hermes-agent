@@ -16,7 +16,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
-import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes'
+import { disconnectOAuthProvider, listOAuthProviders, type ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -25,8 +25,9 @@ import { confirm } from '@/store/confirm'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
-import { $settingsRequestProfile } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
+
+import { useSettingsOwner } from '../hooks/use-settings-owner'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
@@ -144,7 +145,7 @@ function OAuthPicker({
   onWantApiKey: () => void
   onWantLocalModels: () => void
   providers: OAuthProvider[]
-  profile?: string
+  profile?: ProfileScope
 }) {
   const { t } = useI18n()
   const p = t.settings.providers
@@ -196,6 +197,7 @@ function OAuthPicker({
           <GroupLabel>{p.connected}</GroupLabel>
           {connected.map(p => (
             <ConnectedProviderRow
+              allowTerminal={profile === undefined}
               disconnecting={disconnecting === p.id}
               key={p.id}
               onDisconnect={onDisconnect}
@@ -233,12 +235,14 @@ function OAuthPicker({
 }
 
 function ConnectedProviderRow({
+  allowTerminal,
   disconnecting,
   onDisconnect,
   onSelect,
   onTerminalDisconnect,
   provider
 }: {
+  allowTerminal: boolean
   disconnecting: boolean
   onDisconnect: (provider: OAuthProvider) => void
   onSelect: (provider: OAuthProvider) => void
@@ -255,7 +259,7 @@ function ConnectedProviderRow({
   // command we can run in the embedded terminal (Electron shell only).
   const terminalDisconnect = !canDisconnect && Boolean(provider.disconnect_command) && canRunInTerminal()
   // Only fall back to a static "remove it elsewhere" hint when we offer no button.
-  const showHint = !canDisconnect && !terminalDisconnect
+  const showHint = !canDisconnect && (!terminalDisconnect || !allowTerminal)
 
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
@@ -292,6 +296,7 @@ function ConnectedProviderRow({
         {terminalDisconnect && (
           <Button
             aria-label={`${copy.disconnect} ${title}`}
+            disabled={!allowTerminal}
             onClick={() => onTerminalDisconnect(provider)}
             size="icon-xs"
             title={copy.disconnectInTerminal}
@@ -354,7 +359,7 @@ export function ProvidersSettings({
   view
 }: ProvidersSettingsProps) {
   const { t } = useI18n()
-  const scopeProfile = useStore($settingsRequestProfile)
+  const { profile: scopeProfile, isCurrent, isActive } = useSettingsOwner()
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
   const [oauthProviders, setOauthProviders] = useState<OAuthProvider[]>([])
   const [openProvider, setOpenProvider] = useState<null | string>(null)
@@ -369,8 +374,11 @@ export function ProvidersSettings({
   const refreshOAuthProviders = useCallback(async () => {
     // OAuth providers are best-effort — a failure here just hides the panel.
     const { providers } = await listOAuthProviders(scopeProfile)
-    setOauthProviders(providers)
-  }, [scopeProfile])
+
+    if (isCurrent()) {
+      setOauthProviders(providers)
+    }
+  }, [isCurrent, scopeProfile])
 
   useEffect(() => {
     let cancelled = false
@@ -401,7 +409,9 @@ export function ProvidersSettings({
   async function handleTerminalDisconnect(provider: OAuthProvider) {
     const command = provider.disconnect_command
 
-    if (!command) {
+    // The terminal runner has no owner argument; never execute it for an
+    // explicit Settings target, even if its profile name matches the ambient one.
+    if (!command || scopeProfile !== undefined || !isCurrent()) {
       return
     }
 
@@ -413,7 +423,7 @@ export function ProvidersSettings({
       title: t.settings.providers.removeTerminalConfirm(name, command)
     })
 
-    if (!ok) {
+    if (!ok || !isCurrent()) {
       return
     }
 
@@ -436,7 +446,7 @@ export function ProvidersSettings({
       title: t.settings.providers.removeConfirm(name)
     })
 
-    if (!ok) {
+    if (!ok || !isCurrent()) {
       return
     }
 
@@ -444,6 +454,11 @@ export function ProvidersSettings({
 
     try {
       await disconnectOAuthProvider(provider.id, scopeProfile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       notify({
         durationMs: 3_000,
         kind: 'success',
@@ -452,14 +467,23 @@ export function ProvidersSettings({
       })
       await refreshOAuthProviders().catch(() => undefined)
     } catch (err) {
-      notifyError(err, t.settings.providers.failedRemove(name))
+      if (isCurrent()) {
+        notifyError(err, t.settings.providers.failedRemove(name))
+      }
     } finally {
       setDisconnecting(null)
     }
   }
 
   if (!vars) {
-    return <SettingsSkeleton search sections={[{ rows: 6 }]} />
+    return (
+      <>
+        <SettingsContent>
+          <SettingsProfileScope className="mb-5" />
+        </SettingsContent>
+        <SettingsSkeleton search sections={[{ rows: 6 }]} />
+      </>
+    )
   }
 
   const hasOauth = oauthProviders.length > 0
@@ -527,7 +551,20 @@ export function ProvidersSettings({
     // Strict --local gate: without the launch flag the pane doesn't render
     // even when local models are configured — a stale ?pview=local deep link
     // (or an old shortcut) lands on the accounts view instead.
-    return $localModelsEnabled.get() ? <LocalModelsSettings /> : null
+    return $localModelsEnabled.get() ? (
+      <>
+        <SettingsContent>
+          <SettingsProfileScope className="mb-5" />
+        </SettingsContent>
+        {isActive() ? (
+          <LocalModelsSettings />
+        ) : (
+          <SettingsContent>
+            <p className="text-xs text-muted-foreground">{t.settings.profileScope.activeGatewayOnly}</p>
+          </SettingsContent>
+        )}
+      </>
+    ) : null
   }
 
   return (

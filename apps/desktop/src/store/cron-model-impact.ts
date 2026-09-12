@@ -1,3 +1,4 @@
+import { getApiRequestConnection, type ProfileScope } from '@/api/client'
 import { getApiRequestProfile, setModelAssignment } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { requestCronReview } from '@/store/cron'
@@ -147,18 +148,21 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
 
 export async function setMainModelAssignment(
   request: Omit<ModelAssignmentRequest, 'scope'>,
-  scopeProfile?: null | string,
+  scopeProfile?: ProfileScope,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
   const profile = profileIdentity()
+  const ambientConnection = getApiRequestConnection()
+  const ambientProfile = getApiRequestProfile()
+  const owner = scopeProfile && typeof scopeProfile === 'object' ? { ...scopeProfile } : scopeProfile
 
   // Only pass the extra arg when a scope override exists, so unscoped callers
   // keep the exact legacy call shape.
   const assign = (body: Omit<ModelAssignmentRequest, 'scope'>) =>
-    scopeProfile == null
+    scopeProfile === undefined
       ? setModelAssignment({ ...body, scope: 'main' })
-      : setModelAssignment({ ...body, scope: 'main' }, scopeProfile)
+      : setModelAssignment({ ...body, scope: 'main' }, owner)
 
   let result = await assign(request)
 
@@ -175,7 +179,11 @@ export async function setMainModelAssignment(
 
     const accepted = await confirmModelWarning(result.confirm_message?.trim() ?? '')
 
-    if (!accepted) {
+    if (
+      !accepted ||
+      (!(owner && typeof owner === 'object') &&
+        (ambientConnection !== getApiRequestConnection() || ambientProfile !== getApiRequestProfile()))
+    ) {
       throw new Error(translateNow('cron.modelImpact.declined'))
     }
 

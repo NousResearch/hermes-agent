@@ -1017,6 +1017,7 @@ export const zhHant = defineLocale({
       pill: '搜尋'
     },
     profileScope: {
+      activeGatewayOnly: '僅適用於目前作用中的閘道和設定檔。',
       appliesTo: '套用至',
       editsProfile: profile => `此頁面的變更將套用至「${profile}」設定檔。`
     },

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
+import { useSettingsOwner } from '@/app/hooks/use-settings-owner'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type IconComponent } from '@/lib/icons'
@@ -46,8 +48,9 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 // scope); undefined keeps the app-wide active profile. Request-shaped on
 // purpose: the API helpers treat an explicit `null` as "target the
 // primary/default backend", which is never what a settings page means.
-export function useEnvCredentials(profile?: string): UseEnvCredentials {
+export function useEnvCredentials(profile?: ProfileScope): UseEnvCredentials {
   const { t } = useI18n()
+  const { isCurrent } = useSettingsOwner(profile)
   const credentials = t.settings.credentials
   const toolsets = t.settings.toolsets
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
@@ -98,7 +101,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   async function handleSave(key: string) {
     const value = edits[key]
 
-    if (!value) {
+    if (!value || !isCurrent()) {
       return
     }
 
@@ -122,7 +125,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   async function saveValue(key: string, value: string): Promise<{ message?: string; ok: boolean }> {
     const trimmed = value.trim()
 
-    if (!trimmed) {
+    if (!trimmed || !isCurrent()) {
       return { message: credentials.enterValueFirst, ok: false }
     }
 
@@ -145,7 +148,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   }
 
   async function handleClear(key: string) {
-    if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) }))) {
+    if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) })) || !isCurrent()) {
       return
     }
 
@@ -172,6 +175,11 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
 
     try {
       const result = await revealEnvVar(key, profile)
+
+      if (!isCurrent()) {
+        return
+      }
+
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
       notifyError(err, toolsets.failedReveal(key))

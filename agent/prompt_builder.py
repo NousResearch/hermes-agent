@@ -39,6 +39,12 @@ logger = logging.getLogger(__name__)
 # stalls system-prompt assembly before the first turn.
 _CONTEXT_FILE_READ_TIMEOUT_SECS = 5.0
 
+# Every API call pays for the full skills index in the system prompt. When the
+# catalog grows past this budget, demote the largest categories to names-only
+# so every skill stays callable via skill_view without shipping every
+# description on every turn. Collision/provenance warnings are never demoted.
+SKILLS_INDEX_CHAR_BUDGET = 23_000
+
 
 def _get_context_file_read_timeout() -> float:
     """``context_file_read_timeout`` from config.yaml, else the 5s default."""
@@ -1292,29 +1298,48 @@ def _render_skills_index(
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
         return ""
-    # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
-    # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    # Demoted categories collapse to one names-only line. NEVER drop entries —
+    # agent-created skills are the model's project memory and it won't rediscover
+    # them via skills_list. Nested categories follow their parent. Categories
+    # over SKILLS_INDEX_CHAR_BUDGET are demoted largest-first; names stay listed.
+    demoted = set(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+
+    def category_lines(category, names_only=False):
+        entries = skills_by_category[category]
+        if names_only:
+            return [f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}"]
+        cat_desc = category_descriptions.get(category, "")
+        lines = [f"  {category}: {cat_desc}" if cat_desc else f"  {category}:"]
+        seen = set()
+        for name, desc in sorted(entries, key=lambda x: x[0]):
+            if name not in seen:
+                seen.add(name)
+                lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+        return lines
+
+    rendered = {cat: category_lines(cat, cat in demoted) for cat in skills_by_category}
+    size = sum(len(line) + 1 for lines in rendered.values() for line in lines)
+    savings = sorted(
+        ((sum(len(line) + 1 for line in rendered[cat]) - len(category_lines(cat, True)[0]) - 1, cat)
+         for cat, entries in skills_by_category.items()
+         if cat not in demoted and not any(desc.startswith("[") for _, desc in entries)),
+        key=lambda item: (-item[0], item[1]),
+    )
+    for saved, cat in savings:
+        if size <= SKILLS_INDEX_CHAR_BUDGET:
+            break
+        if saved > 0:
+            rendered[cat] = category_lines(cat, True)
+            demoted.add(cat)
+            size -= saved
     hidden_note = (
-        "\n(Categories marked [names only] are outside the current coding "
-        "context, so their descriptions are omitted — the skills work "
-        "normally and load with skill_view(name) as usual.)"
+        "\n(Categories marked [names only] omit descriptions to keep the index compact. "
+        "All skills remain available via skill_view(name). "
+        "If a name is ambiguous, call skills_list(category) for its full description before choosing.)"
     ) if demoted else ""
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
-    index_lines = []
-    for category in sorted(skills_by_category):
-        entries = skills_by_category[category]
-        if category in demoted:
-            index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
-            continue
-        cat_desc = category_descriptions.get(category, "")
-        index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
-        seen = set()
-        for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
-            if name not in seen:
-                seen.add(name)
-                index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
+    index_lines = [line for cat in sorted(rendered) for line in rendered[cat]]
     return (
         "## Skills\n"
         "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "

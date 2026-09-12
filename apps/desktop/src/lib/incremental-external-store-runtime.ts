@@ -36,6 +36,32 @@ const shallowEqual = (a: object, b: object): boolean => {
 const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.threadList ?? {}
 
 /**
+ * A render may rebuild the exported repository wrapper while every visible
+ * message is still the same normalized object. `useSyncExternalStore` treats
+ * that wrapper identity change as a new snapshot, so treating it as a runtime
+ * change feeds a render back into `setAdapter`. Compare the observable tree
+ * instead: the repository is unchanged when its head and every
+ * `(message,parentId)` link are unchanged by reference.
+ */
+function sameMessageRepository(
+  left: NonNullable<ExternalStoreAdapter['messageRepository']>,
+  right: NonNullable<ExternalStoreAdapter['messageRepository']>
+): boolean {
+  if (left === right) {
+    return true
+  }
+
+  if (left.headId !== right.headId || left.messages.length !== right.messages.length) {
+    return false
+  }
+
+  return left.messages.every(
+    (item, index) =>
+      item.message === right.messages[index]?.message && item.parentId === right.messages[index]?.parentId
+  )
+}
+
+/**
  * Write only the items whose (message, parentId) pair actually moved.
  *
  * `useRuntimeMessageRepository` caches normalized ThreadMessages by source
@@ -194,10 +220,17 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
       changed = true
     }
 
-    if (oldStore && oldStore.isRunning === store.isRunning && oldStore.messageRepository === store.messageRepository) {
-      // Same transcript, same run state: notify only if extras/suggestions/
-      // capabilities actually moved. A silent no-op swap here is what breaks
-      // the render feedback loop — see the render-loop guard test.
+    if (
+      oldStore &&
+      oldStore.messageRepository &&
+      oldStore.isRunning === store.isRunning &&
+      sameMessageRepository(oldStore.messageRepository, store.messageRepository)
+    ) {
+      // Same observable transcript, same run state: notify only if
+      // extras/suggestions/capabilities actually moved. A fresh repository
+      // wrapper with the same normalized messages is not observable state. A
+      // silent no-op swap here is what breaks the render feedback loop — see
+      // the render-loop guard test.
       if (changed) {
         self._notifySubscribers()
       }

@@ -77,10 +77,19 @@ describe('pre-warm is hover-scoped, never roster-wide', () => {
 
     expect(warmProfile).not.toHaveBeenCalled()
 
-    fireEvent.pointerEnter(row)
+    vi.useFakeTimers()
 
-    expect(warmProfile.mock.calls).toEqual([['alpha']])
-    expect(warmAgent).not.toHaveBeenCalled()
+    try {
+      fireEvent.pointerEnter(row)
+
+      expect(warmProfile).not.toHaveBeenCalled()
+      vi.runOnlyPendingTimers()
+
+      expect(warmProfile.mock.calls).toEqual([['alpha']])
+      expect(warmAgent).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('pre-dials a source-scoped row on its own source', async () => {
@@ -92,10 +101,53 @@ describe('pre-warm is hover-scoped, never roster-wide', () => {
       sourceScoped: true
     } as RosterRow)
 
-    fireEvent.pointerEnter(row)
+    vi.useFakeTimers()
 
-    expect(warmAgent.mock.calls).toEqual([['work', 'research']])
-    expect(warmProfile).not.toHaveBeenCalled()
+    try {
+      fireEvent.pointerEnter(row)
+      expect(warmAgent).not.toHaveBeenCalled()
+      vi.runOnlyPendingTimers()
+
+      expect(warmAgent.mock.calls).toEqual([['work', 'research']])
+      expect(warmProfile).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps only the final hover eligible to warm', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { getAllByRole } = render(
+        <>
+          <BotRow
+            bot={{ name: 'alpha' } as RosterRow}
+            onDelete={noop}
+            onEdit={noop}
+            onGroup={noop}
+            onNewSection={noop}
+          />
+          <BotRow
+            bot={{ name: 'beta' } as RosterRow}
+            onDelete={noop}
+            onEdit={noop}
+            onGroup={noop}
+            onNewSection={noop}
+          />
+        </>
+      )
+
+      const [alpha, beta] = getAllByRole('button')
+
+      fireEvent.pointerEnter(alpha)
+      fireEvent.pointerEnter(beta)
+      vi.runOnlyPendingTimers()
+
+      expect(warmProfile.mock.calls).toEqual([['beta']])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

@@ -59,3 +59,41 @@ def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkey
                                  "removed": [{"name": "pulled-live", "reason": "cve"}]}))
     assert [e.name for e in pc.load_catalog_live()] == ["live-only"]
     assert pc.find_removed("pulled-live").reason == "cve"
+
+
+def test_desktop_components_and_desktop_id_are_loaded():
+    entry = pc.entry_from_mapping(
+        _entry(components=["desktop-ui"], desktop_id="vault-view", capabilities={}),
+        "desktop.yaml",
+    )
+    assert entry is not None
+    assert entry.components == ["desktop-ui"]
+    assert entry.desktop_id == "vault-view"
+    dumped = entry.to_dict()
+    assert dumped["components"] == ["desktop-ui"]
+    assert dumped["desktop_id"] == "vault-view"
+
+
+def test_unknown_component_value_is_invalid():
+    assert pc.entry_from_mapping(_entry(components=["toaster"]), "bad.yaml") is None
+
+
+def test_bad_desktop_id_is_invalid():
+    assert pc.entry_from_mapping(_entry(desktop_id="Nope"), "bad.yaml") is None
+
+
+def test_existing_entries_without_desktop_keys_remain_valid():
+    entry = pc.entry_from_mapping(_entry(), "legacy.yaml")
+    assert entry is not None
+    assert entry.components == []
+    assert entry.desktop_id == ""
+
+
+def test_desktop_ui_capability_summary_mentions_desktop_ui():
+    entry = pc.entry_from_mapping(
+        _entry(components=["desktop-ui"], capabilities={}),
+        "desktop.yaml",
+    )
+    assert entry is not None
+    summary = pc.entry_capability_summary(entry)
+    assert "Desktop UI" in summary

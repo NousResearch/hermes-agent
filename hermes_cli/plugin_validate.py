@@ -404,7 +404,9 @@ def _check_builtin_collisions(
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
-def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
+def validate_plugin_dir(
+    plugin_dir: Path, expected_id: Optional[str] = None
+) -> ValidationReport:
     """Run every admission check against *plugin_dir* and return the report."""
     report = ValidationReport()
     plugin_dir = Path(plugin_dir)
@@ -426,9 +428,17 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
         portable_file = plugin_dir / "plugin.json"
         if portable_file.is_file():
             return _validate_portable_plugin(report, plugin_dir)
+        # Standalone Desktop UI package: root plugin.js, no Agent manifest.
+        # Nested-only desktop/plugin.js is NOT this path — fail-open like
+        # an empty directory (Agent/portable remain the other two options).
+        plugin_js = plugin_dir / "plugin.js"
+        if plugin_js.is_file():
+            return _validate_desktop_plugin(
+                report, plugin_dir, expected_id=expected_id
+            )
         report.add(
             "manifest", False,
-            "no plugin.yaml (or portable plugin.json) in the plugin directory",
+            "no plugin.yaml, plugin.json, or plugin.js in the plugin directory",
         )
         return report
 
@@ -484,4 +494,294 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    return report
+
+
+# ── Standalone Desktop UI (plugin.js, no Agent manifest) ─────────────────────
+
+_DESKTOP_ALLOWED_IMPORTS = frozenset({
+    "@hermes/plugin-sdk",
+    "react",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+})
+_JS_URL_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*:", re.I)
+_JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_JS_LINE_COMMENT_RE = re.compile(r"(?<!:)//[^\n]*")
+_JS_FROM_SPEC_RE = re.compile(r"""\bfrom\s+['"]([^'"]+)['"]""")
+_JS_SIDE_EFFECT_IMPORT_RE = re.compile(
+    r"""(?m)^\s*import\s+['"]([^'"]+)['"]"""
+)
+_JS_DYNAMIC_IMPORT_RE = re.compile(
+    r"""\bimport\s*\(\s*['"]([^'"]+)['"]"""
+)
+_JS_BINDING_RE = re.compile(
+    r"""^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*['"]([^'"]*)['"]""",
+    re.MULTILINE,
+)
+_JS_EXPORT_DEFAULT_OBJECT_RE = re.compile(r"\bexport\s+default\s*\{")
+_JS_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _strip_js_comments(source: str) -> str:
+    """Drop ``//`` line comments and ``/* */`` blocks. Not a full tokenizer."""
+    return _JS_LINE_COMMENT_RE.sub("", _JS_BLOCK_COMMENT_RE.sub("", source))
+
+
+def _skip_js_string(source: str, index: int) -> int:
+    quote = source[index]
+    i = index + 1
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == quote:
+            return i + 1
+        i += 1
+    return n
+
+
+def _extract_js_object_after(source: str, brace_index: int) -> Optional[str]:
+    """Return the text inside the ``{...}`` starting at *brace_index*, or None."""
+    if brace_index < 0 or brace_index >= len(source) or source[brace_index] != "{":
+        return None
+    depth = 0
+    i = brace_index
+    n = len(source)
+    while i < n:
+        ch = source[i]
+        if ch in ("'", '"'):
+            i = _skip_js_string(source, i)
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace_index + 1:i]
+        i += 1
+    return None
+
+
+def _desktop_import_specifiers(source: str) -> List[str]:
+    specs = [
+        *_JS_FROM_SPEC_RE.findall(source),
+        *_JS_SIDE_EFFECT_IMPORT_RE.findall(source),
+        *_JS_DYNAMIC_IMPORT_RE.findall(source),
+    ]
+    return specs
+
+
+def _is_allowed_desktop_import(spec: str) -> bool:
+    if spec in _DESKTOP_ALLOWED_IMPORTS:
+        return True
+    # Match apps/desktop/src/contrib/runtime-loader.ts unsupportedImports().
+    if spec.startswith(("./", "../", "/")):
+        return True
+    return bool(_JS_URL_SCHEME_RE.match(spec))
+
+
+def _toplevel_string_bindings(source: str) -> Dict[str, str]:
+    return {name: value for name, value in _JS_BINDING_RE.findall(source)}
+
+
+def _default_export_id_token(obj_body: str) -> Optional[Tuple[str, str]]:
+    """Return ``('literal', value)`` or ``('ident', name)`` for a top-level ``id``."""
+    depth = 0
+    i = 0
+    n = len(obj_body)
+    while i < n:
+        ch = obj_body[i]
+        if ch in ("'", '"'):
+            i = _skip_js_string(obj_body, i)
+            continue
+        if ch == "{":
+            depth += 1
+            i += 1
+            continue
+        if ch == "}":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if depth == 0:
+            boundary = i == 0 or not (obj_body[i - 1].isalnum() or obj_body[i - 1] in "_$")
+            if boundary and obj_body.startswith("id", i):
+                after = obj_body[i + 2:]
+                if after[:1] and (after[0].isalnum() or after[0] in "_$"):
+                    i += 1
+                    continue
+                rest = after.lstrip()
+                if rest.startswith(":"):
+                    value = rest[1:].lstrip()
+                    if value[:1] in ("'", '"'):
+                        quote = value[0]
+                        j = 1
+                        while j < len(value):
+                            if value[j] == "\\":
+                                j += 2
+                                continue
+                            if value[j] == quote:
+                                return ("literal", value[1:j])
+                            j += 1
+                        return None
+                    ident = _JS_IDENT_RE.match(value)
+                    if ident:
+                        return ("ident", ident.group(0))
+                    return None
+        i += 1
+    return None
+
+
+def _default_export_has_register(obj_body: str) -> bool:
+    """True when the export object has a function-like ``register`` at depth 0."""
+    depth = 0
+    i = 0
+    n = len(obj_body)
+    while i < n:
+        ch = obj_body[i]
+        if ch in ("'", '"'):
+            i = _skip_js_string(obj_body, i)
+            continue
+        if ch == "{":
+            depth += 1
+            i += 1
+            continue
+        if ch == "}":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if depth == 0:
+            boundary = i == 0 or not (obj_body[i - 1].isalnum() or obj_body[i - 1] in "_$")
+            if boundary and obj_body.startswith("register", i):
+                after = obj_body[i + 8:]
+                if after[:1] and (after[0].isalnum() or after[0] in "_$"):
+                    i += 1
+                    continue
+                rest = after.lstrip()
+                if rest.startswith("("):
+                    return True
+                if rest.startswith(":"):
+                    value = rest[1:].lstrip()
+                    if value.startswith("async"):
+                        nxt = value[5:6]
+                        if nxt and (nxt.isalnum() or nxt in "_$"):
+                            i += 1
+                            continue
+                        value = value[5:].lstrip()
+                    if value.startswith("function") or value.startswith("("):
+                        return True
+        i += 1
+    return False
+
+
+def _validate_desktop_plugin(
+    report: ValidationReport,
+    plugin_dir: Path,
+    expected_id: Optional[str] = None,
+) -> ValidationReport:
+    """Static admission checks for a standalone Desktop UI package.
+
+    Does not import, eval, or subprocess-execute ``plugin.js``. Agent
+    capability probing is skipped; the Desktop loader still requires a
+    callable ``register`` on the default export.
+    """
+    plugin_js = plugin_dir / "plugin.js"
+    try:
+        source = plugin_js.read_text(encoding="utf-8")
+    except OSError as exc:
+        report.add(
+            "desktop plugin.js",
+            False,
+            f"plugin.js exists but could not be read: {exc}",
+        )
+        return report
+    report.add("desktop plugin.js", True, "standalone Desktop plugin.js present")
+
+    stripped = _strip_js_comments(source)
+    disallowed = sorted({
+        spec for spec in _desktop_import_specifiers(stripped)
+        if not _is_allowed_desktop_import(spec)
+    })
+    if disallowed:
+        report.add(
+            "desktop sdk imports",
+            False,
+            "disallowed import specifier(s): " + ", ".join(repr(s) for s in disallowed)
+            + " (allowed: @hermes/plugin-sdk, react, react/jsx-runtime,"
+            + " react/jsx-dev-runtime, ./, ../, /, URL schemes)",
+        )
+    else:
+        report.add(
+            "desktop sdk imports",
+            True,
+            "import specifiers limited to the Desktop SDK allowlist",
+        )
+
+    match = _JS_EXPORT_DEFAULT_OBJECT_RE.search(stripped)
+    obj_body = (
+        _extract_js_object_after(stripped, match.end() - 1) if match else None
+    )
+    if obj_body is None:
+        report.add(
+            "desktop plugin export",
+            False,
+            "plugin.js must have `export default { ... }` (an object, not a function)",
+        )
+        report.add(
+            "desktop plugin id",
+            False,
+            "cannot resolve id without an export-default object",
+        )
+        return report
+    report.add("desktop plugin export", True, "export default { ... } object present")
+
+    has_register = _default_export_has_register(obj_body)
+    report.add(
+        "desktop plugin register",
+        has_register,
+        "default export has a register function" if has_register
+        else "default export must contain a register function",
+    )
+
+    token = _default_export_id_token(obj_body)
+    resolved = ""
+    if token is None:
+        report.add(
+            "desktop plugin id",
+            False,
+            "export default object must have an `id` property "
+            "(string literal or top-level const/let/var binding)",
+        )
+        return report
+    kind, value = token
+    if kind == "literal":
+        resolved = value
+    else:
+        bindings = _toplevel_string_bindings(stripped)
+        if value not in bindings:
+            report.add(
+                "desktop plugin id",
+                False,
+                f"id refers to {value!r} which is not a top-level string binding",
+            )
+            return report
+        resolved = bindings[value]
+
+    if not resolved:
+        report.add("desktop plugin id", False, "resolved plugin id is empty")
+        return report
+    expected = (expected_id or "").strip() or None
+    if expected is not None and resolved != expected:
+        report.add(
+            "desktop plugin id",
+            False,
+            f"plugin id {resolved!r} does not match expected id {expected!r}",
+        )
+        return report
+    detail = f"id {resolved!r}"
+    if expected is not None:
+        detail += " matches expected id"
+    report.add("desktop plugin id", True, detail)
     return report

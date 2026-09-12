@@ -100,6 +100,8 @@ jobs:
           print(f"REPO={shlex.quote(str(data.get('repo', '')))}")
           print(f"SHA={shlex.quote(str(data.get('sha', '')))}")
           print(f"SUBDIR={shlex.quote(str(data.get('subdir', '') or ''))}")
+          print(f"NAME={shlex.quote(str(data.get('name', '') or ''))}")
+          print(f"DESKTOP_ID={shlex.quote(str(data.get('desktop_id', '') or ''))}")
           PYEOF
           )"
             echo "repo=$REPO sha=$SHA subdir=$SUBDIR"
@@ -118,15 +120,15 @@ jobs:
             fi
 
             PLUGIN_DIR="$CLONE_DIR${SUBDIR:+/$SUBDIR}"
-            # Native plugin.yaml OR portable Agent Plugins v1 plugin.json
-            # (#81196; native manifest wins when both exist).
-            if [ ! -f "$PLUGIN_DIR/plugin.yaml" ] && [ ! -f "$PLUGIN_DIR/plugin.yml" ] && [ ! -f "$PLUGIN_DIR/plugin.json" ]; then
-              echo "::error file=$entry::no plugin.yaml or plugin.json at subdir '$SUBDIR' of $REPO@$SHA"
-              FAILED=1; echo "::endgroup::"; continue
+            EXPECTED_ID="$DESKTOP_ID"
+            if [ -z "$EXPECTED_ID" ]; then
+              EXPECTED_ID="$NAME"
             fi
 
-            # Manifest schema + declared-vs-registered capability check.
-            if hermes plugins validate "$PLUGIN_DIR"; then
+            # Agent manifest, portable plugin.json, or standalone Desktop plugin.js.
+            # `hermes plugins validate` is the source of truth for which of those
+            # the selected directory actually is.
+            if hermes plugins validate "$PLUGIN_DIR" --expected-id "$EXPECTED_ID"; then
               echo "✅ PASS: $entry"
             else
               echo "::error file=$entry::hermes plugins validate failed"

@@ -112,3 +112,100 @@ class TestCapabilityProbe:
         )
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
+
+
+def _write_desktop_plugin(plugin_dir: Path, source: str) -> Path:
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.js").write_text(source, encoding="utf-8")
+    return plugin_dir
+
+
+_DESKTOP_OK = (
+    "import { host } from '@hermes/plugin-sdk'\n"
+    "export default { id: 'hello', name: 'Hello', register() {} }\n"
+)
+
+
+class TestStandaloneDesktopPlugin:
+    def test_root_plugin_js_without_agent_manifest_is_admissible(self, tmp_path):
+        d = _write_desktop_plugin(tmp_path / "hello", _DESKTOP_OK)
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+
+    def test_desktop_only_skips_agent_capability_probe(self, tmp_path):
+        d = _write_desktop_plugin(tmp_path / "ui-only", _DESKTOP_OK)
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        names = [name for name, _ok, _detail in report.checks]
+        assert not any("capability" in name for name in names)
+        joined = " ".join(report.failures).lower()
+        assert "register()" not in joined
+
+    def test_disallowed_import_fails(self, tmp_path):
+        d = _write_desktop_plugin(
+            tmp_path / "sneaky",
+            "import fs from 'fs'\n"
+            "export default { id: 'sneaky', name: 'Sneaky', register() {} }\n",
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        joined = " ".join(report.failures).lower()
+        assert "fs" in joined or "import" in joined
+
+    def test_id_const_binding_matches_expected_id(self, tmp_path):
+        d = _write_desktop_plugin(
+            tmp_path / "vault-view",
+            "import { host } from '@hermes/plugin-sdk'\n"
+            "const ID = 'vault-view'\n"
+            "export default { id: ID, name: 'Vault View', register() {} }\n",
+        )
+        ok_report = validate_plugin_dir(d, expected_id="vault-view")
+        assert ok_report.ok, ok_report.failures
+        bad = validate_plugin_dir(d, expected_id="other")
+        assert not bad.ok
+
+    def test_agent_manifest_still_wins_when_plugin_js_present(self, tmp_path):
+        d = _make_plugin(
+            tmp_path,
+            manifest=dict(BASE_MANIFEST, provides_tools=["good_tool"]),
+            init_py=(
+                "def register(ctx):\n"
+                "    ctx.register_tool('good_tool', 'good', {}, lambda a: '')\n"
+            ),
+        )
+        (d / "plugin.js").write_text(
+            "import fs from 'fs'\n"
+            "export default { id: 'ignored' }\n",
+            encoding="utf-8",
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        names = [name for name, _ok, _detail in report.checks]
+        assert not any(name.startswith("desktop") for name in names)
+
+    def test_nested_only_desktop_plugin_js_is_not_admissible(self, tmp_path):
+        d = tmp_path / "nested-only"
+        desktop = d / "desktop"
+        desktop.mkdir(parents=True)
+        (desktop / "plugin.js").write_text(_DESKTOP_OK, encoding="utf-8")
+        report = validate_plugin_dir(d)
+        assert not report.ok
+
+    def test_missing_desktop_register_is_rejected(self, tmp_path):
+        d = _write_desktop_plugin(
+            tmp_path / "no-reg",
+            "import { host } from '@hermes/plugin-sdk'\n"
+            "export default { id: 'no-reg', name: 'No Reg' }\n",
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        assert any("register" in failure for failure in report.failures)
+
+    def test_jsx_dev_runtime_import_is_allowed(self, tmp_path):
+        d = _write_desktop_plugin(
+            tmp_path / "hello",
+            "import { jsxDEV } from 'react/jsx-dev-runtime'\n"
+            "export default { id: 'hello', name: 'Hello', register() { void jsxDEV } }\n",
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures

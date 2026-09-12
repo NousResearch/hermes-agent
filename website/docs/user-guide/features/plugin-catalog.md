@@ -39,6 +39,8 @@ directory of the hermes-agent repository, declaring:
 | `capabilities` | Declared tools, hooks, middleware, and required env vars |
 | `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional) |
 | `platforms` | OS restrictions, empty = all (optional) |
+| `components` | Optional list from `{agent, desktop-ui}` |
+| `desktop_id` | Optional Desktop plugin `id` when it differs from `name` |
 | `docs_url` | External documentation link (optional) |
 
 ## Trust model
@@ -67,6 +69,20 @@ declarations were checked, and the repo met the submission bar. It is not a
 security audit, and it says nothing about other commits in the same
 repository. Review the code of anything you give credentials to.
 :::
+
+## Standalone Desktop packages
+
+The catalog admits standalone Desktop UI packages: the selected directory has
+a root `plugin.js` (importing `@hermes/plugin-sdk`, and optionally `react` /
+`react/jsx-runtime` / `react/jsx-dev-runtime`, with a callable `register`)
+and **no** Agent `plugin.yaml` / `plugin.json`. Catalog
+CI runs `hermes plugins validate` against that `plugin.js` instead of
+requiring an Agent manifest. Hybrid packages that ship an Agent manifest plus
+`desktop/plugin.js` keep the existing Agent validation path.
+
+Use `components: [desktop-ui]` so install/info text mentions the Desktop UI
+component, and set `desktop_id` when the plugin's `id` differs from the
+catalog `name`.
 
 ## Installing from the catalog
 

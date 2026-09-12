@@ -43,6 +43,7 @@ NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 TIERS = ("official", "community")
 PLATFORMS = ("linux", "macos", "windows")
+COMPONENTS = ("agent", "desktop-ui")
 CAPABILITY_KEYS = (
     "provides_tools",
     "provides_hooks",
@@ -62,6 +63,8 @@ KNOWN_KEYS = {
     "requires_hermes",
     "docs_url",
     "platforms",
+    "components",
+    "desktop_id",
     "capabilities",
 }
 REQUIRED_KEYS = ("name", "repo", "sha", "description", "maintainer")
@@ -137,6 +140,23 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
         bad = [p for p in platforms if p not in PLATFORMS]
         if bad:
             errors.append(f"platforms {bad!r} not in allowed set {list(PLATFORMS)}")
+
+    components = data.get("components", [])
+    if components is None:
+        components = []
+    if not isinstance(components, list):
+        errors.append("components must be a list")
+    else:
+        bad = [c for c in components if c not in COMPONENTS]
+        if bad:
+            errors.append(f"components {bad!r} not in allowed set {list(COMPONENTS)}")
+
+    if "desktop_id" in data:
+        desktop_id = data["desktop_id"]
+        if not isinstance(desktop_id, str) or not NAME_RE.match(desktop_id):
+            errors.append(
+                f"desktop_id {desktop_id!r} must match [a-z0-9_-]{{1,64}}"
+            )
 
     caps = data.get("capabilities", {})
     if caps is None:

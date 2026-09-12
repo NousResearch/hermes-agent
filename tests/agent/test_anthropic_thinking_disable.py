@@ -64,6 +64,16 @@ class TestThinkingOffIsSentExplicitly:
         assert kwargs["thinking"] == {"type": "disabled"}
         assert "output_config" not in kwargs
 
+    def test_qwen38_family_on_anthropic_compatible_endpoints_accepts_disable(self) -> None:
+        """Qwen3.8-family models served behind Anthropic-compatible endpoints
+        (DashScope token-plan and mirrors) accept an explicit disable and think
+        server-side by default when it is omitted — the same bill-the-user trap
+        this module exists to close for adaptive Claude. Probed live against
+        qwen3.8-flash / qwen3.8-max on v0.21.2; tool_use unaffected."""
+        for model in ("qwen3.8-flash", "qwen3.8-max", "alibaba/qwen3.8-max"):
+            kwargs = _kwargs(model, {"enabled": False})
+            assert kwargs["thinking"] == {"type": "disabled"}, model
+
     def test_mandatory_thinking_models_keep_the_omission(self) -> None:
         """claude-fable answers a disable with HTTP 400, so don't send one."""
         kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": False})

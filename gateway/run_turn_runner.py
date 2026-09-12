@@ -1673,29 +1673,13 @@ class TurnRunner:
         extract_media() delivers each file once. Scoped to THIS turn (slice at len(agent_history)) so
         a stale MEDIA: path from an earlier turn never rides a later reply; the history-path dedup is
         the secondary guard — and the sole one when mid-run compression shrank the list."""
-        from gateway.run import _collect_auto_append_media_tags
-        if "MEDIA:" in final_response:
-            return final_response
-        # Scan tool results for MEDIA:<path> tags that need to be delivered as native audio/file
-        # attachments. The TTS tool embeds MEDIA: tags in its JSON response, but the model's final text
-        # reply usually doesn't include them. We collect unique tags from tool results and append any that
-        # aren't already present in the final response, so the adapter's extract_media() can find and
-        # deliver the files exactly once. Scope the scan to THIS turn's tool results only. ``agent_history``
-        # was passed into run_conversation as ``conversation_history``, so the agent's returned ``messages``
-        # list is ``agent_history`` followed by the messages produced this turn. Slicing at
-        # ``len(agent_history)`` isolates the current turn precisely, so a stale MEDIA: path emitted by a
-        # tool several turns earlier (still present in the full message list) can never leak onto a later
-        # text-only reply. (Fixes #34608) Path-based deduplication against _history_media_paths (collected
-        # before run_conversation) is retained as a secondary guard. It is also the sole guard on the
-        # fallback branch taken when mid-run context compression shrinks the message list below the original
-        # history length, preserving the compression-safe behaviour of #160.
-        media_tags, has_voice_directive = _collect_auto_append_media_tags(
-            result.get("messages", []), history_offset=len(agent_history), history_media_paths=history_media_paths,
+        from gateway.run import _append_auto_media_tags_to_response
+        return _append_auto_media_tags_to_response(
+            final_response,
+            result.get("messages", []),
+            history_offset=len(agent_history),
+            history_media_paths=history_media_paths,
         )
-        if not media_tags:
-            return final_response
-        unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))
-        return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
         """Executor-thread body of the turn; returns the gateway result dict.

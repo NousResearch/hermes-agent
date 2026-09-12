@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import contextvars
 import json
+import os
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -391,7 +392,7 @@ class _SchemaOutcome:
     retries: int
 
 def _validate_child_output_schema(
-    child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any
+    child: Any, result: Dict[str, Any], task_index: int, run: _ChildRun
 ) -> _SchemaOutcome:
     """Validate the final answer against the attached output_schema with ONE bounded retry. Schema-less children (no
     dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
@@ -404,28 +405,38 @@ def _validate_child_output_schema(
     if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
         return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 0)
 
+    # The first attempt is superseded the moment a retry is warranted: discard its buffered relay
+    # text now so a gated child never releases both the rejected attempt's text and the corrected
+    # one — only whatever this retry (or its absence) leaves behind is ever shown.
+    run.discard_withheld_text()
     # Exactly one retry turn, carrying the validation errors verbatim (no
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
         _retry_result = child.run_conversation(
-            user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
+            user_message=build_retry_message(_schema_errors), task_id=run.child_task_id, stream_callback=run.relay_text,
         )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
-        _retry_text = _retry_result.get("final_response") or ""
-        if _retry_text.strip():
-            result["final_response"] = _retry_text
-        try:
-            result["api_calls"] = int(result.get("api_calls", 0) or 0) + int(_retry_result.get("api_calls", 0) or 0)
-        except (TypeError, ValueError):
-            pass
-        _retry_messages = _retry_result.get("messages")
-        if isinstance(_retry_messages, list) and isinstance(result.get("messages"), list):
-            result["messages"] = result["messages"] + _retry_messages
+        _retry_text = _merge_retry_turn(result, _retry_result)
         _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
+
+def _merge_retry_turn(result: Dict[str, Any], retry_result: Dict[str, Any]) -> str:
+    """Fold one bounded correction turn into the child's result (final text, api_calls, messages);
+    returns the retry text, empty when the turn produced nothing (the original answer then stands)."""
+    retry_text = retry_result.get("final_response") or ""
+    if retry_text.strip():
+        result["final_response"] = retry_text
+    try:
+        result["api_calls"] = int(result.get("api_calls", 0) or 0) + int(retry_result.get("api_calls", 0) or 0)
+    except (TypeError, ValueError):
+        pass
+    retry_messages = retry_result.get("messages")
+    if isinstance(retry_messages, list) and isinstance(result.get("messages"), list):
+        result["messages"] = result["messages"] + retry_messages
+    return retry_text
 
 def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
     """Tool trace from the child's conversation messages, pairing parallel
@@ -562,15 +573,42 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    workspace_local: bool = False  # terminal backend was local when the child was seeded
+    child_timeout: Optional[float] = None  # snapshot taken by await_child; correction turns get what is left
+    close_deferred: bool = False  # a timed-out correction turn still owns the child (see await_child)
+    withhold_text: bool = False  # gated child: reply text is buffered until the verdict (see relay_text)
+    withheld_text: list = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        from tools.delegation_quality_gate import GateConfig
+        self.withhold_text = isinstance(getattr(self.child, "_delegate_quality_gate", None), GateConfig)
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
 
     def relay_text(self, delta: str) -> None:
         """Stream callback forwarding the child's reply text up the progress relay so gateway watch windows mirror it
-        live (subagent.text → message.delta). Inert under CLI/TUI: their progress handlers ignore non-tool events."""
-        if delta:
-            _safe_progress(self.child_progress_cb, "subagent.text", preview=delta)
+        live (subagent.text → message.delta). Inert under CLI/TUI: their progress handlers ignore non-tool events.
+        A child with a quality gate is untrusted until judged: its text is withheld here and released as one
+        ``subagent.text`` event by ``settle_withheld_text`` only when the entry is delivered, so text the gate
+        rejects (or a superseded attempt's text) never reaches the parent relay or the live transcript."""
+        if not delta:
+            return
+        if self.withhold_text:
+            self.withheld_text.append(delta)
+            return
+        _safe_progress(self.child_progress_cb, "subagent.text", preview=delta)
+
+    def discard_withheld_text(self) -> None:
+        self.withheld_text.clear()
+
+    def settle_withheld_text(self, entry: Dict[str, Any]) -> None:
+        """Release the withheld reply text iff the entry is being delivered (not quarantined)."""
+        from tools.delegation_quality_gate import is_quarantined
+        text = "".join(self.withheld_text)
+        self.withheld_text.clear()
+        if text and not is_quarantined(entry):
+            _safe_progress(self.child_progress_cb, "subagent.text", preview=text)
 
     def attach_worktree(self, entry_dict: Dict[str, Any]) -> Dict[str, Any]:
         """Inspect + prune the child worktree, reporting into the entry (no-op without isolation)."""
@@ -601,6 +639,9 @@ class _ChildRun:
             record_session_cwd(self.child_task_id, get_session_cwd(self.parent_task_id))
             register_container_alias(self.child_task_id, self.parent_task_id)
 
+        with _quiet(None):
+            from tools import subagent_worktree
+            self.workspace_local = subagent_worktree.local_backend_active()
         self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
         if self.worktree_info is not None:
             with _quiet("worktree cwd seed failed: %s"):
@@ -612,6 +653,19 @@ class _ChildRun:
             self.goal = self.goal + build_worktree_context_note(self.worktree_info)
         self.wall_start = time.time()
         self.parent_reads_snapshot = list(file_state.known_reads(self.parent_task_id)) if self.parent_task_id else []
+
+    def child_workspace(self) -> Optional[str]:
+        """The child's OWN working directory, for external judges: its worktree when isolation engaged, else its
+        terminal cwd record (which its own ``cd``s update) — only on the local backend and only when it is a real
+        directory here. None otherwise: never the parent's workspace hint, never a remote-backend container path."""
+        if self.worktree_info is not None:
+            candidate = self.worktree_info.get("path")
+        elif self.workspace_local:
+            from tools.terminal_tool import get_session_cwd
+            candidate = get_session_cwd(self.child_task_id)
+        else:
+            return None
+        return candidate if isinstance(candidate, str) and os.path.isdir(candidate) else None
 
     def finish_failed(
         self, entry: Dict[str, Any], late_steer: Optional[str], *, preview: str, summary: str = "", status: Optional[str] = None,
@@ -642,25 +696,10 @@ class _ChildRun:
         via a Future done-callback (``close_deferred=True``) — closing here would race its still-unwinding finally
         path.
         """
-        from tools.delegate_tool import (_get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb)
-        from tools.daemon_pool import DaemonThreadPoolExecutor
+        from tools.delegate_tool import _get_child_timeout
         child, task_index = self.child, self.task_index
-        child_timeout = _get_child_timeout()
-        executor = DaemonThreadPoolExecutor(
-            max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
-        )
-        # Worker thread handle so the timeout diagnostic can dump its stack.
-        worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
-
-        def _run_with_thread_capture():
-            worker_thread_holder["t"] = threading.current_thread()
-            from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
-                )
-
-        future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
+        self.child_timeout = child_timeout = _get_child_timeout()
+        executor, future, worker_thread_holder = self._submit_turn(self.goal)
         try:
             return future.result(timeout=child_timeout), None, False
         except Exception as wait_exc:
@@ -720,6 +759,60 @@ class _ChildRun:
             _defer_close_after_timeout(child, future)
         return None, _error_entry, close_deferred
 
+    def _submit_turn(self, user_message: str) -> tuple[Any, Any, Dict[str, Optional[threading.Thread]]]:
+        """Submit ONE child turn on a fresh daemon worker (non-interactive approval callback installed, delegated-child
+        context entered): ``(executor, future, worker_thread_holder)``. The holder gives the timeout diagnostic the
+        worker's stack."""
+        from tools.delegate_tool import _get_subagent_approval_callback, _set_subagent_approval_cb
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        child = self.child
+        executor = DaemonThreadPoolExecutor(
+            max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
+        )
+        worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
+
+        def _run_with_thread_capture():
+            worker_thread_holder["t"] = threading.current_thread()
+            from agent.delegation_context import delegated_child_context
+            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                return child.run_conversation(
+                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                )
+
+        return executor, executor.submit(contextvars.copy_context().run, _run_with_thread_capture), worker_thread_holder
+
+    def run_correction_turn(self, user_message: str) -> tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+        """One bounded follow-up turn on the finished child (quality-gate corrections), under the SAME envelope as the
+        main turn: daemon worker, approval callback, delegated-child context, and whatever is left of
+        ``child_timeout_seconds``. A timed-out turn stops the child and defers its close exactly like ``await_child``.
+        ``(result, None, None)`` on success, else ``(None, code, detail)`` with code ``spent`` | ``timeout`` |
+        ``raised`` — never raises."""
+        self.discard_withheld_text()  # the superseded attempt's text is never shown
+        remaining: Optional[float] = None
+        if self.child_timeout is not None:
+            remaining = self.child_timeout - (time.monotonic() - self.child_start)
+            if remaining <= 0:
+                return None, "spent", f"child_timeout_seconds ({self.child_timeout:g}s) already spent"
+        executor, future, _holder = self._submit_turn(user_message)
+        try:
+            return future.result(timeout=remaining), None, None
+        except (FuturesTimeoutError, TimeoutError) as exc:
+            # concurrent.futures.TimeoutError IS builtin TimeoutError (3.11+): a child turn that raised one itself
+            # arrives here too, distinguished by a finished future (the budget wait leaves the worker running).
+            if future.done():
+                if future.exception() is None:  # finished in the gap between the wait expiring and this check
+                    return future.result(), None, None
+                return None, "raised", f"correction turn raised {type(exc).__name__}: {exc}"
+            _signal_child_stop(self.child)
+            self.close_deferred = True
+            _defer_close_after_timeout(self.child, future)
+            budget = f"{self.child_timeout:g}s" if isinstance(self.child_timeout, (int, float)) else "unbounded"
+            return None, "timeout", f"correction turn timed out (child_timeout_seconds={budget})"
+        except Exception as exc:
+            return None, "raised", f"correction turn raised {type(exc).__name__}: {exc}"
+        finally:
+            executor.shutdown(wait=False)
+
     def append_sibling_write_reminder(self, entry: Dict[str, Any]) -> None:
         """Warn the parent when this child wrote files the parent had already read. Checks writes by ANY non-parent
         task_id (not just this child's) so nested orchestrator→worker chains are covered too."""
@@ -727,7 +820,10 @@ class _ChildRun:
             return
         with _quiet("file_state sibling-write check failed", exc_info=True):
             sibling_writes = file_state.writes_since(self.parent_task_id, self.wall_start, self.parent_reads_snapshot)
-            mod_paths = sorted({p for paths in sibling_writes.values() for p in paths}) if sibling_writes else []
+            # Only paths the PARENT itself read before the child ran (writes_since filters on the snapshot); a
+            # quarantined entry therefore never carries a child-chosen path, only "re-read your own files".
+            parent_known = set(self.parent_reads_snapshot)
+            mod_paths = sorted({p for paths in sibling_writes.values() for p in paths if p in parent_known})
             if not mod_paths:
                 return
             reminder = (
@@ -745,7 +841,18 @@ class _ChildRun:
         """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now
         belong to the parent (their completion lands in the parent's chat); anything else still running is about to be
         terminated, and the parent must hear that from the runtime rather than trust a child's "watcher running"."""
+        from tools.delegation_quality_gate import is_quarantined
         handed = list(getattr(self.child, "_handed_off_processes", None) or [])
+        if is_quarantined(entry):
+            # Commands, purposes and output tails are child-authored: report counts only.
+            with _quiet(None):
+                from tools.process_registry import process_registry
+                entry["quarantined_processes"] = {
+                    "handed_off": len(handed),
+                    "orphaned": len(process_registry.running_owned_by(self.child_task_id)),
+                    "unread_completions": len(process_registry.unread_completions_owned_by(self.child_task_id)),
+                }
+            return
         if handed:
             entry["handed_off_processes"] = handed
         with _quiet(None):
@@ -767,6 +874,16 @@ class _ChildRun:
         if not self.child_progress_cb:
             return
         child = self.child
+        from tools.delegation_quality_gate import is_quarantined
+        if is_quarantined(entry):
+            # Fixed error text only: no summary excerpt, tool-output tail or child-chosen file paths.
+            _safe_progress(
+                self.child_progress_cb, "subagent.complete", preview=entry["error"], status=entry["status"],
+                duration_seconds=duration, summary=entry["error"], api_calls=_num(entry["api_calls"]),
+                input_tokens=_num(getattr(child, "session_prompt_tokens", 0)),
+                output_tokens=_num(getattr(child, "session_completion_tokens", 0)),
+            )
+            return
         summary = entry["summary"]
         _files_read: list = []
         with _quiet(None):
@@ -800,6 +917,7 @@ class _ChildRun:
         no turn is active."""
         child = self.child
         heartbeat.stop()
+        self.withheld_text.clear()  # never released on failure paths: unjudged text stays unseen
 
         # Safe even if the child was never registered (ID missing on test doubles).
         if self.subagent_id:

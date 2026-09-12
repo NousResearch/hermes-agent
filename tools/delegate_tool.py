@@ -53,6 +53,7 @@ from tools.delegate_tool_toolsets import (  # noqa: F401
 from tools.delegate_tool_results import (  # noqa: F401
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
+from tools.delegation_quality_gate import apply_gate_outcome, judge_child_result, load_gate_config
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
@@ -262,6 +263,8 @@ def _build_child_agent(
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
+    # Frozen at spawn: a running child (terminal + file tools) cannot rewrite config.yaml to change its own gate.
+    child._delegate_quality_gate = load_gate_config(delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:
@@ -331,7 +334,14 @@ def _run_single_child(
         if failure_entry is not None:
             return failure_entry
 
-        schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
+        schema = _validate_child_output_schema(child, result, task_index, run)
+        # Opt-in external judge (config frozen on the child at spawn); its bounded correction turns run through
+        # the child's own turn envelope and must precede the steer boundary.
+        gate = judge_child_result(
+            child, result, task_index, run.goal, run_turn=run.run_correction_turn, workspace=run.child_workspace(),
+            workspace_isolated=run.worktree_info is not None, schema=schema,
+        )
+        _child_close_deferred = run.close_deferred
         _merge_late_steer(result, _subagent_id, child)
         # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, "_flush"):
@@ -340,6 +350,8 @@ def _run_single_child(
 
         duration = run.elapsed()
         entry = _build_result_entry(child, result, task_index, duration, schema)
+        apply_gate_outcome(entry, gate)
+        run.settle_withheld_text(entry)
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)

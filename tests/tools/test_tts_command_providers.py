@@ -17,6 +17,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,6 +35,7 @@ from tools.tts_command_provider import (
     render_command_template as _render_command_tts_template,
     run_command_provider as _run_command_tts,
     shell_quote_context as _shell_quote_context,
+    terminate_command_process_tree,
 )
 from tools.tts_tool import (
     BUILTIN_TTS_PROVIDERS,
@@ -539,3 +541,49 @@ class TestCommandTtsEnvPassthrough:
         ) == ["A_KEY", "B_KEY"]
         assert _command_provider_env_passthrough({}) == []
         assert _command_provider_env_passthrough({"env_passthrough": "A_KEY"}) == []
+
+
+# ---------------------------------------------------------------------------
+# terminate_command_process_tree — also the judge-timeout cleanup path
+# (delegation_quality_gate.run_gate spawns its judge with start_new_session=True
+# and calls this on timeout)
+# ---------------------------------------------------------------------------
+
+class TestTerminateCommandProcessTreeGroupCleanup:
+    """The leader can exit on its own right before cleanup runs; descendants sharing its process
+    group (created via ``start_new_session=True``) must still be reached, not just the leader."""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process groups only")
+    def test_kills_the_group_even_after_the_leader_has_already_exited(self, tmp_path):
+        import psutil
+
+        pidfile = tmp_path / "grandchild.pid"
+        leader_script = (
+            "import subprocess, sys\n"
+            f"child = subprocess.Popen([{sys.executable!r}, '-c', 'import time; time.sleep(30)'])\n"
+            f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", leader_script], start_new_session=True)
+        grandchild_pid = None
+        try:
+            proc.wait(timeout=5)
+            assert proc.poll() is not None  # the leader already exited by the time cleanup runs
+
+            deadline = time.monotonic() + 5
+            while not pidfile.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            grandchild_pid = int(pidfile.read_text().strip())
+            assert psutil.pid_exists(grandchild_pid)  # leader is gone, descendant is not
+
+            terminate_command_process_tree(proc)
+
+            deadline = time.monotonic() + 5
+            while psutil.pid_exists(grandchild_pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert not psutil.pid_exists(grandchild_pid), "descendant survived a leader-already-exited cleanup"
+        finally:
+            if grandchild_pid is not None and psutil.pid_exists(grandchild_pid):
+                try:
+                    os.kill(grandchild_pid, 9)
+                except ProcessLookupError:
+                    pass

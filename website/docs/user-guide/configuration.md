@@ -2715,7 +2715,14 @@ delegation:
   worktree_isolation: false                 # Give each child its own git worktree branched from HEAD (local backend + git repos only; inspired by Muse Code). See Subagent Delegation → Worktree Isolation.
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
+  # quality_gate:                           # Opt-in external judge on every finished child (off unless command is set)
+  #   command: ["hermes-gate", "delegate-judge"]   # argv list, never a shell string
+  #   timeout_seconds: 120                  # hard cap per verdict
+  #   max_retries: 1                        # correction turns on a "retry" verdict
+  #   on_error: open                        # open = deliver unchanged when the judge fails; closed = reject
 ```
+
+**Quality gate:** `delegation.quality_gate.command` names an executable that judges each child's final answer (JSON request on stdin → `{"verdict": "pass"|"warn"|"retry"|"reject"|"error", "feedback": "..."}` on stdout; `error` is the judge declining to judge and follows `on_error`). The section is frozen onto each child at spawn. `retry` sends the child one bounded correction turn per `max_retries` (feedback quoted as untrusted text; the corrected answer is re-validated against any `output_schema`), `reject` quarantines the result (`status: failed`, `exit_reason: error`, `failure_reason: quality_gate`, `summary: null`; no child or judge text is delivered, stored in memory, or passed to hooks — only a reason code plus the rejected text's size and SHA-256), `warn` annotates it. Judge failures follow `on_error` (`closed` quarantines the same way). See [Subagent Delegation → Quality Gate](features/delegation.md#quality-gate-opt-in).
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 

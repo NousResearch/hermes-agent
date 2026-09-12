@@ -1668,6 +1668,16 @@ delegation:
   # fallback_providers:                       # Fallback chain for delegated children (same entry format as the
   #   - provider: "openrouter"                # top-level list). Pinned children use only a declared child chain;
   #     model: "deepseek/deepseek-chat"       # unpinned children inherit when unset. [] disables fallback (#65038).
+  # quality_gate:                             # Opt-in external judge run on every finished child BEFORE the parent
+  #   command: ["hermes-gate", "delegate-judge"]    # sees the result. argv list only (a shell string is refused).
+  #   timeout_seconds: 120                    # Hard wall-clock cap per verdict; the judge's process tree is killed.
+  #   max_retries: 1                          # Correction turns per child when the judge answers "retry" (0 = never).
+  #   on_error: open                          # open = deliver the child's result unchanged if the judge fails;
+  #                                           # closed = quarantine it. A reject/closed-error QUARANTINES the
+  #                                           # result: summary null, no child/judge text delivered, stored in
+  #                                           # memory or passed to hooks. Contract: JSON request on stdin ->
+  #                                           # {"verdict": pass|warn|retry|reject|error, "feedback": "..."} on
+  #                                           # stdout ("error" = judge could not judge; follows on_error).
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

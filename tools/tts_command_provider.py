@@ -96,28 +96,40 @@ def _signal_process_tree(psutil: Any, proc: subprocess.Popen, method: str) -> No
 
 
 def terminate_command_process_tree(proc: subprocess.Popen) -> None:
-    """Best-effort termination of a shell process and all of its children."""
-    if proc.poll() is not None:
-        return
+    """Best-effort termination of a shell process and all of its children.
+
+    Every caller spawns ``proc`` with ``start_new_session=True`` (POSIX), so ``proc.pid`` doubles
+    as the process group id. A leader that has already exited by the time this runs (e.g. right
+    before a timeout fires) can still leave longer-lived descendants alive in that same group,
+    holding the caller's pipes open — returning early on ``proc.poll() is not None`` skipped the
+    group entirely, so the POSIX path below always signals it, even when the leader is gone.
+    """
     if os.name == "nt":
-        try:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL)
-        except Exception:
-            proc.kill()
+        if proc.poll() is None:
+            try:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL)
+            except Exception:
+                proc.kill()
         return
     try:
         import psutil  # type: ignore
     except ImportError:
         psutil = None
-    # Without psutil only the shell itself is signalled (children may survive).
-    signal = ((lambda m: getattr(proc, m)()) if psutil is None
-              else (lambda m: _signal_process_tree(psutil, proc, m)))
-    signal("terminate")
+    if proc.poll() is None:
+        # Without psutil only the shell itself is signalled (children may survive).
+        signal = ((lambda m: getattr(proc, m)()) if psutil is None
+                  else (lambda m: _signal_process_tree(psutil, proc, m)))
+        signal("terminate")
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            signal("kill")
+    import signal as _signal
     try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        signal("kill")
+        os.killpg(proc.pid, _signal.SIGKILL)  # windows-footgun: ok — nt branch returned above
+    except ProcessLookupError:
+        pass
 
 
 def command_env_passthrough(config: Dict[str, Any]) -> list:

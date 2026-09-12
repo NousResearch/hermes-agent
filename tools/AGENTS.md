@@ -89,7 +89,18 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
+subagent_auto_approve, inherit_mcp_toolsets, max_iterations, quality_gate`. **Quality gate** (`delegation_quality_gate.py`,
+opt-in via `quality_gate.command`, an argv list never run through a shell): the config is frozen onto the child at
+spawn (`child._delegate_quality_gate`, `_build_child_agent`) — never re-read after completion. After `output_schema`
+validation and BEFORE the steer boundary in `_run_single_child`, the judge reads the child's answer as JSON on stdin
+(with the child's OWN workspace from `_ChildRun.child_workspace()`) and answers pass/warn/retry/reject; `retry` drives
+correction turns through `_ChildRun.run_correction_turn` (same daemon/approval/`child_timeout_seconds` envelope as the
+main turn; feedback quoted as untrusted text; corrected answers re-validated against the schema). A blocking verdict
+QUARANTINES the entry (`quarantine_entry`: `failed` / `exit_reason: error` / `failure_reason: quality_gate`, `summary`
+None, fixed error text, empty `tool_trace`, report = reason code + size/sha256 only); `is_quarantined(entry)` gates
+memory (`_notify_memory_manager` skips), `subagent_stop` payload (summary None, empty history), `emit_complete` and
+process accounting (counts only) — every delivery path returns that same dict. Judge failures follow `on_error`
+(open delivers + diagnostic; closed quarantines). No `quality_gate` key on the entry unless the gate ran. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
 (children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
 (`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on

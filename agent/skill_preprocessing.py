@@ -42,10 +42,17 @@ def substitute_template_vars(content: str, skill_dir: Path | None, session_id: s
     return _SKILL_TEMPLATE_RE.sub(lambda m: values[m.group(1)] or m.group(0), content)
 
 
-def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
+def run_inline_shell(command: str, cwd: Path | None, timeout: int, session_id: str | None = None) -> str:
     """Run one inline-shell snippet and return its stdout (trimmed; stderr when
     stdout is empty). Failures return an ``[inline-shell ...]`` marker instead
     of raising, so one bad snippet can't wreck the whole skill message."""
+    if session_id:
+        from tools.mcp_skills_consent import enforce_remote_skill_gate
+        blocked = enforce_remote_skill_gate(
+            "terminal", {"command": command, "workdir": str(cwd) if cwd else None},
+            task_id=session_id, session_id=session_id)
+        if blocked is not None:
+            return "[inline-shell blocked: remote MCP skill execution consent was not granted]"
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     from agent.delegation_context import delegated_child_subprocess_env
     try:
@@ -76,13 +83,14 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     return output
 
 
-def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int) -> str:
+def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int,
+                        session_id: str | None = None) -> str:
     """Replace every !`cmd` snippet with its stdout, run with the skill dir as CWD."""
     if "!`" not in content:
         return content
     def _replace(match: re.Match) -> str:
         cmd = match.group(1).strip()
-        return run_inline_shell(cmd, skill_dir, timeout) if cmd else ""
+        return run_inline_shell(cmd, skill_dir, timeout, session_id) if cmd else ""
     return _INLINE_SHELL_RE.sub(_replace, content)
 
 
@@ -99,5 +107,6 @@ def preprocess_skill_content(
     if cfg.get("template_vars", True):
         content = substitute_template_vars(content, skill_dir, session_id)
     if cfg.get("inline_shell", False):
-        content = expand_inline_shell(content, skill_dir, int(cfg.get("inline_shell_timeout", 10) or 10))
+        content = expand_inline_shell(
+            content, skill_dir, int(cfg.get("inline_shell_timeout", 10) or 10), session_id)
     return content

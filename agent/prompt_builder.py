@@ -1204,6 +1204,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
+    remote_skills: "tuple[dict, ...] | list[dict] | None" = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1223,10 +1224,11 @@ def build_skills_system_prompt(
         # Trusted project-local dirs — highest-precedence tier; cwd/trust are session-stable, so byte-stable.
         from agent.skill_utils import get_project_skills_dirs
         project_dirs = get_project_skills_dirs()
-        if not skills_dir.exists() and not external_dirs and not project_dirs:
+        if not skills_dir.exists() and not external_dirs and not project_dirs and not remote_skills:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
+            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs,
+            remote_skills=remote_skills)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1326,7 +1328,8 @@ def _render_skills_index(
         "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
         "code review, planning, and testing — load them even for tasks you already know how to do, because "
         "the skill defines how it should be done here.\n"
-        "If a skill has issues, fix it with skill_manage(action='patch').\n"
+        "If a local skill has issues, fix it with skill_manage(action='patch'). Remote MCP skills are immutable "
+        "through skill_manage; report issues to their origin instead.\n"
         "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
         "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
         "\n"
@@ -1341,7 +1344,7 @@ def _render_skills_index(
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
+    project_dirs: "list[Path] | None" = None, remote_skills: "tuple[dict, ...] | list[dict] | None" = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1352,6 +1355,9 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        tuple(sorted((str(row.get("server") or ""), str(row.get("uri") or ""),
+                      str(row.get("manifest_fingerprint") or ""))
+                     for row in (remote_skills or []) if isinstance(row, dict))),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1408,6 +1414,29 @@ def _build_skills_system_prompt_inner(
                               skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s")
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
+
+    # Remote descriptions are already pinned to this profile/session. Collapse
+    # and HTML-escape all server text so metadata cannot forge index lines or
+    # close the <available_skills> boundary. Remote names stay qualified and
+    # therefore never enter local first-wins collision resolution.
+    if remote_skills:
+        import html
+        def _safe_remote(value) -> str:
+            text = " ".join(str(value or "").split())
+            text = "".join(ch for ch in text if ch >= " " and ch != "\x7f")
+            return html.escape(text, quote=False)
+        for row in remote_skills:
+            if not isinstance(row, dict):
+                continue
+            # Server labels and URIs were validated before publication. Keep
+            # them byte-exact so the displayed canonical identifier remains
+            # directly invocable; only remote prose needs HTML escaping.
+            server = str(row.get("server") or "")
+            uri = str(row.get("uri") or "")
+            description = _safe_remote((row.get("frontmatter") or {}).get("description"))
+            qualified = f"mcp:{server}:{uri}"
+            origin = f"[remote MCP origin: {server}]"
+            skills_by_category.setdefault(f"mcp:{server}", []).append((qualified, f"{origin} {description}".strip()))
 
     result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
     with _SKILLS_PROMPT_CACHE_LOCK:

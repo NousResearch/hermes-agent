@@ -1297,6 +1297,9 @@ class AIAgent(
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
+        from tools.mcp_skills_consent import enforce_delegate_for_agent
+        if blocked := enforce_delegate_for_agent(self, function_args):
+            return blocked
         from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
         # Top-level MODEL delegations always run in the background (handle returned, results re-enter as
         # messages). An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and

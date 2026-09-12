@@ -620,8 +620,7 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_message: Optional[st
 
 
 def _pre_tool_block(agent, ref: _ToolCallRef):
-    """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
-    hook-modified args applied. Hook failures never block."""
+    """Run plugin hooks, then the host-owned remote-skill gate on final arguments."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 
@@ -631,9 +630,18 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
             **tool_hook_ids(agent, ref.task_id, ref.call_id),
             middleware_trace=list(ref.trace),
         )
-        return block_msg, (ref.args if modified_args is None else modified_args)
+        final_args = ref.args if modified_args is None else modified_args
     except Exception:
-        return None, ref.args
+        block_msg, final_args = None, ref.args
+    if block_msg is not None:
+        return block_msg, final_args
+    try:
+        from tools.mcp_skills_consent import enforce_remote_skill_block_message
+        return enforce_remote_skill_block_message(
+            ref.name, final_args, task_id=ref.task_id,
+            session_id=getattr(agent, "session_id", "") or ""), final_args
+    except Exception as exc:
+        return f"Remote MCP skill origin gate failed closed: {exc}", final_args
 
 
 def _dispatch_authorized_once(

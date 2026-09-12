@@ -157,7 +157,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     try:
         from tools.skills_tool import _skills_dir, skill_view
         from agent.skill_utils import normalize_skill_lookup_name
-        normalized = normalize_skill_lookup_name(raw_identifier)
+        normalized = raw_identifier if raw_identifier.startswith("mcp:") else normalize_skill_lookup_name(raw_identifier)
         loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
     except Exception:
         return None
@@ -236,14 +236,15 @@ def _build_skill_message(
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import _skills_dir
     # Preprocess first so downstream blocks see the expanded content.
-    content = preprocess_skill_content(
-        str(loaded_skill.get("content") or ""), skill_dir, session_id, skills_cfg=_load_skills_config(),
-    )
+    is_remote = (loaded_skill.get("origin") or {}).get("type") == "mcp"
+    content = str(loaded_skill.get("content") or "") if is_remote else preprocess_skill_content(
+        str(loaded_skill.get("content") or ""), skill_dir, session_id, skills_cfg=_load_skills_config())
     parts = [activation_note, "", content.strip()]
     # Absolute skill dir lets the agent run bundled scripts without a skill_view() round-trip.
     if skill_dir:
         parts += ["", f"[Skill directory: {skill_dir}]", _SKILL_DIR_NOTE]
-    _inject_skill_config(loaded_skill, parts)
+    if not is_remote:
+        _inject_skill_config(loaded_skill, parts)
     setup_note = _setup_note(loaded_skill)
     if setup_note:
         parts += ["", f"[Skill setup note: {setup_note}]"]
@@ -259,6 +260,14 @@ def _build_skill_message(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
+        )
+    elif supporting and is_remote:
+        qualified = loaded_skill.get("qualified_name") or loaded_skill.get("name")
+        parts += ["", "[This remote skill has manifested supporting files; no cache path is executable or trusted:]"]
+        parts += [f"- {sf}" for sf in supporting]
+        parts.append(
+            f'\nLoad one explicitly with skill_view(name="{qualified}", file_path="<path>"). '
+            "Use materialize=true only when an editable local workspace copy is needed; execution remains separately gated."
         )
     stable_prefix = None
     if user_instruction:

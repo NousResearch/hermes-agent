@@ -121,6 +121,17 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+    # Remote-skill snapshots and active-origin obligations are host-authored
+    # security state. Editable materializations live in the workspace instead;
+    # native file tools must never forge this cache/state boundary.
+    real_home = _get_real_hermes_home()
+    mcp_state_root = os.path.join(real_home, "cache", "mcp-skills") if real_home else None
+    if mcp_state_root and any(
+            candidate == mcp_state_root or candidate.startswith(mcp_state_root + os.sep)
+            for candidate in candidates):
+        return (
+            f"Refusing to write to Hermes-managed MCP skill state: {filepath}\n"
+            "Use skill_view materialize=true for an editable workspace copy.")
     return None
 
 

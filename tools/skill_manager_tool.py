@@ -739,6 +739,12 @@ def skill_manage(
     session_id: str = None, operations=None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
+    requested_names = ([op.get("name") for op in operations if isinstance(op, dict)]
+                       if isinstance(operations, list) else [name])
+    if any(isinstance(candidate, str) and candidate.startswith("mcp:") for candidate in requested_names):
+        return tool_error(
+            "Remote MCP skills are immutable through skill_manage. Materialize a selected resource into the "
+            "workspace for an editable task copy, or report the issue to the originating server.", success=False)
     if operations is not None:
         return _skill_manage_batch(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)

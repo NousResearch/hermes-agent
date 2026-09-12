@@ -416,3 +416,4 @@ class MCPServerRunMixin:
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
             _registration._deregister_mcp_tool_all_scopes(self, tool_name)
         self._registered_tool_names = []
+        getattr(self, "_revoke_skills_readiness")()

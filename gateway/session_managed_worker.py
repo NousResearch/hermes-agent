@@ -183,8 +183,10 @@ def _worker_env(authority):
     if not is_multiplex_active() or not home.is_absolute():
         return None
     from agent.secret_scope import build_profile_secret_scope
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=True)
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
+    # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
+    env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True), home)
     env.update({k: v for k, v in build_profile_secret_scope(home).items() if v is not None})
     env['HERMES_HOME'] = str(home)
     from hermes_constants import apply_subprocess_home_env

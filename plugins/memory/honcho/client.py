@@ -67,9 +67,11 @@ def _host_block(raw: dict, host: str) -> dict:
 
 
 def resolve_active_host() -> str:
-    """Honcho host key: HERMES_HONCHO_HOST env, else the active profile. The config's
-    ``defaultHost`` is honored only for the default profile so named profiles stay isolated."""
-    explicit = os.environ.get("HERMES_HONCHO_HOST", "").strip()
+    """Honcho host key: HERMES_HONCHO_HOST (profile-scoped .env), else the active profile. The config's
+    ``defaultHost`` is honored only for the default profile so named profiles stay isolated — which is
+    also why the override is read through the secret scope: from raw environ it would fold every
+    multiplexed profile onto the default profile's host block and peer."""
+    explicit = (get_secret("HERMES_HONCHO_HOST", "") or "").strip()
     if explicit:
         return explicit
     try:
@@ -249,8 +251,10 @@ def _is_local_base_url(base_url: str | None) -> bool:
 
 
 def _env_base_url() -> str | None:
-    """HONCHO_BASE_URL / HONCHO_URL (the SDK's own var); a deployment setting, so plain os.environ."""
-    return os.environ.get("HONCHO_BASE_URL", "").strip() or os.environ.get("HONCHO_URL", "").strip() or None
+    """HONCHO_BASE_URL / HONCHO_URL (the SDK's own var). A self-hosted URL varies per profile, so it is
+    read through the secret scope: the scoped HONCHO_API_KEY beside it must not be sent to the default
+    profile's server."""
+    return (get_secret("HONCHO_BASE_URL", "") or "").strip() or (get_secret("HONCHO_URL", "") or "").strip() or None
 
 
 def _connection_fields(look: _HostLookup, host: str, path: Path) -> dict[str, Any]:
@@ -309,6 +313,7 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         "message_max_chars": look.parsed("messageMaxChars", int, 25000),
         "dialectic_max_input_chars": look.parsed("dialecticMaxInputChars", int, 10000),
         "recall_mode": _normalize_choice(look.pick("recallMode") or "hybrid", _RECALL_MODES),
+        "recall_sync": look.flag("recallSync", default=False),
         "init_on_session_start": look.flag("initOnSessionStart", default=False),
         "injection_frequency": look.pick("injectionFrequency", "every-turn"),
         "context_cadence": look.parsed("contextCadence", int, 1),
@@ -320,6 +325,7 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         **_resolve_observation(observation_mode, look.pick("observation")),
         "session_strategy": look.pick("sessionStrategy", "per-directory"),
         "session_peer_prefix": look.pick_set("sessionPeerPrefix", False),
+        "a2a_sessions": look.flag("a2aSessions", default=True),
     }
 
 
@@ -363,6 +369,7 @@ class HonchoClientConfig:
     dialectic_max_input_chars: int = 10000
     # "hybrid" (context + tools) | "context" (no tools) | "tools" (no auto context)
     recall_mode: str = "hybrid"
+    recall_sync: bool = False  # bounded current-query automatic recall
     init_on_session_start: bool = False  # tools mode: init eagerly instead of on first tool call
     injection_frequency: str = "every-turn"  # or "first-turn"
     context_cadence: int = 1  # min turns between peer.context() calls
@@ -381,6 +388,8 @@ class HonchoClientConfig:
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
+    # Bot-authored DMs write into their own session per sender bot.
+    a2a_sessions: bool = True
     sessions: dict[str, str] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
     # A hosts.<host> block or explicit enabled flag, vs auto-enabled from a stray env key.
@@ -407,7 +416,7 @@ class HonchoClientConfig:
         base_url = _sanitize_url(_env_base_url())
         return cls(
             host=resolved_host, workspace_id=workspace_id, api_key=api_key, base_url=base_url,
-            environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
+            environment=get_secret("HONCHO_ENVIRONMENT", "") or "production",
             timeout=_resolve_optional_float(os.environ.get("HONCHO_TIMEOUT")),
             ai_peer=resolved_host, enabled=bool(api_key or base_url),
             config_path=resolve_config_path(), hermes_home=get_hermes_home(),

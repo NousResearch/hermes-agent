@@ -21,7 +21,8 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from gateway.status import resolve_gateway_liveness
+from gateway.status import (
+    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
 from hermes_cli.web_deps import LateState, late
@@ -166,14 +167,18 @@ def _platform_enablement(
     os.environ and would leak the root install's tokens into the profile's state."""
     required = entry["required_env"]
     if scoped:
+        configured = bool(required) and all(env_on_disk.get(key) for key in required)
         try:
             plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
             hc = plat_cfg.get("home_channel")
-            enabled, home_channel = bool(plat_cfg.get("enabled")), (hc if isinstance(hc, dict) else None)
+            # Setup writes credentials without a platforms entry; explicit disable wins.
+            raw_enabled = plat_cfg.get("enabled")
+            enabled = False if raw_enabled is False else bool(raw_enabled) or configured
+            home_channel = hc if isinstance(hc, dict) else None
         except Exception:
             enabled, home_channel = False, None
-        return enabled, all(env_on_disk.get(key) for key in required), home_channel
+        return enabled, configured, home_channel
     try:
         from gateway.config import Platform, load_gateway_config
 
@@ -210,6 +215,12 @@ def _messaging_platform_payload(
         pid_probe=get_running_pid_cached, runtime_reader=read_runtime_status,
         runtime_pid_probe=get_runtime_status_running_pid,
     ).running
+    if not gateway_running:
+        # gateway_state.json outlives its writer and keeps per-platform entries across
+        # restarts, so a stopped gateway that once ran WITHOUT credentials still says
+        # "fatal / No bot token configured" after the user saved a token. Only a live
+        # process's verdict describes the current config; a dead one's is history.
+        runtime_platform = {}
 
     def env_value(key: str) -> str:
         # Profile-scoped: judge only the profile's own .env — the dashboard process's
@@ -264,6 +275,12 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     HERMES_HOME contextvar; the gateway status readers do not, hence the explicit path)."""
     env_on_disk = load_env()
     runtime = read_runtime_status(path=scoped_dir / "gateway_state.json") if scoped_dir is not None else read_runtime_status()
+    if scoped_dir is not None and runtime is None:
+        # A profile served by the multiplexer writes no record of its own; its adapters live in the
+        # multiplexer's record under ``<profile>:<platform>``.
+        served = multiplexer_liveness_for_profile(scoped_dir)
+        if served is not None:
+            runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], scoped_dir.name)}
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
             for entry in entries]
 

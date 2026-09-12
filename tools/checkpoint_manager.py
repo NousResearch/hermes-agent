@@ -31,6 +31,15 @@ from utils import env_int
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
+_CHECKPOINT_BASE_AT_IMPORT = CHECKPOINT_BASE
+
+
+def _resolve_checkpoint_base() -> Path:
+    """Active profile's checkpoint root at call time: the patched ``CHECKPOINT_BASE`` when a test
+    changed it, else live profile-scoped HERMES_HOME — under the multiplexed gateway one process
+    serves every profile, so the import-time constant would write every profile's code-edit
+    checkpoints into the launch profile's store."""
+    return CHECKPOINT_BASE if CHECKPOINT_BASE != _CHECKPOINT_BASE_AT_IMPORT else get_hermes_home() / "checkpoints"
 
 _STORE_DIRNAME, _INDEXES_DIRNAME, _PROJECTS_DIRNAME, _LEDGERS_DIRNAME = "store", "indexes", "projects", "ledgers"
 _REFS_PREFIX, _LEGACY_PREFIX, _PRUNE_MARKER_NAME = "refs/hermes", "legacy-", ".last_prune"
@@ -104,7 +113,7 @@ def _project_hash(working_dir: str) -> str:
 
 
 def _store_path(base: Optional[Path] = None) -> Path:
-    return (base or CHECKPOINT_BASE) / _STORE_DIRNAME
+    return (base or _resolve_checkpoint_base()) / _STORE_DIRNAME
 
 
 def _store_has_head(store: Path) -> bool:
@@ -203,8 +212,14 @@ def _git_env(store: Path, working_dir: str, index_file: Optional[Path] = None) -
 
 def _git_subprocess(cmd: List[str], env: dict, timeout: int, cwd: Optional[str] = None):
     # creationflags suppresses the per-call conhost flash on Windows (no-op on POSIX).
-    return subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
-                          env=env, cwd=cwd, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+    # Text mode both replaces undecodable path bytes and normalizes CR/CRLF.
+    text_options = {} if "-z" in cmd else {"text": True, "encoding": "utf-8", "errors": "replace"}
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout, **text_options,
+                            env=env, cwd=cwd, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+    if "-z" in cmd:
+        result.stdout = os.fsdecode(result.stdout)
+        result.stderr = result.stderr.decode("utf-8", errors="replace")
+    return result
 
 
 def _repair_bare_repo_dirs(store: Path) -> None:
@@ -251,7 +266,9 @@ def _run_git(args: List[str], store: Path, working_dir: str, timeout: int = _GIT
         return False, "", str(exc)
 
     ok = result.returncode == 0
-    stdout, stderr = result.stdout.strip(), result.stderr.strip()
+    # NUL-delimited output contains literal paths, including leading spaces.
+    stdout = result.stdout if "-z" in args else result.stdout.strip()
+    stderr = result.stderr.strip()
     if not ok and result.returncode not in (allowed_returncodes or set()):
         logger.error("Git command failed: %s (rc=%d) stderr=%s",
                      " ".join(cmd), result.returncode, stderr)
@@ -508,7 +525,7 @@ class _ProjectRefs(NamedTuple):
 
 def _project_refs(working_dir: str) -> _ProjectRefs:
     abs_dir = str(_normalize_path(working_dir))
-    store, dir_hash = _store_path(CHECKPOINT_BASE), _project_hash(abs_dir)
+    store, dir_hash = _store_path(), _project_hash(abs_dir)
     return _ProjectRefs(abs_dir, store, dir_hash, _index_path(store, dir_hash), _ref_name(dir_hash))
 
 
@@ -583,7 +600,7 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            store, dir_hash = _store_path(CHECKPOINT_BASE), _project_hash(self.get_working_dir_for_path(str(path)))
+            store, dir_hash = _store_path(), _project_hash(self.get_working_dir_for_path(str(path)))
             _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
@@ -596,7 +613,7 @@ class CheckpointManager:
         if err:
             return err
 
-        (ok, names_out, err), = _diff_staged_tree(p, ["diff", "--name-only", commit_hash, "--cached"])
+        (ok, names_out, err), = _diff_staged_tree(p, ["diff", "--name-only", "-z", commit_hash, "--cached"])
         if not ok:
             return {"success": False, "error": f"Could not compute changed files: {err}"}
 
@@ -604,7 +621,7 @@ class CheckpointManager:
         if not ledger:
             return {"success": True, "restore": [], "skipped": [], "ledger_empty": True}
         out: Dict[str, List[str]] = {"restore": [], "skipped": []}
-        for rel in filter(None, (line.strip() for line in names_out.splitlines())):
+        for rel in filter(None, names_out.split("\x00")):
             abs_path = Path(p.abs_dir) / rel
             entry = ledger.get(str(abs_path))
             recorded = entry.get("sha256") if isinstance(entry, dict) else None
@@ -666,7 +683,7 @@ class CheckpointManager:
         Each entry carries the extra ``workdir`` key so callers can label which project a checkpoint belongs
         to.
         """
-        store = _store_path(CHECKPOINT_BASE)
+        store = _store_path()
         if not _store_has_head(store):
             return []
         results = [{**entry, "workdir": workdir}
@@ -855,7 +872,7 @@ class CheckpointManager:
             return
         ok, stdout, _ = _run_git(["ls-files", "--cached", "-z"], store, working_dir, index_file=index_file)
         abs_workdir = _normalize_path(working_dir)
-        # NUL-separated; _run_git's strip() leaves NULs alone.
+        # NUL-separated literal paths; whitespace is part of the file name.
         oversize = [rel for rel in (stdout if ok else "").split("\x00") if rel and self._exceeds_size_cap(abs_workdir / rel)]
         if not oversize:
             return
@@ -1054,7 +1071,7 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
     ``str``) binds orphan deletion to exactly what a ``store_status()`` preview showed — a project
     orphaned after the preview is skipped; ``None`` deletes every current orphan (``--force``,
     unattended).  ``max_total_size_mb > 0`` drops the oldest commit per project until the store fits."""
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     result = _empty_prune_result()
     if not base.exists():
         return result
@@ -1079,7 +1096,7 @@ def maybe_auto_prune_checkpoints(retention_days: int = 7, min_interval_hours: in
     """Idempotent wrapper around ``prune_checkpoints`` for startup hooks: writes
     ``CHECKPOINT_BASE/.last_prune`` so calls within ``min_interval_hours`` short-circuit.
     Returns ``{"skipped": bool, "result": prune dict, "error": optional str}``."""
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out: Dict[str, object] = {"skipped": False}
     try:
         if not base.exists():
@@ -1117,7 +1134,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     ``pre_v2_projects`` are repos still on the pre-v2 layout, distinct from the migrated
     ``legacy_archives``; an orphan-deletion preview must include both ``projects`` and
     ``pre_v2_projects`` since ``prune_checkpoints`` sweeps both."""
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out: Dict = {"base": str(base), "store_size_bytes": 0, "legacy_size_bytes": 0, "total_size_bytes": 0,
                  "project_count": 0, "projects": [], "pre_v2_projects": [], "legacy_archives": []}
     if not base.exists():
@@ -1147,7 +1164,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
 def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
     Returns ``{"bytes_freed": N, "deleted": bool}``."""
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out = {"bytes_freed": 0, "deleted": False}
     if not base.exists():
         return out
@@ -1162,7 +1179,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
 def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Delete all ``legacy-*`` archive directories.  Returns ``{"bytes_freed": N, "deleted": count}``."""
-    base = checkpoint_base or CHECKPOINT_BASE
+    base = checkpoint_base or _resolve_checkpoint_base()
     out = {"bytes_freed": 0, "deleted": 0}
     if not base.exists():
         return out

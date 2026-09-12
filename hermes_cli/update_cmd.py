@@ -147,13 +147,30 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
         record_step(step, ok, detail)
 
 
+# A fetch whose transport dead-stalls (HTTP/2 to GitHub on some networks, a black-holed proxy)
+# otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
+# minutes is generous for a scoped single-branch fetch and still ends in a real error.
+NETWORK_GIT_TIMEOUT_SECONDS = 300
+
+
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
-    terminal prompt so an HTTP 401 fails fast instead of hanging."""
-    return subprocess.run(
-        git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
-        text=True, encoding="utf-8", errors="replace", check=check,
-        **(_no_prompt_git_kwargs() if network else {}))
+    terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
+    try:
+        return subprocess.run(
+            git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", check=check,
+            **({"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}))
+    except subprocess.TimeoutExpired as exc:
+        # subprocess.run already killed the child; the checkout stays consistent because
+        # fetch writes to tmp_pack_* and only renames on success. Report as a failed run
+        # so every caller's existing stderr path prints one clear line.
+        result = subprocess.CompletedProcess(
+            exc.cmd, 124, stdout="",
+            stderr=f"git {args[0]} timed out after {NETWORK_GIT_TIMEOUT_SECONDS}s with no response from the remote")
+        if check:
+            raise subprocess.CalledProcessError(124, exc.cmd, output="", stderr=result.stderr) from exc
+        return result
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:
@@ -415,25 +432,50 @@ def _log_only_write(text: str) -> None:
         return
     stream = _m().sys.stdout
     log_file = getattr(stream, "_log", None)
-    if log_file is None:
-        return
     with suppress(Exception):
-        log_file.write(text if text.endswith("\n") else text + "\n")
-        log_file.flush()
+        if log_file is None:
+            log_path = get_hermes_home() / "logs" / "update.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as fallback:
+                fallback.write(text)
+        else:
+            log_file.write(text)
+            log_file.flush()
 
 
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):
-    """Run ``cmd`` with combined output captured into update.log only; returns the
-    ``CompletedProcess`` so the caller can surface the output on failure."""
-    # Check if there are updates. On shallow checkouts `rev-list --count` walks the truncated graph and can
-    # report the entire remote ancestry (e.g. "Found 9980 new commit(s)" on a depth-1 install — #53479). The
-    # zero/nonzero gate is still sound (HEAD == origin/<branch> counts 0), so keep it, but treat the shallow
-    # NUMBER as unknown and recover the real one via the GitHub compare API when possible.
-    result = subprocess.run(
-        cmd, cwd=cwd, env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace")
-    _log_only_write(result.stdout or "")
-    return result
+    """Stream combined build output to update.log, retaining it for failure reporting."""
+    import codecs
+    import io
+    from hermes_cli._subprocess_compat import kill_process_tree, windows_hide_flags
+
+    child_env = dict(os.environ if env is None else env)
+    child_env.setdefault("PYTHONUNBUFFERED", "1")
+    spawn = {"creationflags": windows_hide_flags()} if os.name == "nt" else {"process_group": 0}
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **spawn)
+    # read1 delivers partial lines too; incremental decoding preserves split UTF-8
+    # and the universal-newline behavior callers previously got from text=True.
+    decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder("utf-8")("replace"), True)
+    output = []
+    try:
+        while True:
+            chunk = proc.stdout.read1(8192)
+            text = decoder.decode(chunk, final=not chunk)
+            output.append(text)
+            _log_only_write(text)
+            if not chunk:
+                break
+        return subprocess.CompletedProcess(cmd, proc.wait(), stdout="".join(output))
+    except BaseException:
+        # Unlike Popen.__exit__, do not wait for a cancelled build to finish.
+        kill_process_tree(proc)
+        with suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5)
+        raise
+    finally:
+        proc.stdout.close()
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
@@ -488,6 +530,15 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if fetch_result.returncode != 0:
         _print_fetch_failure(fetch_result.stderr)
         sys.exit(1)
+
+    if is_shallow:
+        # The depth-1 fetch above leaves the previous tip behind as a ``.git/shallow`` graft
+        # (git never removes old grafts); prune the stale ones so the file stops growing and
+        # merge-base / the orphan-divergence heuristic keep working (#105951).
+        from hermes_cli.gitlock import prune_stale_shallow_grafts
+        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
     # rev-list on a bogus ref exits 128 and (check=True) would traceback; verify first.
     verify_result = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", compare_branch])
@@ -1287,6 +1338,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
         if swept:
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
+        # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
+        # (#105951); stale grafts break merge-base and push this run into the divergence path.
+        from hermes_cli.gitlock import prune_stale_shallow_grafts
+        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
+        if pruned:
+            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
 
         # Surface autostashes left by earlier updates (--keep-stash, failed restores).
         # Surface autostash entries left behind by earlier updates (#63717 problem 6) — parked --keep-stash

@@ -779,17 +779,13 @@ def skill_manage(
 
 # --- OpenAI Function-Calling Schema -------------------------------------------
 
-SKILL_MANAGE_SCHEMA = {
-    "name": "skill_manage",
-    # ONE advertised call shape (memory-tool pattern): the call IS an operations
-    # array. The legacy flat shape (top-level action/name/content/...) is still
-    # ACCEPTED for old transcripts and staged-write replay, but not advertised.
-    "description": (
+def _skill_manage_description(create_dir: str) -> str:
+    return (
         "Create, update, or delete skills — your procedural memory for "
         "recurring task types. The call is an operations array (a single "
         "edit is a list of one); it applies atomically — any failure rolls "
         "every touched skill back. Ops: create (full SKILL.md; lands in "
-        f"{_display_create_dir()}; must precede that skill's other "
+        f"{create_dir}; must precede that skill's other "
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "
@@ -799,7 +795,22 @@ SKILL_MANAGE_SCHEMA = {
         "imperative rule + why, no PR numbers/dates/incident narration, one "
         "rule per lesson, references/ named by topic (extend before adding). "
         "skill_view() shows format conventions."
-    ),
+    )
+
+
+def _skill_manage_schema_overrides() -> dict:
+    """Rebuild the create-dir hint from the ACTIVE profile at every get_definitions(): the
+    multiplexed gateway serves every profile from one process, so a path baked in at import
+    would name the launch profile's skills dir for everyone else (#95685)."""
+    return {"description": _skill_manage_description(_display_create_dir())}
+
+
+SKILL_MANAGE_SCHEMA = {
+    "name": "skill_manage",
+    # ONE advertised call shape (memory-tool pattern): the call IS an operations
+    # array. The legacy flat shape (top-level action/name/content/...) is still
+    # ACCEPTED for old transcripts and staged-write replay, but not advertised.
+    "description": _skill_manage_description("the profile's skills.create_dir"),
     "parameters": {
         "type": "object",
         "properties": {
@@ -881,7 +892,8 @@ from tools.registry import registry, tool_error
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
     handler=lambda args, **kw: _skill_manage_from(
-        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")))
+        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
+    dynamic_schema_overrides=_skill_manage_schema_overrides)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

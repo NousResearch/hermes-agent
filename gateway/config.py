@@ -42,37 +42,6 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
-def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
-    """Normalize the optional named-profile allowlist: ``None`` = serve all; a malformed
-    outer value fails safe to ``[]`` (default profile only); bad entries are skipped."""
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        logger.warning(
-            "Invalid gateway.multiplex_profile_allowlist (expected a list, got %s); "
-            "serving only the default profile",
-            type(value).__name__,
-        )
-        return []
-
-    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
-
-    normalized: List[str] = []
-    for entry in value:
-        if not isinstance(entry, str):
-            logger.warning("Skipping invalid gateway.multiplex_profile_allowlist entry %r (expected a profile name)", entry)
-            continue
-        try:
-            name = normalize_profile_name(entry)
-            validate_profile_name(name)
-        except ValueError:
-            logger.warning("Skipping invalid gateway.multiplex_profile_allowlist entry %r", entry)
-            continue
-        if name != "default" and name not in normalized:
-            normalized.append(name)
-    return normalized
-
-
 def _env_multiplex_profiles_override() -> "bool | None":
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
@@ -322,16 +291,15 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
 
 @dataclass
 class SessionResetPolicy:
-    """When sessions reset: "daily" (at ``at_hour``), "idle" (after ``idle_minutes``),
-    "both" (whichever first), "none" (default: only compression manages context)."""
+    """Inert legacy value type retained solely for the scheduled plugin-compat window.
+
+    Gateway configuration and session lifecycle do not consume this datatype.
+    """
     mode: str = "none"
     at_hour: int = 4  # 0-23, local time
     idle_minutes: int = 1440
     notify: bool = True  # Notify the user when auto-reset occurs
     notify_exclude_platforms: tuple = ("api_server", "webhook")
-    # A background process this old no longer blocks reset (not killed, only ignored by the guard).
-    # A forgotten preview server should not keep a session alive forever (#29177). Raise this if you run
-    # legitimate multi-day jobs whose liveness should pin the conversation open.
     bg_process_max_age_hours: int = 24
 
     def to_dict(self) -> Dict[str, Any]:
@@ -540,9 +508,6 @@ _TOPLEVEL_BOOL_DEFAULTS = {
 class GatewayConfig:
     """Main gateway configuration: platform connections, session policies, delivery settings."""
     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
-    default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
-    reset_by_type: Dict[str, SessionResetPolicy] = field(default_factory=dict)
-    reset_by_platform: Dict[Platform, SessionResetPolicy] = field(default_factory=dict)
     reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
     quick_commands: Dict[str, Any] = field(default_factory=dict)  # slash commands that bypass the agent loop
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -561,9 +526,8 @@ class GatewayConfig:
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
     # Opt-in: the default profile's gateway serves every profile on the host (profiles stamped into
-    # session keys, per-profile adapters/credentials). Allowlist None = serve all; [] = default only.
+    # session keys, per-profile adapters/credentials).
     multiplex_profiles: bool = False
-    multiplex_profile_allowlist: Optional[List[str]] = None
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -592,14 +556,13 @@ class GatewayConfig:
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
-        "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
+        "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
     )
 
     def __post_init__(self) -> None:
-        self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(self.multiplex_profile_allowlist)
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
     def get_connected_platforms(self) -> List[Platform]:
@@ -650,20 +613,9 @@ class GatewayConfig:
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         return self.platforms[platform].home_channel if self.platforms.get(platform) else None
 
-    def get_reset_policy(self, platform: Optional[Platform] = None, session_type: Optional[str] = None) -> SessionResetPolicy:
-        """Priority: platform override > type override > default."""
-        if platform and platform in self.reset_by_platform:
-            return self.reset_by_platform[platform]
-        if session_type and session_type in self.reset_by_type:
-            return self.reset_by_type[session_type]
-        return self.default_reset_policy
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             "platforms": {p.value: c.to_dict() for p, c in self.platforms.items()},
-            "default_reset_policy": self.default_reset_policy.to_dict(),
-            "reset_by_type": {k: v.to_dict() for k, v in self.reset_by_type.items()},
-            "reset_by_platform": {p.value: v.to_dict() for p, v in self.reset_by_platform.items()},
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
@@ -739,14 +691,6 @@ class GatewayConfig:
 
         return cls(
             platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
-            default_reset_policy=SessionResetPolicy.from_dict(data["default_reset_policy"])
-            if "default_reset_policy" in data
-            else SessionResetPolicy(),
-            reset_by_type={
-                type_name: SessionResetPolicy.from_dict(policy_data)
-                for type_name, policy_data in _coerce_dict(data.get("reset_by_type", {})).items()
-            },
-            reset_by_platform=by_platform("reset_by_platform", SessionResetPolicy.from_dict),
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",
@@ -754,7 +698,6 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            multiplex_profile_allowlist=pick("multiplex_profile_allowlist"),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
@@ -820,16 +763,6 @@ def load_gateway_config() -> GatewayConfig:
 
 def _validate_gateway_config(config: "GatewayConfig") -> None:
     """Validate and sanitize a loaded GatewayConfig in place (after all sources are merged)."""
-    policy = config.default_reset_policy
-
-    if not (0 <= policy.at_hour <= 23):
-        logger.warning("Invalid at_hour=%s (must be 0-23). Using default 4.", policy.at_hour)
-        policy.at_hour = 4
-
-    if policy.idle_minutes is None or policy.idle_minutes <= 0:
-        logger.warning("Invalid idle_minutes=%s (must be positive). Using default 1440.", policy.idle_minutes)
-        policy.idle_minutes = 1440
-
     try:
         # Reject known-weak placeholder tokens. Ported from openclaw/openclaw#64586: users who copy
         # .env.example without changing placeholder values get a clear startup error instead of a confusing

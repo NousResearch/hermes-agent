@@ -104,7 +104,8 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
         (
             ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
-            ("window", "window", 5), ("sort", "sort"), ("detail", "detail", "adaptive"),
+            ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
+            ("detail", "detail", "adaptive"),
         ),
         db=session_db, current_session_id=agent.session_id,
     )
@@ -115,7 +116,7 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
         "tools.memory_tool", "memory_tool", args,
         (
             ("action", "action"), ("target", "target", "memory"), ("content", "content"),
-            ("old_text", "old_text"), ("operations", "operations"),
+            ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
         store=agent._memory_store,
     )

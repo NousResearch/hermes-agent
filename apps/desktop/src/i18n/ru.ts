@@ -422,8 +422,7 @@ export const ru = defineLocale({
       archivedChats: 'Архив чатов',
       about: 'О программе',
       billing: 'Оплата',
-      notifications: 'Уведомления',
-      plugins: 'Плагины'
+      notifications: 'Уведомления'
     },
     plugins: {
       title: 'Плагины приложения',
@@ -437,26 +436,6 @@ export const ru = defineLocale({
       failed: 'ошибка',
       empty: 'Плагины приложения пока не установлены.',
       kinds: { bundled: 'встроенный', disk: 'на диске', runtime: 'runtime' },
-      agent: {
-        title: 'Плагины агента',
-        blurb:
-          'Плагины, установленные в бэкенд Hermes — инструменты, навыки, MCP-серверы, хуки и slash-команды. Переносимые — пакеты Agent Plugins (навыки + MCP-бандлы, работающие и в других агентах). Переключатели действуют для новых сеансов.',
-        appliesTo: 'Применяется к:',
-        empty: 'Плагины агента пока не установлены.',
-        loadFailed: 'Не удалось загрузить плагины агента',
-        portable: 'переносимый',
-        search: 'Поиск плагинов…',
-        noMatches: 'Плагины, подходящие под поиск, не найдены.',
-        toggleFailed: name => `Не удалось переключить ${name}`,
-        updateBackendToManage: 'Обновите бэкенд Hermes, чтобы управлять этим плагином из приложения.',
-        sources: {
-          bundled: 'встроенный',
-          user: 'пользовательский',
-          git: 'git',
-          project: 'проектный',
-          entrypoint: 'pip'
-        }
-      },
       installModal: {
         title: 'Установка плагина',
         description: 'Перед установкой посмотрите, что содержит этот репозиторий.',
@@ -464,7 +443,7 @@ export const ru = defineLocale({
         includesHeading: 'Состав пакета',
         agentLabel: 'Плагин агента',
         desktopLabel: 'UI приложения',
-        agentTargetLocal: profile => `Устанавливается в локальный бэкенд ${profile} (~/.hermes/plugins/)`,
+        agentTargetLocal: (profile, dir) => `Устанавливается в локальный бэкенд ${profile} (${dir})`,
         agentTargetRemote: profile => `Устанавливается в подключённый бэкенд ${profile}`,
         desktopTarget: 'Устанавливается в локальную папку desktop-plugins этого приложения',
         desktopOnlyNote: 'Пакеты только для приложения не устанавливают плагин агента.',
@@ -479,6 +458,11 @@ export const ru = defineLocale({
         gitCloneLabel: 'URL для git clone',
         enableAgent: 'Включить плагин агента после установки',
         forceReinstall: 'Принудительная переустановка (заменить, если уже установлен)',
+        pinToCommit: 'Закрепить на коммите (необязательно)',
+        pinToCommitPlaceholder: 'Полный SHA коммита (40 символов)',
+        pinToCommitHint:
+          'Все, кто установит этот SHA, получат одинаковый код; плагин перестанет обновляться до смены пина. Оставьте пустым для последнего коммита.',
+        pinToCommitInvalid: 'Нужен полный SHA коммита из 40 символов (ветки и теги не принимаются).',
         install: 'Установить',
         installing: 'Установка…',
         probing: 'Осмотр репозитория…',
@@ -584,6 +568,10 @@ export const ru = defineLocale({
       tabStripAuto: 'Авто',
       tabStripAlways: 'Всегда',
       tabStripNever: 'Никогда',
+      appActionsTitle: 'Действия приложения',
+      appActionsDesc: 'Где в заголовке окна сидят Настройки, Макет и HUD. Справа оставляют место для вкладок слева.',
+      appActionsLeft: 'Слева',
+      appActionsRight: 'Справа',
       terminalFontTitle: 'Шрифт терминала',
       terminalFontDesc:
         'Выберите установленный шрифт для терминалов приложения. Nerd Fonts отображают Powerlevel10k и иконки оболочки; оставьте пустым, чтобы использовать встроенный JetBrains Mono.',
@@ -1135,6 +1123,11 @@ export const ru = defineLocale({
       },
       cloudRefresh: 'Обновить',
       cloudConnect: 'Подключиться',
+      cloudSavedTitle: 'Сохранённые облачные шлюзы',
+      cloudSavedDesc:
+        'Используйте сохранённый шлюз без изменения шлюза по умолчанию. Войдите ниже, чтобы добавить экземпляры. Имена и вход — в списке сохранённых подключений.',
+      cloudUseSaved: 'Использовать шлюз',
+      cloudActive: 'Активен в этом окне',
       cloudConnecting: 'Подключение…',
       cloudDiscoverFailed: 'Не удалось загрузить агентов Hermes Cloud',
       cloudConnectFailed: 'Не удалось подключиться к этому агенту',
@@ -1660,6 +1653,10 @@ export const ru = defineLocale({
     resetToMine: 'Вернуться к моей карте'
   },
   agents: {
+    extendedTranscript: 'Подробный журнал',
+    transcriptTruncated: 'Последние 16 КиБ',
+    transcriptUnavailable: 'Текущий журнал недоступен',
+
     close: 'Закрыть агентов',
     title: 'Дерево запусков',
     subtitle: 'Активные субагенты текущего хода в реальном времени.',
@@ -1671,6 +1668,14 @@ export const ru = defineLocale({
     streaming: 'Стримится',
     files: 'Файлы',
     moreFiles: count => `+ещё ${count} ${RU_NOUN(count, 'файл', 'файла', 'файлов')}`,
+    moreAgents: count => `Ещё ${count} агентов`,
+    queued: 'В очереди',
+    waitingActivity: 'Ожидание активности',
+    steer: 'Направить',
+    steerPlaceholder: 'Инструкции этому субагенту',
+    steerQueued: 'В очереди до следующей контрольной точки',
+    stopRequested: 'Запрошена остановка',
+    requestRejected: 'Субагент не принял запрос',
     delegation: index => `Делегирование ${index}`,
     workers: count => `${count} ${RU_NOUN(count, 'воркер', 'воркера', 'воркеров')}`,
     workersActive: count => `${count} ${RU_NOUN(count, 'активен', 'активно', 'активных')}`,
@@ -1944,6 +1949,41 @@ export const ru = defineLocale({
     failedRevoke: name => `Не удалось отозвать ${name}`,
     pairingLockedOut: 'Слишком много неудачных одобрений — эта платформа заблокирована. Попробуйте позже.',
     waitingSince: minutes => (minutes < 1 ? 'только что' : `${minutes}м назад`),
+    restartNeeded: 'Сохранено. Перезапустите шлюз сообщений, чтобы применить новые настройки.',
+    restartNow: 'Перезапустить',
+    restarting: 'Перезапуск…',
+    restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
+    telegramQr: {
+      title: 'Выберите способ подключения Telegram-бота',
+      subtitle:
+        'Оба способа подключают бота под вашим контролем и сохраняют его данные только в этой установке Hermes.',
+      quickSetup: 'Быстрая настройка',
+      recommended: 'Рекомендуется',
+      quickHelp:
+        'Отсканируйте QR-код и подтвердите в Telegram. Hermes создаст бота и определит ваш Telegram ID автоматически.',
+      createWithQr: 'Создать по QR',
+      starting: 'Запуск…',
+      replaceWarning:
+        'Данные Telegram уже настроены. Новая QR-настройка или токен заменят текущего бота при сохранении.',
+      scanHint: 'Отсканируйте в приложении Telegram на телефоне или откройте ссылку на этом компьютере.',
+      waiting: 'Ожидание Telegram…',
+      expiresIn: remaining => `Истекает через ${remaining}`,
+      expired: 'Истёк',
+      openTelegram: 'Открыть Telegram',
+      ready: 'Бот создан',
+      allowedUsers: 'Разрешённые пользователи',
+      ownerDetected: 'Владелец определён',
+      addAtLeastOne: 'Добавьте хотя бы один Telegram ID.',
+      userIdPlaceholder: 'Telegram ID пользователя',
+      add: 'Добавить',
+      numericOnly: 'Telegram ID должны быть числовыми.',
+      saveAndRestart: 'Сохранить и перезапустить',
+      applying: 'Сохранение…',
+      pairingExpired: 'Срок QR-настройки истёк. Начните новую.',
+      stillWaiting: detail => `Всё ещё ждём Telegram. Повтор после: ${detail}`,
+      savedRestarting: 'Telegram сохранён; шлюз перезапускается…',
+      savedRestartFailed: detail => `Telegram сохранён; перезапуск шлюза не удался${detail}`
+    },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Токен бота',
@@ -2195,9 +2235,9 @@ export const ru = defineLocale({
     title: 'Запланированные задачи',
     count: count => `${count} ${RU_PLURAL(count, 'задача', 'задачи', 'задач')}`,
     modelImpact: {
-      title: 'Запланированные задачи требуют проверки',
+      title: 'Запланированные задачи остаются на исходной модели',
       message: count =>
-        `Будет пропущено ${count} ${RU_NOUN(count, 'задача', 'задачи', 'задач')} до тех пор, пока вы не проверите их настройки модели.`,
+        `${count} незакреплённых запланированных задач продолжат работать на модели, с которой были созданы. Закрепите их или задайте cron.model, чтобы перевести.`,
       detailMore: (names, remaining) => `${names} и ещё ${remaining}`,
       review: 'Проверить запланированные задачи',
       saveFailed: 'Hermes не сохранил это изменение модели.'
@@ -2388,13 +2428,23 @@ export const ru = defineLocale({
     missingBody: 'Этот артефакт больше нет в локальном реестре.'
   },
   sidebar: {
+    gatewayGroups: {
+      grouping: 'Шлюз и профиль',
+      rename: 'Переименовать группу',
+      aliasLabel: 'Отображаемое имя',
+      aliasHint: 'Меняется только отображаемое имя; имена шлюза и профиля остаются прежними.',
+      resetName: 'Сбросить имя',
+      moveUp: 'Переместить вверх',
+      moveDown: 'Переместить вниз',
+      reorder: 'Изменить порядок групп',
+      actions: 'Действия с группой'
+    },
     nav: {
       'new-session': 'Новый сеанс',
       skills: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: 'Запланированные задачи',
-      'session-import': 'Импортировать сессию'
+      cron: 'Запланированные задачи'
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',
@@ -2414,9 +2464,11 @@ export const ru = defineLocale({
     shiftClickHint: 'Shift-клик по чату, чтобы закрепить',
     noWorkspace: 'Без рабочего пространства',
     projectEmpty: 'Сеансов пока нет',
+    projectLoadFailed: 'Не удалось загрузить сеансы',
     noSessions: 'Сеансов пока нет',
     noFilterMatches: 'Нет сеансов по этим фильтрам',
     projects: {
+      showAllSessions: 'Показать все сессии',
       sectionLabel: 'Проекты',
       home: 'Главная',
       newButton: 'Новый проект',
@@ -2964,6 +3016,10 @@ export const ru = defineLocale({
       noReturn: 'Бэкенд не вернулся в сеть. Обновление могло не завершиться — проверьте хост бэкенда.'
     }
   },
+  guidedGreeting: {
+    line: 'Заходите. Я Hermes. Дайте мне пару минут — обустрою тут всё под вас, а потом займёмся тем, что вам правда нужно.\n\nДля начала: как к вам обращаться?',
+    nameSuggestion: (name: string) => `(Могу звать вас просто ${name}, если так удобнее.)`
+  },
   install: {
     stageStates: {
       pending: 'Ожидает',
@@ -3435,7 +3491,7 @@ export const ru = defineLocale({
     closeAll: 'Закрыть все',
     newSessionTab: 'Вкладка нового сеанса',
     pluginDisabled: pluginId => `Плагин «${pluginId}» отключён`,
-    pluginDisabledBody: 'Включите его снова в Настройки → Плагины, чтобы вернуть панель.',
+    pluginDisabledBody: 'Включите его снова в Возможности → Плагины, чтобы вернуть панель.',
     missingPane: paneId => `нет панели: ${paneId}`,
     editTitle: 'Раскладки',
     editHint: 'Выберите раскладку или перетащите панели между зонами.',
@@ -3726,6 +3782,9 @@ export const ru = defineLocale({
     resumeStrandedTitle: 'Не удалось загрузить этот сеанс',
     resumeStrandedBody:
       'Соединение с этим сеансом оборвалось, и автоматические повторные попытки исчерпаны. Проверьте, что шлюз работает, и попробуйте снова.',
+    poolSlotTimeoutBody:
+      'Все слоты локальных бэкендов профилей заняты. Увеличьте Warm Bot Backends в «Настройки» → «Дополнительно» или повторите попытку после освобождения неактивного бэкенда.',
+    poolSlotTimeoutOpenSettings: 'Открыть расширенные настройки',
     resumeRetry: 'Повторить',
     nothingToBranch: 'Нечего ветвить',
     branchNeedsChat: 'Начните или возобновите чат перед ветвлением.',

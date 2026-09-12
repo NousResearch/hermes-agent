@@ -24,6 +24,7 @@ import types
 import pytest
 
 from hermes_cli import mcp_startup
+from hermes_constants import hermes_home_key
 
 
 @pytest.fixture(autouse=True)
@@ -31,11 +32,11 @@ def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
     try:
-        mcp_startup._mcp_discovery_started = False
-        mcp_startup._mcp_discovery_thread = None
+        mcp_startup._mcp_discovery_started = set()
+        mcp_startup._mcp_discovery_thread = {}
         yield
     finally:
-        thread = mcp_startup._mcp_discovery_thread
+        thread = mcp_startup._current_home_thread()
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
@@ -135,7 +136,7 @@ def test_ensure_helper_starts_discovery_and_waits(monkeypatch):
     )
 
     # Discovery was started (thread created)
-    assert mcp_startup._mcp_discovery_thread is not None or waited
+    assert mcp_startup._current_home_thread() is not None or waited
     # Wait was called with single_query=True
     assert any(call[1] is True for call in waited)
 
@@ -146,12 +147,12 @@ def test_ensure_helper_is_idempotent(monkeypatch):
     logger = types.SimpleNamespace(debug=lambda *_a, **_k: None, warning=lambda *_a, **_k: None)
 
     mcp_startup.ensure_mcp_discovery_before_agent_build(logger=logger)
-    thread1 = mcp_startup._mcp_discovery_thread
+    thread1 = mcp_startup._current_home_thread()
     if thread1:
         thread1.join(timeout=2.0)
 
     mcp_startup.ensure_mcp_discovery_before_agent_build(logger=logger)
-    thread2 = mcp_startup._mcp_discovery_thread
+    thread2 = mcp_startup._current_home_thread()
     if thread2:
         thread2.join(timeout=2.0)
 
@@ -289,7 +290,7 @@ def test_wait_stays_bounded_when_discovery_is_slow(monkeypatch):
     stop = threading.Event()
     thread = threading.Thread(target=lambda: stop.wait(10), daemon=True)
     thread.start()
-    mcp_startup._mcp_discovery_thread = thread
+    mcp_startup._mcp_discovery_thread[hermes_home_key()] = thread
 
     try:
         start = time.monotonic()
@@ -306,7 +307,7 @@ def test_wait_stays_bounded_when_discovery_is_slow(monkeypatch):
 
 def test_wait_returns_instantly_when_discovery_done():
     """When discovery is already complete, the wait returns immediately."""
-    mcp_startup._mcp_discovery_thread = None
+    mcp_startup._mcp_discovery_thread.clear()
     t0 = time.time()
     mcp_startup.wait_for_mcp_discovery(single_query=True)
     assert time.time() - t0 < 0.2

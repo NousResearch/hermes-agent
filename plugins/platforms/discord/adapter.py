@@ -261,13 +261,14 @@ from gateway.platforms.helpers import (
 )
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
+    BasePlatformAdapter, SendResult,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
-from gateway.platforms._shared import profile_scoped as _profile_scoped_config_load
+from gateway.platforms._shared import yaml_env_setter as _yaml_env_setter
 
 
 async def _read_url_image_with_redirect_guard(
@@ -601,11 +602,12 @@ def check_discord_requirements() -> bool:
     return True
 
 
-def _build_allowed_mentions():
+def _build_allowed_mentions(extra: Optional[dict] = None):
     """Build Discord ``AllowedMentions`` denying @everyone/@here/roles by default (any LLM output
     with ``@everyone`` would otherwise ping the server); user / replied-user pings stay on.
 
-    Override via env (or ``discord.allow_mentions.*`` in config.yaml):
+    Override via ``discord.allow_mentions.*`` in config.yaml (``extra["allow_mentions"]``, per profile)
+    or env — a secondary multiplex profile never sees the default profile's env (#72348):
 
         DISCORD_ALLOW_MENTION_EVERYONE      default false  — @everyone + @here
         DISCORD_ALLOW_MENTION_ROLES         default false  — @role pings
@@ -614,12 +616,19 @@ def _build_allowed_mentions():
     """
     if not DISCORD_AVAILABLE:
         return None
-    _b = _env_bool
+    configured = (extra or {}).get("allow_mentions")
+    configured = configured if isinstance(configured, dict) else {}
+
+    def _b(name: str, key: str, default: bool) -> bool:
+        if (raw := configured.get(key)) is not None:
+            return str(raw).strip().lower() in {"true", "1", "yes", "on"}
+        return _env_bool(name, default)
+
     return discord.AllowedMentions(
-        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
-        roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
-        users=_b("DISCORD_ALLOW_MENTION_USERS", True),
-        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", "everyone", False),
+        roles=_b("DISCORD_ALLOW_MENTION_ROLES", "roles", False),
+        users=_b("DISCORD_ALLOW_MENTION_USERS", "users", True),
+        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", "replied_user", True),
     )
 
 
@@ -952,7 +961,7 @@ _DISCORD_PROMPT_TIMEOUT_MAX = 900
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name, "").strip().lower()
+    raw = _scoped_gate_env(name).lower()
     if not raw:
         return default
     return raw in {"true", "1", "yes", "on"}
@@ -982,7 +991,10 @@ def _read_discord_prompt_timeout() -> int:
     return seconds
 
 
-class DiscordAdapter(BasePlatformAdapter):
+from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+
+
+class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1096,7 +1108,7 @@ class DiscordAdapter(BasePlatformAdapter):
         extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
         value = extra.get(key)
         if value is None and env_key:
-            value = os.getenv(env_key)
+            value = _scoped_gate_env(env_key) or None
         return default if value is None or value == "" else value
 
     def _finite_positive_config_float(
@@ -1214,7 +1226,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
-                allowed_mentions=_build_allowed_mentions(),
+                allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
                 **proxy_kwargs_for_bot(proxy_url),
             )
             adapter_self = self  # capture for closure
@@ -1401,9 +1413,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             if other_bots_mentioned and not raw_self_mention:
                 return False, False
-            ignore_no_mention = os.getenv(
-                "DISCORD_IGNORE_NO_MENTION", "true"
-            ).lower() in {"true", "1", "yes"}
+            ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
                 parent_id = None
                 if hasattr(message.channel, "parent_id") and message.channel.parent_id:
@@ -2046,7 +2056,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if isinstance(value, str):
                 return value.strip().lower() in ("true", "1", "yes", "on")
             return bool(value)
-        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
+        raw = _scoped_gate_env("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
         return str(raw).strip().lower() in ("true", "1", "yes", "on")
 
     def _missed_message_backfill_channels(self) -> set[str]:
@@ -2069,7 +2079,7 @@ class DiscordAdapter(BasePlatformAdapter):
     def _missed_message_backfill_number(self, key: str, env_key: str, default, cast, lo, hi=None):
         """Numeric ``missed_message_backfill.<key>`` (dict extra wins over env), clamped to [lo, hi]."""
         configured = self.config.extra.get("missed_message_backfill")
-        raw = configured.get(key, default) if isinstance(configured, dict) else os.getenv(env_key, str(default))
+        raw = configured.get(key, default) if isinstance(configured, dict) else _scoped_gate_env(env_key, str(default))
         try:
             value = cast(raw)
         except (TypeError, ValueError):
@@ -2565,7 +2575,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _get_discord_command_sync_policy(self) -> str:
-        raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
+        raw = _scoped_gate_env("DISCORD_COMMAND_SYNC_POLICY", "safe").lower()
         if raw in _DISCORD_COMMAND_SYNC_POLICIES:
             return raw
         if raw:
@@ -2741,8 +2751,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``."""
+        return self._extra_or_env_flag("reactions", "DISCORD_REACTIONS", "true", truthy=False)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""
@@ -3139,149 +3149,7 @@ class DiscordAdapter(BasePlatformAdapter):
             success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
         )
 
-    async def _send_file_attachment(
-        self, chat_id: str, file_path: str, caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-    ) -> SendResult:
-        """Send a local file as a Discord attachment (forum channels get a new thread). Path-based
-        ``discord.File`` only: the open-handle form can race the multipart encoder after an image
-        batch and yield zero attachments — a silent drop for video/document MEDIA tags.
 
-        See #66797.
-        """
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        if not os.path.isfile(file_path):
-            return SendResult(success=False, error=f"File not found: {file_path}")
-        channel = await self._resolve_channel(chat_id)
-        if not channel:
-            return SendResult(success=False, error=f"Channel {chat_id} not found")
-        filename = file_name or os.path.basename(file_path)
-        logger.info(
-            "[%s] Sending file attachment %s (%s) to %s", self.name, filename,
-            os.path.splitext(filename)[1].lower() or "no-ext", chat_id,
-        )
-        # Path-based File (discord.py owns open/close); ``files=[...]`` over deprecated ``file=``.
-        discord_file = discord.File(file_path, filename=filename)
-        if self._is_forum_parent(channel):
-            result = await self._forum_post_file(
-                channel, content=(caption or "").strip(), files=[discord_file],
-            )
-            return result
-        msg = await channel.send(content=caption if caption else None, files=[discord_file])
-        attachments = getattr(msg, "attachments", None) or []
-        if not attachments:
-            # Discord accepted the message but attached nothing: fail loud instead of a silent drop.
-            # Discord accepted the message but attached nothing — the failure mode reported in #66797 (MEDIA
-            # video stripped from text, no attachment, no prior log line).
-            logger.warning(
-                "[%s] Discord returned message %s with no attachments for %s", self.name,
-                getattr(msg, "id", "?"), filename,
-            )
-            return SendResult(
-                success=False,
-                error=f"Discord accepted the message but attached no files ({filename})",
-                message_id=str(getattr(msg, "id", "") or "") or None,
-            )
-        return SendResult(success=True, message_id=str(msg.id))
-
-    async def send_multiple_images(
-        self, chat_id: str, images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
-    ) -> None:
-        """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
-        inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
-        if not self._client:
-            return
-        if not images:
-            return
-        try:
-            import discord as _discord_mod
-            import io as _io
-            from urllib.parse import unquote as _unquote
-        except Exception:  # pragma: no cover
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
-        try:
-            channel = await self._resolve_channel(chat_id)
-            if not channel:
-                logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
-                return
-        except Exception as e:
-            logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
-        CHUNK = 10
-        chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
-        for chunk_idx, chunk in enumerate(chunks):
-            if human_delay > 0 and chunk_idx > 0:
-                await asyncio.sleep(human_delay)
-            files: List[Any] = []
-            captions: List[str] = []
-            aiohttp_session = None
-            try:
-                for image_url, alt_text in chunk:
-                    if alt_text:
-                        captions.append(alt_text)
-                    if image_url.startswith("file://"):
-                        local_path = _unquote(image_url[7:])
-                        if not os.path.exists(local_path):
-                            logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
-                            continue
-                        files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
-                    else:
-                        if not is_safe_url(image_url):
-                            logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
-                            continue
-                        # Download to BytesIO so it renders inline
-                        try:
-                            import aiohttp as _aiohttp
-                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
-                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-                            if aiohttp_session is None:
-                                aiohttp_session = _aiohttp.ClientSession(**_sess_kw)
-                            status, data, headers = await _read_url_image_with_redirect_guard(
-                                aiohttp_session, image_url,
-                                timeout=_aiohttp.ClientTimeout(total=30), request_kwargs=_req_kw,
-                            )
-                            if status != 200:
-                                logger.warning(
-                                    "[%s] Failed to download image (HTTP %d) in batch: %s",
-                                    self.name, status, image_url[:80],
-                                )
-                                continue
-                            ext = _image_ext_from_content_type(headers.get("content-type", "image/png"))
-                            files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
-                        except Exception as dl_err:
-                            logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
-                            continue
-                if not files:
-                    continue
-                # Use the first caption if any (Discord only has one message body for the group)
-                content = captions[0] if captions else None
-                logger.info(
-                    "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
-                    self.name, len(files), chunk_idx + 1, len(chunks),
-                )
-                if self._is_forum_parent(channel):
-                    await self._forum_post_file(
-                        channel, content=(content or "").strip(), files=files,
-                    )
-                else:
-                    await channel.send(content=content, files=files)
-            except Exception as e:
-                logger.warning(
-                    "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
-                    self.name, chunk_idx + 1, len(chunks), e, exc_info=True,
-                )
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
-            finally:
-                if aiohttp_session is not None:
-                    try:
-                        await aiohttp_session.close()
-                    except Exception:
-                        pass
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
@@ -3292,71 +3160,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
-    async def send_voice(
-        self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
-    ) -> SendResult:
-        """Send audio as a Discord file attachment."""
-        try:
-            import io
-            channel = await self._resolve_channel(chat_id)
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
-            if not os.path.exists(audio_path):
-                return SendResult(success=False, error=f"Audio file not found: {audio_path}")
-            filename = os.path.basename(audio_path)
-            reference = self._reply_reference_for_send(reply_to, channel)
-            with open(audio_path, "rb") as f:
-                file_data = f.read()
-            # Forum channels reject POST /messages (native voice path too); create a thread post instead.
-            if self._is_forum_parent(channel):
-                forum_file = discord.File(io.BytesIO(file_data), filename=filename)
-                return await self._forum_post_file(
-                    channel, content=(caption or "").strip(), file=forum_file,
-                )
-            # Try sending as a native voice message via raw API (flags=8192).
-            try:
-                import base64
-                try:
-                    from mutagen.oggopus import OggOpus
-                    duration_secs = OggOpus(audio_path).info.length
-                except Exception:
-                    duration_secs = max(1.0, len(file_data) / 2000.0)
-                payload_data = {
-                    "flags": 8192,
-                    "attachments": [{
-                        "id": "0", "filename": "voice-message.ogg", "duration_secs": round(duration_secs, 2),
-                        "waveform": base64.b64encode(bytes([128] * 256)).decode(),
-                    }],
-                }
-                if reference is not None:
-                    payload_data["message_reference"] = {"message_id": str(reply_to), "fail_if_not_exists": False}
-                form = [
-                    {"name": "payload_json", "value": json.dumps(payload_data)},
-                    {
-                        "name": "files[0]", "value": file_data, "filename": "voice-message.ogg",
-                        "content_type": "audio/ogg",
-                    },
-                ]
-                msg_data = await self._client.http.request(
-                    discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
-                    form=form,
-                )
-                return SendResult(success=True, message_id=str(msg_data["id"]))
-            except Exception as voice_err:
-                logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
-                file = discord.File(io.BytesIO(file_data), filename=filename)
-                try:
-                    msg = await channel.send(file=file, reference=reference)
-                except Exception as send_err:
-                    if reference is not None and self._is_reply_reference_rejected(send_err):
-                        msg = await channel.send(file=file, reference=None)
-                    else:
-                        raise
-                return SendResult(success=True, message_id=str(msg.id))
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
-            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
 
     # --- Voice channel methods (join / leave / play) ---
 
@@ -4119,20 +3922,45 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.debug("[Discord] Could not schedule admin notify task: %s", e)
         return False
 
+    @staticmethod
+    async def _alert_adapters_and_config(runner, profile):
+        """``(adapter_map, gateway_config)`` of the profile owning this adapter. Default/primary: the
+        runner's own. Secondary: ``_profile_adapters[profile]`` and the config loaded under that
+        profile's runtime scope (its ``home_channel`` entries live in ITS config.yaml)."""
+        if not profile:
+            return runner.adapters, runner.config
+        adapters = runner._adapters_for_profile(profile)
+        if adapters is runner.adapters:  # profile IS the primary
+            return adapters, runner.config
+        from gateway.config import load_gateway_config
+        from gateway.run import _async_profile_runtime_scope
+        from hermes_cli.profiles import get_profile_dir
+        async with _async_profile_runtime_scope(get_profile_dir(profile)):
+            return adapters, load_gateway_config()
+
     async def _notify_unauthorized_slash(
         self, user_name: str, user_id: str, chan_id, guild_id, command_text: str, reason: str,
     ) -> None:
         """Best-effort operator alert: TELEGRAM first, then SLACK; no-op without a home channel.
-        A soft failure (``SendResult(success=False)``, e.g. rate-limit) continues the fallback chain."""
+        A soft failure (``SendResult(success=False)``, e.g. rate-limit) continues the fallback chain.
+        Under multiplex the alert stays inside THIS adapter's profile: its own adapter map (fail closed
+        when the profile has no Telegram/Slack bot) and its own home channels — never the default
+        profile's bot or channel, which is what a bare ``runner.adapters`` lookup resolves."""
         runner = getattr(self, "gateway_runner", None)
         if not runner:
             return
+        profile = getattr(self, "_owner_profile", None)
+        try:
+            adapters, config = await self._alert_adapters_and_config(runner, profile)
+        except Exception as e:
+            logger.debug("[Discord] Admin notify: profile %r resolution failed: %s", profile, e)
+            return
         for target in (Platform.TELEGRAM, Platform.SLACK):
             try:
-                adapter = runner.adapters.get(target)
+                adapter = adapters.get(target)
                 if not adapter:
                     continue
-                home = runner.config.get_home_channel(target)
+                home = config.get_home_channel(target)
                 if not home or not getattr(home, "chat_id", None):
                     continue
                 msg = (
@@ -4155,106 +3983,12 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("[Discord] Admin notify via %s failed: %s", target, e)
 
-    async def _send_local_file(self, chat_id, path, caption, *, file_name=None, not_found: str, kind: str, fallback):
-        """Native attachment upload for a local file; missing file -> error, other failure -> base adapter."""
-        try:
-            return await self._send_file_attachment(chat_id, path, caption, file_name=file_name)
-        except FileNotFoundError:
-            return SendResult(success=False, error=f"{not_found}: {path}")
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send %s, falling back to base adapter: %s", self.name, kind, e, exc_info=True)
-            return await fallback()
 
-    async def send_image_file(
-        self, chat_id: str, image_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send a local image file natively as a Discord file attachment."""
-        return await self._send_local_file(
-            chat_id, image_path, caption, not_found="Image file not found", kind="local image",
-            fallback=lambda: super(DiscordAdapter, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata),
-        )
 
-    async def _send_url_media(
-        self, chat_id: str, url: str, caption: Optional[str], *, kind: str,
-        filename_for, fallback, metadata: Optional[dict], error_metadata: Optional[dict],
-    ) -> SendResult:
-        """Download ``url`` and post it as a native attachment (Discord renders those inline).
-        ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure)."""
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        if not is_safe_url(url):
-            logger.warning("[%s] Blocked unsafe %s URL during Discord send_%s", self.name, kind, kind)
-            return await fallback(metadata)
-        try:
-            import aiohttp
-            channel = await self._resolve_channel(chat_id)
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
-            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="DISCORD_PROXY"))
-            async with aiohttp.ClientSession(**_sess_kw) as session:
-                status, data, headers = await _read_url_image_with_redirect_guard(
-                    session, url, timeout=aiohttp.ClientTimeout(total=30), request_kwargs=_req_kw,
-                )
-                if status != 200:
-                    raise Exception(f"Failed to download {kind}: HTTP {status}")
-                import io
-                file = discord.File(io.BytesIO(data), filename=filename_for(headers))
-                if self._is_forum_parent(channel):
-                    return await self._forum_post_file(channel, content=(caption or "").strip(), file=file)
-                msg = await channel.send(content=caption if caption else None, file=file)
-                return SendResult(success=True, message_id=str(msg.id))
-        except ImportError:
-            logger.warning("[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp", self.name, exc_info=True)
-            return await fallback(error_metadata)
-        except Exception as e:  # pragma: no cover - defensive logging
-            logger.error("[%s] Failed to send %s attachment, falling back to URL: %s", self.name, kind, e, exc_info=True)
-            return await fallback(error_metadata)
 
-    async def send_image(
-        self, chat_id: str, image_url: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send an image natively as a Discord file attachment."""
-        return await self._send_url_media(
-            chat_id, image_url, caption, kind="image",
-            filename_for=lambda h: f"image.{_image_ext_from_content_type(h.get('content-type', 'image/png'))}",
-            fallback=lambda md: super(DiscordAdapter, self).send_image(chat_id, image_url, caption, reply_to, metadata=md),
-            metadata=metadata, error_metadata=None,
-        )
 
-    async def send_animation(
-        self, chat_id: str, animation_url: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send an animated GIF natively as a Discord file attachment."""
-        return await self._send_url_media(
-            chat_id, animation_url, caption, kind="animation", filename_for=lambda _h: "animation.gif",
-            fallback=lambda md: super(DiscordAdapter, self).send_animation(chat_id, animation_url, caption, reply_to, metadata=md),
-            metadata=metadata, error_metadata=metadata,
-        )
 
-    async def send_video(
-        self, chat_id: str, video_path: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send a local video file natively as a Discord attachment."""
-        return await self._send_local_file(
-            chat_id, video_path, caption, not_found="Video file not found", kind="local video",
-            fallback=lambda: super(DiscordAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
-        )
 
-    async def send_document(
-        self, chat_id: str, file_path: str, caption: Optional[str] = None,
-        file_name: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send an arbitrary file natively as a Discord attachment."""
-        return await self._send_local_file(
-            chat_id, file_path, caption, file_name=file_name, not_found="File not found", kind="document",
-            fallback=lambda: super(DiscordAdapter, self).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata),
-        )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
@@ -4555,7 +4289,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 dropped_over_cap,
             )
         # Opt-in UX only: hide slash commands from non-admins; real gate is _check_slash_authorization.
-        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in {
+        if _scoped_gate_env("DISCORD_HIDE_SLASH_COMMANDS", "false").lower() in {
             "true", "1", "yes", "on",
         }:
             self._apply_owner_only_visibility(tree)
@@ -4827,12 +4561,13 @@ class DiscordAdapter(BasePlatformAdapter):
         """Boolean from ``config.extra[key]`` (str parsed permissively) else ``env_key``.
         ``truthy=True`` env values must be in {true,1,yes,on}; ``truthy=False`` env values are on
         unless in {false,0,no,off} — matching each flag's historical default shape."""
-        configured = self.config.extra.get(key)
+        extra = getattr(self.config, "extra", None)
+        configured = extra.get(key) if isinstance(extra, dict) else None
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        env = os.getenv(env_key, env_default).lower()
+        env = _scoped_gate_env(env_key, env_default).lower()
         return env in {"true", "1", "yes", "on"} if truthy else env not in {"false", "0", "no", "off"}
 
     def _discord_require_mention(self) -> bool:
@@ -4843,7 +4578,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
         configured = self.config.extra.get("max_attachment_bytes")
         if configured is None:
-            configured = os.getenv("DISCORD_MAX_ATTACHMENT_BYTES")
+            configured = _scoped_gate_env("DISCORD_MAX_ATTACHMENT_BYTES") or None
         if configured is None or configured == "":
             return 32 * 1024 * 1024
         try:
@@ -4965,7 +4700,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _get_allow_bots(self) -> str:
         """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""
-        return self._gate_env("DISCORD_ALLOW_BOTS", "none").lower().strip() or "none"
+        raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
+        return str(raw or "none").lower().strip() or "none"
 
     def _discord_free_response_channels(self) -> set:
         """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit."""
@@ -5045,10 +4781,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _discord_history_backfill(self) -> bool:
         """Return whether history backfill is enabled for shared sessions."""
-        configured = self.config.extra.get("history_backfill")
-        if configured is not None:
-            return self._extra_or_env_flag("history_backfill", "DISCORD_HISTORY_BACKFILL", "true", truthy=True)
-        return os.getenv("DISCORD_HISTORY_BACKFILL", "true").lower() in {"true", "1", "yes"}
+        return self._extra_or_env_flag("history_backfill", "DISCORD_HISTORY_BACKFILL", "true", truthy=True)
 
     def _discord_history_backfill_limit(self) -> int:
         """Max messages scanned backwards; a safety cap since scans usually stop at the bot's last message."""
@@ -5058,7 +4791,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 return int(configured)
             except (ValueError, TypeError):
                 pass
-        raw = os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
+        raw = _scoped_gate_env("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
         try:
             return int(raw)
         except (ValueError, TypeError):
@@ -5474,7 +5207,7 @@ class DiscordAdapter(BasePlatformAdapter):
     def _approval_mention_content(self) -> Optional[str]:
         """User mentions for approval prompts, gated on ``discord.approval_mentions``
         (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
-        if not _env_bool("DISCORD_APPROVAL_MENTIONS", False):
+        if not self._extra_or_env_flag("approval_mentions", "DISCORD_APPROVAL_MENTIONS", "false", truthy=True):
             return None
         user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
         if not user_ids:
@@ -5998,7 +5731,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -7226,16 +6959,18 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     Implements the ``apply_yaml_config_fn`` contract (#24836). Mirrors the legacy ``discord_cfg`` block that
     used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
     """
-    def _env_default(env_key: str, value) -> None:
-        # First-writer-wins: an explicit env var always beats the YAML value.
-        if not os.getenv(env_key):
-            os.environ[env_key] = value
+    # Every env write is first-writer-wins (an explicit env var beats YAML) and is skipped for a
+    # profile-scoped multiplex load: a secondary profile's settings must never land in process-global
+    # env where they'd become another profile's policy (#72348). Everything is seeded into extra too.
+    _env_default = _yaml_env_setter()
 
     def _csv(value) -> str:
         return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
+    seeded_extra = {}
     for key, env_key in _YAML_BOOL_ENV_KEYS:
         if key in discord_cfg:
+            seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools
             _env_default(env_key, str(discord_cfg[key]).lower())
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
@@ -7245,13 +6980,6 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             candidate_extra = discord_platform_cfg.get("extra")
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
-    seeded_extra = {}
-    # Gate keys are ALWAYS seeded into PlatformConfig.extra (per-profile lists); the os.environ writes
-    # below are first-writer-wins for legacy consumers and skipped for profile-scoped multiplex loads.
-    # The os.environ writes below remain first-writer-wins for legacy env-only consumers, but are skipped
-    # for profile-scoped loads under multiplex — a secondary profile's gates must never land in
-    # process-global env where they'd become another profile's policy. See #72348.
-    _skip_env_bridge = _profile_scoped_config_load()
 
     def _gate(key: str, env_key: str, *, from_platform_extra: bool, lower: bool = False) -> None:
         value = discord_cfg[key] if key in discord_cfg else (platform_extra_cfg.get(key) if from_platform_extra else None)
@@ -7259,21 +6987,23 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             return
         text = str(value).lower() if lower else _csv(value)
         seeded_extra[key] = text
-        if not _skip_env_bridge:
-            _env_default(env_key, text)
+        _env_default(env_key, text)
 
     _gate("allow_from", "DISCORD_ALLOWED_USERS", from_platform_extra=True)
     _gate("allowed_roles", "DISCORD_ALLOWED_ROLES", from_platform_extra=True)
     _gate("allow_all_users", "DISCORD_ALLOW_ALL_USERS", from_platform_extra=True, lower=True)
+    _gate("allow_bots", "DISCORD_ALLOW_BOTS", from_platform_extra=True, lower=True)
     approval_mentions_cfg = (
         discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
         else platform_extra_cfg.get("approval_mentions")
     )
     if approval_mentions_cfg is not None:
+        seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
     for key, env_key in (("auto_thread", "DISCORD_AUTO_THREAD"), ("reactions", "DISCORD_REACTIONS")):
         if key in discord_cfg:
+            seeded_extra[key] = discord_cfg[key]
             _env_default(env_key, str(discord_cfg[key]).lower())
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):
@@ -7283,13 +7013,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
+        seeded_extra["history_backfill"] = discord_cfg["history_backfill"]
         _env_default("DISCORD_HISTORY_BACKFILL", str(discord_cfg["history_backfill"]).lower())
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None:
+        seeded_extra["history_backfill_limit"] = hbl
         _env_default("DISCORD_HISTORY_BACKFILL_LIMIT", str(hbl))
     # allow_mentions: safe defaults live in the adapter; these keys only override when set.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):
+        seeded_extra["allow_mentions"] = dict(allow_mentions_cfg)
         for yaml_key in ("everyone", "roles", "users", "replied_user"):
             if yaml_key in allow_mentions_cfg:
                 _env_default(f"DISCORD_ALLOW_MENTION_{yaml_key.upper()}", str(allow_mentions_cfg[yaml_key]).lower())
@@ -7307,8 +7040,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             value = _websocket_liveness_cfg.get(legacy_key)
         if value is not None:
             seeded_extra[primary_key] = value
-            if env_key and not os.getenv(env_key):
-                os.environ[env_key] = str(value)
+            if env_key:
+                _env_default(env_key, str(value))
     return seeded_extra or None
 
 

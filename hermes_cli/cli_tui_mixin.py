@@ -387,6 +387,7 @@ class CLITuiMixin:
             *self._get_extra_tui_widgets(),
             getattr(self, "_pet_widget", None),
             getattr(self, "_stash_panel_widget", None),
+            getattr(self, "_subagent_dock_widget", None),
             status_bar,
             input_rule_top,
             image_bar,
@@ -401,6 +402,9 @@ class CLITuiMixin:
             if not self._app:
                 time.sleep(0.1)
                 continue
+            monitor = getattr(self, "_subagent_monitor", None)
+            if monitor is not None:
+                monitor.tick()
             if self._command_running:
                 self._invalidate(min_interval=0.1)
                 time.sleep(0.1)
@@ -684,6 +688,30 @@ class CLITuiMixin:
     def _get_sudo_display_fragments(self):
         if not self._sudo_state:
             return []
+        if code := self._sudo_state.get("vault_code"):
+            return self._render_sudo_style_panel(
+                f'🔐 Verification code for {code["site"]}',
+                [f'{code["site"]} is asking for a one-time code (text message, email or authenticator app).',
+                 'Type the code and press Enter; Hermes enters it into the page for you.',
+                 'Enter on an empty line skips. The model never sees the code.'])
+        if save := self._sudo_state.get("vault_save"):
+            if save["step"] == "identifier":
+                return self._render_sudo_style_panel(
+                    f'🔐 Save login for {save["site"]}',
+                    ['The agent reached a sign-in page with no saved login for this site.',
+                     'Type the email / username you sign in with (shown), then Enter.',
+                     'Enter on an empty line skips. Nothing here is shown to the model.'])
+            return self._render_sudo_style_panel(
+                f'🔐 Save login for {save["site"]}',
+                ['Now the password (hidden). It is encrypted on this machine, bound to',
+                 f'{save["origin"]}, and filled into the page without the model ever seeing it.',
+                 'Enter on an empty line skips.'])
+        if backend := self._sudo_state.get("vault_backend"):
+            return self._render_sudo_style_panel(
+                f'🔐 Unlock {backend}',
+                [f'The agent wants to sign into a site with a login saved in {backend}.',
+                 'Type your master password (hidden) to unlock it for this session.',
+                 'Enter on an empty line keeps it locked. The model never sees the password.'])
         return self._render_sudo_style_panel(
             '🔐 Sudo Password Required', ['Enter password below (hidden), or press Enter to skip'])
 
@@ -709,6 +737,9 @@ class CLITuiMixin:
     def _tui_hint_text(self):
         for state_attr, deadline_attr, hint in self._TUI_MODAL_HINTS:
             if getattr(self, state_attr):
+                if state_attr == "_sudo_state" and ((self._sudo_state.get("vault_save") or {}).get("step") == "identifier"
+                                                    or self._sudo_state.get("vault_code")):
+                    hint = '  shown as you type · Enter to continue'
                 remaining = max(0, int(getattr(self, deadline_attr) - time.monotonic()))
                 return [('class:hint', hint), ('class:clarify-countdown', f'  ({remaining}s)')]
         if self._clarify_state:
@@ -739,6 +770,10 @@ class CLITuiMixin:
         if self._voice_processing:
             return "transcribing..."
         if self._sudo_state:
+            if (self._sudo_state.get("vault_save") or {}).get("step") == "identifier":
+                return "type your email / username, Enter to continue · ESC to skip"
+            if self._sudo_state.get("vault_code"):
+                return "type the code, Enter to submit · ESC to skip"
             return "type password (hidden), Enter to submit · ESC to skip"
         if self._secret_state:
             return "type secret (hidden), Enter to submit · ESC to skip"
@@ -1452,8 +1487,9 @@ class CLITuiMixin:
             event.app.invalidate()
             return True
         if self._secret_state:
-            self._submit_secret_response(buf.text)
+            value = buf.text
             buf.reset()
+            self._submit_secret_response(value)
             event.app.invalidate()
             return True
         if self._approval_state:
@@ -1853,6 +1889,12 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
+        from hermes_cli.cli_subagent_monitor import modal_prompt_active, open_monitor, toggle_dock
+        for key in ('c-t', 'f6'):
+            kb.add(key, filter=Condition(lambda: not modal_prompt_active(self)))(
+                lambda event: open_monitor(self))
+        kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
+            lambda event: toggle_dock(self))
         return kb
 
     def _tui_bind_editor_and_stash(self, kb) -> None:
@@ -2000,6 +2042,8 @@ class CLITuiMixin:
     def _tui_build_layout(self, kb):
         """Build the TUI widgets, Layout and Style; registers wrapper keybindings on ``kb``."""
         cli_ref = self
+        from hermes_cli.cli_subagent_monitor import install_dock
+        install_dock(self)
         input_area = self._tui_build_input_area()
         spinner_widget = Window(
             content=FormattedTextControl(self._tui_spinner_text),
@@ -2135,7 +2179,10 @@ class CLITuiMixin:
         # Mask input with '*' while a sudo/secret prompt is active.
         input_area.control.input_processors.append(ConditionalProcessor(
             PasswordProcessor(),
-            filter=Condition(lambda: bool(cli_ref._sudo_state) or bool(cli_ref._secret_state))))
+            filter=Condition(lambda: (bool(cli_ref._sudo_state)
+                                      and (cli_ref._sudo_state.get("vault_save") or {}).get("step") != "identifier"
+                                      and not cli_ref._sudo_state.get("vault_code"))
+                             or bool(cli_ref._secret_state))))
 
         class _PlaceholderProcessor(Processor):
             """Render grayed-out placeholder text inside the input when empty."""

@@ -172,7 +172,8 @@ def _unscoped_profile_secrets() -> Dict[str, str]:
 
 
 def _scoped_platform_setting(env_name, extra, key):
-    """Raw non-secret setting; in a secondary profile scope ``os.environ`` is the DEFAULT profile's, so ``extra`` wins.
+    """Raw non-secret setting; in a secondary profile scope ``os.environ`` is the DEFAULT profile's, so the
+    profile's own secret scope (its ``.env``) stands in for env and ``extra`` is the fallback.
 
     Inside a secondary profile scope ``os.environ`` holds the DEFAULT profile's YAML-to-env bridge output
     (#98738), so the profile's ``PlatformConfig.extra`` is authoritative and env is not consulted: a missing
@@ -181,14 +182,18 @@ def _scoped_platform_setting(env_name, extra, key):
     under multiplexing — the legacy ``os.getenv`` read is returned unchanged, so env-over-config precedence
     is preserved.
     """
-    return (extra or {}).get(key) if _profile_scoped() else os.getenv(env_name)
+    if _profile_scoped():
+        scoped = _get_scoped_secret(env_name)
+        return scoped if scoped is not None else (extra or {}).get(key)
+    return os.getenv(env_name)
 
 
 logger = logging.getLogger(__name__)
 
 from gateway.platforms.base import (
-    BasePlatformAdapter, CachedMedia, SendResult, MessageEvent, MessageType, cache_media_bytes_async,
+    BasePlatformAdapter, CachedMedia, SendResult, cache_media_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
 
@@ -412,10 +417,9 @@ def _normalize_user_ref(ref: str) -> Optional[str]:
 
 def _reply_to_mode(config, extra: dict) -> str:
     """Reply mode ("first"/"all" thread, "off" posts flat); env overrides config, ``reply_in_thread: false`` = "off"."""
-    mode = str(os.getenv("BUZZ_REPLY_TO_MODE") or getattr(config, "reply_to_mode", "first") or "first").strip().lower()
-    rit = os.getenv("BUZZ_REPLY_IN_THREAD")
-    if rit is None:
-        rit = extra.get("reply_in_thread")
+    mode_env = _get_scoped_secret("BUZZ_REPLY_TO_MODE") if _profile_scoped() else os.getenv("BUZZ_REPLY_TO_MODE")
+    mode = str(mode_env or getattr(config, "reply_to_mode", "first") or "first").strip().lower()
+    rit = _setting_or("BUZZ_REPLY_IN_THREAD", extra, "reply_in_thread", None)
     return "off" if rit is not None and str(rit).strip().lower() in ("false", "0", "no", "off") else mode
 
 
@@ -656,7 +660,7 @@ class BuzzAdapter(BasePlatformAdapter):
         # Entries may be hex or npub (normalized to hex). Reaction-only identities get a 👀 on explicit tags but
         # never dispatch; allowed_users wins on overlap.
         self._allowed_pubkeys: set = _pubkey_set(_setting_or("BUZZ_ALLOWED_USERS", extra, "allowed_users", []))
-        self._reaction_only_pubkeys: set = _pubkey_set(os.getenv("BUZZ_REACTION_ONLY_USERS") or extra.get("reaction_only_users", []))
+        self._reaction_only_pubkeys: set = _pubkey_set(_setting_or("BUZZ_REACTION_ONLY_USERS", extra, "reaction_only_users", []))
         # Secret — resolved lazily (never at import time, never logged); connect() re-resolves.
         self._private_key = self._auth_tag = ""
         # Identity — filled in by connect() from ``buzz users get``
@@ -1930,11 +1934,11 @@ def _profile_buzz_extra() -> dict:
 def check_requirements() -> bool:
     """Check if Buzz is configured: a relay URL plus a resolvable key."""
     if _profile_scoped():
-        # Secondary profile: os.environ's BUZZ_* are the default profile's and must not satisfy the gate.
-        # Consult the profile's own config.yaml (via the scoped home override) and its secret scope instead;
+        # Scoped profile: os.environ's BUZZ_* may be another profile's and must not satisfy the gate.
+        # Consult the profile's own .env (secret scope) and config.yaml (scoped home override) instead;
         # an unconfigured profile fails closed. See #98738.
         extra = _profile_buzz_extra()
-        return bool(str(extra.get("relay_url") or "").strip() and _resolve_private_key(extra))
+        return bool(_configured_relay(extra) and _resolve_private_key(extra))
     # The gate runs before per-profile scopes install; the relay can be externally managed too.
     return bool((_get_scoped_secret("BUZZ_RELAY_URL", "") or "").strip()) and bool(_resolve_private_key())
 
@@ -1996,30 +2000,26 @@ def _apply_yaml_config(yaml_cfg: dict, buzz_cfg: dict) -> Optional[dict]:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed ``PlatformConfig.extra`` from env so env-only setups show in gateway status; None if unconfigured."""
-    if _profile_scoped():
-        # Process env holds the default profile's BUZZ_*; never fabricate Buzz for a secondary profile.
-        return None
-    # Secondary profile scope (#98738): the process env's BUZZ_* values are the default profile's
-    # configuration, not this profile's — env enablement must not fabricate a Buzz platform for a profile
-    # that did not configure one.
-    relay = os.getenv("BUZZ_RELAY_URL", "").strip()
+    """Seed ``PlatformConfig.extra`` from the owning profile's env so env-only setups show in gateway
+    status; None if unconfigured. Reads go through the profile scope: a served secondary sees only its
+    own ``.env`` (#98738 — the process env is the DEFAULT profile's and must not fabricate Buzz here)."""
+    relay = str(_get_scoped_secret("BUZZ_RELAY_URL", "") or "").strip()
     if not relay or not _resolve_private_key():
         return None
     seed: dict = {"relay_url": relay}
-    if channels := os.getenv("BUZZ_CHANNELS", "").strip():
+    if channels := str(_get_scoped_secret("BUZZ_CHANNELS", "") or "").strip():
         seed["channels"] = [c.strip() for c in channels.split(",") if c.strip()]
-    if interval := os.getenv("BUZZ_POLL_INTERVAL", "").strip():
+    if interval := str(_get_scoped_secret("BUZZ_POLL_INTERVAL", "") or "").strip():
         try:
             seed["poll_interval"] = float(interval)
         except ValueError:
             pass
-    if cli_path := os.getenv("BUZZ_CLI_PATH", "").strip():
+    if cli_path := str(_get_scoped_secret("BUZZ_CLI_PATH", "") or "").strip():
         seed["cli_path"] = cli_path
     # Cron delivery target; defaults to the first watched channel.
-    home = os.getenv("BUZZ_HOME_CHANNEL", "").strip() or (seed.get("channels") or [""])[0]
+    home = str(_get_scoped_secret("BUZZ_HOME_CHANNEL", "") or "").strip() or (seed.get("channels") or [""])[0]
     if home:
-        seed["home_channel"] = {"chat_id": home, "name": os.getenv("BUZZ_HOME_CHANNEL_NAME", home)}
+        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("BUZZ_HOME_CHANNEL_NAME", home)}
     return seed
 
 

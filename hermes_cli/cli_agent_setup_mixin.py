@@ -124,7 +124,9 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
         if display_kind == "hidden":
             continue
         if display_kind in _RESUME_EVENT_TEXT:
-            entries.append(("event", _RESUME_EVENT_TEXT[display_kind]))
+            metadata = msg.get("display_metadata") or {}
+            label = metadata.get("display_text") if display_kind == "async_delegation_complete" else None
+            entries.append(("event", _sanitize_display_text(label or _RESUME_EVENT_TEXT[display_kind])))
             continue
         if role == "user":
             text = _sanitize_display_text(_user_display_text(content))
@@ -196,6 +198,11 @@ class CLIAgentSetupMixin:
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
+        if resolved_provider != "nous":
+            # An explicit provider carries inference. The free-tier identity (for connectors) was
+            # created by the boot bootstrap before this point, never here; this prints the one-time
+            # "free tier is here" notice the first time an identity is seen beside an own key.
+            self._maybe_print_free_tier_available_notice()
         resolved_routing = (
             resolved_provider, runtime.get("api_mode", self.api_mode), runtime.get("command"),
             list(runtime.get("args") or []))
@@ -261,6 +268,20 @@ class CLIAgentSetupMixin:
             self.agent = None
             self._active_agent_route_signature = None
         return True
+
+    def _maybe_print_free_tier_available_notice(self) -> None:
+        """One-time notice for installs whose inference is carried by an explicit provider: the free
+        tier (inference + connectors) now exists. Printed the first time an identity is present, then
+        flagged on that identity so it never repeats. Never blocks or raises."""
+        from cli import logger
+        try:
+            from hermes_cli import anon_auth
+            if not anon_auth.guest_notice_pending():
+                return
+            self._console_print(f"[dim]{anon_auth.FREE_TIER_AVAILABLE_NOTICE}[/]")
+            anon_auth.mark_guest_notice_shown()
+        except Exception as exc:
+            logger.debug("free tier availability notice skipped: %s", exc)
 
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in
@@ -516,7 +537,7 @@ class CLIAgentSetupMixin:
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"), acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
-                max_tokens=self.max_tokens, max_iterations=self.max_turns,
+                max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose, quiet_mode=not self.verbose,
@@ -554,10 +575,10 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
-            # Route agent status output through prompt_toolkit so ANSI escapes
-            # aren't garbled by patch_stdout's StdoutProxy.
-            # See #2262.
-            self.agent._print_fn = _cprint
+            # Route agent status output through prompt_toolkit so ANSI escapes aren't garbled by
+            # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
+            # subagent/background completion notice never splits the reply mid-paragraph.
+            self.agent._print_fn = self._agent_status_print
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:

@@ -192,12 +192,14 @@ def uninstall_gateway_service():
 
 def _remove_systemd_gateway() -> bool:
     """Linux: uninstall systemd services (both user and system scopes)."""
-    from hermes_cli.gateway import _systemctl_cmd, get_service_name, get_systemd_unit_path
+    from hermes_cli.gateway import (
+        _systemctl_cmd, _systemd_unit_belongs_to_current_home, get_service_name, get_systemd_unit_path,
+    )
     svc_name = get_service_name()
     removed_any = False
     for is_system, scope in ((False, "user"), (True, "system")):
         unit_path = get_systemd_unit_path(system=is_system)
-        if not unit_path.exists():
+        if not unit_path.exists() or not _systemd_unit_belongs_to_current_home(is_system):
             continue
         try:
             if is_system and os.geteuid() != 0:  # windows-footgun: ok — Linux-only systemd path

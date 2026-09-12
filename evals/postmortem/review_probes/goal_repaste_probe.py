@@ -35,7 +35,7 @@ from cli import HermesCLI
 from hermes_cli import cli_commands_mixin, goals
 from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from tui_gateway import server
 

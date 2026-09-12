@@ -45,6 +45,7 @@ from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
 from hermes_cli.cli_voice_mixin import CLIVoiceMixin
 from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
 from hermes_cli.cli_tui_mixin import CLITuiMixin
+from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 from agent.interrupt_compat import request_hard_interrupt
 from agent.pet import render as pet_render
 
@@ -2407,7 +2408,7 @@ def save_config_value(key_path: str, value: any) -> bool:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
-        # Same fail-closed cron drift warning as `hermes config set` for every model switch.
+        # Same unpinned-cron notice as `hermes config set` for every model switch.
         from hermes_cli.config import warn_unpinned_cron_jobs_after_model_config_change
 
         warn_unpinned_cron_jobs_after_model_config_change(key_path, value)
@@ -2526,7 +2527,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -2618,7 +2619,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         # Streaming display state
         self._stream_buf = ""  # partial line buffer
         self._reasoning_preview_buf = ""  # coalesces tiny reasoning chunks
-        self._stream_started = self._stream_box_opened = False
+        self._stream_started = self._stream_box_opened = self._stream_box_live = False
+        self._held_status_lines: list[str] = []  # agent status lines parked while a box streams
         # Possible markdown-table lines held until the block ends for wcwidth-aware re-padding.
         self._stream_table_buf: list[str] = []
         self._in_stream_table = False
@@ -2669,9 +2671,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         # A ``moa:<preset>`` model string selects the MoA virtual provider in one shot (parity with
         # interactive ``/moa`` and the model picker). See #56828.
         _moa_provider_override, self.model = _normalize_moa_model(self.model)
-        _env_mt = os.environ.get("HERMES_MAX_TOKENS")
-        _mt = _model_config.get("max_tokens")
-        self.max_tokens = _int_or(_env_mt, None) if _env_mt else (_mt if isinstance(_mt, int) else None)
+
         if self.model == "":  # auto-detect from a local server
             _base_url = _model_config.get("base_url") or ""
             if base_url_hostname(_base_url) in ("localhost", "127.0.0.1"):
@@ -2958,7 +2958,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         if self._active_session_lease is not None:
             return True
         try:
-            from hermes_cli.active_sessions import try_acquire_active_session
+            from hermes_cli.active_sessions import format_refusal_stderr, try_acquire_active_session
 
             lease, message = try_acquire_active_session(
                 session_id=self.session_id,
@@ -2972,7 +2972,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             logger.warning("Failed to claim active session slot: %s", exc)
             return True
         if message:
-            print(message, file=sys.stderr) if stderr else self._console_print(f"[bold red]{message}[/]")
+            print(format_refusal_stderr(message), file=sys.stderr) if stderr else self._console_print(f"[bold red]{message}[/]")
             return False
         self._active_session_lease = lease
         with suppress(Exception):
@@ -3000,6 +3000,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
+        from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+        set_unlock_prompt_callback(self._vault_unlock_callback)
+        set_save_login_prompt_callback(self._vault_save_login_callback)
+        set_code_prompt_callback(self._vault_code_callback)
         try:
             from tools.computer_use_tool import set_approval_callback as _set_cu_cb
 
@@ -3379,37 +3383,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
         return True
 
-    def _owns_process_notification(self, event: dict) -> bool:
-        """Whether this session owns a delegation event (pre-compression keys resolve to their continuation; fail closed)."""
-        event_key = str(event.get("session_key") or "")
-        current_key = str(getattr(self, "session_id", "") or "")
-        if not event_key or not current_key:
-            return False
-        if event_key == current_key:
-            return True
-        try:
-            session_db = getattr(self, "_session_db", None)
-            resolved_key = (
-                session_db.resolve_resume_session_id(event_key) if session_db is not None else event_key
-            ) or event_key
-        except Exception:
-            resolved_key = event_key
-        return str(resolved_key) == current_key
-
-    def _drain_process_notifications(self, consumer: str) -> None:
-        """Queue background notifications owned by this session (drained with our stable identity so another window can't claim them)."""
-        from tools.process_registry import process_registry
-        from tools.async_delegation import claim_event_delivery, complete_event_delivery
-
-        for event, synthetic_message in process_registry.drain_notifications(
-            session_key=getattr(self, "session_id", "") or "", owns_event=self._owns_process_notification,
-        ):
-            claim = claim_event_delivery(event, consumer)
-            if claim is None:
-                continue
-            self._pending_input.put(synthetic_message)
-            complete_event_delivery(event, claim)
-
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray ``_interrupt_queue`` messages into ``_pending_input`` after every turn.
 
@@ -3474,20 +3447,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             with suppress(Exception):
                 step()
 
-    def _tui_unwrap_input(self, user_input):
-        """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""
-        # Voice-transcribed messages arrive wrapped in a sentinel so only genuine STT output gets the voice
-        # prefix (#65827).
-        is_voice_input = isinstance(user_input, _VoiceInputMessage)
-        if is_voice_input:
-            user_input = user_input.text
-        is_seeded_query = isinstance(user_input, _SeededQueryMessage)
-        if is_seeded_query:
-            user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
-        return user_input, is_voice_input, is_seeded_query
-
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
+        from tools.process_registry_notifications import SubagentNotification
+        notification_preview = user_input if isinstance(user_input, SubagentNotification) else None
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
@@ -3534,7 +3497,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
         print()
-        self._print_user_message_preview(user_input)
+        self._print_user_message_preview(notification_preview or user_input)
 
         if submit_images:
             n = len(submit_images)
@@ -3545,7 +3508,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         self._turn_summary_begin()
         self._app.invalidate()
         try:
-            self.chat(user_input, images=submit_images or None, voice_input=is_voice_input)
+            self.chat(notification_preview or user_input, images=submit_images or None, voice_input=is_voice_input)
         finally:
             self._tui_after_turn()
 
@@ -3981,8 +3944,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         with suppress(Exception):
             from tools.voice_mode import cleanup_temp_recordings
             cleanup_temp_recordings()
-        for _unset in (set_sudo_password_callback, set_approval_callback, set_secret_capture_callback):
+        from agent.vault_backends.unlock import (lock as _vault_lock, set_code_prompt_callback,
+                                                 set_save_login_prompt_callback, set_unlock_prompt_callback)
+        for _unset in (set_sudo_password_callback, set_approval_callback, set_secret_capture_callback,
+                       set_unlock_prompt_callback, set_save_login_prompt_callback, set_code_prompt_callback):
             _unset(None)
+        _vault_lock()  # session tokens for external password managers die with the session
         # On SIGHUP/SIGTERM the agent thread may be reaped before its own persistence runs.
         self._persist_active_session_before_close()
 
@@ -4096,9 +4063,17 @@ def _sync_cli_session_id_from_agent(cli) -> None:
 
 
 def _run_quiet_single_query(cli, effective_query):
-    """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code."""
+    """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
+    HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it."""
+    from agent.interrupt_compat import _accepts_keyword
+    from agent.turn_author import take_turn_author_from_env
+
+    author = take_turn_author_from_env()
+    author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
     try:
-        result = cli.agent.run_conversation(user_message=effective_query, conversation_history=cli.conversation_history)
+        result = cli.agent.run_conversation(
+            user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
+        )
     except KeyboardInterrupt:
         _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)

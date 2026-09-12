@@ -1,6 +1,4 @@
-"""SessionStore reset/expiry policy and crash-recovery markers (idle/daily reset, expiry
-finalization, active-turn tokens, resume_pending, suspension, pruning) plus the shared clock/id
-helpers. Mixin split out of ``gateway/session.py``; bound onto ``SessionStore`` via the MRO."""
+"""SessionStore explicit suspension, crash-recovery markers, pruning and shared clock/id helpers."""
 
 from __future__ import annotations
 
@@ -46,8 +44,7 @@ _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
 def auto_continue_freshness_window() -> float:
-    """Auto-continue freshness window in seconds (one source of truth for the resume scheduler and
-    the routing-time zombie gate); env var, default when unset/malformed; non-positive disables."""
+    """Resume-scheduler freshness window; stale automation never discards the transcript."""
     raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
     try:
         return float(raw) if raw else float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
@@ -56,72 +53,7 @@ def auto_continue_freshness_window() -> float:
 
 
 class SessionLifecycleMixin:
-    """SessionStore reset/expiry policy and crash-recovery markers."""
-
-    def set_expiry_finalized(
-        self, entry: SessionEntry, *, clear_model_override: bool = True
-    ) -> None:
-        """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db (single
-        write-path for the expiry watcher). ``clear_model_override=False`` = flag only."""
-        with self._lock:
-            entry.expiry_finalized = True
-            if clear_model_override:
-                # Finalization is a conversation boundary: a later message must not rehydrate it.
-                entry.model_override = None
-            self._save()
-        # Background caller never entered ``_profile_runtime_scope``: resolve the store by key.
-        # The expiry watcher calls this from a background task that never entered
-        # ``_profile_runtime_scope``, so resolve the store from the key rather than from the ambient scope
-        # (#66887).
-        _db = self._db_for_key(entry.session_key)
-        if not _db:
-            return
-        setter = getattr(_db, "set_expiry_finalized", None)
-        if callable(setter):
-            try:
-                setter(entry.session_id, True)
-            except Exception as exc:
-                logger.debug("Session DB expiry_finalized write failed for %s: %s", entry.session_id, exc)
-        try:
-            # Without a durable ``session_reset`` end_reason, later agent cleanup ends the row as
-            # ``agent_close``, which stale-route recovery treats as resumable.
-            _db.promote_to_session_reset(entry.session_id)
-        except Exception as exc:
-            logger.debug("Session DB promote_to_session_reset failed for %s: %s", entry.session_id, exc)
-
-    @staticmethod
-    def _policy_reset_reason(policy, updated_at: datetime) -> Optional[str]:
-        """Return "idle"/"daily" when *updated_at* is overdue under *policy*, else None."""
-        if policy.mode == "none":
-            return None
-        now = _now()
-        if policy.mode in {"idle", "both"} and now > updated_at + timedelta(minutes=policy.idle_minutes):
-            return "idle"
-        if policy.mode in {"daily", "both"}:
-            today_reset = now.replace(hour=policy.at_hour, minute=0, second=0, microsecond=0)
-            if now.hour < policy.at_hour:
-                today_reset -= timedelta(days=1)
-            if updated_at < today_reset:
-                return "daily"
-        return None
-
-    def _is_session_expired(self, entry: SessionEntry) -> bool:
-        """Whether the reset policy has expired *entry* (expiry watcher); sessions with active
-        background processes never expire."""
-        if self._has_active_processes_safe(entry.session_key, context="expiry"):
-            logger.debug("Session %s not expired — active background processes", entry.session_key)
-            return False
-        policy = self.config.get_reset_policy(platform=entry.platform, session_type=entry.chat_type)
-        return self._policy_reset_reason(policy, entry.updated_at) is not None
-
-    def is_session_finalizable(self, entry: SessionEntry) -> bool:
-        """True if the expiry watcher will *ever* finalize this session; ``mode == "none"`` never
-        expires, so the agent-cache sweep must reap its agent itself. Policy errors -> False."""
-        try:
-            policy = self.config.get_reset_policy(platform=entry.platform, session_type=entry.chat_type)
-            return policy.mode != "none"
-        except Exception:
-            return False
+    """SessionStore explicit boundaries and crash-recovery markers."""
 
     def _is_session_ended_in_db(self, session_id: str) -> bool:
         """True iff state.db has this session with a non-null end_reason (same staleness test as
@@ -146,37 +78,9 @@ class SessionLifecycleMixin:
             return False
         return bool(row is not None and row.get("end_reason") is not None)
 
-    def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
-        """Reset reason ("idle"/"daily") if policy says reset, else None; sessions with active
-        background processes are never reset."""
-        session_key = self._generate_session_key(source)
-        if self._has_active_processes_safe(session_key, context="reset"):
-            logger.debug("Session reset skipped for %s — active background processes", session_key)
-            return None
-        policy = self.config.get_reset_policy(platform=source.platform, session_type=source.chat_type)
-        return self._policy_reset_reason(policy, entry.updated_at)
-
-    def _route_reset_reason(
-        self, entry: SessionEntry, source: SessionSource, now: datetime
-    ) -> Optional[str]:
-        """Reset decision for an existing route (no lock; DB/config I/O). ``suspended`` always
-        resets; otherwise the reset policy decides, and a still-pending resume marker is also
-        freshness-gated — but ``session_reset.mode: none`` (user opted out of ALL automatic
-        resets) makes an expired marker fall through to a normal resume, never a silent fresh
-        session."""
-        if entry.suspended:
-            return "suspended"
-        reason = self._should_reset(entry, source)
-        if reason or not entry.resume_pending:
-            return reason
-        policy = self.config.get_reset_policy(platform=source.platform, session_type=source.chat_type)
-        if policy.mode == "none":
-            return None
-        window = auto_continue_freshness_window()
-        ref_time = entry.last_resume_marked_at or entry.updated_at
-        if window > 0 and (now - ref_time).total_seconds() > window:
-            return "resume_pending_expired"
-        return None
+    def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
+        """Only explicit suspension replaces a routed conversation; time never does."""
+        return "suspended" if entry.suspended else None
 
     def _update_entry(self, session_key: str, mutate) -> bool:
         """Apply ``mutate(entry)`` under ``_lock`` and full-save; False when the entry is missing

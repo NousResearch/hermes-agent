@@ -452,7 +452,17 @@ def _run_install_with_heartbeat(
     t = threading.Thread(target=_heartbeat, daemon=True)
     t.start()
     try:
-        subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, env=env)
+        # stderr=STDOUT: uv/pip write progress to stderr. Legacy desktop
+        # hand-offs (pre scripts/desktop-update/windows.ps1, which drains
+        # both pipes) only drain the child's stdout, so a full stderr
+        # pipe (~64KB) blocks the installer forever. Merged into stdout,
+        # the output rides the pipe old hand-offs DO drain. This module
+        # is imported when `hermes update` starts, so an update running
+        # from an old base executes the old copy regardless of the git
+        # reset — this protects updates initiated from bases that ship
+        # it. (managed_uv.py gets the same fix AND is imported lazily
+        # after the reset, so its sync is protected even on old bases.)
+        subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, env=env, stderr=subprocess.STDOUT)
     finally:
         done.set()
         t.join(timeout=0.2)

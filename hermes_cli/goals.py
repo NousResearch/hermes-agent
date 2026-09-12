@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -518,24 +519,17 @@ _DB_BOOTSTRAP_INIT_WAIT_S = 1.5
 def _bootstrap_session_db(home: str, done: threading.Event) -> None:
     """Construct SessionDB off-loop and populate the cache (worker thread)."""
     try:
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_state import SessionDB
-
-        # Bind the caller's home for this thread: the cache key is the caller's scoped home, and
-        # without the override a multiplexed worker thread would resolve the process env (default
-        # profile) and cache the wrong profile's DB under this profile's key.
-        token = set_hermes_home_override(home)
-        try:
-            db = SessionDB()
-        finally:
-            reset_hermes_home_override(token)
+        db = _acquire_session_db(home)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
         db = None
     with _DB_BOOTSTRAP_LOCK:
         if db is not None and home not in _DB_CACHE:
             _DB_CACHE[home] = db
+            db = None
         _DB_BOOTSTRAP_INFLIGHT.pop(home, None)
+    if db is not None:  # lost the race; drop our reference
+        _release_session_db(db)
     done.set()
 
 
@@ -548,7 +542,6 @@ def _get_session_db() -> Optional[Any]:
     """
     try:
         from hermes_constants import get_hermes_home
-        from hermes_state import SessionDB
 
         home = str(get_hermes_home())
     except Exception as exc:  # pragma: no cover
@@ -582,21 +575,34 @@ def _get_session_db() -> Optional[Any]:
         return _DB_CACHE.get(home)
 
     try:
-        db = SessionDB()
+        db = _acquire_session_db(home)
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
     with _DB_BOOTSTRAP_LOCK:
         existing = _DB_CACHE.get(home)
         if existing is not None:
-            # A concurrent bootstrap won the race; close ours so connections don't leak.
-            try:
-                db.close()
-            except Exception:
-                pass
+            # A concurrent bootstrap won the race; drop our reference so connections don't leak.
+            _release_session_db(db)
             return existing
         _DB_CACHE[home] = db
     return db
+
+
+def _acquire_session_db(home: str):
+    """The registry's shared handle for ``home/state.db``. A bare ``SessionDB()`` here was a SECOND
+    writer per profile beside the gateway's registry handle — its own token-writer thread and
+    close-time checkpoint (the #90837 corruption shape), doubled under multiplexing."""
+    from hermes_state_registry import acquire
+    return acquire(Path(home) / "state.db")
+
+
+def _release_session_db(db) -> None:
+    from hermes_state_registry import release_or_close
+    try:
+        release_or_close(db)
+    except Exception:
+        pass
 
 
 def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:
@@ -938,6 +944,55 @@ def count_active_delegations(session_id: Optional[str]) -> int:
         return len(_session_records(_LIVE_STATES, "", "", str(session_id)))
     except Exception:
         return 0
+
+
+# `/goal <text>` kicks the loop by sending the goal as the next user turn. When that text IS what
+# the user just said (a pasted handoff note, a plan the agent already has), re-sending it makes the
+# agent spend a turn deciding it is a replay (11 API calls, 6 min, in one run) and duplicates ~2k
+# tokens of context. The pointer is used only when the goal is substantially the WHOLE last
+# message: a short goal that merely appears inside a longer one ("ship the API" after a message
+# offering API or UI work) selects one option, and two different goals must not kick identically.
+GOAL_ALREADY_SEEN_KICK = "[Goal set] Continue with the goal you were just given; there is no need to re-read it."
+_GOAL_REPASTE_MIN_CHARS = 400
+_GOAL_REPASTE_MIN_SHARE = 0.8
+
+
+def goal_kick_prompt(goal: str, last_user_message: Any) -> str:
+    """The goal text, or ``GOAL_ALREADY_SEEN_KICK`` when ``last_user_message`` is essentially that text."""
+    content = last_user_message
+    if isinstance(content, list):
+        content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    goal_norm, last_norm = " ".join(str(goal or "").split()), " ".join(str(content or "").split())
+    if (
+        len(goal_norm) >= _GOAL_REPASTE_MIN_CHARS
+        and goal_norm in last_norm
+        and len(goal_norm) >= _GOAL_REPASTE_MIN_SHARE * len(last_norm)
+    ):
+        return GOAL_ALREADY_SEEN_KICK
+    return goal
+
+
+def last_user_message_content(history: Any) -> Any:
+    """Content of the newest ``role == "user"`` message in an OpenAI-shaped history, else ``""``."""
+    for msg in reversed(history or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return msg.get("content")
+    return ""
+
+
+def last_user_message_from_db(session_id: Optional[str]) -> Any:
+    """Newest user message of ``session_id`` from the SessionDB (gateway/TUI surfaces have no live
+    history object at slash-command time); ``""`` on any error."""
+    if not session_id:
+        return ""
+    try:
+        db = _get_session_db()
+        if db is None:
+            return ""
+        rows = db.get_messages(str(session_id), limit=20, latest=True)
+        return last_user_message_content(rows)
+    except Exception:
+        return ""
 
 
 def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1450,7 +1505,7 @@ class GoalManager:
                 f"judge API unreachable {n_tx} turns in a row (check auxiliary.goal_judge provider/key in config.yaml)",
                 "continue", reason,
                 f"⏸ Goal paused — judge API returned errors ({n_tx} turns). Check the goal_judge provider/key in "
-                + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-v4-flash"),
+                + _JUDGE_CONFIG_HINT.format(provider="deepseek", model="deepseek-flash"),
             )
         if n_parse >= DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES:
             return self._pause_decision(

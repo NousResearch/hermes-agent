@@ -426,6 +426,16 @@ def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
     # esbuild treats this as an executable override. If a shell points it at a
     # different release, the pinned package's postinstall rejects that binary.
     run_env.pop("ESBUILD_BINARY_PATH", None)
+    # The repo-root ``.npmrc`` is git-tracked, so the updater's autostash parks
+    # any mirror/proxy line added there and every update reinstalls without it
+    # (restricted networks then prune optional native deps like get-windows and
+    # the rebuild fails). ``$HERMES_HOME`` lives outside the git tree and the
+    # update hand-off already carries ``HERMES_HOME`` down to every npm child.
+    # An explicit ``NPM_CONFIG_USERCONFIG`` wins (#106373).
+    from hermes_constants import get_hermes_home
+    npmrc = get_hermes_home() / "npmrc"
+    if npmrc.is_file():
+        run_env.setdefault("NPM_CONFIG_USERCONFIG", os.fspath(npmrc))
     return run_env
 
 
@@ -724,6 +734,12 @@ def _launch_tui(
     # the single factory; keep secrets (the TUI/agent needs provider creds).
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    from hermes_cli.shared_session_attach import configure_tui_attachment
+    try:
+        configure_tui_attachment(env, resume_session_id)
+    except (ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     try:
         from hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)

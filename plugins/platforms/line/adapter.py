@@ -3,7 +3,9 @@
 * Reply token preferred (free, single-use, ~60s TTL), metered Push as fallback.
 * Slow-LLM postback button past ``slow_response_threshold`` (45s; 0 disables): the reply
   token is burned on a Template Buttons bubble; the tap yields a fresh free token that
-  delivers the cached answer (PENDING → READY → DELIVERED, ERROR on cancel).
+  delivers the cached answer (PENDING → READY → DELIVERED, ERROR on cancel). Mid-turn
+  progress/status sends (``_interim_send`` metadata / busy-ack prefixes) bypass the cache;
+  a stale or vanished mapping falls through to a live wire send (#106446).
 * Three allowlists (users U…, groups C…, rooms R…); ``LINE_ALLOW_ALL_USERS`` is dev-only.
 * Media via public HTTPS only: local files served under ``/line/media/<token>/<name>``
   (allowed-roots guard); ``LINE_PUBLIC_URL`` overrides host:port behind tunnels/wildcards.
@@ -35,9 +37,11 @@ from urllib.parse import quote as _urlquote
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult,
+    gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
-    cache_video_from_bytes_async)
+    cache_video_from_bytes_async,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
 logger = logging.getLogger(__name__)
@@ -65,6 +69,7 @@ DEFAULT_PENDING_REPLY_TEXT = "🤔 Still thinking. Tap below to fetch the answer
 DEFAULT_BUTTON_LABEL = "Get answer"
 DEFAULT_DELIVERED_TEXT = "Already replied ✅"
 DEFAULT_INTERRUPTED_TEXT = "Run was interrupted before completion."
+DEFAULT_EXPIRED_TEXT = "That request has expired — send your message again."
 MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
 LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
@@ -313,13 +318,26 @@ def build_postback_button_message(text: str, button_label: str, request_id: str)
     return {"type": "template", "altText": alt, "template": {"type": "buttons", "text": truncated, "actions": [action]}}
 
 
-# Gateway busy-ack prefixes (interrupting / queued / steered / background review);
-# these bypass a PENDING postback cache so they land as visible bubbles.
-_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = ("⚡ Interrupting", "⏳ Queued", "⏩ Steered", "💾")
+# Gateway busy-ack prefixes (interrupting / queued / steered / background review / working
+# heartbeat); these bypass a PENDING postback cache so they land as visible bubbles.
+_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = ("⚡ Interrupting", "⏳ Queued", "⏩ Steered", "💾", "⏳ Working")
 
 
 def _is_system_bypass(content: str) -> bool:
     return bool(content) and any(content.startswith(p) for p in _SYSTEM_BYPASS_PREFIXES)
+
+
+def _is_interim_send(content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    """True for mid-turn progress/status sends that must not become the cached answer.
+
+    Purpose-first: the gateway stamps every mid-turn send with ``_interim_send`` metadata
+    (``gateway.run._interim_metadata``), which survives to the adapter and is stripped
+    before the wire. The text prefixes remain a fallback for callers that pass no
+    metadata. See #106446.
+    """
+    if (metadata or {}).get("_interim_send"):
+        return True
+    return _is_system_bypass(content)
 
 
 def _csv_set(value: str) -> Set[str]:
@@ -327,7 +345,8 @@ def _csv_set(value: str) -> Set[str]:
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
+    # Scoped read: under multiplex os.environ is the DEFAULT profile's allow-all flag.
+    v = _get_scoped_secret(name)
     return default if v is None else v.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -370,10 +389,11 @@ class LineAdapter(BasePlatformAdapter):
         extra = getattr(config, "extra", {}) or {}
 
         def env_or(env: str, key: str, default: Any = "") -> Any:
-            return os.getenv(env) or extra.get(key, default)
+            return _get_scoped_secret(env) or extra.get(key, default)
 
         def allowlist(env: str, key: str) -> Set[str]:
-            return _csv_set(os.getenv(env, "")) | set(extra.get(key, []))
+            # Scoped read: under multiplex os.environ is the DEFAULT profile's allowlist.
+            return _csv_set(_get_scoped_secret(env, "")) | set(extra.get(key, []))
 
         self.channel_access_token, self.channel_secret = _credentials(config)
         # Host ``None`` → dual-stack bind (see DEFAULT_HOST); empty string collapses to None.
@@ -393,7 +413,8 @@ class LineAdapter(BasePlatformAdapter):
             ("pending_text", "LINE_PENDING_TEXT", DEFAULT_PENDING_REPLY_TEXT),
             ("button_label", "LINE_BUTTON_LABEL", DEFAULT_BUTTON_LABEL),
             ("delivered_text", "LINE_DELIVERED_TEXT", DEFAULT_DELIVERED_TEXT),
-            ("interrupted_text", "LINE_INTERRUPTED_TEXT", DEFAULT_INTERRUPTED_TEXT)):
+            ("interrupted_text", "LINE_INTERRUPTED_TEXT", DEFAULT_INTERRUPTED_TEXT),
+            ("expired_text", "LINE_EXPIRED_TEXT", DEFAULT_EXPIRED_TEXT)):
             setattr(self, attr, env_or(env, attr, default))
         # Runtime state
         self._client: Optional[_LineClient] = None
@@ -575,7 +596,20 @@ class LineAdapter(BasePlatformAdapter):
             return
         request_id = parsed.get("request_id", "") if parsed.get("action") == "show_response" else ""
         entry = self._cache.get(request_id) if request_id else None
-        if not self._client or not reply_token or not entry:
+        if not self._client or not reply_token:
+            return
+        if entry is None:
+            # The tap targets a button whose entry is gone (expired / lost with
+            # process state). Tell the user instead of leaving the chat stuck,
+            # and drop any mapping that still points at the dead request so
+            # later answers reach the wire. See #106446.
+            if request_id and self._pending_buttons.get(chat_id) == request_id:
+                self._pending_buttons.pop(chat_id, None)
+            messages = [_text_message(self.expired_text)]
+            try:
+                await self._client.reply(reply_token, messages)
+            except Exception as exc:
+                logger.debug("LINE: postback expired-notice reply failed: %s", exc)
             return
         state = entry.state
         if state is State.READY:
@@ -628,14 +662,24 @@ class LineAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
-        # A PENDING postback button caches the response for the tap — except system
-        # busy-acks, which must land as visible bubbles.
+        # A PENDING postback button caches the response for the tap — except interim /
+        # system sends (progress heartbeats, busy-acks), which must land as visible
+        # bubbles. Interim detection is purpose-first: the gateway marks every mid-turn
+        # status send with ``_interim_send`` (see ``gateway.run._interim_metadata``);
+        # the text prefixes stay as belt-and-suspenders for metadata-less callers.
         pending_rid = self._pending_buttons.get(chat_id)
-        if pending_rid and not _is_system_bypass(content):
-            self._cache.set_ready(pending_rid, content)
-            return SendResult(success=True, message_id=pending_rid)
-        # System busy-acks (interrupting / queued / steered) bypass the postback cache and route directly to
-        # LINE so they reach the user as visible bubbles. Source: PR #18153.
+        if pending_rid and not _is_interim_send(content, metadata):
+            entry = self._cache.get(pending_rid)
+            if entry is not None and entry.state is State.PENDING:
+                self._cache.set_ready(pending_rid, content)
+                return SendResult(success=True, message_id=pending_rid)
+            # Stale mapping: the entry is READY/DELIVERED/ERROR or gone entirely —
+            # absorbing this send would silently swallow the answer behind a dead
+            # button. Clear the mapping and deliver on the wire. See #106446.
+            self._pending_buttons.pop(chat_id, None)
+        # System busy-acks (interrupting / queued / steered) and progress heartbeats
+        # bypass the postback cache and route directly to LINE so they reach the user
+        # as visible bubbles. Source: PR #18153, #106446.
         return await self._send_text_chunks(chat_id, content, force_push=False)
 
     async def _send_text_chunks(self, chat_id: str, content: str, *, force_push: bool) -> SendResult:
@@ -892,10 +936,10 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     if not _env_credentials_present():
         return None
     seeded: Dict[str, Any] = {}
-    if os.getenv("LINE_PORT"):
+    if _get_scoped_secret("LINE_PORT"):
         with contextlib.suppress(ValueError):
-            seeded["port"] = int(os.environ["LINE_PORT"])
-    seeded.update({key: os.environ[env] for env, key in _ENV_SEED_KEYS if os.getenv(env)})
+            seeded["port"] = int(_get_scoped_secret("LINE_PORT"))
+    seeded.update({key: _get_scoped_secret(env) for env, key in _ENV_SEED_KEYS if _get_scoped_secret(env)})
     return seeded
 
 

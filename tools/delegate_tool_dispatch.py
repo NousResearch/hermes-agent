@@ -43,6 +43,7 @@ class _Batch:
     origin_ui_session_id: str
     origin_owner_transport: Any
     origin_owner_session_record: Any
+    origin_session_history_delivery: bool
     overall_start: float
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
@@ -66,17 +67,22 @@ def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) ->
         _hdr = f"  🔀 [{format_batch_tag(live_deleg_id, parent_agent)}] delegating {n_tasks} tasks"
         _print_completion_line(parent_agent, getattr(parent_agent, "_delegate_spinner", None), _hdr, console_line=_hdr)
 
-def _capture_origin() -> tuple[str, str, Any, Any]:
-    """``(wake_sid, ui_session_id, owner_transport, owner_session_record)`` of the
+def _capture_origin() -> tuple[str, str, Any, Any, bool]:
+    """``(wake_sid, ui_session_id, owner_transport, owner_session_record, session_history_delivery)`` of the
     ORIGINATING session, captured BEFORE building any child: AIAgent construction
-    clobbers the HERMES_SESSION_ID ContextVar/os.environ with the subagent's id."""
+    clobbers the HERMES_SESSION_ID ContextVar/os.environ with the subagent's id.  The wake-
+    capability flag rides the same request-scoped binding and is captured here for the same
+    reason — and fails closed: a binding that never declared it (or a read error) leaves the
+    session treated as non-wake-capable (#98619)."""
     from tools.async_delegation import _current_origin_session_id
     _origin_wake_sid = _current_origin_session_id()
     _origin_ui_session_id = ""
+    _origin_session_history_delivery = False
     with _quiet(None):
-        from gateway.session_context import get_session_env
+        from gateway.session_context import get_session_env, session_history_delivery_supported
         _origin_ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
-    return (_origin_wake_sid, _origin_ui_session_id, *_capture_gateway_steer_authority(_origin_ui_session_id))
+        _origin_session_history_delivery = session_history_delivery_supported()
+    return (_origin_wake_sid, _origin_ui_session_id, *_capture_gateway_steer_authority(_origin_ui_session_id), _origin_session_history_delivery)
 
 def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tasks, remaining) -> None:
     """Print one completion line for a finished child and refresh the spinner text. Failed/errored/timed-out children
@@ -171,6 +177,11 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     update_manifest_statuses(batch.live_deleg_id, results)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
+    from tools.process_registry_notifications import _process_accounting_lines
+    process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
+    if process_notes:
+        combined["process_notes"] = process_notes
     unit_paths = [batch.live_paths[i] for (i, _, _) in batch.children if i < len(batch.live_paths)]
     if unit_paths:
         combined["live_transcripts"] = unit_paths
@@ -182,7 +193,7 @@ _SYNC_FALLBACK_NOTES = {
     "no_async": (
         "background=true is not available in this session — it cannot "
         "receive a detached subagent result after the turn ends (a "
-        "one-shot runner such as `hermes -z`, a cron job, a Kanban "
+        "finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a cron job, a Kanban "
         "worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above."
     ),
     "at_capacity": (
@@ -199,15 +210,19 @@ def _run_sync_with_note(batch: _Batch, reason: str) -> str:
         result["note"] = _SYNC_FALLBACK_NOTES[reason]
     return json.dumps(result, ensure_ascii=False)
 
-def _resolve_async_wake_sid(origin_wake_sid: str) -> Optional[str]:
-    """Wake target for a detached batch, or None to force synchronous execution.
+def _resolve_async_wake_sid(origin_wake_sid: str, origin_session_history_delivery: bool = False) -> Optional[str]:
+    """Detached result target: empty for push, a resumable API id, or None for inline.
 
-    Finite sessions (stateless HTTP requests, one-shot Kanban workers) cannot route a detached result back after their
-    turn/process ends — but if a raw session id is bound (the API server always binds one), gateway.wake can still
-    reach it by self-POSTing /v1/chat/completions, so only fall back to sync when there is truly no session id to
-    wake. Uses the origin captured BEFORE child construction — HERMES_SESSION_ID here would be the subagent's internal
-    id.
-    """
+    API completion only persists a row; this does not authorize a model wake. The
+    continuation must read that row, not an authoritative caller-owned snapshot."""
+    from gateway.session_context import get_session_env
+
+    # Finite chat owns no later turn to consume a detached result. Reuse its
+    # approval/lifecycle marker without disabling terminal notify completions:
+    # those have their own bounded exit linger and durable result receipts.
+    if get_session_env("HERMES_SINGLE_QUERY_SESSION") == "1":
+        return None
+
     try:
         # Finite sessions cannot route a detached subagent result back to the agent after their turn/process
         # ends. This includes stateless HTTP requests (#10760) and one-shot Kanban workers (#63169). Fall
@@ -218,13 +233,17 @@ def _resolve_async_wake_sid(origin_wake_sid: str) -> Optional[str]:
             return ""
     except Exception:
         return ""
-    if origin_wake_sid:
+    if origin_wake_sid and origin_session_history_delivery:
         logger.info(
-            "delegate_task: async delivery unsupported on this session, but a session id is bound (%s) — dispatching "
-            "in the background and waking the session via self-post when it completes instead of forcing synchronous "
-            "execution.", origin_wake_sid,
+            "delegate_task: session %s resumes server history — detached result will be persisted "
+            "for the next client turn (no model wake).", origin_wake_sid,
         )
         return origin_wake_sid
+    if origin_wake_sid:
+        logger.info(
+            "delegate_task: session %s has no declared server-history consumer — running the batch "
+            "synchronously so the result returns in this turn.", origin_wake_sid,
+        )
     return None
 
 def _resolve_async_session_key(parent_agent: Any, origin_ui_session_id: str) -> tuple[str, str]:
@@ -274,14 +293,15 @@ def _batch_progress_token(child_agents: List[Any]) -> tuple:
 
 _BACKGROUND_NOTES = {
     "one": (
-        "Subagent is running in the background. You and the user can keep working; its full result re-enters the "
-        "conversation as a new message when it finishes. Do not wait or poll — just continue."
+        "Subagent is running in the background; its full result re-enters the conversation as a new message when it "
+        "finishes. Results are delivered only after you END YOUR TURN: do anything that does not depend on it, then "
+        "stop with a one-line status. Do not poll its transcript or artifacts to wait for it."
     ),
     "many": (
-        "{n} subagents are running in parallel in the background as {k} independent unit(s). You and the user can keep "
-        "working; each unit's results re-enter the conversation as their own message as soon as THAT unit finishes "
-        "(tasks sharing a `group` finish together; ungrouped tasks report individually), so act on each as it lands. "
-        "Do not wait or poll — just continue."
+        "{n} subagents are running in parallel in the background as {k} completion unit(s); each unit's results "
+        "re-enter the conversation as their own new message when THAT unit finishes. Results are delivered only "
+        "after you END YOUR TURN: do anything that does not depend on them, then stop with a one-line status. Do not "
+        "poll transcripts or artifacts to wait for them."
     ),
     "control_hint": (
         "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live "
@@ -320,7 +340,13 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
 def _units_of(batch: _Batch) -> List[_Batch]:
     """Partition the call's children into async units: one per distinct task ``group`` (first-appearance order) and
     one per ungrouped task. Each unit is a ``_Batch`` sharing the call's task_list/transcripts but owning a subset of
-    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own."""
+    ``children``, so a unit joins only on itself and its completion re-enters the conversation on its own.
+
+    Off by default (``delegation.independent_completions``): the whole call is ONE unit and returns as one message.
+    A per-task flurry of completions (one new turn each) fragmented orchestrators that had no plan for it."""
+    from tools.delegate_tool_config import _get_independent_completions
+    if not _get_independent_completions():
+        return [batch]
     members: Dict[Any, List[tuple]] = {}
     for i, t, c in batch.children:
         g = t.get("group")
@@ -354,7 +380,7 @@ def _dispatch_background(batch: _Batch) -> str:
     running synchronously (with an explanatory ``note``) when the session cannot receive detached completions or the
     async pool is at capacity."""
     from tools.delegate_tool import _get_max_async_children
-    wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid)
+    wake_sid = _resolve_async_wake_sid(batch.origin_wake_sid, batch.origin_session_history_delivery)
     if wake_sid is None:
         logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
         return _run_sync_with_note(batch, "no_async")

@@ -230,36 +230,6 @@ async def update_hermes():
     return {"ok": True, "pid": proc.pid, "name": "hermes-update", "action_id": action_id}
 
 
-def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
-    """Commits the local checkout is behind ``origin/main`` by, newest first; [] on any failure.
-
-    Logs the SAME range the behind-count uses (``HEAD..origin/main``, see
-    ``banner._check_via_local_git``), NOT ``@{upstream}``: on a feature branch that is
-    the branch's own tip (zero commits), leaving the changelog empty while the count is non-zero.
-    """
-    try:
-        # git log emits UTF-8 (emoji/CJK subjects). On Windows text=True defaults to
-        # the ANSI code page; an undefined cp1252 byte crashed the stdlib
-        # _readerthread and killed the desktop backend — hence encoding="utf-8".
-        out = subprocess.run(
-            [
-                "git", "-C", str(_server_path("PROJECT_ROOT")), "log", "--format=%H%x1f%s%x1f%an%x1f%ct",
-                "HEAD..origin/main", f"-n{int(n)}",
-            ],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-        )
-        if out.returncode != 0:
-            return []
-        rows: List[Dict[str, Any]] = []
-        for line in out.stdout.splitlines():
-            if line.strip():
-                sha, summary, author, at = (line.split("\x1f") + ["", "", "", "0"])[:4]
-                rows.append({"sha": sha[:7], "summary": summary, "author": author, "at": int(at or 0)})
-        return rows
-    except Exception:
-        return []
-
-
 _NON_APPLYABLE_MESSAGES = {
     "docker": format_docker_update_message,
     "apt": lambda: "Hermes is managed by Termux APT; run `pkg upgrade hermes-agent`.",
@@ -295,10 +265,10 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = non_applyable()
         return payload
 
-    # banner.check_for_updates() handles git / nix-revision paths and caches
-    # the result for 6h. ``force`` busts the cache so "Check now" reflects reality.
+    # banner.check_for_updates() handles git / nix-revision paths through the GitHub API and
+    # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
     try:
-        from hermes_cli.banner import check_for_updates
+        from hermes_cli.banner import check_for_updates, upstream_commits_behind
 
         if force:
             with contextlib.suppress(OSError):
@@ -315,10 +285,9 @@ async def check_hermes_update(force: bool = False):
         payload["message"] = "You're on the latest version."
     else:
         payload["update_available"] = True
-        # "What's changed" for the desktop's remote update overlay; git only,
-        # best-effort (empty list on any failure).
-        if install_method == "git":
-            payload["commits"] = await asyncio.to_thread(_recent_upstream_commits)
+        # "What's changed" for the desktop's remote update overlay; best-effort
+        # (empty list on any failure).
+        payload["commits"] = await asyncio.to_thread(upstream_commits_behind)
     return payload
 
 

@@ -21,6 +21,7 @@ from gateway.config import (
     PlatformConfig,
     _getenv_str,
     _has_usable_api_server_key,
+    platform_binds_port,
 )
 from utils import is_truthy_value
 
@@ -168,6 +169,15 @@ def _env_reply_mode(config: GatewayConfig, platform: Platform, env: str) -> None
         config.platforms.setdefault(platform, PlatformConfig()).reply_to_mode = mode
 
 
+def _loading_secondary_under_multiplexer() -> bool:
+    """True while a multiplexer loads a NON-default profile's config (``_profile_runtime_scope`` sets the
+    home override; the runner sets the multiplex flag). Same signal ``gateway.config`` uses for scoped reads."""
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    override = get_hermes_home_override()
+    return bool(override) and is_multiplex_active() and profile_name_for_home(override) != "default"
+
+
 def _enable_from_env(
     config: GatewayConfig, platform: Platform, *, pop_marker: bool = False, warn: bool = True
 ) -> PlatformConfig:
@@ -184,7 +194,13 @@ def _enable_from_env(
     explicit = extra.pop("_enabled_explicit", False) if pop_marker else extra.get("_enabled_explicit", False)
     if platform_config.enabled:
         return platform_config
-    if not explicit:
+    if not explicit and not (
+        platform_binds_port(platform.value, extra) and _loading_secondary_under_multiplexer()
+    ):
+        # A secondary's port-binding credential (the docs require API_SERVER_KEY in its .env for
+        # /p/<profile>/ auth) must not turn into listener intent: the default profile owns the one
+        # shared listener and ``_load_secondary_profile_config`` skips the WHOLE profile for it (#100397).
+        # The credential itself still lands in ``extra`` for the shared adapter to authenticate with.
         platform_config.enabled = True
     elif warn:
         _warn_explicit_disable_beats_env(platform)
@@ -341,13 +357,6 @@ def _qq_home(config: GatewayConfig, qq_config: PlatformConfig) -> None:
         )
 
 
-def _session_settings(config: GatewayConfig) -> None:
-    for env, attr in (("SESSION_IDLE_MINUTES", "idle_minutes"), ("SESSION_RESET_HOUR", "at_hour")):
-        if raw := getenv(env):
-            with contextlib.suppress(ValueError):
-                setattr(config.default_reset_policy, attr, int(raw))
-
-
 def _plugin_probe_seed(entry) -> Optional[dict]:
     """``env_enablement_fn()`` result as a non-empty dict, else None."""
     if entry.env_enablement_fn is None:
@@ -457,7 +466,11 @@ def _relay(config: GatewayConfig) -> None:
     relay_url_yaml = str(existing_relay.extra.get("relay_url") or "").strip() if existing_relay else ""
     relay_url_val = relay_url_env or relay_url_yaml
     if relay_url_val:
-        _enable_from_env(config, Platform.RELAY).extra["relay_url"] = relay_url_val.rstrip("/")
+        relay_config = _enable_from_env(config, Platform.RELAY)
+        relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
+        # An opted-out relay does not own this profile's native connections.
+        if not relay_config.enabled:
+            return
 
     if not relay_url_env or is_truthy_value(getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS")):
         return
@@ -623,7 +636,7 @@ _ENV_STEPS: tuple = (
         ),
         home="YUANBAO_HOME_CHANNEL",
     ),
-    _session_settings,
+
     _enable_plugin_platforms_from_env,
     _relay,
     _scrub_explicit_markers,

@@ -142,9 +142,11 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from gateway.authz_mixin import _coerce_allow_set
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult, classify_send_error,
+    BasePlatformAdapter, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len)
+    SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
+)
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -2947,7 +2949,14 @@ class TelegramAdapter(BasePlatformAdapter):
             self._register_handlers(self._app)
             await self._initialize_app_with_retries(builder)
             await self._app.start()
-            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
+            # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
+            # default's listener (and stops polling for it).
+            from agent.secret_scope import UnscopedSecretError, get_secret
+            try:
+                webhook_url = (get_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
+            except UnscopedSecretError:
+                webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
             if webhook_url:
                 await self._start_webhook_mode(webhook_url, is_reconnect=is_reconnect)
             else:
@@ -3302,6 +3311,15 @@ class TelegramAdapter(BasePlatformAdapter):
                             _send_attempt + 1, wait, safe_send_error)
                         await asyncio.sleep(wait)
                         continue
+                    # Retries exhausted and still flooded. Fail closed the same way a long penalty
+                    # does: raising here handed the caller the platform's own wording instead of the
+                    # canonical result, so the delivery ledger did not recognise the row as a flood
+                    # refusal, armed no redelivery timer, and the reply waited for the next restart.
+                    logger.warning(
+                        "[%s] Telegram flood control on send persisted across %d attempts; failing "
+                        "closed so the delivery ledger owns the wait: %s",
+                        self.name, _send_attempt + 1, safe_send_error)
+                    return _flood_cap_result(wait)
                 raise
 
     async def _retrigger_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> None:
@@ -3514,6 +3532,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
                     logger.error("[%s] Edit retry failed after flood wait: %s", self.name, safe_retry_error)
+                    retry_wait = getattr(retry_err, "retry_after", None)
+                    if retry_wait is not None or "retry after" in str(retry_err).lower():
+                        # Still flooded after the inline wait, and typically for much longer than the
+                        # first refusal asked for. Fail closed canonically so the ledger arms its
+                        # timer on this delay rather than storing the platform's raw wording, which
+                        # it would read as an ordinary failure and never redeliver.
+                        return _flood_cap_result(
+                            float(retry_wait) if retry_wait is not None else wait)
                     return SendResult(success=False, error=safe_retry_error)
             safe_error = _redact_telegram_error_text(e)
             # Transient network errors must not permanently disable progress-message editing.
@@ -4623,24 +4649,27 @@ class TelegramAdapter(BasePlatformAdapter):
                     os.unlink(_transcoded_voice_path)
 
     async def send_multiple_images(
-        self, chat_id: str, images: List[tuple], metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+        self, chat_id: str, images: List[tuple], metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """Send images as Telegram albums (``send_media_group``, 10 per chunk). Animated GIFs can't join a
         media group (need ``send_animation``) so they go via the base per-image path, as does a failed chunk."""
-        if not self._bot or not images:
-            return
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not images:
+            return SendResult(success=False, error="no images to send")
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
             logger.warning("[%s] InputMediaPhoto unavailable, falling back to per-image send: %s", self.name, exc)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         is_anim = lambda url: not url.startswith("file://") and self._is_animation_url(url)  # noqa: E731
         animations = [img for img in images if is_anim(img[0])]
         photos = [img for img in images if not is_anim(img[0])]
+        delivered = False
         if animations:
-            await super().send_multiple_images(chat_id, animations, metadata, human_delay=human_delay)
+            anim_result = await super().send_multiple_images(chat_id, animations, metadata, human_delay=human_delay)
+            delivered = anim_result.success
         if not photos:
-            return
+            return SendResult(success=delivered, error=None if delivered else "all images failed to send")
         from urllib.parse import unquote as _unquote
         CHUNK = 10  # Telegram's album limit
         chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
@@ -4673,15 +4702,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_media_group, {**send_kwargs, "media": media}, metadata, reply_to_id,
                     "media group", reset_media=_reset_opened_files)
+                delivered = True
             except Exception as e:
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s", self.name,
                     chunk_idx + 1, len(chunks), _redact_telegram_error_text(e), exc_info=True)
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                delivered = delivered or fallback.success
             finally:
                 for fh in opened_files:
                     with contextlib.suppress(Exception):
                         fh.close()
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -4995,7 +5027,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv(env_name, default).lower() in {"true", "1", "yes", "on"}
+        return _scoped_gate_env(env_name, default).lower() in {"true", "1", "yes", "on"}
 
     def _extra_str_set(self, key: str, env_name: str) -> set[str]:
         """Comma/list allowlist from ``config.extra[key]``, else the profile-scoped env var."""
@@ -5023,6 +5055,13 @@ class TelegramAdapter(BasePlatformAdapter):
     def _telegram_exclusive_bot_mentions(self) -> bool:
         """Return whether explicit @...bot mentions exclusively route group messages."""
         return self._extra_bool("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS", "true")
+
+    def _telegram_bots_require_mention(self) -> bool:
+        """Whether another bot's message must explicitly @mention us (a quote-reply alone won't);
+        breaks two-bot reply loops in groups while human replies stay unaffected."""
+        return self._extra_bool(
+            "bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION", "false"
+        )
 
     def _telegram_free_response_chats(self) -> set[str]:
         return self._extra_str_set("free_response_chats", "TELEGRAM_FREE_RESPONSE_CHATS")
@@ -5083,7 +5122,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
-            raw = os.getenv("TELEGRAM_MENTION_PATTERNS", "").strip()
+            raw = _scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
             if raw:
                 try:
                     loaded = json.loads(raw)
@@ -5583,6 +5622,16 @@ class TelegramAdapter(BasePlatformAdapter):
         user_id = getattr(from_user, "id", None)
         return bot_id is not None and user_id is not None and bot_id == user_id
 
+    def _sender_is_other_bot(self, message: Message) -> bool:
+        """True when the sender is a bot other than this one (this bot's own echoes are already
+        filtered by ``_is_own_message``)."""
+        sender = getattr(message, "from_user", None)
+        if sender is None or not getattr(sender, "is_bot", False):
+            return False
+        bot_id = getattr(self._bot, "id", None)
+        sender_id = getattr(sender, "id", None)
+        return bot_id is None or sender_id is None or sender_id != bot_id
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules: DMs unrestricted; group messages pass ``allowed_chats`` (hard gate; only
         the ``guest_mode`` @mention bypass crosses it) and then any of free_response chat/topic, ``require_mention``
@@ -5612,6 +5661,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return guest_mention
         if guest_mention or chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return True
+        # Bot-to-bot loop breaker: another bot must explicitly @mention us; its quote-reply or
+        # plain chatter does not count (two bots answering each other's replies never stop otherwise).
+        if (
+            self._telegram_bots_require_mention()
+            and self._sender_is_other_bot(message)
+            and not self._message_mentions_bot(message)
+        ):
+            return False
         if not self._telegram_require_mention() or self._is_reply_to_bot(message):
             return True
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
@@ -6297,8 +6354,11 @@ class TelegramAdapter(BasePlatformAdapter):
     # -- Message reactions (processing lifecycle) --
 
     def _reactions_enabled(self) -> bool:
-        """Reactions enabled via TELEGRAM_REACTIONS env/config."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or TELEGRAM_REACTIONS."""
+        configured = self.config.extra.get("reactions")
+        if configured is None:
+            configured = _scoped_gate_env("TELEGRAM_REACTIONS", "false")
+        return str(configured).lower() not in {"false", "0", "no"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:
         """Set a single emoji reaction (``None`` clears all bot-set reactions, the documented Bot API way)."""
@@ -6421,34 +6481,25 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     gateway/config.py::load_gateway_config().
     """
     import json as _json
+    from gateway.platforms._shared import yaml_env_setter
     extras: dict = {}
-    # Under multiplex a secondary profile's authorization gates must NOT hit the process-global env
-    # (first-writer-wins would pin them for every profile); they flow via extra/secret scope.
-    try:
-        # See #72348.
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-        _skip_env_bridge = bool(is_multiplex_active() and current_secret_scope() is not None)
-    except Exception:
-        _skip_env_bridge = False
-
-    def _set_env(env: str, value: str) -> None:
-        if not os.getenv(env):
-            os.environ[env] = value
+    # Under multiplex a secondary profile's settings must NOT hit the process-global env (first-writer-wins
+    # would pin them for every profile, #72348); yaml_env_setter skips the write under its scope and the
+    # values flow via extra/secret scope instead.
+    _set_env = yaml_env_setter()
 
     def _bridge_lower(key: str, env: str) -> None:
         if key in telegram_cfg:
+            extras.setdefault(key, telegram_cfg[key])
             _set_env(env, str(telegram_cfg[key]).lower())
 
     def _bridge_gate(key: str, env: str, value: Any, *, seed_extra: bool = False) -> None:
-        """CSV allowlist gate: list → comma-joined; skipped under multiplex secret scope."""
+        """CSV allowlist gate: list → comma-joined; env write skipped under multiplex secret scope."""
         if value is None:
             return
         if seed_extra:
             extras.setdefault(key, value)
-        if isinstance(value, list):
-            value = ",".join(str(v) for v in value)
-        if not _skip_env_bridge:
-            _set_env(env, str(value))
+        _set_env(env, value)
 
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
@@ -6459,6 +6510,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         _set_env("TELEGRAM_MENTION_PATTERNS", _json.dumps(telegram_cfg["mention_patterns"]))
     for key, env in (
         ("exclusive_bot_mentions", "TELEGRAM_EXCLUSIVE_BOT_MENTIONS"), ("allow_bots", "TELEGRAM_ALLOW_BOTS"),
+        ("bots_require_mention", "TELEGRAM_BOTS_REQUIRE_MENTION"),
         ("guest_mode", "TELEGRAM_GUEST_MODE", ), ("observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES")):
         _bridge_lower(key, env)
     # No extras seed for allowed_chats / allowed_topics / group_allowed_chats: the shared-key loop already

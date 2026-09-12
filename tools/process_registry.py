@@ -12,6 +12,7 @@ import os
 import platform
 import shlex
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -30,13 +31,23 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from agent.redact import redact_sensitive_text
 from tools.process_registry_notifications import format_process_notification
+from tools.process_registry_checkpoint import ProcessCheckpointMixin
+from tools.process_registry_results import load_completed_results, save_completed_result
 
 logger = logging.getLogger(__name__)
 
 # Crash-recovery checkpoint (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+_CHECKPOINT_PATH_AT_IMPORT = CHECKPOINT_PATH
+
+
+def _checkpoint_path() -> Path:
+    """Active profile's checkpoint file at call time: the patched ``CHECKPOINT_PATH`` when a test
+    changed it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every
+    profile from one process, so the import-time constant would pin every profile's process
+    checkpoint to the launch home."""
+    return CHECKPOINT_PATH if CHECKPOINT_PATH != _CHECKPOINT_PATH_AT_IMPORT else get_hermes_home() / "processes.json"
 
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
@@ -136,6 +147,62 @@ def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     ]
 
 
+def _default_user_runtime_dir() -> Path:
+    """``/run/user/<uid>``; a function so tests can point it at a temp dir with a real socket."""
+    return Path(f"/run/user/{os.getuid()}")  # windows-footgun: ok — only reached behind the _IS_LINUX gate in systemd_user_bus_env
+
+
+def _secure_user_runtime_dir(path: Path) -> bool:
+    """Accept only an absolute, owned, non-writable real directory."""
+    try:
+        metadata = path.lstat()
+        return (
+            path.is_absolute()
+            and stat.S_ISDIR(metadata.st_mode)
+            and metadata.st_uid == os.getuid()  # windows-footgun: ok — only reached behind the _IS_LINUX gate in systemd_user_bus_env
+            and metadata.st_mode & 0o022 == 0
+        )
+    except OSError:
+        return False
+
+
+def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Build an environment that can reach this user's lingering systemd manager.
+
+    System-level gateway units run as an unprivileged ``User=`` but normally do
+    not inherit login-session variables.  When the conventional runtime
+    directory is owned by this uid and its bus exists, derive the two standard
+    variables.  Derived fresh on every call rather than adopted once at boot:
+    linger may be enabled after the gateway started (existing installs), so
+    the bus can appear later and the probe's failure TTL must be able to
+    recover (#104893).
+    The returned copy is passed explicitly to the probe and every scoped spawn;
+    ``os.environ`` is left unchanged.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    if not _IS_LINUX:
+        return env
+    configured = env.get("XDG_RUNTIME_DIR")
+    if configured and _secure_user_runtime_dir(Path(configured)):
+        runtime_dir = Path(configured)
+    else:
+        runtime_dir = _default_user_runtime_dir()
+        if not _secure_user_runtime_dir(runtime_dir):
+            return env
+
+    bus_path = runtime_dir / "bus"
+    try:
+        bus_metadata = bus_path.lstat()
+    except OSError:
+        return env
+    if not stat.S_ISSOCK(bus_metadata.st_mode) or bus_metadata.st_uid != os.getuid():  # windows-footgun: ok — behind the _IS_LINUX gate above
+        return env
+
+    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+    return env
+
+
 def _systemd_scope_cached() -> Optional[bool]:
     """Cached probe verdict, or None when a (re)probe is due. True is permanent; False
     expires after ``_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS`` so a D-Bus blip isn't sticky."""
@@ -149,7 +216,10 @@ def _systemd_run_user_scope_available() -> bool:
     """True if ``systemd-run --user --scope`` can create a cgroup.
     ``shutil.which`` alone is insufficient: system services and containers may lack
     the user D-Bus bus even with the binary on PATH (every spawn would fail with
-    ``Failed to connect to user bus``), so a cheap ``/bin/true`` probe is run and cached."""
+    ``Failed to connect to user bus``), so a cheap probe is run and cached.
+
+    Use ``/bin/sh -c 'exit 0'``: NixOS provides ``/bin/sh`` but not ``/bin/true``
+    (#105365), regardless of the gateway service's PATH."""
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
     verdict = _systemd_scope_cached()
     if verdict is not None:
@@ -170,7 +240,10 @@ def _systemd_run_user_scope_available() -> bool:
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                     result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/true"), capture_output=True, timeout=3,
+                        _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
+                        capture_output=True,
+                        timeout=3,
+                        env=systemd_user_bus_env(),
                     )
                     available = result.returncode == 0
                     if not available:
@@ -234,9 +307,12 @@ def restart_safe_gateway_child_argv(
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
         return command
     if not _systemd_run_user_scope_available():
+        # Stored as the cron execution's error and shown on the job row: name the remedy.
         raise RuntimeError(
             "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run --user --scope is unavailable"
+            "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
+            f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
+            "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
         )
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:
@@ -262,8 +338,13 @@ def _stop_systemd_unit(unit_name: str) -> bool:
     if binary is None:
         return False
     try:
-        result = subprocess.run([binary, "--user", "stop", unit_name], capture_output=True, timeout=15,
-                                stdin=subprocess.DEVNULL)
+        result = subprocess.run(
+            [binary, "--user", "stop", unit_name],
+            capture_output=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+            env=systemd_user_bus_env(),
+        )
         if result.returncode != 0:
             stderr = (result.stderr or b"").decode(errors="replace").strip()
             if any(marker in stderr.lower() for marker in ("not loaded", "not found", "does not exist")):
@@ -323,6 +404,7 @@ class ProcessSession:
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
+    handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
     # Watcher/notification routing (persisted for crash recovery)
     # systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     # (#70716)
@@ -384,7 +466,7 @@ _CHECKPOINT_DEFAULTS = {
 }
 
 
-class ProcessRegistry:
+class ProcessRegistry(ProcessCheckpointMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -738,9 +820,12 @@ class ProcessRegistry:
 
     @staticmethod
     def _new_session(command, task_id, owner_task_id, session_key, cwd, **extra) -> ProcessSession:
+        from gateway.session_context import get_session_env
+
         return ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id or task_id, session_key=session_key, cwd=cwd,
+            parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
             started_at=time.time(), **extra)
 
     @staticmethod
@@ -784,12 +869,18 @@ class ProcessRegistry:
         return env
 
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
-        """Start the output reader thread, register the session and checkpoint it."""
-        reader = threading.Thread(target=reader_target, args=(session, *extra_args), daemon=True, name=reader_name)
+        """Register before the reader can publish completion, even for an exited child."""
+        from contextvars import copy_context
+
+        # Reader completion must retain the producer's multiplex profile scope.
+        reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
+                                  daemon=True, name=reader_name)
         session._reader_thread = reader
-        reader.start()
         with self._lock:
             self._prune_if_needed()
+            # Completion takes this lock too. Starting here also leaves no
+            # ghost entry if the interpreter cannot start another thread.
+            reader.start()
             self._running[session.id] = session
         self._write_checkpoint()
 
@@ -801,12 +892,14 @@ class ProcessRegistry:
             from winpty import PtyProcess as _PtyProcessCls
         else:
             from ptyprocess import PtyProcess as _PtyProcessCls
+        pty_argv = self._scope_argv(session, safe_command, session.id, "PTY")
         pty_env = self._spawn_env(env_vars)
+        if session.systemd_unit:
+            pty_env = systemd_user_bus_env(pty_env)
         # A PTY is a real TTY, so pager-happy tools (git log/diff, man) WILL page and
         # hang waiting for `q` — default them to cat, honoring any pager the user set.
         pty_env.setdefault("GIT_PAGER", "cat")
         pty_env.setdefault("PAGER", "cat")
-        pty_argv = self._scope_argv(session, safe_command, session.id, "PTY")
         pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -848,13 +941,16 @@ class ProcessRegistry:
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
         unit_suffix = f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
         spawn_argv = self._scope_argv(session, safe_command, unit_suffix, "Local")
+        spawn_env = self._spawn_env(env_vars)
+        if session.systemd_unit:
+            spawn_env = systemd_user_bus_env(spawn_env)
         # start_new_session is REQUIRED with systemd-run --scope too: the scope does not
         # give the worker a new session, so from an interactive TUI the worker would
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
         proc = subprocess.Popen(
-            spawn_argv, text=True, cwd=session.cwd, env=self._spawn_env(env_vars), encoding="utf-8",
+            spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True, **_popen_kwargs)
         session.process = proc
@@ -1171,9 +1267,13 @@ class ProcessRegistry:
         Idempotent: kill_process() and the reader thread can both call this; only
         the FIRST move enqueues the completion notification, so no duplicates."""
         with self._lock:
-            was_running = self._running.pop(session.id, None) is not None
+            was_running = session.id in self._running
+            if was_running:
+                # Keep the session tracked until its result is durable. A finite
+                # parent must not observe completion and exit during this write.
+                save_completed_result(session)
+                self._running.pop(session.id)
             self._finished[session.id] = session
-        session._completion_event.set()
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {
@@ -1183,6 +1283,7 @@ class ProcessRegistry:
                 "task_id": session.task_id,
                 "owner_task_id": session.owner_task_id or session.task_id,
                 "command": session.command,
+                **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
                 "output": _output_tail(session, 2000),
                 # Stable producer identity across checkpoint recovery (unlike a
@@ -1191,6 +1292,7 @@ class ProcessRegistry:
             }
             _redact_process_result(notification)
             self.completion_queue.put(notification)
+        session._completion_event.set()
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
@@ -1245,7 +1347,7 @@ class ProcessRegistry:
         with self._lock:
             pending = [
                 s for s in self._running.values()
-                if s.notify_on_complete and not s.exited and (task_id is None or s.task_id == task_id)
+                if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
             ]
         if not pending or timeout <= 0:
             return result
@@ -1263,7 +1365,7 @@ class ProcessRegistry:
         interrupted = False
         for session in pending:
             try:
-                while not session.exited:
+                while not session._completion_event.is_set():
                     if interrupted or _is_interrupted():
                         interrupted = True
                         break
@@ -1282,14 +1384,14 @@ class ProcessRegistry:
                         # #17327).
                         self._reconcile_local_exit(session)
                         self._refresh_detached_session(session)
-                    if session.exited:
+                    if session._completion_event.is_set():
                         break
                     session._completion_event.wait(min(remaining, interval))
             except KeyboardInterrupt:
                 # Stop waiting, but never let the interrupt skip the caller's durable
                 # teardown (session flush, end_session) that follows.
                 interrupted = True
-            result["completed" if session.exited else "timed_out"].append(session.id)
+            result["completed" if session._completion_event.is_set() else "timed_out"].append(session.id)
         if result["timed_out"]:
             logger.warning(
                 "One-shot exit linger timed out after %ss with %d background "
@@ -1399,8 +1501,12 @@ class ProcessRegistry:
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Session by full ID or unique prefix (``proc_4dae`` / bare ``4dae``, like git
         short hashes); ambiguous or too-short prefixes resolve to None, never a guess."""
+        if not isinstance(session_id, str) or not session_id:
+            return None
         with self._lock:
             session = self._running.get(session_id) or self._finished.get(session_id)
+        if session is None:
+            session = load_completed_results(session_id).get(session_id)
         return self._refresh_detached_session(session if session is not None else self._resolve_prefix(session_id))
 
     def _resolve_prefix(self, session_id: str) -> Optional[ProcessSession]:
@@ -1413,12 +1519,13 @@ class ProcessRegistry:
             query = f"proc_{query}"
         if len(query) - len("proc_") < self._MIN_PREFIX_CHARS:
             return None
+        matches = load_completed_results(query)
         with self._lock:
-            matches = [
-                s for store in (self._running, self._finished)
+            matches.update({
+                sid: s for store in (self._running, self._finished)
                 for sid, s in store.items() if sid.startswith(query)
-            ]
-        return matches[0] if len(matches) == 1 else None
+            })
+        return next(iter(matches.values())) if len(matches) == 1 else None
 
     def _reconcile_local_exit(self, session: "ProcessSession") -> None:
         """Reconcile ``session.exited`` against the real child state.
@@ -1770,7 +1877,7 @@ class ProcessRegistry:
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
         return len(self._running)
 
-    def list_sessions(self, task_id: str = None, session_key: str = None) -> list:
+    def list_sessions(self, task_id: str = None, session_key: str = None, *, include_retained: bool = False) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
         cross-task entries sharing the gateway session (a forgotten preview server
         blocking session reset) are flagged ``"session_scoped": true``.
@@ -1780,9 +1887,13 @@ class ProcessRegistry:
         surfaced too, even if they belong to a different task — so the agent can discover a forgotten
         preview server that is blocking session reset (#29177).
         """
+        # Only an explicit tool query reads historical receipts. Status bars and
+        # gateway liveness scans call this frequently and need the live registry.
+        sessions = load_completed_results() if include_retained else {}
         with self._lock:
-            all_sessions = list(self._running.values()) + list(self._finished.values())
-        all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
+            sessions.update(self._finished)
+            sessions.update(self._running)
+        all_sessions = [self._refresh_detached_session(s) for s in sessions.values()]
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
@@ -1832,6 +1943,35 @@ class ProcessRegistry:
     def has_active_processes(self, task_id: str) -> bool:
         """Whether any process for ``task_id`` is still running."""
         return self._any_running(lambda s: s.task_id == task_id)
+
+    def running_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
+        """Running processes whose RAW spawning owner is ``owner_task_id``."""
+        with self._lock:
+            return [s for s in self._running.values() if s.owner_task_id == owner_task_id and not s.exited]
+
+    def unread_completions_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
+        """Exited ``notify_on_complete`` processes of ``owner_task_id`` whose result nobody read (no wait/log/poll).
+        A child's completion notice is suppressed in the parent, so an unread exit is otherwise lost silently."""
+        with self._lock:
+            return [s for s in self._finished.values()
+                    if s.owner_task_id == owner_task_id and s.notify_on_complete
+                    and s.id not in self._completion_consumed and s.id not in self._poll_observed]
+
+    def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
+                           to_session_key: str, note: str = "") -> Optional[ProcessSession]:
+        """Move a RUNNING process from one owner to another under the registry lock. Ownership is the ``owner_task_id``
+        field: completion notices are stamped from it at exit time and teardown kills by it, so flipping it here is the
+        whole transfer. Returns the session, or None when it is unknown, already exited, or not owned by ``from_owner``
+        (the caller must not report a transfer that did not happen)."""
+        session = self.get(session_id)
+        with self._lock:
+            if session is None or session.exited or session.owner_task_id != from_owner:
+                return None
+            session.owner_task_id = to_owner
+            session.task_id = to_task_id
+            session.session_key = to_session_key
+            session.handoff_note = note
+            return session
 
     def has_active_for_session(self, session_key: str, max_active_age: Optional[float] = None) -> bool:
         """Active processes for a gateway session key. Processes older than
@@ -1893,97 +2033,6 @@ class ProcessRegistry:
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
 
-    # ----- Checkpoint (crash recovery) -----
-
-    def _write_checkpoint(self, extra_entries: Optional[List[Dict[str, Any]]] = None):
-        """Write running process metadata to the checkpoint file atomically."""
-        try:
-            with self._lock:
-                entries = []
-                for s in self._running.values():
-                    if s.exited:
-                        continue
-                    # Backfill the start time so recovery can detect PID recycling
-                    # even for sessions spawned before this field existed.
-                    if s.host_start_time is None and s.pid_scope == "host" and s.pid:
-                        s.host_start_time = self._safe_host_start_time(s.pid)
-                    entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
-                    # Redact inline credentials before persisting (~/.hermes/processes.json).
-                    # Recovery uses command only for display (adoption re-validates the
-                    # PID, never re-runs it), so masking is lossless.
-                    # See #77484.
-                    entry["command"] = redact_sensitive_text(s.command, code_file=True)
-                    entry["owner_task_id"] = s.owner_task_id or s.task_id
-                    entries.append(entry)
-                if extra_entries:
-                    tracked_ids = {item.get("session_id") for item in entries}
-                    entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
-            from utils import atomic_json_write
-            atomic_json_write(CHECKPOINT_PATH, entries)
-        except Exception as e:
-            logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
-
-    def recover_from_checkpoint(self) -> int:
-        """On gateway startup, probe PIDs from the checkpoint file; returns how many
-        were recovered as detached sessions."""
-        if not CHECKPOINT_PATH.exists():
-            return 0
-        try:
-            entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            return 0
-        recovered = 0
-        unresolved_scope_entries: List[Dict[str, Any]] = []
-        for entry in entries:
-            pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
-            if not pid:
-                continue
-            if pid_scope != "host":  # in-sandbox PIDs mean nothing once the env handle is gone
-                logger.info(
-                    "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
-                    entry.get("command", "unknown")[:60], pid, pid_scope)
-                continue
-            # Alive AND the same process: across a restart the kernel may have
-            # recycled the PID onto a stranger, and adopting it would let a later
-            # kill tree-kill e.g. a browser.
-            if not self._host_pid_is_ours(pid, entry.get("host_start_time")):
-                if self._is_host_pid_alive(pid):
-                    logger.info(
-                        "Not recovering session %s: pid %d is alive but its "
-                        "start time no longer matches — PID was recycled onto "
-                        "an unrelated process; refusing to adopt it.",
-                        entry.get("session_id", "?"), pid)
-                systemd_unit = entry.get("systemd_unit", "")
-                if systemd_unit and not _stop_systemd_unit(systemd_unit):
-                    logger.warning(
-                        "Could not reap persisted scope %s for dead wrapper pid %s; "
-                        "retaining checkpoint entry for the next startup",
-                        systemd_unit, pid)
-                    unresolved_scope_entries.append(entry)
-                continue
-            fields = {f: entry.get(f, _CHECKPOINT_DEFAULTS[f]) for f in _CHECKPOINT_FIELDS}
-            fields.update(
-                command=entry.get("command", "unknown"),
-                owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
-                started_at=entry.get("started_at", time.time()))
-            # detached: can't read output, but can report status + kill
-            session = ProcessSession(id=entry["session_id"], detached=True, **fields)
-            with self._lock:
-                self._running[session.id] = session
-            recovered += 1
-            logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
-            # Re-enqueue watcher so gateway can resume notifications
-            if session.watcher_interval > 0:
-                self.pending_watchers.append({
-                    "session_id": session.id,
-                    "check_interval": session.watcher_interval,
-                    "session_key": session.session_key,
-                    **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
-                    "notify_on_complete": session.notify_on_complete,
-                    "parent_session_id": session.parent_session_id,
-                })
-        self._write_checkpoint(extra_entries=unresolved_scope_entries)
-        return recovered
 
 
 process_registry = ProcessRegistry()
@@ -2000,17 +2049,22 @@ PROCESS_SCHEMA = {
     "description": (
         "Poll, wait on, or kill background terminal processes (from "
         "terminal(background=true)). "
+        "Completed results remain retrievable by session_id when resuming their owning conversation "
+        "(up to 7 days, newest 64 results per profile; rolling output tail). "
         "poll: status + new output. log: full output, paged. wait: block "
         "until exit or timeout (partial output on timeout). write vs "
         "submit: submit appends Enter — use it to answer prompts; write "
-        "sends raw bytes, no newline. close: EOF stdin. kill: terminate."
+        "sends raw bytes, no newline. close: EOF stdin. kill: terminate. "
+        "handoff (subagents only): transfer a running process you started to your parent agent, which then "
+        "receives its completion; `data` = one sentence on its purpose. Subagent-owned processes are otherwise "
+        "killed when the subagent finishes and their notifications never reach the parent."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"]
+                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close", "handoff"]
             },
             "session_id": {
                 "type": "string",
@@ -2018,7 +2072,7 @@ PROCESS_SCHEMA = {
             },
             "data": {
                 "type": "string",
-                "description": "Stdin text for write/submit."
+                "description": "Stdin text for write/submit; purpose sentence for handoff."
             },
             "timeout": {
                 "type": "integer",
@@ -2071,7 +2125,8 @@ def _list_processes(task_id) -> dict:
         session_key = get_current_session_key(default="") or ""
     return {"processes": [
         _redact_process_result(p)
-        for p in process_registry.list_sessions(task_id=task_id, session_key=session_key or None)]}
+        for p in process_registry.list_sessions(
+            task_id=task_id, session_key=session_key or None, include_retained=True)]}
 
 
 # action -> (handler(session_id, args) -> dict, redact output?). Output-bearing
@@ -2087,19 +2142,64 @@ _SESSION_ACTIONS = {
 }
 
 
+def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dict:
+    """Subagent-only: transfer a running background process to the parent agent so its completion is delivered THERE
+    (child-owned process notices are suppressed and child teardown kills what it owns). Validated against the live spawn
+    tree: the caller must be a registered child and must own the process; anything else is an error, never a silent
+    no-op, so a PID mentioned in prose can't masquerade as a transfer."""
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from tools.terminal_tool import _resolve_container_task_id
+    with _active_subagents_lock:
+        record = _active_subagents.get(str(task_id or ""))
+    child = record.get("agent") if record else None
+    parent_ref = getattr(child, "_delegate_parent_ref", None)
+    parent = parent_ref() if callable(parent_ref) else None
+    if parent is None:
+        return {"error": "handoff is only available to a running subagent with a live parent; you are not one."}
+    parent_owner = str(getattr(parent, "_current_task_id", "") or getattr(parent, "session_id", "") or "")
+    if not parent_owner:
+        return {"error": "parent has no process owner id yet; retry after the parent's turn has started."}
+    handed = getattr(child, "_handed_off_processes", None)
+    if handed is None:
+        handed = child._handed_off_processes = []
+    if len(handed) >= _MAX_HANDOFFS_PER_CHILD:
+        return {"error": f"handoff cap reached ({_MAX_HANDOFFS_PER_CHILD} per subagent); wait on or kill the rest yourself."}
+    note = str(args.get("data") or "").strip()
+    if not note:
+        return {"error": "handoff requires `data`: one sentence saying what the process is for and what the parent should do with its result."}
+    session = process_registry.transfer_ownership(
+        session_id, from_owner=str(task_id or ""), to_owner=parent_owner,
+        to_task_id=_resolve_container_task_id(parent_owner),
+        to_session_key=str(getattr(parent, "session_id", "") or ""), note=note)
+    if session is None:
+        return {"error": f"cannot hand off {session_id}: not a running process you own (already exited? read its result "
+                         "with poll/log and report it instead)."}
+    handed.append({"session_id": session.id, "command": session.command, "note": note})
+    return {"status": "handed_off", "session_id": session.id, "command": session.command,
+            "note": "Your parent now owns this process and will receive its completion; you will not. Mention the handoff "
+                    "in your final answer."}
+
+
+_MAX_HANDOFFS_PER_CHILD = 3
+
+
 def _handle_process(args, **kw):
     action = args.get("action", "")
     # Coerce to string — some models send session_id as an integer
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
     if action == "list":
         return json.dumps(_list_processes(kw.get("task_id")), ensure_ascii=False)
+    if action == "handoff":
+        if not session_id:
+            return tool_error("session_id is required for handoff")
+        return json.dumps(_handoff_process(session_id, args, kw.get("task_id")), ensure_ascii=False)
     if action in _SESSION_ACTIONS:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         handler, redact = _SESSION_ACTIONS[action]
         result = handler(session_id, args)
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
-    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close")
+    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 
 
 registry.register(

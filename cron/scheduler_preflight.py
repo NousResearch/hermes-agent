@@ -321,6 +321,7 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     follows the alert-once pattern from the dead-pin auto-pause (#73506).
     """
     for name, check in (
+        ("env_refs", lambda: _preflight_check_env_refs(job)),
         ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),
         ("skills", lambda: _preflight_check_skills(job)),
         ("delivery", lambda: _preflight_check_delivery(job))):
@@ -331,6 +332,22 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
             continue
         if reason:
             return reason
+    return None
+
+
+def _preflight_check_env_refs(job: dict) -> Optional[str]:
+    """After the per-run expansion, a field still matching ``${...}`` references an unset
+    variable — running would ship the literal placeholder to the provider (opaque 404). Name the
+    field so the operator can fix the environment without decoding a provider error."""
+    from hermes_cli.config import _ENV_REF_RE
+
+    for field in _sched._ENV_REF_OVERRIDE_FIELDS:
+        value = job.get(field)
+        if isinstance(value, str) and _ENV_REF_RE.search(value):
+            return (
+                f"unresolved env reference in field '{field}': {value!r} — set the "
+                "variable in the profile .env (or hardcode the value) so the job can run."
+            )
     return None
 
 

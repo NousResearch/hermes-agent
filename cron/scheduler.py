@@ -39,7 +39,11 @@ from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
-    _expand_env_vars, load_config, resolve_cron_model_drift_defaults)
+    _ENV_REF_RE,
+    _expand_env_vars,
+    load_config,
+    resolve_cron_model_drift_defaults,
+)
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
@@ -1352,6 +1356,26 @@ def _snapshot_pin(job: dict, axis: str, current: str, job_id: str) -> str:
     return snapshot
 
 
+_ENV_REF_OVERRIDE_FIELDS = ("model", "provider", "base_url")
+
+
+def _expand_job_env_refs(job: dict, job_id: str) -> dict:
+    """Expand ``${VAR}`` / ``${env:VAR}`` refs in a job's runtime override fields against the
+    per-run environment (dotenv is reloaded just before this). Operates on a shallow copy so the
+    stored job keeps the templates — the resolved values are never persisted back, exactly like
+    the per-run ``api_key`` expansion (#9682), so a later env change applies next tick. Unresolved
+    refs stay verbatim; preflight reports them by field name."""
+    expanded = dict(job)
+    for field in _ENV_REF_OVERRIDE_FIELDS:
+        raw = expanded.get(field)
+        if isinstance(raw, str) and _ENV_REF_RE.search(raw):
+            expanded[field] = _expand_env_vars(raw)
+            if expanded[field] != raw:
+                logger.debug(
+                    "Job '%s': expanded env ref in field '%s'", job_id, field)
+    return expanded
+
+
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
     """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
     creation snapshot > HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so
@@ -2252,6 +2276,7 @@ def run_job(
         if scope.workdir:
             logger.info("Job '%s': using task-scoped workdir %s", job_id, scope.workdir)
         _reload_dotenv_and_publish_delivery_target(job)
+        job = _expand_job_env_refs(job, job_id)
 
         jc = _load_cron_job_config(job, job_id, job_name)
         _cfg = jc.cfg

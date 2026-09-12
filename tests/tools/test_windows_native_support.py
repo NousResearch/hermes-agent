@@ -425,6 +425,67 @@ class TestSubprocessCompatHelpers:
         # First element is either an absolute path (sh found) or the bare
         # name (fallback) — both are acceptable behaviours.
 
+    def test_popen_detached_retries_without_breakaway_when_denied(self, monkeypatch):
+        """A breakaway-denied CreateProcess must be retried without the bit.
+
+        Windows Task Scheduler wraps every task it starts in a Job Object that
+        does not set ``JOB_OBJECT_LIMIT_BREAKAWAY_OK``, so requesting
+        ``CREATE_BREAKAWAY_FROM_JOB`` from inside it makes ``CreateProcess``
+        fail outright with ``ERROR_ACCESS_DENIED`` (``WinError 5``) rather than
+        ignoring the flag.  The WhatsApp bridge, the dashboard action spawner
+        and the gateway-side ``/update`` spawner all route through this helper,
+        so the retry is the difference between "starts" and "can never start"
+        on the auto-start path a reboot depends on.
+
+        ``IS_WINDOWS`` is patched (not the flags) so both branches are exercised
+        on any host, including the Linux CI.
+        """
+        from hermes_cli import _subprocess_compat as sc
+
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        calls = []
+        sentinel = object()
+
+        def fake_popen(argv, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise PermissionError(5, "Access is denied")
+            return sentinel
+
+        monkeypatch.setattr(sc.subprocess, "Popen", fake_popen)
+
+        result = sc.popen_detached_with_breakaway_fallback(["node", "bridge.js"])
+
+        assert result is sentinel
+        assert len(calls) == 2, "the denied spawn must be retried exactly once"
+        assert calls[0]["creationflags"] & 0x01000000, (
+            "the first attempt must request CREATE_BREAKAWAY_FROM_JOB — dropping "
+            "it by default re-breaks the Electron job-teardown case (#40909)."
+        )
+        assert calls[1]["creationflags"] == sc.windows_detach_flags_without_breakaway(), (
+            "the retry must use windows_detach_flags_without_breakaway() so the "
+            "child still detaches, minus only the denied bit."
+        )
+        assert not calls[1]["creationflags"] & 0x01000000
+
+    def test_popen_detached_posix_surfaces_oserror_without_retry(self, monkeypatch):
+        """POSIX has no breakaway concept: the failure must propagate, not retry."""
+        from hermes_cli import _subprocess_compat as sc
+
+        monkeypatch.setattr(sc, "IS_WINDOWS", False)
+        calls = []
+
+        def fake_popen(argv, **kwargs):
+            calls.append(kwargs)
+            raise OSError("spawn failed")
+
+        monkeypatch.setattr(sc.subprocess, "Popen", fake_popen)
+
+        with pytest.raises(OSError):
+            sc.popen_detached_with_breakaway_fallback(["node", "bridge.js"])
+
+        assert len(calls) == 1
+        assert calls[0] == {"start_new_session": True}
 
     @pytest.mark.windows_only
     def test_windows_detach_flags_exclude_detached_process(self):

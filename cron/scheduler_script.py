@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -230,7 +231,11 @@ def _drain_script_pipes(proc: subprocess.Popen) -> None:
 
 
 def _windows_cron_bootstrap_argv(
-    python_exe: str, env_overlay: dict[str, str], script_path: str) -> list[str]:
+    python_exe: str,
+    env_overlay: dict[str, str],
+    script_path: str,
+    script_args: Optional[list[str]] = None,
+) -> list[str]:
     """Bootstrap a cron script under the base interpreter with ``.pth`` support. Overlay mode puts
     the venv on ``PYTHONPATH``, but ``.pth`` files are only processed by ``site.addsitedir()``, so
     editable installs would be invisible; bootstrap via addsitedir + ``runpy.run_path`` (keeps
@@ -251,11 +256,29 @@ def _windows_cron_bootstrap_argv(
         "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
         "runpy.run_path(script, run_name='__main__')"
     )
-    return [python_exe, "-c", bootstrap, script_path]
+    return [python_exe, "-c", bootstrap, script_path, *(script_args or [])]
 
 
-def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str]]:
-    """Validate a job script path; ``(path, None)`` or ``(None, error)``. Scripts MUST resolve
+def _split_script_spec(script_spec: str) -> tuple[Optional[str], Optional[list[str]], Optional[str]]:
+    """Parse a cron script specification into ``(path_token, args, error)``.
+
+    The ``script`` field allows shell-style quoting for arguments; token[0] is the script path,
+    remaining tokens are argv passed to the script.
+    """
+    text = str(script_spec)
+    if "\x00" in text:
+        return None, None, f"Blocked: script path contains a NUL byte: {script_spec!r}"
+    try:
+        parts = shlex.split(text, posix=True)
+    except ValueError as exc:
+        return None, None, f"Invalid script specification: {exc}"
+    if not parts:
+        return None, None, "Invalid script specification: empty script value"
+    return parts[0], parts[1:], None
+
+
+def _resolve_script_path(script_spec: str) -> tuple[Optional[Path], Optional[list[str]], Optional[str]]:
+    """Validate a job script spec; ``(path, args, None)`` or ``(None, None, error)``. Scripts MUST resolve
     inside HERMES_HOME/scripts/ (relative, absolute and ``~`` paths are all validated — path
     traversal / absolute-path injection); contract of lifecycle_guard._expand_candidate_path."""
     scripts_dir = _sched._get_hermes_home() / "scripts"
@@ -270,31 +293,34 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     # cleanly instead of crashing the scheduler. str() first so the guard itself can never raise TypeError
     # on a non-str script_path (e.g. a Path passed by a future caller) — the guard must be crash-proof even
     # though every current call site passes a plain str (#86832 review).
-    if "\x00" in str(script_path):
-        return None, f"Blocked: script path contains a NUL byte: {script_path!r}"
+    script_path, script_args, split_error = _split_script_spec(script_spec)
+    if split_error is not None:
+        return None, None, split_error
+    if script_path is None:
+        return None, None, "Invalid script specification: empty script value"
     try:
         raw = _sched.Path(script_path).expanduser()
     except (ValueError, RuntimeError, OSError):
         # RuntimeError: unexpandable ``~`` (no resolvable HOME).
-        return None, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
+        return None, None, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
     path = raw.resolve() if raw.is_absolute() else (scripts_dir / raw).resolve()
 
     # Traversal / absolute-path / symlink escape guard — MUST stay inside HERMES_HOME/scripts/.
     try:
         path.relative_to(scripts_dir_resolved)
     except ValueError:
-        return None, (
+        return None, None, (
             f"Blocked: script path resolves outside the scripts directory "
             f"({scripts_dir_resolved}): {script_path!r}"
         )
     if not path.exists():
-        return None, f"Script not found: {path}"
+        return None, None, f"Script not found: {path}"
     if not path.is_file():
-        return None, f"Script path is not a file: {path}"
-    return path, None
+        return None, None, f"Script path is not a file: {path}"
+    return path, script_args, None
 
 
-def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
+def _script_argv(path: Path, script_args: Optional[list[str]] = None) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
     else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
@@ -307,11 +333,13 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        return [_bash, str(path)], {}, None
+        return [_bash, str(path), *(script_args or [])], {}, None
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
     if env_overlay:
-        return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
-    return [python_exe, str(path)], env_overlay, None
+        return _windows_cron_bootstrap_argv(
+            python_exe, env_overlay, str(path), script_args
+        ), env_overlay, None
+    return [python_exe, str(path), *(script_args or [])], env_overlay, None
 
 
 def _run_job_script(
@@ -328,11 +356,11 @@ def _run_job_script(
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
     instead of the scripts-dir parent. See #69396.
     """
-    path, err = _resolve_script_path(script_path)
+    path, script_args, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
     script_timeout = _get_script_timeout()
-    argv, env_overlay, err = _script_argv(path)
+    argv, env_overlay, err = _script_argv(path, script_args)
     if argv is None:
         return False, err
 

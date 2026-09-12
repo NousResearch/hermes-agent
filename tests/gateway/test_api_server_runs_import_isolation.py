@@ -22,4 +22,5 @@ def test_missing_requestkey_keeps_web_module_bound():
         sys.modules["aiohttp.web_request"] = real
         importlib.reload(api_server_runs)
 
-    assert api_server_runs.RequestKey is aiohttp.web_request.RequestKey
+    # aiohttp < 3.14 has no RequestKey; the module binds None there, so compare against getattr.
+    assert api_server_runs.RequestKey is getattr(aiohttp.web_request, "RequestKey", None)

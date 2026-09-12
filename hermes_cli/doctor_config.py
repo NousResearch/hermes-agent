@@ -285,6 +285,41 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
         check_warn("config.yaml not found", "(using defaults)")
 
 
+def collect_approval_bypass_source(env_map: dict | None, approvals_mode) -> tuple[str, str] | None:
+    """``(mechanism, origin)`` naming an approval bypass that would be active on the next run without
+    an explicit ``--yolo`` flag, or ``None``. *env_map* is the on-disk ``.env`` (not ``os.environ``:
+    ``--yolo`` also writes ``HERMES_YOLO_MODE`` into the process env, so by the time doctor runs the
+    two are indistinguishable there — the file is the only place still naming a silent source).
+    *approvals_mode* is the raw (unmerged) ``approvals.mode`` from config.yaml."""
+    from utils import is_truthy_value
+    from tools.approval_context import _normalize_approval_mode
+    if isinstance(env_map, dict) and is_truthy_value(str(env_map.get("HERMES_YOLO_MODE", ""))):
+        return ("HERMES_YOLO_MODE", ".env")
+    if _normalize_approval_mode(approvals_mode) == "off":
+        return ("approvals.mode: off", "config.yaml")
+    return None
+
+
+@doctor_check()
+def _check_approval_bypass(should_fix: bool, f: Finding) -> None:
+    """Name the source when approval bypass is active from an env var or config key rather than an
+    explicit ``--yolo`` flag on this invocation — silent otherwise (#106504)."""
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_cli.config import load_env, read_user_config_raw
+    env_map = {}
+    with warn_on_error(""):
+        env_map = load_env()
+    raw_config = read_user_config_raw(HERMES_HOME / "config.yaml")
+    approvals_mode = (raw_config.get("approvals") or {}).get("mode") if isinstance(raw_config, dict) else None
+    found = collect_approval_bypass_source(env_map, approvals_mode)
+    if found is None:
+        check_ok("Approval bypass not active (approvals enforced)")
+        return
+    mechanism, origin = found
+    check_warn(f"Approval bypass active via {mechanism}", f"(set in {_DHH}/{origin} — every command auto-allows)")
+    f.issues.append(f"Approval bypass is active via {mechanism} in {_DHH}/{origin}; remove or reset it to require approvals again")
+
+
 def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:
     from hermes_cli.config import check_config_version, migrate_config
     current_ver, latest_ver = check_config_version()

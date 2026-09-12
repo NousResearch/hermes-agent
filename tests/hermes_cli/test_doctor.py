@@ -1564,6 +1564,71 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "⚠" in out or "Deprecated" in out
 
 
+class TestApprovalBypassSource:
+    """#106504: doctor must name the source when approval bypass is active from an env var or
+    config key rather than an explicit --yolo flag."""
+
+    def test_no_bypass_returns_none(self):
+        assert doctor_config.collect_approval_bypass_source({"OPENAI_API_KEY": "sk-test"}, "smart") is None
+        assert doctor_config.collect_approval_bypass_source({}, None) is None
+
+    def test_yolo_env_var_names_dotenv_as_source(self):
+        found = doctor_config.collect_approval_bypass_source({"HERMES_YOLO_MODE": "1"}, "smart")
+        assert found == ("HERMES_YOLO_MODE", ".env")
+
+    def test_falsy_yolo_env_var_is_not_a_bypass(self):
+        assert doctor_config.collect_approval_bypass_source({"HERMES_YOLO_MODE": "0"}, "smart") is None
+        assert doctor_config.collect_approval_bypass_source({"HERMES_YOLO_MODE": "false"}, "smart") is None
+
+    def test_approvals_mode_off_names_config_yaml_as_source(self):
+        found = doctor_config.collect_approval_bypass_source({}, "off")
+        assert found == ("approvals.mode: off", "config.yaml")
+
+    def test_approvals_mode_off_as_yaml_bool_is_still_detected(self):
+        """YAML 1.1 parses a bare ``off:`` as False — read_user_config_raw() hands that bool
+        straight through, so the source must recognize it the same way the runtime does."""
+        found = doctor_config.collect_approval_bypass_source({}, False)
+        assert found == ("approvals.mode: off", "config.yaml")
+
+    def test_env_var_checked_before_config_mode(self):
+        """Both active at once: report the env var first (it is the more surprising, less visible one)."""
+        found = doctor_config.collect_approval_bypass_source({"HERMES_YOLO_MODE": "true"}, "off")
+        assert found[0] == "HERMES_YOLO_MODE"
+
+    def _run_check(self, monkeypatch, tmp_path, *, config_yaml: str = "", env_text: str = ""):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+        (hermes_home / ".env").write_text(env_text, encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+        monkeypatch.setattr(doctor_mod, "_DHH", "~/.hermes")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            finding = doctor_config._check_approval_bypass(False)
+        return buf.getvalue(), finding
+
+    def test_check_warns_and_names_dotenv_file(self, monkeypatch, tmp_path):
+        out, finding = self._run_check(monkeypatch, tmp_path, env_text="HERMES_YOLO_MODE=1\n")
+        assert "Approval bypass active via HERMES_YOLO_MODE" in out
+        assert "~/.hermes/.env" in out
+        assert any("HERMES_YOLO_MODE" in issue for issue in finding.issues)
+
+    def test_check_warns_and_names_config_yaml(self, monkeypatch, tmp_path):
+        out, finding = self._run_check(
+            monkeypatch, tmp_path, config_yaml="approvals:\n  mode: off\n",
+        )
+        assert "Approval bypass active via approvals.mode: off" in out
+        assert "~/.hermes/config.yaml" in out
+        assert finding.issues
+
+    def test_check_ok_when_no_bypass(self, monkeypatch, tmp_path):
+        out, finding = self._run_check(monkeypatch, tmp_path, env_text="OPENAI_API_KEY=sk-test\n")
+        assert "Approval bypass not active" in out
+        assert finding.issues == []
+
+
 class TestMacOSTCCGrants:
     """macOS TCC grant persistence check (issue #86385)."""
 

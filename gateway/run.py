@@ -2122,7 +2122,9 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
-    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key)
+    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
+    resolve_runner_session_isolation,
+)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE
@@ -3861,6 +3863,12 @@ class GatewayRunner(
     exit_reason = property(lambda self: self._exit_reason)
     exit_code = property(lambda self: self._exit_code)
 
+    def _resolve_session_isolation_for_source(
+        self, source: SessionSource
+    ) -> tuple[bool, bool]:
+        """Resolve the store's effective scope, with a bare-runner config fallback."""
+        return resolve_runner_session_isolation(self, source)
+
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
         if hasattr(self, "session_store") and self.session_store is not None:
@@ -3883,10 +3891,13 @@ class GatewayRunner(
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
+        group_per_user, thread_per_user = self._resolve_session_isolation_for_source(source)
         return build_session_key(
-            source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
-            profile=_profile)
+            source,
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
+            profile=_profile,
+        )
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})

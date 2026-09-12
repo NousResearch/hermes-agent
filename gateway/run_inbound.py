@@ -22,7 +22,8 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
 from gateway.session import (
-    SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
+    SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text,
+    resolve_runner_session_isolation,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
@@ -1324,9 +1325,11 @@ class GatewayInboundMixin:
 
     def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
         """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
+        group_per_user, thread_per_user = resolve_runner_session_isolation(self, source)
         _is_shared_multi_user = is_shared_multi_user_session(
-            source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            source,
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
         )
         if _is_shared_multi_user and source.user_name:
             # Display names are attacker-influenceable: neutralize newlines/control chars or a

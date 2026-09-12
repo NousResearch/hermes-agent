@@ -374,10 +374,17 @@ class TestStdioPgroupReaping:
             "    time.sleep(0.5)\n"
         )
 
-        # Parent: spawn grandchild, exit immediately (without killing it).
+        # Parent: persist its session PGID, spawn grandchild, then exit
+        # immediately without killing it. Reading the durable PGID avoids a
+        # race with os.getpgid(parent.pid) after the short-lived parent exits.
+        parent_pgid_file = tmp_path / "parent.pgid"
         parent_script = tmp_path / "parent.py"
         parent_script.write_text(
-            "import subprocess, sys\n"
+            "import os, subprocess, sys\n"
+            f"tmp = {str(parent_pgid_file)!r} + '.tmp'\n"
+            "with open(tmp, 'w') as f:\n"
+            "    f.write(str(os.getpgrp()))\n"
+            f"os.replace(tmp, {str(parent_pgid_file)!r})\n"
             f"subprocess.Popen([sys.executable, {str(grandchild_script)!r}])\n"
             # Parent exits — grandchild reparents to init.
         )
@@ -387,13 +394,16 @@ class TestStdioPgroupReaping:
             [sys.executable, str(parent_script)],
             start_new_session=True,
         )
-        parent_pgid = os.getpgid(parent.pid)
         # Wait for parent to exit and grandchild to spin up.
         parent.wait(timeout=15)
         deadline = _time.time() + 15  # fresh CPython spinup dilates under CI load
-        while _time.time() < deadline and not grandchild_pid_file.exists():
+        while _time.time() < deadline and not (
+            grandchild_pid_file.exists() and parent_pgid_file.exists()
+        ):
             _time.sleep(0.05)
         assert grandchild_pid_file.exists(), "grandchild did not start"
+        assert parent_pgid_file.exists(), "parent did not persist its process group"
+        parent_pgid = int(parent_pgid_file.read_text().strip())
         grandchild_pid = int(grandchild_pid_file.read_text().strip())
 
         # Sanity: grandchild is alive and shares the parent's pgid.

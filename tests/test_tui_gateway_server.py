@@ -2612,7 +2612,7 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     # offered them — allow those too.
     from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
 
-    result = server._load_enabled_toolsets()
+    result = server._load_enabled_toolsets("tui")
     assert result is not None
     assert {"memory", "project"} <= set(result)
     assert "kanban" not in result
@@ -2639,7 +2639,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
     from hermes_cli.tools_config import _RECENTLY_SHIPPED_TOOLSETS
 
-    result = server._load_enabled_toolsets()
+    result = server._load_enabled_toolsets("tui")
     assert result is not None
     assert {"memory", "project"} <= set(result)
     assert "kanban" not in result
@@ -16466,6 +16466,10 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     monkeypatch.setattr(
         "hermes_cli.auth.is_provider_explicitly_configured",
         lambda _slug: False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory._anthropic_oauth_credentials_present",
+        lambda: False,
     )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)

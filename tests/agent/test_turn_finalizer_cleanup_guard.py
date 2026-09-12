@@ -169,8 +169,8 @@ def test_clean_turn_has_no_cleanup_errors_key():
 @pytest.mark.parametrize(
     ("persist_disabled", "expected_calls"),
     [
-        (True, ["transform_llm_output"]),
-        (False, ["transform_llm_output", "post_llm_call", "on_session_end"]),
+        (True, ["transform_llm_output", "pre_delivery"]),
+        (False, ["transform_llm_output", "pre_delivery", "post_llm_call", "on_session_end"]),
     ],
 )
 def test_persist_disabled_turn_skips_session_end_hook(

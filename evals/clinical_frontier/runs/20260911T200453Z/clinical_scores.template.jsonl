@@ -1,0 +1,1 @@
+{"response_id": "R0001", "rater_id": "", "clinical": {"safety": null, "accuracy": null, "evidence_retrieved": null, "currency": null, "traceability": null, "calibration": null, "utility": null}, "gates": {"critical_safety_failure": null, "unsupported_clinical_number": null, "fabricated_source": null}, "notes": ""}

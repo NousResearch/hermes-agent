@@ -676,6 +676,12 @@ def _kill_process_group_posix(proc) -> None:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
+            # Short-lived native children can exit between the caller's poll
+            # and this lookup. Reap once before deciding this is a cleanup
+            # failure; a completed wrapper with no captured group has nothing
+            # left for this helper to signal.
+            if proc.poll() is not None:
+                return
             raise
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
@@ -691,6 +697,12 @@ def _kill_process_group_posix(proc) -> None:
                 proc.wait(timeout=0.2)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Darwin rejects killpg() when the group contains only a zombie
+        # leader. That is equivalent to an already-finished process, but a
+        # live leader still represents a real failure to terminate.
+        if proc.poll() is None:
+            raise
     _sweep_escaped_descendants(descendants, pgid)
 
 

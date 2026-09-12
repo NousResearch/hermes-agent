@@ -96,6 +96,7 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
+    monkeypatch.setattr(update_cmd, "_verify_fleet_after_update", lambda *_a, **_kw: None)
 
 
 

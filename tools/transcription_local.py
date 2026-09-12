@@ -135,10 +135,20 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         # multiple Intel OpenMP runtimes are loaded — set before the import.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     from faster_whisper import WhisperModel
-    if force_cpu:
-        logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
-                    "(int8) to avoid native device autodetection crashes")
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+    if force_cpu and (device == "auto" or compute_type == "auto"):
+        safe_device = "cpu" if device == "auto" else device
+        safe_compute_type = "int8" if compute_type == "auto" else compute_type
+        logger.info(
+            "Apple Silicon/Rosetta detected — replacing automatic faster-whisper "
+            "settings with device=%s, compute_type=%s",
+            safe_device,
+            safe_compute_type,
+        )
+        return WhisperModel(
+            model_name,
+            device=safe_device,
+            compute_type=safe_compute_type,
+        )
     try:
         return WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as exc:

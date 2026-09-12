@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -14,6 +16,15 @@ SCRIPT_PATH = (
     / "scripts"
     / "openclaw_to_hermes.py"
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_home(monkeypatch, tmp_path: Path):
+    """Keep migration tests from importing the developer's real skills."""
+    home = tmp_path / "user-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
 
 def load_module():

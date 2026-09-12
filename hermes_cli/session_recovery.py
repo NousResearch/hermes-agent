@@ -991,7 +991,7 @@ def _recover_via_lost_and_found(
         refusal = find_sqlite3_cli_refusal()
         if refusal.get("reason") == "wal_reset_vulnerable":
             raise SessionRecoverySourceError(
-                "Partial recovery requires a page-level salvage shell, but "
+                "Partial recovery requires a page-level salvage shell with .recover, but "
                 "the only sqlite3 CLI on PATH is not safe to use for it: it "
                 + refusal["detail"]
                 + ". The readable table schemas for: "

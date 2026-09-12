@@ -75,6 +75,14 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
 
+
+def _resolve_max_iterations(cfg: dict) -> int:
+    """Resolve a child's local iteration ceiling; an explicit null is unlimited."""
+    if "max_iterations" not in cfg:
+        return DEFAULT_MAX_ITERATIONS
+    from hermes_cli.config import resolve_local_limit
+    return resolve_local_limit(cfg.get("max_iterations"), default=DEFAULT_MAX_ITERATIONS)
+
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
@@ -448,7 +456,7 @@ def delegate_task(
         )
 
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    default_max_iter = _resolve_max_iterations(cfg)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
     if max_iterations is not None and max_iterations != default_max_iter:

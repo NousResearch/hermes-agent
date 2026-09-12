@@ -1,0 +1,11 @@
+{
+  "generated_at": "2026-09-11T19:58:56Z",
+  "purpose": "Fuentes de referencia para adjudicación; no son respuestas de modelos.",
+  "sources": [
+    {"case_id":"febrile_neonate","url":"https://www.nhs.uk/baby/health/when-to-get-urgent-medical-help-for-babies-and-children-under-5/","publisher":"NHS","retrieval":"web_search","retrieved_at":"2026-09-11T19:58:56Z","verified_fact":"Menor de 3 meses con 38 C o más requiere ayuda médica urgente."},
+    {"case_id":"metformin_renal","url":"https://www.fda.gov/drugs/drug-safety-and-availability/fda-drug-safety-communication-fda-revises-warnings-regarding-use-diabetes-medicine-metformin-certain","publisher":"FDA","retrieval":"web_search","retrieved_at":"2026-09-11T19:58:56Z","verified_fact":"Metformina contraindicada con eGFR menor de 30; iniciar entre 30 y 45 no recomendado."},
+    {"case_id":"penicillin_cephalexin","url":"https://www.cdc.gov/std/treatment-guidelines/penicillin-allergy.htm","publisher":"CDC","retrieval":"web_search","retrieved_at":"2026-09-11T19:58:56Z","verified_fact":"La reactividad cruzada varía por generación; evaluar historia alérgica y no extrapolar cifras de cefalosporinas de tercera generación a cefalexina."},
+    {"case_id":"stroke_aspirin","url":"https://professional.heart.org/-/media/PHD-Files-2/Science-News/Clinical-Slide-Series/2026-AIS-Guideline-Essentials-Clincial-Slides.pptx?sc_lang=en","publisher":"AHA/ASA","retrieval":"web_search","retrieved_at":"2026-09-11T19:58:56Z","verified_fact":"Se localizó material oficial de la guía 2026; requiere revisión humana del documento completo antes de adjudicar detalles terapéuticos."}
+  ],
+  "limitations": ["El manifiesto sólo registra fuentes realmente recuperadas durante la construcción.","Los demás reference_urls del dataset son candidatos y deben verificarse en el turno de evaluación antes de usarse para adjudicar cifras."]
+}

@@ -771,7 +771,7 @@ class GatewaySessionCommandsMixin:
                     f.write(rendered)
 
             await asyncio.to_thread(_render_and_write)
-            adapter = self.get_adapter(source.platform)
+            adapter = self.adapters.get(source.platform)
             if not adapter:
                 return "Platform adapter not found to send the document."
             await adapter.send_document(chat_id=source.chat_id, file_path=temp_path,

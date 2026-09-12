@@ -1652,18 +1652,22 @@ def _run_reclaim_phase(
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
-    _release_expired_failure_breakers(conn, failure_retry_seconds)
+    _release_expired_failure_breakers(
+        conn, failure_retry_seconds, failure_limit=failure_limit,
+    )
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 
 def _release_expired_failure_breakers(
     conn: sqlite3.Connection,
     retry_seconds: int = DEFAULT_FAILURE_RETRY_SECONDS,
+    *,
+    failure_limit: int = DEFAULT_FAILURE_LIMIT,
 ) -> int:
-    """Reset aged ``gave_up`` streaks so the next promotion can retry once.
+    """Arm aged ``gave_up`` breakers for exactly one retry attempt.
 
     Explicit worker/operator blocks remain sticky. A failed probe trips the
-    normal breaker again and waits for another cooldown, keeping retries
+    breaker again and waits for another cooldown, keeping retries
     bounded while ensuring transient infrastructure failures are revisited.
     """
     retry_seconds = max(int(retry_seconds or 0), 0)
@@ -1673,7 +1677,8 @@ def _release_expired_failure_breakers(
     released = 0
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT t.id, t.consecutive_failures, MAX(e.created_at) AS gave_up_at "
+            "SELECT t.id, t.consecutive_failures, t.max_retries, "
+            "MAX(e.created_at) AS gave_up_at "
             "FROM tasks t JOIN task_events e ON e.task_id = t.id "
             "WHERE t.status = 'blocked' AND t.consecutive_failures > 0 "
             "AND e.kind = 'gave_up' GROUP BY t.id "
@@ -1683,10 +1688,15 @@ def _release_expired_failure_breakers(
         for row in rows:
             if _kb._has_sticky_block(conn, row["id"]):
                 continue
+            task_override = _kb._row_get(row, "max_retries")
+            effective_limit = int(
+                task_override if task_override is not None else failure_limit
+            )
+            armed_failures = max(effective_limit - 1, 0)
             cur = conn.execute(
-                "UPDATE tasks SET consecutive_failures = 0, last_failure_error = NULL "
+                "UPDATE tasks SET consecutive_failures = ?, last_failure_error = NULL "
                 "WHERE id = ? AND status = 'blocked'",
-                (row["id"],),
+                (armed_failures, row["id"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -1696,6 +1706,8 @@ def _release_expired_failure_breakers(
                 "breaker_retry",
                 {
                     "previous_failures": int(row["consecutive_failures"]),
+                    "armed_failures": armed_failures,
+                    "effective_limit": effective_limit,
                     "cooldown_seconds": retry_seconds,
                     "gave_up_at": int(row["gave_up_at"]),
                 },

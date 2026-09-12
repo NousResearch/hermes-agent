@@ -440,17 +440,21 @@ def test_dispatch_retries_aged_failure_breaker_once_per_cooldown(kanban_home, mo
     now = 2_000_000
     cooldown = 3600
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="transient upstream", assignee="a")
-        conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=2, "
-            "last_failure_error='pid 42 not alive' WHERE id=?",
-            (tid,),
+        failed_probe = kb.create_task(
+            conn, title="transient upstream", assignee="a", max_retries=3,
         )
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, payload, created_at) "
-            "VALUES (?, 'gave_up', ?, ?)",
-            (tid, '{"retry_status":"ready"}', now),
-        )
+        successful_probe = kb.create_task(conn, title="recovered upstream", assignee="a")
+        for tid, failures in ((failed_probe, 3), (successful_probe, 2)):
+            conn.execute(
+                "UPDATE tasks SET status='blocked', consecutive_failures=?, "
+                "last_failure_error='pid 42 not alive' WHERE id=?",
+                (failures, tid),
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'gave_up', ?, ?)",
+                (tid, '{"retry_status":"ready"}', now),
+            )
         conn.commit()
 
         monkeypatch.setattr(kbd.time, "time", lambda: now + cooldown - 1)
@@ -458,34 +462,39 @@ def test_dispatch_retries_aged_failure_breaker_once_per_cooldown(kanban_home, mo
             conn, max_spawn=0, failure_limit=2, failure_retry_seconds=cooldown,
         )
         assert result.promoted == 0
-        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.get_task(conn, failed_probe).status == "blocked"
+        assert kb.get_task(conn, successful_probe).status == "blocked"
 
         monkeypatch.setattr(kbd.time, "time", lambda: now + cooldown)
         result = kbd.dispatch_once(
             conn, max_spawn=0, failure_limit=2, failure_retry_seconds=cooldown,
         )
-        task = kb.get_task(conn, tid)
-        assert result.promoted == 1
+        task = kb.get_task(conn, failed_probe)
+        assert result.promoted == 2
         assert task.status == "ready"
-        assert task.consecutive_failures == 0
+        # The task override wins over the dispatcher default and arms one probe.
+        assert task.consecutive_failures == 2
         assert task.last_failure_error is None
-        retry_events = [e for e in kb.list_events(conn, tid) if e.kind == "breaker_retry"]
+        retry_events = [
+            e for e in kb.list_events(conn, failed_probe) if e.kind == "breaker_retry"
+        ]
         assert len(retry_events) == 1
-        assert retry_events[0].payload["previous_failures"] == 2
+        assert retry_events[0].payload["previous_failures"] == 3
+        assert retry_events[0].payload["armed_failures"] == 2
+        assert retry_events[0].payload["effective_limit"] == 3
 
-        # A failed probe consumes the normal budget and parks again until a
-        # fresh cooldown; it does not create a per-tick retry storm.
-        kb.claim_task(conn, tid)
-        assert not kbd._record_task_failure(
-            conn, tid, "pid 43 not alive", outcome="spawn_failed",
-            failure_limit=2, release_claim=True, end_run=True,
-        )
-        kb.claim_task(conn, tid)
+        # A successful probe clears the armed streak through normal completion.
+        kb.claim_task(conn, successful_probe)
+        kb.complete_task(conn, successful_probe, result="recovered")
+        assert kb.get_task(conn, successful_probe).consecutive_failures == 0
+
+        # A failed probe immediately parks again until a fresh cooldown.
+        kb.claim_task(conn, failed_probe)
         assert kbd._record_task_failure(
-            conn, tid, "pid 44 not alive", outcome="spawn_failed",
+            conn, failed_probe, "pid 43 not alive", outcome="spawn_failed",
             failure_limit=2, release_claim=True, end_run=True,
         )
-        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.get_task(conn, failed_probe).status == "blocked"
         assert kbd.dispatch_once(
             conn, max_spawn=0, failure_limit=2, failure_retry_seconds=cooldown,
         ).promoted == 0

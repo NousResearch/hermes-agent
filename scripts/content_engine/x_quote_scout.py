@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Approval-only X quote-post scout — deterministic filtering stage.
+"""Approval-only X co-manage scout — reads Sahil's timeline, finds the moves.
 
-Stages pending artifacts through x_manager with LLM draft generation and
-discord cards. This stage uses the already-live session cookies through the
-local Playwright reader and never posts, likes, or writes to X.
+Sources (registry-driven, no X API cost — logged-in Playwright scrape):
+  1. Home timeline  (his actual feed: following graph as X curated it)
+  2. Mentions       (reply-eligible, low-hanging)
+  3. Registry extras (data/x_registry.json — Sahil-editable account list)
+
+Freshness: registry-driven (default 6h hard window via snowflake age).
+Voice: corpus-calibrated prompt + deterministic voice gate per draft.
+Argument packs are reserved for standalone opinions (the blog-cross-ref
+lane); replies and quotes are gated on the voice rejection test instead.
 """
 import json
 import os
@@ -15,60 +21,63 @@ from pathlib import Path
 
 CE = Path('/home/kensei/repos/KenseiAgent/content_engine')
 sys.path.insert(0, str(CE))
+sys.path.insert(0, str(Path.home() / '.hermes' / 'scripts'))  # x_manager_report
 
-from engagement_x_poster import fetch_tweets_batch
+import x_ingest
+from x_ingest import load_registry, apply_freshness, dedupe_by_id, tweet_age
 from llm_generate import _call_llm_chain
 import x_manager as xm
 from x_manager_report import render_report
+from x_voice_gate import voice_gate_issues, blog_cross_reference
 
-TARGET_ACCOUNTS = [
-    "NousResearch", "hermesagent", "teknium", "karpathy", "swyx",
-    "rauchg", "levelsio", "tahseen_rahman", "AnthropicAI", "openai",
-]
-MAX_PER_ACCOUNT = 8
-MIN_TWEET_CHARS = 60
-BAIT_WORDS = ("rt if", "retweet if", "like if", "follow for", "tag someone", "vote if", "#ad", "#sponsored")
-CANDIDATES_JSON = Path('/home/kensei/repos/KenseiAgent/content_engine/data/x_scout_candidates.json')
+REGISTRY = load_registry()
+FRESHNESS = REGISTRY["freshness_hours"]
+MAX_CANDIDATES = int(REGISTRY.get("max_candidates_per_run", 40))
+MIN_TWEET_CHARS = int(REGISTRY.get("min_tweet_chars", 40))
+MAX_REPLIES_PER_RUN = 2   # replies are the etiquette-risky lane: keep them rare
+MAX_QUOTES_PER_RUN = 4
+
+CANDIDATES_JSON = CE / 'data' / 'x_scout_candidates.json'
+STATE_FILE = CE / 'data' / 'x_scout_last_run.json'
+VERDICTS = ("reply", "quote", "standalone", "discard")
+VERDICT_FILE = CE / 'data' / 'x_scout_verdicts.json'
+STANDALONE_SEEDS = CE / 'data' / 'x_standalone_seeds.json'
 VOICE_SKILL = Path('/home/kensei/.hermes/skills/social-media/sahil-twitter-voice/SKILL.md')
 
-VERDICTS = ("reply", "quote", "standalone", "discard")
-VERDICT_FILE = Path('/home/kensei/repos/KenseiAgent/content_engine/data/x_scout_verdicts.json')
-STANDALONE_SEEDS = Path('/home/kensei/repos/KenseiAgent/content_engine/data/x_standalone_seeds.json')
-
 LLM_SYSTEM = (
-    "You evaluate one X post for Sahil and decide the strongest move. "
+    "You are drafting for Sahil's own X account. He is an indie builder (AI "
+    "agents, Hermes, UK groceries app Plenishd, football) who posts in a "
+    "specific voice — you will be given his calibrated voice rules below. "
+    "You are reading ONE post from his timeline or mentions. Decide the "
+    "strongest move and draft it ONLY if it would sound like him typing it.\n"
     "Verdicts:\n"
-    "  reply      — enter the author's conversation (add, challenge, reframe).\n"
-    "  quote      — the source is good raw material for your own standalone-ish "
-    "quote post.\n"
-    "  standalone — the subject deserves a broader argument as its own post;\n"
-    "               you will NOT draft it here.\n"
-    "  discard    — nothing unique to add; a popular post is not a reason to "
-    "reply.\n"
-    "Never reply merely because the post is popular. Reply only when you can add, "
-    "challenge or reframe. Prefer discard when in doubt — the account gets "
-    "stronger when selective.\n"
-    "For reply/quote, craft the post in Sahil's real voice, not a generic "
-    "analyst or product manager voice. Choose the natural response mode: genuine "
-    "excitement, playful observation, sharp disagreement, personal build "
-    "comparison, or curious challenge. Do not force a lesson or critique when "
-    "the source only earns a short reaction.\n"
+    "  reply      — enter the conversation (add, challenge, reframe, react).\n"
+    "  quote      — the source is raw material for a quote post in his voice.\n"
+    "  standalone — the subject deserves its own broader post later; seed it.\n"
+    "  discard    — nothing unique to add; a popular post is not a reason to engage.\n"
+    "Rules: reply only when you can add, challenge or reframe — a popular post "
+    "is not a reason to reply. Prefer discard when in doubt; the account gets "
+    "stronger when selective. Do NOT write an analyst review: no 'the real "
+    "test is whether…', no 'in practice…', no feature-spec language. One "
+    "natural move: genuine excitement, playful observation, sharp "
+    "disagreement, personal build comparison, or a curious challenge. A "
+    "perfect one-liner beats a padded paragraph. Never invent first-hand "
+    "experience he hasn't shown you. Never use hashtags, em-dashes, emoji, "
+    "engagement bait or generic praise. Do not reveal credentials or private "
+    "data.\n"
     "Reply with exactly one JSON object: "
     '{"verdict": "reply|quote|standalone|discard", "reason": "...", '
-    '"claim": "...", "evidence": "...", "mechanism": "...", "weak_practice": "...", '
-    '"position": "...", "post": "..."} '
-    "For discard: reason is why there is no unique angle; leave claim/evidence/"
-    "mechanism/position/post empty or minimal. For standalone: fill claim/"
-    "evidence/mechanism/position as a seed for the idea, post may be empty. "
-    "The post may be 25-280 characters and must be distinct from the source. "
-    "No em-dashes, hashtags, engagement bait, invented experience or generic "
-    "praise. Weak practice may be 'none; constructive explanation' when nothing "
-    "is being challenged. Do not reveal credentials or private data."
+    '"post": "...", "stance": "..."}\n'
+    "For standalone, also include claim/evidence/mechanism/position (the "
+    "thesis, for the incubator). For reply/quote: post is the full draft "
+    "(25-280 chars), stance is a one-line summary of the position the draft "
+    "takes, claim/evidence/mechanism may be empty. For discard, post may be "
+    "empty and reason explains why there is no unique angle."
 )
 
 
 def _runtime_voice() -> str:
-    """Load only the compact corpus-calibrated section from the voice skill."""
+    """Load only the corpus-calibrated section from the voice skill."""
     try:
         text = VOICE_SKILL.read_text()
         marker = '## Corpus-Calibrated Runtime Voice'
@@ -79,7 +88,7 @@ def _runtime_voice() -> str:
 
 
 def _load_env():
-    env = Path('/home/kensei/.hermes/.env')
+    env = Path.home() / '.hermes' / '.env'
     if not env.exists():
         return
     for line in env.read_text().splitlines():
@@ -88,25 +97,25 @@ def _load_env():
             os.environ.setdefault(key.strip(), value.strip())
 
 
-def _bait(text: str) -> bool:
-    low = (text or '').lower()
-    return any(w in low for w in BAIT_WORDS)
-
-
-def _collect() -> list:
-    rows = []
-    for account in TARGET_ACCOUNTS:
-        try:
-            # The browser collector is intentionally chatty. Keep those logs
-            # local so no_agent stdout remains a clean Discord summary.
-            with contextlib.redirect_stdout(io.StringIO()):
-                batch = fetch_tweets_batch([account], limit=MAX_PER_ACCOUNT)
-            rows.extend(batch.get(account, []))
-        except Exception as exc:
-            print(f"[x-quote-scout] fetch {account}: {exc}", file=sys.stderr)
+def _collect() -> list[dict]:
+    """Scrape home + mentions + registry extras, freshness-filter, dedupe."""
+    rows = x_ingest.ingest(
+        include_home=True,
+        include_mentions=True,
+        include_following=bool(os.environ.get('X_SCOUT_FOLLOWING')),  # phase 2 flag
+    )
+    # Mentions are reply-eligible: keep them even if slightly outside the
+    # reply window, because a mention IS a conversation already started.
+    rows = dedupe_by_id(rows)
+    fresh = apply_freshness(rows, FRESHNESS.get("quote", 6))
+    # Rank: mentions first (reply-eligible), then by recency.
+    def sort_key(r):
+        return (0 if r.get("source") == "mention" else 1,
+                r.get("age_hours") if r.get("age_hours") is not None else 999)
+    fresh.sort(key=sort_key)
     CANDIDATES_JSON.parent.mkdir(parents=True, exist_ok=True)
-    CANDIDATES_JSON.write_text(json.dumps(rows, ensure_ascii=False))
-    return rows
+    CANDIDATES_JSON.write_text(json.dumps(fresh, ensure_ascii=False))
+    return fresh[:MAX_CANDIDATES]
 
 
 def _load_verdicts() -> dict:
@@ -117,89 +126,54 @@ def _load_verdicts() -> dict:
         return {}
 
 
-def _save_verdicts(data: dict) -> None:
+def _record_verdict(tweet: dict, verdict: str, reason: str) -> None:
+    data = _load_verdicts()
+    entries = data.get("ids", [])
+    entries.append({
+        "id": tweet.get("id", ""),
+        "author": tweet.get("author", ""),
+        "source": tweet.get("source", ""),
+        "verdict": verdict,
+        "reason": (reason or "")[:300],
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    data["ids"] = entries[-200:]
     VERDICT_FILE.parent.mkdir(parents=True, exist_ok=True)
     VERDICT_FILE.write_text(json.dumps(data, ensure_ascii=False))
 
 
-def _load_standalone_seeds() -> list:
-    try:
-        data = json.loads(STANDALONE_SEEDS.read_text())
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def _save_standalone_seeds(seeds: list) -> None:
-    STANDALONE_SEEDS.parent.mkdir(parents=True, exist_ok=True)
-    STANDALONE_SEEDS.write_text(json.dumps(seeds, ensure_ascii=False))
-
-
-def _record_verdict(tweet: dict, verdict: str, reason: str) -> None:
-    data = _load_verdicts()
-    ids = data.setdefault("ids", [])
-    entry = {
-        "id": tweet.get("id", ""),
-        "author": tweet.get("author", ""),
-        "verdict": verdict,
-        "reason": (reason or "")[:300],
-        "at": datetime.now(timezone.utc).isoformat(),
-    }
-    ids.append(entry)
-    # Keep only the most recent 200 verdicts for the health metric.
-    data["ids"] = ids[-200:]
-    _save_verdicts(data)
-
-
-def _verdict_health() -> dict:
-    data = _load_verdicts()
-    ids = data.get("ids", [])
-    counts: dict[str, int] = {}
-    for entry in ids:
-        v = entry.get("verdict", "discard")
-        counts[v] = counts.get(v, 0) + 1
-    total = sum(counts.values()) or 1
-    return {
-        "total": len(ids),
-        "counts": counts,
-        "discard_rate": round(counts.get("discard", 0) / total, 3),
-    }
-
-
 def _draft(tweet: dict) -> dict:
-    """LLM draft; returns verdict fields plus post or raises."""
+    """LLM verdict + draft for one tweet."""
     system = LLM_SYSTEM + "\n\n" + _runtime_voice()
-    out = _call_llm_chain(system, (tweet.get('text') or '')[:2000],
+    src = (tweet.get('text') or '')[:2000]
+    head = f"Source: @{tweet.get('author','?')} ({tweet.get('source','?')})"
+    if tweet.get("source") == "mention":
+        head += " — this post mentions/mentions Sahil or is in his timeline thread"
+    out = _call_llm_chain(system, head + "\n\nPOST:\n" + src,
                           timeout=90, max_tokens=4000)
     if not out:
         raise RuntimeError('empty LLM output')
     text = out.strip()
-    start = text.find('{')
-    end = text.rfind('}')
-    if start == -1 or end == -1 or end <= start:
+    start, end = text.find('{'), text.rfind('}')
+    if start == -1 or end <= start:
         raise RuntimeError('no JSON object in LLM output')
-    data = json.loads(text[start:end + 1])
-    return data
+    return json.loads(text[start:end + 1])
 
 
-def _candidate_artifacts(rows) -> tuple[list, list, list]:
-    """Return (staged_artifacts, standalone_seeds, verdict_summary).
-
-    Verdict-aware: only reply/quote produce staged artifacts; standalone is
-    recorded as a seed for the thesis incubator; discard is recorded for the
-    health metric.
-    """
+def _candidate_artifacts(rows):
+    """Return (staged_artifacts, seeds, discards)."""
     artifacts: list = []
     seeds: list = []
     discards: list = []
+    reply_count = quote_count = 0
     for tweet in rows:
         text = (tweet.get('text') or '').strip()
-        if len(text) < MIN_TWEET_CHARS or _bait(text):
+        if len(text) < MIN_TWEET_CHARS:
             continue
         try:
             data = _draft(tweet)
         except Exception as exc:
-            print(f"[x-quote-scout] draft skip: {exc}", file=sys.stderr)
+            print(f"[x-scout] draft skip: {exc}", file=sys.stderr)
             continue
         verdict = (data.get('verdict') or 'discard').strip().lower()
         if verdict not in VERDICTS:
@@ -209,15 +183,17 @@ def _candidate_artifacts(rows) -> tuple[list, list, list]:
 
         if verdict == 'standalone':
             seeds.append({
-                "source_id": tweet.get('id', ''),
-                "author": tweet.get('author', ''),
-                "source_url": tweet.get('url', ''),
+                "source_id": tweet.get("id", ""),
+                "author": tweet.get("author", ""),
+                "source_url": tweet.get("url", ""),
                 "source_text": text[:600],
                 "claim": (data.get('claim') or '').strip(),
                 "evidence": (data.get('evidence') or '').strip(),
                 "mechanism": (data.get('mechanism') or '').strip(),
                 "position": (data.get('position') or '').strip(),
                 "reason": reason,
+                "blog_refs": blog_cross_reference(
+                    (data.get('position') or '') + ' ' + (data.get('claim') or '')),
             })
             continue
         if verdict == 'discard':
@@ -225,75 +201,98 @@ def _candidate_artifacts(rows) -> tuple[list, list, list]:
             continue
 
         post = (data.get('post') or '').strip()
-        if not post:
+        if not post or post.casefold() == text.casefold():
             continue
-        if post.casefold() == text.casefold():
+        # ── deterministic voice gate (the corpus rejection test, mechanical) ──
+        issues = voice_gate_issues(post)
+        if len(issues) > 2:
+            print(f"[x-scout] voice gate fail ({len(issues)}): {issues[:3]}",
+                  file=sys.stderr)
             continue
+        stance = (data.get('stance') or reason or post[:120]).strip()
+        # Pack for the artifact record: stance carries the position; the
+        # LLM is not forced to write pack prose for replies/quotes.
         pack = xm.ArgumentPack(
-            claim=(data.get('claim') or '').strip(),
-            evidence=((data.get('evidence') or '').strip() or tweet.get('url', '')),
-            mechanism=(data.get('mechanism') or '').strip(),
-            position=(data.get('position') or '').strip(),
-            context={'tweet_id': tweet.get('id', ''), 'author': tweet.get('author', ''),
-                     'source_url': tweet.get('url', ''), 'source_text': text[:500]},
+            claim=stance,
+            evidence=tweet.get('url', ''),
+            mechanism=(data.get('mechanism') or reason or stance).strip(),
+            position=stance,
+            context={
+                'tweet_id': str(tweet.get('id', '')),
+                'author': str(tweet.get('author', '')),
+                'source': tweet.get('source', ''),
+                'source_url': tweet.get('url', ''),
+                'source_text': text[:500],
+                'age_hours': tweet.get('age_hours'),
+                'voice_issues': issues,  # minor issues kept for the review
+                'blog_refs': [] if verdict != 'quote' else blog_cross_reference(post),
+            },
         )
         if not pack.is_complete():
             continue
-        if verdict == 'reply':
-            try:
-                art = xm.reply_draft_artifact(
+        try:
+            if verdict == 'reply':
+                if reply_count >= MAX_REPLIES_PER_RUN:
+                    continue
+                artifacts.append(xm.reply_draft_artifact(
                     tweet_id=str(tweet.get('id', '')),
                     author=str(tweet.get('author', '')),
                     source_text=text,
                     body=post[:280],
                     pack=pack,
-                )
-                artifacts.append(art)
-            except Exception as exc:
-                print(f"[x-quote-scout] reply build skip: {exc}", file=sys.stderr)
-        else:  # quote
-            artifacts.append(xm.XArtifact(id=xm._new_id(xm.LANE_QUOTE_SCAN),
-                                          lane=xm.LANE_QUOTE_SCAN, brand='sahil_twitter',
-                                          body=post[:280], pack=pack))
-        if len(artifacts) >= xm.QUOTE_SCAN_MAX + 2:
-            break
-    return artifacts[:xm.QUOTE_SCAN_MAX], seeds, discards
+                ))
+                reply_count += 1
+            else:
+                if quote_count >= MAX_QUOTES_PER_RUN:
+                    continue
+                artifacts.append(xm.XArtifact(
+                    id=xm._new_id(xm.LANE_QUOTE_SCAN),
+                    lane=xm.LANE_QUOTE_SCAN,
+                    brand='sahil_twitter',
+                    body=post[:280],
+                    pack=pack,
+                ))
+                quote_count += 1
+        except Exception as exc:
+            print(f"[x-scout] build skip: {exc}", file=sys.stderr)
+    return artifacts, seeds, discards
 
 
-STATE_FILE = Path('/home/kensei/repos/KenseiAgent/content_engine/data/x_scout_last_run.json')
+def _merge_standalone_seeds(seeds: list) -> None:
+    try:
+        existing = json.loads(STANDALONE_SEEDS.read_text())
+        if not isinstance(existing, list):
+            existing = []
+    except Exception:
+        existing = []
+    known = {s.get("source_id") for s in existing}
+    fresh = [s for s in seeds if s.get("source_id") not in known]
+    if fresh:
+        STANDALONE_SEEDS.parent.mkdir(parents=True, exist_ok=True)
+        STANDALONE_SEEDS.write_text(json.dumps(existing + fresh, ensure_ascii=False))
+
+
+STATE_FILE2 = STATE_FILE
 
 
 def _already_reported(artifacts) -> bool:
     try:
-        state = json.loads(STATE_FILE.read_text())
+        state = json.loads(STATE_FILE2.read_text())
+        return any(a.id in state.get('ids', []) for a in artifacts)
     except Exception:
         return False
-    return any(a.id in state.get('ids', []) for a in artifacts)
 
 
 def _record_reported(artifacts) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     ids = [a.id for a in artifacts]
     try:
-        state = json.loads(STATE_FILE.read_text())
+        state = json.loads(STATE_FILE2.read_text())
     except Exception:
         state = {'ids': []}
     state.setdefault('ids', [])
     state['ids'] = list(dict.fromkeys(state['ids'] + ids))[-40:]
-    STATE_FILE.write_text(json.dumps(state))
-
-
-def _merge_standalone_seeds(seeds: list) -> None:
-    """Append new standalone seeds, keeping the file bounded and deduped by source id."""
-    if not seeds:
-        return
-    existing = _load_standalone_seeds()
-    known = {s.get("source_id") for s in existing}
-    fresh = [s for s in seeds if s.get("source_id") not in known]
-    if not fresh:
-        return
-    merged = existing + fresh
-    _save_standalone_seeds(merged[-40:])
+    STATE_FILE2.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE2.write_text(json.dumps(state))
 
 
 def main():
@@ -303,10 +302,9 @@ def main():
         return
     artifacts, seeds, discards = _candidate_artifacts(rows)
     _merge_standalone_seeds(seeds)
-    health = _verdict_health()
-    print(f"[x-quote-scout] verdicts: {health.get('counts')} discard_rate={health.get('discard_rate')}", file=sys.stderr)
     if len(artifacts) < xm.QUOTE_SCAN_MIN:
-        print(f"[x-quote-scout] only {len(artifacts)} valid artifacts, below floor", file=sys.stderr)
+        print(f"[x-scout] only {len(artifacts)} valid drafts (floor {xm.QUOTE_SCAN_MIN})",
+              file=sys.stderr)
         return
     if _already_reported(artifacts):
         return
@@ -316,12 +314,13 @@ def main():
             xm.stage_for_approval(art)
             staged.append(art)
         except Exception as exc:
-            print(f"[x-quote-scout] stage failed: {exc}", file=sys.stderr)
+            print(f"[x-scout] stage failed: {exc}", file=sys.stderr)
     if not staged:
         return
-    report = render_report(staged, lane='quote-scout', title='Quote-post recommendations')
+    report = render_report(staged, lane='quote-scout',
+                           title='Quote-post recommendations')
     _record_reported(staged)
-    print(f"X Manager · {len(staged)} post recommendations (quotes + replies)")
+    print(f"X Manager · {len(staged)} post recommendations (replies + quotes)")
     print("Original posts and recommended drafts are in the attached review.")
     print(f"MEDIA:{report}")
 

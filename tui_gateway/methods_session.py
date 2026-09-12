@@ -382,6 +382,7 @@ def _(rid, params: dict) -> dict:
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+    _stop_voice_for_session_switch()  # a new session must not inherit another session's barge-in listener
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
     messages = _history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
@@ -838,6 +839,7 @@ def _(rid, params: dict) -> dict:
         if (resp := _resume_guard(ctx)) is not None:
             return resp
         ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        _stop_voice_for_session_switch()  # switching to this session ends voice mode left on by another
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)

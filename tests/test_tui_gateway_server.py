@@ -20386,6 +20386,80 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     server._tts_stream_stop()
 
 
+def test_session_create_ends_voice_mode_left_on_by_another_session(monkeypatch, tmp_path):
+    """/voice on is process-global runtime state (HERMES_VOICE); opening another session
+    (create) must end it, or every new-session turn re-arms the full-duplex listener and a
+    VAD-only trip (ambient noise, empty transcript) silently aborts its unrelated text turns
+    (#106503)."""
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(stop_continuous=lambda **_kw: None, speak_text=lambda *a, **k: None),
+    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+
+    resp = server._methods["session.create"]("r-voice-create", {"cols": 80})
+
+    assert "result" in resp
+    assert os.environ.get("HERMES_VOICE") == "0"
+    assert os.environ.get("HERMES_VOICE_TTS") == "0"
+
+
+def test_session_resume_ends_voice_mode_left_on_by_another_session(monkeypatch, tmp_path):
+    """Switching to / resuming another session also ends leftover voice mode — the TUI
+    counterpart of Desktop's session-switch voice reset (#61448), for the same cross-session
+    silent-abort failure mode (#106503)."""
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(stop_continuous=lambda **_kw: None, speak_text=lambda *a, **k: None),
+    )
+    target = "voice-switch-target"
+
+    class FakeDB:
+        def get_session(self, sid):
+            return {"id": sid}
+
+        def reopen_session(self, sid):
+            return None
+
+        def get_resume_conversations(self, sid):
+            return ([], [])
+
+        def get_ancestor_display_prefix(self, _sid):
+            return []
+
+        def get_messages_as_conversation(self, sid, **_kw):
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda t: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="test")
+    )
+    monkeypatch.setattr(
+        server, "_session_info", lambda agent, *a: {"model": "test", "tools": {}, "skills": {}}
+    )
+    monkeypatch.setattr(
+        server, "_init_session", lambda sid, key, agent, history, cols=80, **_kw: None
+    )
+    monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *a, **k: None)
+
+    resp = server._methods["session.resume"]("r-voice-resume", {"session_id": target})
+
+    assert "result" in resp
+    assert os.environ.get("HERMES_VOICE") == "0"
+    assert os.environ.get("HERMES_VOICE_TTS") == "0"
+
+
 def test_full_duplex_generation_phase_interrupts_running_turn(monkeypatch, tmp_path):
     """Speech DURING LLM generation (no TTS audio yet) must interrupt the
     in-flight agent turn via the same seam session.interrupt uses, and the

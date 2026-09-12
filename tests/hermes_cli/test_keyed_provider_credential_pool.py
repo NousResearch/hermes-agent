@@ -76,6 +76,89 @@ def test_get_named_custom_provider_exposes_provider_key_and_key_env(
     assert entry.get("base_url") == ENDPOINT
 
 
+def test_custom_collision_pool_matches_custom_runtime_but_not_builtin_pool(tmp_path, monkeypatch):
+    """A custom:openrouter pool survives AIAgent validation; openrouter does not."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "relay-model", "provider": "custom:openrouter"},
+        "providers": {
+            "openrouter": {
+                "name": "Private Relay",
+                "base_url": ENDPOINT,
+            },
+        },
+    }), encoding="utf-8")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "custom:openrouter": [{
+                "id": "private", "label": "private", "auth_type": "api_key",
+                "priority": 0, "source": "manual", "access_token": POOL_KEY,
+            }],
+            "openrouter": [{
+                "id": "public", "label": "public", "auth_type": "api_key",
+                "priority": 0, "source": "manual", "access_token": LEGACY_KEY,
+            }],
+        },
+    }), encoding="utf-8")
+
+    from agent.credential_pool import credential_pool_matches_provider, load_pool
+
+    custom_pool = load_pool("custom:openrouter")
+    builtin_pool = load_pool("openrouter")
+    assert credential_pool_matches_provider(custom_pool, "custom", base_url=ENDPOINT)
+    assert not credential_pool_matches_provider(builtin_pool, "custom", base_url=ENDPOINT)
+
+
+def test_explicit_collision_identity_accepts_only_custom_pools(tmp_path, monkeypatch):
+    """Direct/restored AIAgent identities cannot retain the built-in collision pool."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+        "providers": {
+            "openrouter": {
+                "name": "Private Relay",
+                "base_url": ENDPOINT,
+            },
+        },
+    }), encoding="utf-8")
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "custom:openrouter": [{
+                "id": "private", "label": "private", "auth_type": "api_key",
+                "priority": 0, "source": "manual", "access_token": POOL_KEY,
+            }],
+            "custom:private-relay": [{
+                "id": "legacy", "label": "legacy", "auth_type": "api_key",
+                "priority": 0, "source": "manual", "access_token": LEGACY_KEY,
+            }],
+            "openrouter": [{
+                "id": "public", "label": "public", "auth_type": "api_key",
+                "priority": 0, "source": "manual", "access_token": "public-key",
+            }],
+        },
+    }), encoding="utf-8")
+
+    from agent.credential_pool import credential_pool_matches_provider, load_pool
+
+    for provider in ("custom:openrouter", "custom:private-relay"):
+        assert credential_pool_matches_provider(
+            load_pool("custom:openrouter"), provider, base_url=ENDPOINT,
+        )
+        assert credential_pool_matches_provider(
+            load_pool("custom:private-relay"), provider, base_url=ENDPOINT,
+        )
+        assert not credential_pool_matches_provider(
+            load_pool("openrouter"), provider, base_url=ENDPOINT,
+        )
+
+
 def test_keyed_provider_runtime_uses_durable_pool_slug(tmp_path, monkeypatch):
     """Main turns must send the pooled key, not the no-key-required placeholder."""
     _write_keyed_provider_home(tmp_path, monkeypatch)

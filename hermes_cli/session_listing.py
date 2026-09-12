@@ -56,23 +56,32 @@ def query_session_listing(
     since an id match may be the only handle.
     """
     search = (search_query or "").strip()
-    rows = session_db.list_sessions_rich(
-        source=None if include_all_sources else source,
-        session_key=session_key,
-        exclude_sources=exclude_sources,
-        limit=max(limit * 4, limit),
-        search_query=search or None,
-        order_by_last_active=bool(search),
-    )
     result: list[dict[str, Any]] = []
-    for row in rows:
-        is_current = bool(current_session_id and row.get("id") == current_session_id)
-        if (is_current and not include_current_session) or (
-            not include_unnamed and not row.get("title") and not search and not is_current
-        ):
-            continue
-        result.append({**row, "is_current_session": True} if is_current else row)
-        if len(result) >= limit:
+    offset = 0
+    page_size = 50
+    while len(result) < limit:
+        rows = session_db.list_sessions_rich(
+            source=None if include_all_sources else source,
+            session_key=session_key,
+            exclude_sources=exclude_sources,
+            limit=page_size,
+            offset=offset,
+            search_query=search or None,
+            order_by_last_active=bool(search),
+        )
+        if not rows:
+            break
+        offset += len(rows)
+        for row in rows:
+            is_current = bool(current_session_id and row.get("id") == current_session_id)
+            if (is_current and not include_current_session) or (
+                not include_unnamed and not row.get("title") and not search and not is_current
+            ):
+                continue
+            result.append({**row, "is_current_session": True} if is_current else row)
+            if len(result) >= limit:
+                break
+        if len(rows) < page_size:
             break
     return result
 

@@ -431,6 +431,56 @@ class GatewaySessionCommandsMixin:
             and origin_session_key == persisted_session_key
         )
 
+    async def _legacy_telegram_session_source(
+        self, current: SessionSource, row: dict[str, Any]
+    ) -> Optional[SessionSource]:
+        """Recover only ordinary SQL-NULL Telegram origins owned by the default DB.
+
+        The caller and routing key may corroborate stored facts, never supply
+        missing ones. Named/unknown stores cannot prove the lost profile metadata.
+        """
+        import re
+
+        if (
+            row.get("source") != "telegram"
+            or current.platform != Platform.TELEGRAM
+            or row.get("chat_type") not in ("dm", "group")
+            or row.get("chat_type") != current.chat_type
+            or row.get("profile_name") != "default"
+            or current.profile not in (None, "", "default")
+            or current.profile_route_rejected
+            or getattr(self.config, "multiplex_profiles", None) is not False
+            or "thread_id" not in row
+            or row["thread_id"] not in (None, "")
+            or current.thread_id not in (None, "")
+        ):
+            return None
+        for field in ("user_id_alt", "chat_id_alt", "scope_id", "guild_id",
+                      "prospective_thread_id", "parent_chat_id"):
+            if getattr(current, field, None) not in (None, "") or row.get(field) not in (None, ""):
+                return None
+        chat_id, user_id = row.get("chat_id"), row.get("user_id")
+        if (
+            not isinstance(chat_id, str) or re.fullmatch(r"-?[0-9]+", chat_id) is None
+            or not isinstance(user_id, str) or re.fullmatch(r"[0-9]+", user_id) is None
+            or user_id != current.user_id
+        ):
+            return None
+        origin = SessionSource(
+            platform=Platform(row["source"]), chat_id=chat_id, user_id=user_id,
+            chat_type=row["chat_type"], thread_id=row["thread_id"], profile=row["profile_name"],
+        )
+        if self._is_shared_session_source(origin):
+            return None
+        try:
+            # Native DB owner derives from the actual db_path, not the active
+            # profile, caller, row label, or a parsed agent:main namespace.
+            if await self._session_db._own_profile_name() != "default":
+                return None
+        except Exception:
+            return None
+        return origin
+
     async def _resume_target_allowed(
         self,
         source: SessionSource,
@@ -486,10 +536,15 @@ class GatewaySessionCommandsMixin:
         if source.platform == Platform.MATRIX:
             return self._persisted_matrix_origin_matches(source, row)
 
-        decoded = self._decode_persisted_session_source(row.get("origin_json"))
-        if decoded is None:
-            return False
-        _payload, origin_source = decoded
+        if "origin_json" in row and row["origin_json"] is None:
+            origin_source = await self._legacy_telegram_session_source(source, row)
+            if origin_source is None:
+                return False
+        else:
+            decoded = self._decode_persisted_session_source(row.get("origin_json"))
+            if decoded is None:
+                return False
+            _payload, origin_source = decoded
         try:
             origin_session_key = str(key_for_source(origin_source) or "")
         except Exception:
@@ -1012,13 +1067,72 @@ class GatewaySessionCommandsMixin:
     # -------------------------------------------------------------- /resume, /sessions
 
     async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
-        """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
+        """Titled sessions in the same order for bare /resume and numeric selection."""
+        return await self._list_visible_sessions(source, session_key, allow_all=allow_all)
+
+    async def _list_visible_sessions(
+        self, source, session_key: str, *, allow_all: bool = False,
+        include_all_sources: bool = False, include_unnamed: bool = False,
+        current_session_id: str | None = None, search_query: str | None = None,
+        exclude_sources: list[str] | None = None,
+    ) -> list[dict]:
+        """Fill a gateway page only after canonical root/tip authorization.
+
+        SQL still narrows the lane before LIMIT. Post-filtered rows must not
+        hide older authorized candidates, so advance the raw offset until the
+        visible page is full or the database is exhausted.
+        """
         widen = allow_all and self._resume_caller_is_admin(source)
-        sessions = await self._session_db.list_sessions_rich(
-            source=source.platform.value if source.platform else None,
-            session_key=None if widen else session_key, limit=10)
-        titled = [s for s in sessions if s.get("title")][:10]
-        return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
+        search = (search_query or "").strip()
+        visible: list[dict] = []
+        offset = 0
+        page_size = 50
+        while len(visible) < 10:
+            rows = await self._session_db.list_sessions_rich(
+                source=None if widen and include_all_sources else (
+                    source.platform.value if source.platform else None),
+                session_key=None if widen else session_key,
+                limit=page_size, offset=offset, exclude_sources=exclude_sources,
+                search_query=search or None, order_by_last_active=bool(search),
+            )
+            if not rows:
+                break
+            offset += len(rows)
+            for row in rows:
+                is_current = bool(current_session_id and row.get("id") == current_session_id)
+                if not include_unnamed and not row.get("title") and not search and not is_current:
+                    continue
+                if not await self._resume_row_visible(source, row, allow_all=widen):
+                    continue
+                visible.append({**row, "is_current_session": True} if is_current else row)
+                if len(visible) >= 10:
+                    break
+            if len(rows) < page_size:
+                break
+        return visible
+
+    def _decorate_matrix_session_row(self, row: dict) -> dict:
+        """Label an already-authorized Matrix row without mutating the query result."""
+        decorated = dict(row)
+        title = row.get("title")
+        if not isinstance(title, str) or not title or row.get("source") not in (None, "matrix"):
+            return decorated
+        try:
+            origin = self._gateway_session_origin_for_id(str(row.get("id") or ""))
+        except Exception:
+            origin = None
+        if not isinstance(origin, SessionSource):
+            decoded = self._decode_persisted_session_source(row.get("origin_json"))
+            origin = decoded[1] if decoded else None
+        candidates = []
+        if isinstance(origin, SessionSource) and origin.platform == Platform.MATRIX:
+            candidates.extend((origin.chat_name, origin.chat_id))
+        candidates.extend((row.get("display_name"), row.get("chat_id")))
+        room = next((value.strip() for value in candidates
+                     if isinstance(value, str) and value.strip()), "")
+        if room:
+            decorated["title"] = f"{title} — {room}"
+        return decorated
 
     async def _resolve_visible_title_target(self, source, title: str, allow_override: bool):
         """Prefer an authorized title candidate before widening for a configured admin."""
@@ -1155,9 +1269,7 @@ class GatewaySessionCommandsMixin:
         for idx, s in enumerate(titled[:10], start=1):
             title = s["title"]
             if source.platform == Platform.MATRIX and allow_all:
-                origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
-                if origin:
-                    title = f"{title} — {origin.chat_name or origin.chat_id}"
+                title = self._decorate_matrix_session_row(s)["title"]
             preview = s.get("preview", "")[:40]
             preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
             lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
@@ -1171,7 +1283,7 @@ class GatewaySessionCommandsMixin:
         if not self._session_db:
             return self._session_db_unavailable_reply()
         from hermes_cli.session_listing import (
-            format_gateway_session_listing, parse_session_listing_args, query_session_listing)
+            format_gateway_session_listing, parse_session_listing_args)
         try:
             include_all, include_unnamed, target, search_query = parse_session_listing_args(
                 event.get_command_args().strip())
@@ -1190,18 +1302,13 @@ class GatewaySessionCommandsMixin:
         if include_all and not cross_origin:
             scope_notice = "_Note: `all` (cross-chat listing) requires a configured admin; showing this chat's sessions only._"
         current_entry = await self.async_session_store.get_or_create_session(source)
-        rows = await asyncio.to_thread(
-            query_session_listing, getattr(self._session_db, "_db", self._session_db),
-            source=source.platform.value if source.platform else None,
-            session_key=None if cross_origin else session_key,
-            current_session_id=current_entry.session_id, include_current_session=True,
+        rows = await self._list_visible_sessions(
+            source, session_key, allow_all=cross_origin,
+            current_session_id=current_entry.session_id,
             include_all_sources=cross_origin, include_unnamed=include_unnamed,
-            search_query=search_query,
-            # Search filters in SQL: over-fetch so origin-invisible matches don't consume the page.
-            limit=50 if search_query else 10, exclude_sources=["tool"])
-        if not cross_origin:
-            rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
-        rows = rows[:10]
+            search_query=search_query, exclude_sources=["tool"])
+        if cross_origin and source.platform == Platform.MATRIX:
+            rows = [self._decorate_matrix_session_row(row) for row in rows]
         if search_query:
             title = f"Sessions matching “{search_query}”"
         else:

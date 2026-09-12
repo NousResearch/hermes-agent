@@ -390,12 +390,20 @@ class TestHandleResumeCommand:
             user_id="other-user", chat_id="other",
         )
         db.set_session_title("other_lane", "Other Lane Work")
+        foreign = _make_event(platform=Platform.DISCORD, user_id="victim", chat_id="other").source
+        TestCanonicalResumeAuthorization._create(db, "foreign_platform", foreign, "Foreign Platform Work")
+        db.append_message("foreign_platform", "user", "FOREIGN_PLATFORM_PREVIEW")
 
         runner = _make_runner(session_db=db, event=event)
-        runner._resume_caller_is_admin = lambda _source: True
+        runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(extra={
+            "allow_admin_from": [event.source.user_id],
+        })
+        assert runner._resume_caller_is_admin(event.source)
         result = await runner._handle_resume_command(event)
 
         assert "Other Lane Work" in result
+        for value in ("foreign_platform", "Foreign Platform Work", "FOREIGN_PLATFORM_PREVIEW"):
+            assert value not in result
         db.close()
 
     @pytest.mark.asyncio
@@ -481,6 +489,149 @@ class TestHandleResumeCommand:
         assert "Recovered Topic Work" in result
         assert "Lobby Work" not in result
         db.close()
+
+
+
+
+class TestCompleteAuthorizedListing:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flags", [
+        "--all", "--full", "--all --full", "--full --all",
+    ])
+    async def test_resume_flags_keep_native_semantics_without_sessions_delegation(self, tmp_path, flags):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(f"/resume {flags}")
+        TestCanonicalResumeAuthorization._create(db, "full_target", event.source, "--full")
+        runner = _make_runner(session_db=db, event=event)
+        runner._handle_sessions_command = AsyncMock(return_value="wrong listing path")
+        try:
+            result = await runner._handle_resume_command(event)
+            if flags == "--all":
+                assert "Named Sessions" in result and "--full" in result
+                assert "1." in result and "/resume 1" in result
+                runner.session_store.switch_session.assert_not_called()
+            else:
+                assert "Resumed" in result
+                assert runner.session_store.switch_session.call_args.args[1] == "full_target"
+            runner._handle_sessions_command.assert_not_awaited()
+            assert event.text == f"/resume {flags}"
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("listing_args", ["all", "full", "all full"])
+    @pytest.mark.parametrize("admin", [False, True])
+    async def test_sessions_keeps_authorization_and_formatting(
+        self, tmp_path, listing_args, admin
+    ):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(f"/sessions {listing_args}")
+        create = TestCanonicalResumeAuthorization._create
+        create(db, "own_named", event.source, "Own Work")
+        create(db, "own_unnamed", event.source)
+        db.append_message("own_unnamed", "user", "own preview")
+        foreign = _make_event(platform=Platform.DISCORD, user_id="victim", chat_id="other").source
+        create(db, "foreign_named", foreign, "Foreign Secret Title")
+        db.append_message("foreign_named", "user", "foreign secret preview")
+        runner = _make_runner(session_db=db, current_session_id="own_named", event=event)
+        runner.config.platforms[Platform.TELEGRAM] = PlatformConfig(extra={
+            "allow_admin_from": [event.source.user_id if admin else "operator"],
+        })
+        assert runner._resume_caller_is_admin(event.source) is admin
+        try:
+            actual = await runner._handle_sessions_command(event)
+            assert "**Own Work** (current)" in actual
+            if "full" in listing_args.split():
+                assert "own_unnamed" in actual and "own preview" in actual
+            else:
+                assert "own_unnamed" not in actual
+            for secret in ("foreign_named", "Foreign Secret Title", "foreign secret preview"):
+                assert (secret in actual) is (admin and "all" in listing_args.split())
+            assert ("requires a configured admin" in actual) is (not admin and "all" in listing_args.split())
+            runner.session_store.switch_session.assert_not_called()
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target", ["all", '"all"', '"Project all"', "title_all", "--all title_all"])
+    async def test_resume_all_without_dashes_remains_a_title(self, tmp_path, target):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(f"/resume {target}")
+        title = "Project all" if target == '"Project all"' else "all"
+        TestCanonicalResumeAuthorization._create(db, "title_all", event.source, title)
+        runner = _make_runner(session_db=db, event=event)
+        runner._handle_sessions_command = AsyncMock(return_value="wrong listing path")
+        try:
+            result = await runner._handle_resume_command(event)
+            assert "Resumed" in result
+            assert runner.session_store.switch_session.call_args.args[1] == "title_all"
+            runner._handle_sessions_command.assert_not_awaited()
+        finally:
+            db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target", ["--unknown", "--full own-target", "--all --unknown"])
+    async def test_mixed_listing_flags_keep_direct_target_semantics(self, target):
+        event = _make_event(f"/resume {target}")
+        runner = _make_runner(event=event)
+        runner._session_db = AsyncMock()
+        runner._telegram_topic_mode_enabled = lambda source: False
+        runner._session_db.get_session.return_value = None
+        runner._session_db.list_session_title_candidates.return_value = []
+        runner._handle_sessions_command = AsyncMock(return_value="wrong listing path")
+        result = await runner._handle_resume_command(event)
+        assert "No session found" in result
+        runner._session_db.get_session.assert_awaited_once_with(target.replace("--all ", ""))
+        runner._handle_sessions_command.assert_not_awaited()
+        runner.session_store.switch_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", [
+        "/resume", "/sessions", "/sessions full", "/sessions search needle", "/sessions --full",
+    ])
+    async def test_resume_and_sessions_paginate_past_newer_foreign_rows(self, tmp_path, command):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(command)
+        create = TestCanonicalResumeAuthorization._create
+        create(db, "own_older", event.source, "Needle Older")
+        create(db, "own_newer", event.source, "Needle Newer")
+        foreign = _make_event(user_id="victim", chat_id="other").source
+        for i in range(65):
+            # Roots pass the native lane SQL; projected foreign tips must fail
+            # canonical root/tip authorization AFTER the database limit.
+            root, tip = f"root_{i}", f"foreign_tip_{i}"
+            create(db, root, event.source, f"Needle Private {i}")
+            db.end_session(root, "compression")
+            create(db, tip, foreign, parent=root)
+            db.append_message(tip, "user", "PRIVATE_PREVIEW")
+        runner = _make_runner(session_db=db, event=event, persist_event_origin=False)
+        runner._gateway_session_origin_for_id = lambda sid: None
+        lane = _session_key_for_event(event)
+        try:
+            first = db.list_sessions_rich(source="telegram", session_key=lane, limit=50)
+            assert len(first) == 50
+            assert all(row.get("_lineage_root_id", "").startswith("root_") for row in first)
+            assert all(row["session_key"] == lane for row in first)
+            assert not await runner._resume_row_visible(event.source, first[0], False)
+            result = await (runner._handle_resume_command(event) if command.startswith("/resume")
+                            else runner._handle_sessions_command(event))
+            assert result.index("Needle Newer") < result.index("Needle Older")
+            for secret in ("Needle Private", "foreign_tip_", "PRIVATE_PREVIEW"):
+                assert secret not in result
+            # Numeric choices use exactly the bare /resume display order.
+            numbered = await runner._handle_resume_command(_make_event("/resume 2"))
+            assert "Resumed" in numbered
+            assert runner.session_store.switch_session.call_args.args[1] == "own_older"
+        finally:
+            db.close()
 
 
 class TestHandleSessionsCommand:
@@ -1093,6 +1244,189 @@ class TestCanonicalResumeAuthorization:
         runner._clear_conversation_scope.assert_not_called()
         runner._evict_cached_agent.assert_not_called()
         runner._release_running_agent_state.assert_not_called()
+
+    @pytest.fixture(params=["dm", "group"])
+    def legacy_telegram(self, request):
+        """A real default-profile store with an inactive, SQL-NULL-origin row."""
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionStore
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        # conftest isolates both HERMES_HOME and the default DB path per test.
+        root = get_hermes_home()
+        config = GatewayConfig(multiplex_profiles=False, group_sessions_per_user=True)
+        store = SessionStore(root / "sessions", config)
+        try:
+            event = _make_event("/resume legacy_target")
+            event.source.chat_type = request.param
+            if request.param == "group":
+                event.source.chat_id = "-67890"
+            current = store.get_or_create_session(event.source)
+            db = store._db
+            assert isinstance(db, SessionDB)
+            assert db._own_profile_name() == "default"
+            db.create_session(
+                "legacy_target", "telegram", session_key=current.session_key,
+                chat_id=event.source.chat_id, user_id=event.source.user_id,
+                chat_type=event.source.chat_type, thread_id=None,
+                origin_json=None, profile_name="default",
+            )
+            db.set_session_title("legacy_target", "Historical Telegram")
+            db.append_message("legacy_target", "user", "Historical transcript")
+            db.end_session("legacy_target", "reset")
+            runner = _make_runner(session_db=db, event=event, persist_event_origin=False)
+            runner.config = config
+            runner.session_store = store
+            self._guard_side_effects(runner)
+            assert runner._gateway_session_origin_for_id("legacy_target") is None
+            yield db, runner, event, current
+        finally:
+            store.close_all_db_handles()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target", ["legacy_target", "Historical Telegram", "1"])
+    async def test_legacy_telegram_real_store_switch_readback(self, legacy_telegram, target):
+        from gateway.session import AsyncSessionStore
+
+        db, runner, event, current = legacy_telegram
+        key, previous_id = current.session_key, current.session_id
+        assert db.get_session("legacy_target")["origin_json"] is None
+        assert isinstance(runner.async_session_store, AsyncSessionStore)
+        result = await runner._handle_resume_command(
+            MessageEvent(text=f"/resume {target}", source=event.source))
+        assert "Resumed" in result
+        assert runner.session_store.lookup_by_session_key(key).session_id == "legacy_target"
+        assert (await runner.async_session_store.get_or_create_session(event.source)).session_id == "legacy_target"
+        assert db.get_session(previous_id)["end_reason"] == "session_switch"
+        assert db.get_session("legacy_target")["ended_at"] is None
+        transcript = await runner.async_session_store.load_transcript("legacy_target")
+        assert [m["content"] for m in transcript if m["role"] == "user"] == ["Historical transcript"]
+        runner._clear_conversation_scope.assert_called_once_with(key, reason="resume")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("thread", [None, ""])
+    async def test_legacy_telegram_listing_is_read_only(self, legacy_telegram, thread):
+        db, runner, event, current = legacy_telegram
+        db._conn.execute("UPDATE sessions SET thread_id=? WHERE id='legacy_target'", (thread,))
+        db._conn.commit()
+        before = db.get_session("legacy_target")
+        for command in ("/resume", "/sessions", "/sessions full", "/sessions --full"):
+            handler = runner._handle_sessions_command if command.startswith("/sessions") else runner._handle_resume_command
+            result = await handler(MessageEvent(text=command, source=event.source))
+            assert "Historical Telegram" in result
+        assert db.get_session("legacy_target") == before
+        assert runner.session_store.lookup_by_session_key(current.session_key).session_id == current.session_id
+        runner._clear_conversation_scope.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field,value", [
+        ("origin_json", ""), ("origin_json", " "), ("origin_json", "null"),
+        ("origin_json", "{}"), ("origin_json", "{broken"),
+        ("session_key", ""), ("session_key", "agent:work:telegram:dm:67890"),
+        ("source", "discord"), ("chat_id", "99999"), ("chat_id", 67890),
+        ("user_id", "99999"), ("user_id", 12345), ("user_id", "１２３４５"),
+        ("chat_type", "channel"), ("chat_type", None), ("thread_id", "1"),
+        ("thread_id", 0), ("profile_name", None), ("profile_name", ""),
+        ("profile_name", "work"),
+    ])
+    async def test_legacy_telegram_rejects_conflicting_rows(self, legacy_telegram, field, value):
+        db, runner, event, current = legacy_telegram
+        row = {**db.get_session("legacy_target"), field: value}
+        assert await runner._resume_target_allowed(event.source, "legacy_target", persisted_row=row) is False
+        assert await runner._resume_row_visible(event.source, row, False) is False
+        assert row[field] == value
+        assert runner.session_store.lookup_by_session_key(current.session_key).session_id == current.session_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", [
+        "origin_json", "session_key", "source", "chat_id", "user_id",
+        "chat_type", "thread_id", "profile_name",
+    ])
+    async def test_legacy_telegram_missing_fields_are_not_sql_null(self, legacy_telegram, field):
+        db, runner, event, _ = legacy_telegram
+        row = db.get_session("legacy_target")
+        del row[field]
+        assert await runner._resume_target_allowed(event.source, "legacy_target", persisted_row=row) is False
+        assert field not in row
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field,value", [
+        ("platform", Platform.DISCORD), ("chat_type", "channel"),
+        ("thread_id", "1"), ("user_id", "99999"), ("user_id_alt", "12345"),
+        ("chat_id_alt", "67890"), ("profile", "work"),
+        ("scope_id", "workspace"), ("guild_id", "guild"),
+        ("prospective_thread_id", "1"), ("parent_chat_id", "67890"),
+    ])
+    async def test_legacy_telegram_rejects_nonordinary_callers(self, legacy_telegram, field, value):
+        db, runner, event, _ = legacy_telegram
+        setattr(event.source, field, value)
+        assert await runner._resume_target_allowed(event.source, "legacy_target") is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("multiplex", [True, None])
+    async def test_legacy_telegram_requires_multiplex_explicitly_off(self, legacy_telegram, multiplex):
+        _, runner, event, _ = legacy_telegram
+        runner.config.multiplex_profiles = multiplex
+        assert await runner._resume_target_allowed(event.source, "legacy_target") is False
+
+    @pytest.mark.asyncio
+    async def test_legacy_telegram_shared_group_stays_closed(self, legacy_telegram):
+        db, runner, event, _ = legacy_telegram
+        event.source.chat_type = "group"
+        runner.config.group_sessions_per_user = False
+        row = {**db.get_session("legacy_target"), "chat_type": "group",
+               "session_key": runner._session_key_for_source(event.source)}
+        assert await runner._resume_target_allowed(event.source, "legacy_target", persisted_row=row) is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("store_owner", ["work", None])
+    async def test_legacy_telegram_requires_actual_db_default_owner(self, legacy_telegram, store_owner):
+        from hermes_state import AsyncSessionDB, SessionDB
+
+        db, runner, event, _ = legacy_telegram
+        root = db.db_path.parent
+        path = root / "profiles" / "work" / "state.db" if store_owner else root / "unknown" / "state.db"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        other_db = SessionDB(path)
+        try:
+            assert other_db._own_profile_name() == store_owner
+            runner._session_db = AsyncSessionDB(other_db)
+            # Row and bare key both say default; only the actual DB contradicts them.
+            row = db.get_session("legacy_target")
+            assert row["profile_name"] == "default"
+            assert await runner._resume_target_allowed(event.source, "legacy_target", persisted_row=row) is False
+        finally:
+            other_db.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field,value", [
+        ("origin_json", "{broken"), ("user_id", "99999"), ("profile_name", "work"),
+    ])
+    async def test_legacy_telegram_denial_preserves_real_route_and_cleanup(self, legacy_telegram, field, value):
+        db, runner, event, current = legacy_telegram
+        db._conn.execute(f"UPDATE sessions SET {field}=? WHERE id='legacy_target'", (value,))
+        db._conn.commit()
+        before = db.get_session("legacy_target")
+        active_before = db.get_session(current.session_id)
+        for target in ("legacy_target", "Historical Telegram", "1"):
+            result = await runner._handle_resume_command(
+                MessageEvent(text=f"/resume {target}", source=event.source))
+            assert "Resumed" not in result
+        assert runner.session_store.lookup_by_session_key(current.session_key).session_id == current.session_id
+        assert db.get_session("legacy_target") == before
+        assert db.get_session(current.session_id) == active_before
+        runner._release_running_agent_state.assert_not_called()
+        runner._clear_conversation_scope.assert_not_called()
+        runner._evict_cached_agent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legacy_telegram_keeps_live_origin_priority(self, legacy_telegram):
+        _, runner, event, current = legacy_telegram
+        runner._gateway_session_origin_for_id = lambda sid: _make_event(chat_id="99999").source
+        assert await runner._resume_target_allowed(event.source, "legacy_target") is False
+        runner._gateway_session_origin_for_id = lambda sid: event.source
+        assert await runner._resume_target_allowed(event.source, "legacy_target") is True
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("foreign_root", [True, False])

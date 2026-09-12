@@ -3415,7 +3415,9 @@ class BasePlatformAdapter(ABC):
     def _session_task_is_stale(self, session_key: str) -> bool:
         """True if the recorded owner task for ``session_key`` has exited. No owner task at all is
         NOT stale (guards installed outside handle_message, as tests do, must not be healed)."""
-        done = getattr(self._session_tasks.get(session_key), "done", None)
+        # A command owns the guard until its reply and cancellation finish, even if the old turn exits.
+        owner = getattr(self._active_sessions.get(session_key), "_hermes_command_task", None)
+        done = getattr(owner or self._session_tasks.get(session_key), "done", None)
         return bool(done and done())
 
     def _heal_stale_session_lock(self, session_key: str) -> bool:
@@ -3490,7 +3492,11 @@ class BasePlatformAdapter(ABC):
         self, session_key: str, command_guard: asyncio.Event) -> None:
         """Tail of /stop, /new, /reset: release the command-scoped guard, then
         spawn a fresh processing task for any follow-up queued meanwhile."""
+        if self._active_sessions.get(session_key) is not command_guard:
+            return
         await self._flush_text_debounce_now(session_key)
+        if self._active_sessions.get(session_key) is not command_guard:
+            return
         pending_event = self._pending_messages.pop(session_key, None)
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is not None:
@@ -3503,21 +3509,29 @@ class BasePlatformAdapter(ABC):
         logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
+        setattr(command_guard, "_hermes_command_task", asyncio.current_task())
         self._active_sessions[session_key] = command_guard
         try:
             # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
             # confirmation.
             await self._dispatch_inline_reply(event, log_cmd=cmd)
+            if self._active_sessions.get(session_key) is not command_guard:
+                return
             await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
-        except Exception:
-            # On failure restore the original guard so the session isn't left half-reset.
+            await self._drain_pending_after_session_command(session_key, command_guard)
+        except (Exception, asyncio.CancelledError):
+            # Restore the preceding live owner, which may itself be a command awaiting its reply.
             if self._active_sessions.get(session_key) is command_guard:
-                if session_key in self._session_tasks and current_guard is not None:
+                owner = (getattr(current_guard, "_hermes_command_task", None)
+                         or self._session_tasks.get(session_key))
+                if owner is not None and not owner.done() and current_guard is not None:
                     self._active_sessions[session_key] = current_guard
                 else:
-                    self._release_session_guard(session_key, guard=command_guard)
+                    self._session_tasks.pop(session_key, None)
+                    await self._drain_pending_after_session_command(session_key, command_guard)
             raise
-        await self._drain_pending_after_session_command(session_key, command_guard)
+        finally:
+            delattr(command_guard, "_hermes_command_task")
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
@@ -3958,6 +3972,8 @@ class BasePlatformAdapter(ABC):
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
+        if getattr(self._active_sessions.get(session_key), "_hermes_command_task", None) is not None:
+            return
         late_pending = self._pending_messages.pop(session_key, None)
         current_task = asyncio.current_task()
         if late_pending is not None:
@@ -4043,16 +4059,6 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
-            # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
-            # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
-            await self._flush_text_debounce_now(session_key)
-            if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
-                logger.debug("[%s] Processing queued follow-up message", self.name)
-                self._clear_session_guard(session_key)
-                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-                self._spawn_drain_task(pending_event, session_key)
-                return  # Drain task owns the session now.
         except asyncio.CancelledError:
             expected = asyncio.current_task() in self._expected_cancelled_tasks
             await self._run_processing_hook(
@@ -4067,16 +4073,16 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
-            # alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
-            # Callback work or a late refresh may have recreated typing — one final bounded stop.
-            await self._stop_typing_refresh(
-                event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
-            # Flush any timer that missed the in-band drain, then reconcile ownership.
-            await self._flush_text_debounce_now(session_key)
-            self._finish_session_task(session_key, interrupt_event)
+            try:
+                # Stop typing before callbacks, then clear any refresh they recreated.
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                await self._fire_post_delivery_callback(session_key, interrupt_event)
+                await self._stop_typing_refresh(
+                    event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
+            finally:
+                # Cleanup cancellation must not strand input that is still owned by this session.
+                await self._flush_text_debounce_now(session_key)
+                self._finish_session_task(session_key, interrupt_event)
 
     def _spawn_drain_task(self, pending_event: MessageEvent, session_key: str) -> None:
         """Hand the session to a fresh task for a queued follow-up — never recurse (chained

@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import UnscopedSecretError, get_secret
-from gateway.platforms._shared import yaml_env_setter as _yaml_env_setter
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
 
 try:
     from mautrix.types import (
@@ -341,7 +341,7 @@ def _resolve_max_message_length(config) -> int:
     """Resolve outbound chunk size from config, env, or plugin registry."""
     raw = (getattr(config, "extra", {}) or {}).get("max_message_length")
     if raw is None:
-        raw = os.getenv("MATRIX_MAX_MESSAGE_LENGTH")
+        raw = _get_scoped_secret("MATRIX_MAX_MESSAGE_LENGTH")
     if raw is None:
         with suppress(Exception):
             from gateway.platform_registry import platform_registry
@@ -469,7 +469,7 @@ def _normalize_e2ee_mode(value: Any) -> str:
 def _resolve_e2ee_mode(extra: Optional[Dict[str, Any]] = None) -> str:
     """Resolve E2EE mode with MATRIX_ENCRYPTION backwards compatibility."""
     extra = extra or {}
-    explicit = extra.get("e2ee_mode") or os.getenv("MATRIX_E2EE_MODE", "")
+    explicit = extra.get("e2ee_mode") or _get_scoped_secret("MATRIX_E2EE_MODE", "")
     if explicit:
         return _normalize_e2ee_mode(explicit)
     legacy_enabled = extra.get("encryption", _env_truthy("MATRIX_ENCRYPTION"))
@@ -478,13 +478,13 @@ def _resolve_e2ee_mode(extra: Optional[Dict[str, Any]] = None) -> str:
 
 def _env_truthy(name: str, default: str = "") -> bool:
     """Return True when the env var is one of true/1/yes (case-insensitive)."""
-    return os.getenv(name, default).lower() in ("true", "1", "yes")
+    return str(_get_scoped_secret(name, default)).lower() in ("true", "1", "yes")
 
 
 def _env_number(name: str, default, cast):
     """Parse a numeric env var, falling back to *default* on ValueError."""
     try:
-        return cast(os.getenv(name, str(default)))
+        return cast(_get_scoped_secret(name, str(default)))
     except ValueError:
         return default
 
@@ -859,10 +859,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
         self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
         self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
-        raw_session_scope = str(config.extra.get("session_scope") or os.getenv("MATRIX_SESSION_SCOPE", "auto")).strip().lower()
+        raw_session_scope = str(config.extra.get("session_scope") or _get_scoped_secret("MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
-        self._reactions_enabled: bool = os.getenv("MATRIX_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        self._reactions_enabled: bool = str(_get_scoped_secret("MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
@@ -935,7 +935,7 @@ class MatrixAdapter(BasePlatformAdapter):
         configured = MatrixAdapter._configured_bool(config, "require_mention")
         if configured is not None:
             return configured
-        return os.getenv("MATRIX_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
+        return str(_get_scoped_secret("MATRIX_REQUIRE_MENTION", "true")).lower() not in {"false", "0", "no", "off"}
 
     @staticmethod
     def _parse_thread_require_mention(config) -> bool:
@@ -943,7 +943,7 @@ class MatrixAdapter(BasePlatformAdapter):
         configured = MatrixAdapter._configured_bool(config, "thread_require_mention")
         if configured is not None:
             return configured
-        return os.getenv("MATRIX_THREAD_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+        return str(_get_scoped_secret("MATRIX_THREAD_REQUIRE_MENTION", "false")).lower() in {"true", "1", "yes", "on"}
 
     @staticmethod
     def _extract_server_ed25519(device_keys_obj: Any) -> Optional[str]:

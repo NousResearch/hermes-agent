@@ -961,7 +961,7 @@ _DISCORD_PROMPT_TIMEOUT_MAX = 900
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name, "").strip().lower()
+    raw = _scoped_gate_env(name).lower()
     if not raw:
         return default
     return raw in {"true", "1", "yes", "on"}
@@ -1108,7 +1108,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         extra = self.config.extra if isinstance(getattr(self.config, "extra", None), dict) else {}
         value = extra.get(key)
         if value is None and env_key:
-            value = os.getenv(env_key)
+            value = _scoped_gate_env(env_key) or None
         return default if value is None or value == "" else value
 
     def _finite_positive_config_float(
@@ -1413,9 +1413,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             if other_bots_mentioned and not raw_self_mention:
                 return False, False
-            ignore_no_mention = os.getenv(
-                "DISCORD_IGNORE_NO_MENTION", "true"
-            ).lower() in {"true", "1", "yes"}
+            ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
                 parent_id = None
                 if hasattr(message.channel, "parent_id") and message.channel.parent_id:
@@ -2058,7 +2056,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if isinstance(value, str):
                 return value.strip().lower() in ("true", "1", "yes", "on")
             return bool(value)
-        raw = os.getenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
+        raw = _scoped_gate_env("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
         return str(raw).strip().lower() in ("true", "1", "yes", "on")
 
     def _missed_message_backfill_channels(self) -> set[str]:
@@ -2081,7 +2079,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def _missed_message_backfill_number(self, key: str, env_key: str, default, cast, lo, hi=None):
         """Numeric ``missed_message_backfill.<key>`` (dict extra wins over env), clamped to [lo, hi]."""
         configured = self.config.extra.get("missed_message_backfill")
-        raw = configured.get(key, default) if isinstance(configured, dict) else os.getenv(env_key, str(default))
+        raw = configured.get(key, default) if isinstance(configured, dict) else _scoped_gate_env(env_key, str(default))
         try:
             value = cast(raw)
         except (TypeError, ValueError):
@@ -2577,7 +2575,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._with_discord_recovery_db(_op)
 
     def _get_discord_command_sync_policy(self) -> str:
-        raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
+        raw = _scoped_gate_env("DISCORD_COMMAND_SYNC_POLICY", "safe").lower()
         if raw in _DISCORD_COMMAND_SYNC_POLICIES:
             return raw
         if raw:
@@ -4291,7 +4289,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 dropped_over_cap,
             )
         # Opt-in UX only: hide slash commands from non-admins; real gate is _check_slash_authorization.
-        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in {
+        if _scoped_gate_env("DISCORD_HIDE_SLASH_COMMANDS", "false").lower() in {
             "true", "1", "yes", "on",
         }:
             self._apply_owner_only_visibility(tree)
@@ -4569,7 +4567,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() not in {"false", "0", "no", "off"}
             return bool(configured)
-        env = os.getenv(env_key, env_default).lower()
+        env = _scoped_gate_env(env_key, env_default).lower()
         return env in {"true", "1", "yes", "on"} if truthy else env not in {"false", "0", "no", "off"}
 
     def _discord_require_mention(self) -> bool:
@@ -4580,7 +4578,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
         configured = self.config.extra.get("max_attachment_bytes")
         if configured is None:
-            configured = os.getenv("DISCORD_MAX_ATTACHMENT_BYTES")
+            configured = _scoped_gate_env("DISCORD_MAX_ATTACHMENT_BYTES") or None
         if configured is None or configured == "":
             return 32 * 1024 * 1024
         try:
@@ -4793,7 +4791,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return int(configured)
             except (ValueError, TypeError):
                 pass
-        raw = os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
+        raw = _scoped_gate_env("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
         try:
             return int(raw)
         except (ValueError, TypeError):

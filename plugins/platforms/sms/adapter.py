@@ -93,16 +93,16 @@ class SmsAdapter(BasePlatformAdapter):
         # Scoped like the sibling reads above: a secondary profile must not send from the default
         # profile's TWILIO_PHONE_NUMBER (#98738 class).
         self._from_number: str = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
-        self._webhook_port: int = int(os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
-        self._webhook_host: str = os.getenv("SMS_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
-        self._webhook_url: str = os.getenv("SMS_WEBHOOK_URL", "").strip()
+        self._webhook_port: int = int(_get_scoped_secret("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
+        self._webhook_host: str = _get_scoped_secret("SMS_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
+        self._webhook_url: str = _get_scoped_secret("SMS_WEBHOOK_URL", "").strip()
         self._runner = None
         self._http_session: Optional[aiohttp.ClientSession] = None
 
     # -- Lifecycle -----------------------------------------------------------
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        insecure_no_sig = os.getenv("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
+        insecure_no_sig = _get_scoped_secret("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
         fatal = None
         if not self._from_number:
             fatal = "sms_missing_phone_number", "[sms] TWILIO_PHONE_NUMBER not set — cannot send replies"

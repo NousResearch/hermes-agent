@@ -55,7 +55,8 @@ jobs:
   bundle:
     name: bundle ${{ matrix.target.label }}
     runs-on: ${{ matrix.target.runner }}
-    timeout-minutes: 45
+    # Leave time for setup, cache saves and smoke tests around the wheel build.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:

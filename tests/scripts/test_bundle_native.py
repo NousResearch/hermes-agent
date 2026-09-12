@@ -19,6 +19,8 @@ from scripts.bundles import native
 
 
 def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_path, monkeypatch):
+    import inspect
+
     from hermes_cli.runtime_paths import site_packages
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
@@ -63,6 +65,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     monkeypatch.setattr("pm.extras.ANCHORS", {"payloadtest": "bundle_probe.present"})
     import pm
     real_build = pm.build_environment
+    install_timeout = inspect.signature(real_build).parameters["timeout"].default
     calls = []
     witness = tmp_path / "inventory-python.json"
     fail_inventory = False
@@ -70,6 +73,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     def build(**kwargs):
         assert "uv" not in kwargs
         assert kwargs["sealed"] is True
+        assert kwargs.get("timeout", install_timeout) > install_timeout
         calls.append(kwargs)
         assert not (output / "manifest.json").exists()
         marker = json.loads((output / "pm-runtime/pm-runtime.json").read_text())

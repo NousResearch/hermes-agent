@@ -195,8 +195,10 @@ def _stage_native(args) -> int:
     from pm.package import InstallError
 
     try:
+        # Cold native wheels need a larger budget than interactive installs.
         build_environment(source=repo_dir, python=python_bin, out=venv_dir,
-                          env=env, cache=cache, all_extras=True, sealed=True, explicit=True)
+                          env=env, cache=cache, all_extras=True, sealed=True, explicit=True,
+                          timeout=2 * 60 * 60)
     except InstallError as exc:
         print(f"✗ venv: {exc}")
         return 1

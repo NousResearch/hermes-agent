@@ -1,0 +1,20 @@
+COMMAND: single bounded Python scan: exact base..source git diff + AST/import checks over changed production Python source
+DELTA= 0b3c4e19ed457772dc7c45d413a259d0c11f1a8e..66632250b8c09087dd80eb3c0aaade61baa358bb
+SCRIPT= /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/s007-final-accepted-scan.py
+BOUND_CHANGED_PRODUCTION_PY_COUNT= 28
+PRODUCT_POLICY_CLASSIFIER_CATALOG_CHAINS_MATCHES= 0
+SECOND_MACHINERY_DEFINITIONS_MATCHES= 0
+NEW_COMMAND_FAMILY_MATCHES= 0
+EXECUTABLE_C8_REENTRY_MATCHES= 0
+ROUTER_PAYLOAD_CREDENTIAL_OR_LABEL_FIELDS= []
+EXECUTION_KINDS= ["main_turn", "native_child", "kanban_worker"]
+DISCOVERY_SUPPORTED= ["main_turn", "native_child", "kanban_worker"]
+DISCOVERY_OPERATIONAL= []
+EXTRA_EXECUTION_KINDS= []
+ADDED_EXECUTION_CAPABILITY_LITERALS= ["execution.routing"]
+BROADER_CAPABILITY= []
+FORBIDDEN_FINDINGS= {}
+ABSENCE_SCAN_VERDICT=PASS
+
+INVALID HARNESS HISTORY
+Two prior temporary scans were invalid harness attempts, not product failures. One asserted that ExecutionRoutePinsV1 omitted legitimate reasoning. One broad regex matched the terminal reason routed_restart. Those invalid scripts are not copied into canonical evidence. Their preserved temporary log reference is /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/s007-scope-scan-corrected.log.

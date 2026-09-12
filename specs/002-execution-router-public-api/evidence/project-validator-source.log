@@ -1,0 +1,15 @@
+COMMAND: project_validate(project_id='hermes-execution-router-api')
+RESULT:
+{
+  "verdict": "PASS",
+  "project": "/home/hermes/projects/hermes-execution-router-api",
+  "class": "full",
+  "version_state": "ACCEPTED",
+  "active_feature": "002-execution-router-public-api",
+  "implementation_ready": true,
+  "errors": [],
+  "warnings": []
+}
+validator_path=/home/hermes/projects/meta/spec-kit-standard/scripts/validate_project_standard.py
+validator_sha256=aef7ccd9e74cc6549dff327742b3f53dfc48b2c81d91d68e3bbe00792ce74f35
+exit_code=0

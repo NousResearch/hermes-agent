@@ -1,0 +1,12 @@
+COMMAND: git rev-parse HEAD
+66632250b8c09087dd80eb3c0aaade61baa358bb
+COMMAND: git rev-parse HEAD^
+0b3c4e19ed457772dc7c45d413a259d0c11f1a8e
+COMMAND: git status --porcelain=v1 --untracked-files=all
+RESULT: clean
+COMMAND: git diff --check
+DIFF_CHECK_EXIT: 0
+COMMAND: git merge-base --is-ancestor 90efb60b5c10329db2843bf461027c138d6dcca7 HEAD
+SCAFFOLD_ANCESTOR_EXIT: 0
+COMMAND: git merge-base --is-ancestor 110736c0bc9fd249f1ce7f7ca5d353040f640be6 HEAD
+UPSTREAM_ANCESTOR_EXIT: 0

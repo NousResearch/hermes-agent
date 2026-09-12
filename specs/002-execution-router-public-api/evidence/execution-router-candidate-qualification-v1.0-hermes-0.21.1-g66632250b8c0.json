@@ -1,0 +1,282 @@
+{
+  "schema": "execution-router-candidate-qualification-v1.0",
+  "candidate": {
+    "package": "hermes-agent",
+    "version": "0.21.1",
+    "contract_version": "1.0",
+    "verdict": "PASS"
+  },
+  "source": {
+    "commit": "66632250b8c09087dd80eb3c0aaade61baa358bb",
+    "parent": "0b3c4e19ed457772dc7c45d413a259d0c11f1a8e",
+    "clean_at_qualification": true,
+    "qualified_manifest": {
+      "path": "source-qualified-manifest.sha256",
+      "sha256": "03647b3ebaffa4fe744e18032b6a91f0d5de1a261844afcadc795f17c1dca2f8",
+      "entries_verified": 56,
+      "entries_total": 56,
+      "verdict": "PASS"
+    }
+  },
+  "python_versions": [
+    {
+      "version": "Python 3.11.15",
+      "role": "recorded qualification interpreter",
+      "accepted_interpreter_paths": [
+        "/home/hermes/hermes-agent-prestage/venv/bin/python",
+        "/tmp/hermes-execution-router-api-T006-precommit/isolated-python"
+      ]
+    }
+  ],
+  "accepted_commands_and_results": {
+    "manifest_path": "qualification-command-results.txt",
+    "manifest_sha256": "25957bd881ca4c55ec6dfa12c196cd499f8082fe7d545762f37656714baac31b",
+    "focused_union": {
+      "files": 12,
+      "passed": 244,
+      "failed": 0,
+      "skipped": 0,
+      "verdict": "PASS",
+      "union_semantics": "11 focused-prebuild files plus the one accepted tests/test_packaging_py_modules.py execution; the packaging execution is shared by identity with the regression union and was not repeated",
+      "logs": [
+        "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/focused-prebuild.log",
+        "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/focused-prebuild-summary.txt",
+        "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/packaging-py-modules.log"
+      ]
+    },
+    "regression_union": {
+      "files": 22,
+      "passed": 567,
+      "failed": 0,
+      "skipped": 2,
+      "skip_classification": "platform skips",
+      "successful_file_repeats": 0,
+      "verdict": "PASS",
+      "logs": [
+        "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/regression.log",
+        "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/regression-continuation.log",
+        "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/packaging-py-modules.log"
+      ]
+    }
+  },
+  "required_verdicts": {
+    "main_turn": {
+      "verdict": "PASS",
+      "coverage": "Classic CLI, TUI/backend, Gateway and one-shot; pre-credential routing, route/pass_through/stop/router_error, lifecycle, renderer isolation and routed continuation",
+      "evidence": [
+        "tests/hermes_cli/test_main_turn_c6_surfaces.py",
+        "tests/agent/test_main_turn_continuation.py",
+        "tests/agent/test_execution_router.py"
+      ]
+    },
+    "native_child": {
+      "verdict": "PASS",
+      "coverage": "one decision per initial normalized child, pre-credential/pre-build ordering, mixed outcomes, mandatory lifecycle, renderer isolation and bounded terminal routed fallback without same-unit replacement",
+      "evidence": [
+        "tests/tools/test_delegate.py",
+        "tests/tools/test_delegate_fallback_matrix.py"
+      ]
+    },
+    "kanban_worker": {
+      "verdict": "PASS",
+      "coverage": "existing-claim reservation, route/open transaction, stop/error defer, crash recovery, lifecycle, renderer isolation and fresh later routed retry/requeue",
+      "evidence": [
+        "tests/hermes_cli/test_kanban_execution_router.py"
+      ]
+    },
+    "no_router": {
+      "main_turn": "PASS",
+      "native_child": "PASS",
+      "kanban_worker": "PASS",
+      "verdict": "PASS",
+      "result": "native behavior and fallback preserved for all three kinds; no synthetic route state or provider callback"
+    },
+    "consent": {
+      "verdict": "PASS",
+      "result": "generic grant alone is inactive; exact five-field tuple consent is required; non-interactive denial and stale/forged/superseded rejection passed; activation occurs only on subsequent normal load"
+    },
+    "unsupported_preflight": {
+      "verdict": "PASS",
+      "contract": "1.0",
+      "supported_execution_kinds": [
+        "main_turn",
+        "native_child",
+        "kanban_worker"
+      ],
+      "unsupported_execution_kind": "unsupported_kind rejected",
+      "operational_execution_kinds": [],
+      "provider_callback_calls": 0,
+      "credential_bindings": 0,
+      "executors_created": 0
+    },
+    "disclosure_redaction_bounds": {
+      "verdict": "PASS",
+      "result": "per-kind authorization and existing redaction precede disclosure; only post-redaction/post-truncation UTF-8 bytes up to 16384 bytes are delivered; SHA-256 binds exact delivered bytes; raw text, system prompt, full history, credentials, tools and workspace are absent"
+    },
+    "events_lifecycle_renderer": {
+      "verdict": "PASS",
+      "result": "requested, accepted, started/not-started and finished transitions are correlated and immutable; requested/accepted/actual remain distinct; mandatory lifecycle persists; renderer failure is non-authoritative"
+    },
+    "fallback": {
+      "main_turn": {
+        "verdict": "PASS",
+        "result": "router-selected failure closes the old attempt; existing authority consumes the slot; fresh IDs and fresh decision precede credentials and history-safe continuation"
+      },
+      "native_child": {
+        "verdict": "PASS",
+        "result": "router-selected route/model-change fallback terminates visibly with no same-unit replacement or resubmission"
+      },
+      "kanban_worker": {
+        "verdict": "PASS",
+        "result": "real started failure closes through existing run authority; later ordinary eligible retry/requeue receives fresh IDs and routes again"
+      },
+      "native_pass_through": "PASS"
+    },
+    "focused": "PASS",
+    "regression": "PASS",
+    "packaging": "PASS",
+    "scope": "PASS",
+    "ancestry": "PASS",
+    "validator": "PASS"
+  },
+  "packaging": {
+    "build": {
+      "verdict": "PASS",
+      "command": "HERMES_NIX_BUILD=1 /home/hermes/.local/bin/uv build --out-dir /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/dist",
+      "log": "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/build.log",
+      "build_count": 1
+    },
+    "artifacts": [
+      {
+        "kind": "wheel",
+        "path": "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/dist/hermes_agent-0.21.1-py3-none-any.whl",
+        "sha256": "96bbe1a789375844e1799a7850c8b6da17e6f46828f62dbe2622b26dc06032db",
+        "identity": "hermes-agent 0.21.1"
+      },
+      {
+        "kind": "sdist",
+        "path": "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/dist/hermes_agent-0.21.1.tar.gz",
+        "sha256": "ddcbaa244377e8d5f9a43b5d9fb19746add77e05e5b1b7de8ea2e2b92ea81bb9",
+        "identity": "hermes-agent 0.21.1"
+      }
+    ],
+    "archive_member_source_hashes": {
+      "agent/execution_router.py": "dacb32a2eaf0e8ee1c5dacde7bbfc6b4afa2168fd96847c5edbdf95285ef2511",
+      "agent/execution_router_reference.py": "a6ae21236157723536baecae8655249094d0e9a1446152b8981f7dc864081f68",
+      "execution-router-plugin.md": "50456fcedd3d53ae898e22f4f96adf448febb36f0acad1904cb89cbe62556a62",
+      "metadata": "ca70db9bcedf6d60178885f96caeba216d7f8e509e4ea2c6130b600be452f3ae"
+    },
+    "member_hash_identity_checks": "PASS",
+    "archive_import": {
+      "verdict": "PASS",
+      "command": "/home/hermes/hermes-agent-prestage/venv/bin/python /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/archive-import-verification-repeat.py",
+      "command_file": "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/archive-import-verification-repeat-command.txt",
+      "log": "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/archive-import-verification-repeat.log",
+      "wheel": "PASS",
+      "sdist": "PASS",
+      "public_import": "PASS",
+      "capability_discovery": "PASS",
+      "contract_version": "1.0",
+      "supported_execution_kinds": [
+        "main_turn",
+        "native_child",
+        "kanban_worker"
+      ],
+      "unsupported_rejection": "PASS",
+      "installation_performed": false,
+      "rebuild_performed": false
+    }
+  },
+  "scope_review": {
+    "review_id": "deleg_3ef3fc7d",
+    "verdict": "PASS",
+    "defect_count": 0,
+    "material_risk_count": 0,
+    "hardening_count": 0,
+    "ceremony_count": 0,
+    "unauthorized_functional_expansion": false,
+    "unnecessary_security_expansion": false,
+    "reviewed_manifest": "/tmp/hermes-execution-router-api-002-T006-precommit-review.sha256",
+    "reviewed_manifest_sha256": "6c8a91f23be2a1d120da925051e0590fcbb7754d6416813667e6f1530366dc78",
+    "entries_verified": 56,
+    "entries_total": 56
+  },
+  "post_review_semantic_neutral_correction": {
+    "description": "exactly two trailing spaces in a test string assembly removed solely for git diff --check",
+    "semantic_change": false,
+    "timing": "after independent review and before qualified-source commit",
+    "qualified_source_manifest_sha256": "03647b3ebaffa4fe744e18032b6a91f0d5de1a261844afcadc795f17c1dca2f8"
+  },
+  "scope_scan": {
+    "verdict": "PASS",
+    "script": "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/s007-final-accepted-scan.py",
+    "log": "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/s007-final-accepted-scan.log",
+    "delta": "0b3c4e19ed457772dc7c45d413a259d0c11f1a8e..66632250b8c09087dd80eb3c0aaade61baa358bb",
+    "accepted_categories_passed": true,
+    "forbidden_findings": 0
+  },
+  "static_and_project_checks": {
+    "py_compile": {
+      "verdict": "PASS",
+      "passed": 40,
+      "total": 40
+    },
+    "git_diff_check": "PASS",
+    "validator": {
+      "verdict": "PASS",
+      "implementation_ready": true,
+      "errors": 0,
+      "warnings": 0
+    },
+    "scaffold_ancestor": {
+      "commit": "90efb60b5c10329db2843bf461027c138d6dcca7",
+      "verdict": "PASS"
+    },
+    "upstream_ancestor": {
+      "commit": "110736c0bc9fd249f1ce7f7ca5d353040f640be6",
+      "verdict": "PASS"
+    }
+  },
+  "known_failures": [],
+  "invalid_harness_history": [
+    {
+      "stage": "packaging test",
+      "classification": "invalid harness history",
+      "result": "initial tests/test_packaging_py_modules.py attempt failed only because the selected default Python lacked setuptools",
+      "accepted_resolution": "owner-authorized pinpoint existing isolated-wrapper execution passed 2/2",
+      "product_failure": false
+    },
+    {
+      "stage": "archive import",
+      "classification": "invalid harness history",
+      "result": "first archive import used a wrong isolated wrapper lacking yaml",
+      "preserved_log": "/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/archive-verification.log",
+      "accepted_resolution": "owner-authorized sole repeat passed wheel and sdist",
+      "product_failure": false
+    },
+    {
+      "stage": "S007 scan",
+      "classification": "invalid harness history",
+      "result": "temporary scan asserted that ExecutionRoutePinsV1 omitted legitimate reasoning",
+      "product_failure": false
+    },
+    {
+      "stage": "S007 scan",
+      "classification": "invalid harness history",
+      "result": "temporary broad regex matched the legitimate terminal reason routed_restart",
+      "product_failure": false
+    }
+  ],
+  "evidence_files": {
+    "artifact-hashes.sha256": "cd9efbf12d1e21c09f1f00d59119be5367c06867a93b40cf49a68722d4973f86",
+    "archive-verification-sanitized.log": "12e432263d4e0909b8a1646c587fb53de76f095d368df4d345f339e334aef7c0",
+    "precommit-review-manifest.sha256": "6c8a91f23be2a1d120da925051e0590fcbb7754d6416813667e6f1530366dc78",
+    "project-validator-source.log": "7b445e1a8ea3af59a21bf434c53be2972f674d857d9d8fd94a2d864f740d555b",
+    "py-compile.log": "8c8b820830a30e70cd45f8903f724ed342b443825d97a62d9112410a5871d7a7",
+    "qualification-command-results.txt": "25957bd881ca4c55ec6dfa12c196cd499f8082fe7d545762f37656714baac31b",
+    "review-summary.txt": "f98a1cf9a53c1dbc7dc4dc1745c13592fdc00b1fd237ae7cc0a8320bfef88b25",
+    "s007-final-accepted-scan.log": "655051259c7dcac0c975ad3139107873a8939eab18708b14eebecd1fe6578b66",
+    "source-identity-ancestry.log": "87cc969d2cae70b195081f1afb2596469b5426ae5aa7737bfeba9442100247de",
+    "source-qualified-manifest.sha256": "03647b3ebaffa4fe744e18032b6a91f0d5de1a261844afcadc795f17c1dca2f8"
+  }
+}

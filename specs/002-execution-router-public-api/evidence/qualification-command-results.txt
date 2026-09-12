@@ -1,0 +1,59 @@
+Execution Router candidate qualification — exact accepted commands and results
+Source commit: 66632250b8c09087dd80eb3c0aaade61baa358bb
+Source parent: 0b3c4e19ed457772dc7c45d413a259d0c11f1a8e
+Python: Python 3.11.15
+
+FOCUSED CLEAN-HEAD UNION
+Union semantics: 12 unique files, 244 passed, 0 failed, 0 skipped. The 11-file focused-prebuild execution and the single successful tests/test_packaging_py_modules.py execution form this union. That packaging execution is also an accepted member of the regression union; it was executed once, not repeated.
+Logs: /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/focused-prebuild.log; /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/focused-prebuild-summary.txt; /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/packaging-py-modules.log
+
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/agent/test_execution_router.py => 21 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_plugin_execution_router.py => 14 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_plugin_capabilities.py => 39 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_state/test_execution_router_lifecycle.py => 15 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_session_schema_history.py => 6 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_main_turn_c6_surfaces.py => 12 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/agent/test_main_turn_continuation.py => 4 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/tools/test_delegate.py => 84 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/tools/test_delegate_fallback_matrix.py => 21 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_execution_router.py => 25 passed, 0 failed, 0 skipped
+HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/agent/test_execution_router_reference.py => 1 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/tmp/hermes-execution-router-api-T006-precommit/isolated-python scripts/run_tests.sh tests/test_packaging_py_modules.py => 2 passed, 0 failed, 0 skipped
+
+REGRESSION CLEAN-HEAD UNION
+Union semantics: 22 unique files, 567 passed, 0 failed, 2 platform skips. No successful file was repeated. The already-executed packaging-py-modules result above is shared by identity, not rerun.
+Logs: /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/regression.log; /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/regression-continuation.log; /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/packaging-py-modules.log
+
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_plugins.py => 76 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_plugin_ownership_ledger.py => 27 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_plugins_cmd.py => 46 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/tools/test_strict_provider_selection.py => 33 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/tools/test_approval.py => 118 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/tools/test_approval_plugin_hooks.py => 21 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/run_agent/test_plugin_stream_hooks.py => 12 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/tools/test_async_delegation.py => 32 passed, 0 failed, 1 platform skip
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py => 31 passed, 0 failed, 1 platform skip
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_core_functionality.py => 24 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_review_lifecycle.py => 19 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_review_lifecycle_complete.py => 22 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_reclaim_claim_lock_guard.py => 2 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_worker_lifecycle_hooks.py => 5 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_kanban_worker_spawn_toolsets.py => 3 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/cli/test_cli_interrupt_ack_race.py => 6 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/tui_gateway/test_failed_turn_retention.py => 10 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/gateway/test_turn_context.py => 6 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/hermes_cli/test_model_alias_credentials_83612.py => 59 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/home/hermes/hermes-agent-prestage/venv/bin/python scripts/run_tests.sh tests/test_packaging_metadata.py => 9 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/tmp/hermes-execution-router-api-T006-precommit/isolated-python scripts/run_tests.sh tests/test_packaging_build_guard.py => 4 passed, 0 failed, 0 skipped
+HERMES_TEST_FILE_RETRIES=0 HERMES_PYTHON=/tmp/hermes-execution-router-api-T006-precommit/isolated-python scripts/run_tests.sh tests/test_packaging_py_modules.py => shared accepted execution above, 2 passed, 0 failed, 0 skipped
+
+PACKAGING AND STATIC QUALIFICATION
+HERMES_NIX_BUILD=1 /home/hermes/.local/bin/uv build --out-dir /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/dist => PASS; one wheel and one sdist
+/tmp/hermes-execution-router-api-T006-precommit/isolated-python /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/archive-verification.py => member/hash/identity PASS; import phase invalid because this wrapper lacked yaml
+/home/hermes/hermes-agent-prestage/venv/bin/python /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/archive-import-verification-repeat.py => PASS for wheel and sdist; public import/capability discovery; contract 1.0; exact kinds; unsupported rejected; no installation/rebuild
+/home/hermes/hermes-agent-prestage/venv/bin/python /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/py-compile-repeat.py => PASS 40/40
+single bounded Python scan /tmp/hermes-execution-router-api-T006-final-g66632250b8c0/s007-final-accepted-scan.py over exact 0b3c4e19ed457772dc7c45d413a259d0c11f1a8e..66632250b8c09087dd80eb3c0aaade61baa358bb => PASS, 0 forbidden findings
+project_validate(project_id='hermes-execution-router-api') => PASS, implementation_ready=true, 0 errors, 0 warnings
+git diff --check => PASS
+git merge-base --is-ancestor 90efb60b5c10329db2843bf461027c138d6dcca7 66632250b8c09087dd80eb3c0aaade61baa358bb => PASS
+git merge-base --is-ancestor 110736c0bc9fd249f1ce7f7ca5d353040f640be6 66632250b8c09087dd80eb3c0aaade61baa358bb => PASS

@@ -1,10 +1,10 @@
 # Hermes Execution Router API — Status
 
-Status: PLANNING_ACCEPTED / T001_COMPLETE / T002_COMPLETE / T003_COMPLETE / T004_COMPLETE / T005_COMPLETE
+Status: PLANNING_ACCEPTED / T001_COMPLETE / T002_COMPLETE / T003_COMPLETE / T004_COMPLETE / T005_COMPLETE / T006_COMPLETE
 Updated: 2026-09-12
 Project-Version: 0.1.1
 Active-Feature: 002-execution-router-public-api
-Implementation-Authorization: T005_COMPLETED
+Implementation-Authorization: T006_COMPLETED / STOP_BEFORE_T007
 
 ## Proven
 
@@ -18,12 +18,12 @@ Implementation-Authorization: T005_COMPLETED
 - T001 preserved the accepted planning history and complete upstream Hermes ancestry in one local repository.
 - Exact planning parent is `a6731b60ff2408379c31fed356557c9ab0b35533`; exact upstream parent is `110736c0bc9fd249f1ce7f7ca5d353040f640be6`.
 - The topology merge resolved exactly `.gitignore`, `AGENTS.md` and `README.md`: upstream README was retained, both applicable AGENTS rule sets were preserved, and ignore rules were unioned.
-- T002 policy-neutral host core, T003 `main_turn`, T004 `native_child` and T005 minimal C10 `kanban_worker` integration are complete in the uncommitted working tree.
+- T002 policy-neutral host core, T003 `main_turn`, T004 `native_child`, T005 minimal C10 `kanban_worker` integration and T006 candidate qualification are complete. Source is committed at `66632250b8c09087dd80eb3c0aaade61baa358bb`; its exact parent is `0b3c4e19ed457772dc7c45d413a259d0c11f1a8e`.
 - T003 integrates accepted architecture corrections C6 and C7 across Classic CLI, TUI/backend, Gateway and one-shot.
 - T003 evidence: 16/16 canonical tests; 95/95 focused T002 regression; 81/81 directly affected surface regressions; pagination 10/10 non-reproduced; `py_compile` 26 files; validator PASS; `git diff --check` PASS.
 - Final independent scope review `deleg_b4631bb6`: PASS; D1 closed; Defect 0, Material risk 0, Hardening 0, Ceremony 0.
 - Frozen 28-entry source/test/control manifest passed strict 28/28 entry/exit comparison; SHA-256 `aa611c677b77122fb89b6158fa7e7ea41fc9bf1f90e66da3603c955f6cf1ddfb`.
-- T003 remains uncommitted; no commit, push, install, profile, runtime/gateway process, publication, pilot or LIVE mutation was performed.
+- At the T003 checkpoint it remained uncommitted; T006 later created the authorized qualified-source commit. No push, install, profile, runtime/gateway process, publication, pilot or LIVE mutation was performed.
 - Owner correction C9 is ACCEPTED; SHA-256 `8c46a9e0083edd9dd6b8591664e62d530f1c80d6e2692c49b75cde1080db2223`. C8 is `SUPERSEDED / NOT_EXECUTABLE`.
 - T004 implements simplified C9 v1 only: one initial route decision per normalized native child; automatic replacement/re-entry is deferred to a future version.
 - Owner clarification preserves the active pass-through shared native credential bundle and native batch-wide credential/build errors; no per-child recovery was added.
@@ -33,23 +33,36 @@ Implementation-Authorization: T005_COMPLETED
 - Independent broad review initially found D1/D2; both were corrected. Final missing-only review `deleg_42d8cec0` PASS: Defect 0, Material risk 0.
 - Unauthorized functional expansion: NONE. Unnecessary security expansion: NONE. No executable C8 mechanics, T005, public API/version/capability, new dispatcher, queue, retry or store was added.
 - Frozen implementation manifest v3 `/tmp/hermes-execution-router-api-002-T004-review-v3.sha256` passed strict `43/43`; manifest SHA-256 `7532a5bfef6fe03b17fa265230c50ba76f7c4afe7dcd7b429ae68ce310b083e4`.
-- No commit, install, profile, runtime or LIVE mutation was performed.
+- At the T004 checkpoint no commit, install, profile, runtime or LIVE mutation was performed.
 - Owner correction C10 is ACCEPTED; SHA-256 `f714322813b498a778059d691b2ebb2d953aa297d4a10631d8ff39c3a926ba0a`. T005 implements only existing claim plus bounded defer in the unchanged `ready`/`review` lane, atomically opens the canonical run after routing, and reuses existing events, running recovery and retry/requeue. No new routing status, schema, dispatcher, queue, scheduler, retry engine, reservation store or restart orchestrator was added.
 - Fresh executed evidence after final corrections: full T005 focused `24 passed`; T002 `95 passed`; T003 `16 passed`; T004 `105 passed` plus `2` test-runner subtests; directly affected isolated Kanban/CLI/agent-init suites `153 passed, 1 platform skip`. These are separate reported results; no aggregate is asserted.
 - Compile, `git diff --check` and canonical project validator passed.
 - Independent whole review `deleg_870400e6` found F1–F3. F1/F2 were closed by `deleg_a6cfd2ab`; F3 was corrected, and missing-only review `deleg_9706b100` passed with Defect 0, Material risk 0 and no unauthorized or unnecessary expansion.
 - Final frozen manifest `/tmp/hermes-execution-router-api-002-T005-final-review-v3.sha256` has 49 entries, SHA-256 `cb838bb6ea7ac1ea6b02fa77e5d3015f2f3930c904db67bff96c958343d2a25b`, and passed strict `49/49` verification before formal closure.
-- T005 remains uncommitted; no commit, push, install, profile, runtime/gateway, publication, pilot or LIVE mutation was performed.
+- At the T005 checkpoint it remained uncommitted; T006 later created the authorized qualified-source commit. No push, install, profile, runtime/gateway, publication, pilot or LIVE mutation was performed.
+
+## Completed T006 record
+
+- Exact qualified-source commit: `66632250b8c09087dd80eb3c0aaade61baa358bb`; exact parent: `0b3c4e19ed457772dc7c45d413a259d0c11f1a8e`; clean source manifest 56/56 SHA-256 `03647b3ebaffa4fe744e18032b6a91f0d5de1a261844afcadc795f17c1dca2f8`.
+- Precommit independent review `deleg_3ef3fc7d`: PASS; Defect 0, Material risk 0, Hardening 0, Ceremony 0; no unauthorized functional or unnecessary security expansion. Reviewed 56/56 manifest SHA-256 `6c8a91f23be2a1d120da925051e0590fcbb7754d6416813667e6f1530366dc78`.
+- After review and before the source commit, exactly two trailing spaces in a test string assembly were removed as a semantic-neutral `git diff --check` correction.
+- Clean-HEAD focused union: 12 files, 244 passed, 0 failed, 0 skipped. Clean-HEAD regression union: 22 files, 567 passed, 0 failed, 2 platform skips; no successful file was repeated.
+- One archive build produced wheel `/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/dist/hermes_agent-0.21.1-py3-none-any.whl` SHA-256 `96bbe1a789375844e1799a7850c8b6da17e6f46828f62dbe2622b26dc06032db` and sdist `/tmp/hermes-execution-router-api-T006-final-g66632250b8c0/dist/hermes_agent-0.21.1.tar.gz` SHA-256 `ddcbaa244377e8d5f9a43b5d9fb19746add77e05e5b1b7de8ea2e2b92ea81bb9`.
+- Archive member/hash/identity checks passed. The owner-authorized sole import repeat passed wheel and sdist public import/capability discovery, contract `1.0`, exact three kinds and unsupported rejection without installation or rebuild.
+- `main_turn`, `native_child`, `kanban_worker`, all three no-router cases, consent, unsupported preflight, disclosure/redaction/bounds, events/lifecycle/renderer and per-kind fallback each have explicit PASS. `known_failures` is empty.
+- 40-path `py_compile` PASS; `git diff --check` PASS; canonical validator PASS with `implementation_ready=true`, 0 errors and 0 warnings; scaffold and upstream ancestor checks PASS; final accepted S007 scan PASS with 0 forbidden findings.
+- Required evidence JSON: `specs/002-execution-router-public-api/evidence/execution-router-candidate-qualification-v1.0-hermes-0.21.1-g66632250b8c0.json`; sanitized evidence is confined to that feature evidence directory.
+- Invalid packaging/import/scanner attempts are recorded only as invalid harness history, not product failures.
 
 
 ## Current state
 
-T001–T005 are complete. STOP before T006. T006 remains a separate authorization gate.
+T001–T006 are complete. STOP before T007.
 
 ## Not yet authorized or proven
 
-- T006–T008 execution, commit, delivery, release, installation, consumer integration, pilot or LIVE.
+- T007–T008 delivery/release, installation, consumer integration, pilot or LIVE. T007 requires separate exact repository/account/branch/remote/push/PR authorization.
 
 ## Boundaries
 
-T005 closure covers only the accepted minimal C10 `kanban_worker` existing-claim integration and its frozen evidence. It does not authorize T006+, commit, future-version replacement/re-entry, runtime/profile, consumer, pilot or LIVE work.
+T006 closure covers only the local qualified candidate and evidence-only descendant. It does not authorize T007/T008, push, branch, PR, publication, installation, future-version replacement/re-entry, runtime/profile, consumer, pilot or LIVE work.

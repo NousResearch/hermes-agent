@@ -72,14 +72,17 @@ class ReasoningParamsMixin:
         # allowlist repeatedly went stale one vendor at a time. Unknown falls back to the static list.
         try:
             from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
-            caps = openrouter_model_reasoning_capabilities(self.model)
+            # Strip OpenRouter routing suffix (:floor, :nitro, :free, :batch, ...)
+            # before catalog lookup — suffixes only change routing, not capabilities.
+            _model_for_caps = self.model.split(":")[0] if self.model and ":" in self.model else self.model
+            caps = openrouter_model_reasoning_capabilities(_model_for_caps)
             if caps is None:
                 warm_openrouter_reasoning_caps_async()  # cache cold — warm in the background, never block
         except Exception:
             caps = None
         if caps is not None:
             return bool(caps.get("supports_reasoning"))
-        model = (self.model or "").lower()
+        model = (self.model or "").lower().split(":")[0]
         return any(model.startswith(prefix) for prefix in _OPENROUTER_REASONING_PREFIXES)
 
     def _lmstudio_reasoning_options_cached(self) -> list[str]:

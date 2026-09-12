@@ -4205,13 +4205,21 @@ def _wait_for_launchd_service_pid(
         time.sleep(0.5)
 
 
-def launchd_restart():
+def launchd_restart(*, no_drain: bool = False):
     label = get_launchd_label()
     domain = _launchd_domain()
     target = f"{domain}/{label}"
     from gateway.status import get_running_pid
     try:
         pid = get_running_pid()
+        if no_drain:
+            print(
+                f"⚠ {label}: --no-drain requested — forcing immediate restart; "
+                "in-flight work may be lost"
+            )
+            subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+            _launchd_ok("✓ Service restarted")
+            return
         if pid is not None and _request_gateway_self_restart(pid):
             _launchd_ok("✓ Service restart requested")
             return

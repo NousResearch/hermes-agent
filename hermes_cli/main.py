@@ -2215,6 +2215,18 @@ def _finalize_update_receipt(code: int, reason: str) -> None:
         pass
 
 
+def _prepare_kanban_drain_for_update(*, no_drain: bool = False):
+    """Late-bound update drain hook kept on the main command surface."""
+    from hermes_cli import update_cmd
+    return update_cmd._prepare_kanban_drain_for_update(no_drain=no_drain)
+
+
+def _finish_kanban_drain_for_update(state) -> None:
+    """Late-bound cleanup hook for the update-owned ESTOP."""
+    from hermes_cli import update_cmd
+    update_cmd._finish_kanban_drain_for_update(state)
+
+
 def _update_preflight_handled(args) -> bool:
     """Managed-install refusal, --plan, admission gate, --check. True = nothing more to do."""
     from hermes_cli.config import is_managed, managed_error
@@ -2295,10 +2307,16 @@ def cmd_update(args):
     # Exit code for the Windows hand-off child's hard exit (see finally); None
     # = not SystemExit-shaped, so real exceptions keep their traceback.
     _update_handoff_exit_code: int | None = None
-    from hermes_cli.update_cmd import _cmd_update_impl
+    _update_kanban_drain_state = None
+    from hermes_cli import update_cmd as _update_module
 
     try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
+        _update_kanban_drain_state = _prepare_kanban_drain_for_update(
+            no_drain=bool(getattr(args, "no_drain", False))
+        )
+        if _update_kanban_drain_state and not _update_kanban_drain_state["ready"]:
+            sys.exit(_update_kanban_drain_state["exit_code"])
+        _update_module._cmd_update_impl(args, gateway_mode=gateway_mode)
     except SystemExit as _update_exit:
         # Receipt boundary: the impl has many early sys.exit paths that never
         # reach an inner finalize. Persist any still-open receipt with the real
@@ -2318,6 +2336,7 @@ def cmd_update(args):
         _finalize_update_receipt(0, COMMAND_BOUNDARY_STOP_REASON)
         _update_handoff_exit_code = 0
     finally:
+        _finish_kanban_drain_for_update(_update_kanban_drain_state)
         _update_lock.release()
         _finalize_update_output(_update_io_state)
         # Windows hand-off child: a leftover non-daemon thread from the update

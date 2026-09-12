@@ -495,7 +495,7 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
         print("    launchctl kickstart -k gui/$UID/<label>   # macOS (or user/$UID)")
 
 
-def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) -> tuple[list, list]:
+def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True, no_drain: bool = False) -> tuple[list, list]:
     """Restart the invoking profile's launchd gateway after an update.
 
     No ``launchctl list`` gating: a booted-out job (plist present, definition
@@ -520,7 +520,10 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
         try:
-            launchd_restart()
+            if no_drain:
+                launchd_restart(no_drain=True)
+            else:
+                launchd_restart()
         except subprocess.CalledProcessError as e:
             stderr = (getattr(e, "stderr", "") or "").strip()
             print(
@@ -560,6 +563,7 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
 
 def _restart_macos_launchd_gateways(
     restarted_services: list, failed_or_stale_units: list, drain_budget: float, *, require_supervision: bool = False,
+    no_drain: bool = False,
 ) -> None:
     """Restart every launchd-managed gateway after an update (macOS).
 
@@ -583,7 +587,8 @@ def _restart_macos_launchd_gateways(
         if listing.returncode != 0:
             failed_or_stale_units.append("launchd (listing failed)")
             return
-    _restarted, _failed = _restart_launchd_gateway_after_update(supervision_verify=True)
+    _restarted, _failed = _restart_launchd_gateway_after_update(
+        supervision_verify=True, no_drain=no_drain)
     restarted_services.extend(_restarted)
     failed_or_stale_units.extend(_failed)
     current_label = get_launchd_label()
@@ -600,7 +605,7 @@ def _restart_macos_launchd_gateways(
                     failed_or_stale_units.append(label)
                 continue  # A profile without an installed job has no restart target.
             graceful_ok = False
-            if old_pid is not None and old_pid > 0:
+            if old_pid is not None and old_pid > 0 and not no_drain:
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
                 graceful_ok = _graceful_restart_via_sigusr1(old_pid, drain_timeout=drain_budget)
             if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
@@ -722,7 +727,9 @@ def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
     print("    hermes gateway status")
 
 
-def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: str) -> bool:
+def _drain_or_signal_gateway_for_update(
+    pid: int, drain_budget: float, label: str, *, no_drain: bool = False
+) -> bool:
     """Three-way triage (shared by systemd and bare-process paths) for handing a
     running gateway over to new code. Returns True when signalled/stopped.
 
@@ -742,12 +749,18 @@ def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: st
         _is_pid_ancestor_of_current_process, _request_gateway_self_restart, probe_gateway_loop_liveness,
     )
     if _is_pid_ancestor_of_current_process(pid):
-        print(
-            f"  → {label}: update is running inside this gateway's "
-            "process tree — signalling restart and letting the gateway "
-            "drain itself (avoids the cron-update deadlock, #100179)"
-        )
+        if no_drain:
+            print(f"  ⚠ {label}: --no-drain is unavailable for an in-tree gateway; using the safe fire-and-forget restart request")
+        else:
+            print(
+                f"  → {label}: update is running inside this gateway's "
+                "process tree — signalling restart and letting the gateway "
+                "drain itself (avoids the cron-update deadlock, #100179)"
+            )
         return _request_gateway_self_restart(pid)
+    if no_drain:
+        print(f"  ⚠ {label}: --no-drain requested — skipping graceful drain; in-flight work may be lost")
+        return False
     if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
         _escalate_wedged_gateway(pid)
@@ -787,7 +800,7 @@ def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: s
 
 def _restart_one_systemd_gateway_unit(
     svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
-    restarted_services: list, failed_or_stale_units: list,
+    restarted_services: list, failed_or_stale_units: list, no_drain: bool = False,
 ) -> None:
     """Restart one active systemd gateway/serve unit: graceful SIGUSR1 drain, then forced restart.
 
@@ -812,7 +825,15 @@ def _restart_one_systemd_gateway_unit(
             _main_pid = 0
 
     # Three-way triage (ancestor / wedged / graceful drain).
-    _graceful_ok = _main_pid > 0 and _drain_or_signal_gateway_for_update(_main_pid, drain_budget, svc_name)
+    if _main_pid > 0:
+        if no_drain:
+            _graceful_ok = _drain_or_signal_gateway_for_update(
+                _main_pid, drain_budget, svc_name, no_drain=True)
+        else:
+            _graceful_ok = _drain_or_signal_gateway_for_update(
+                _main_pid, drain_budget, svc_name)
+    else:
+        _graceful_ok = False
 
     if _graceful_ok:
         # ``Restart=always`` respawns only after RestartSec (60s in our unit; dead time for a
@@ -888,7 +909,9 @@ def _restart_one_systemd_gateway_unit(
     )
 
 
-def _restart_systemd_gateway_units(restarted_services, failed_or_stale_units, restarted_scoped_units, drain_budget):
+def _restart_systemd_gateway_units(
+    restarted_services, failed_or_stale_units, restarted_scoped_units, drain_budget, *, no_drain: bool = False
+):
     """Restart every active hermes-gateway*/hermes-serve* systemd unit (user + system).
 
     Settled units → ``restarted_services`` (bare) and ``restarted_scoped_units``
@@ -935,6 +958,7 @@ def _restart_systemd_gateway_units(restarted_services, failed_or_stale_units, re
                     _manage_cmd_cache=_manage_cmd_cache,
                     restarted_services=restarted_services,
                     failed_or_stale_units=failed_or_stale_units,
+                    no_drain=no_drain,
                 ),
                 on_unit_timeout=_on_unit_timeout,
             )
@@ -980,7 +1004,7 @@ class _GatewayRestartOutcome:
             )
 
 
-def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None:
+def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget, *, no_drain: bool = False) -> None:
     """Drain/stop every manual (non-service) gateway and print the restart summary.
 
     Mutates ``out`` in place; raises so the caller's abort recovery fires.
@@ -1019,7 +1043,13 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         # SIGUSR1 drain first, SIGTERM fallback if unsupported/over budget — the watcher
         # relaunches either way. The helper announces its choice first because a silent
         # full-budget wait reads as a hung update.
-        if not _drain_or_signal_gateway_for_update(pid, _drain_budget, proc.profile):
+        if no_drain:
+            _drained = _drain_or_signal_gateway_for_update(
+                pid, _drain_budget, proc.profile, no_drain=True)
+        else:
+            _drained = _drain_or_signal_gateway_for_update(
+                pid, _drain_budget, proc.profile)
+        if not _drained:
             with suppress(ProcessLookupError, PermissionError):
                 os.kill(pid, _signal.SIGTERM)
         # Wait ≤5s for exit: Telegram keeps the old getUpdates session ~30s; a new gateway
@@ -1155,7 +1185,7 @@ def _recover_after_restart_phase_abort(
     out.record_receipt(phase_error=str(e), fresh_recovery=_recovery_result)
 
 
-def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
+def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool, *, no_drain: bool = False):
     """Restart every running gateway (systemd, launchd, manual) onto the pulled code.
 
     Never raises: a phase abort runs fresh-child recovery and fails closed unless
@@ -1214,15 +1244,16 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
             out.pre_restart_gateway_pids = None
 
         _restart_systemd_gateway_units(
-            out.restarted_services, out.failed_or_stale_units, restarted_scoped_units, _drain_budget
-        )
+            out.restarted_services, out.failed_or_stale_units, restarted_scoped_units, _drain_budget,
+            no_drain=no_drain)
 
         # macOS: EVERY ai.hermes.gateway* LaunchAgent (systemd parity).
         if is_macos():
             with suppress(FileNotFoundError, ImportError):
-                _restart_macos_launchd_gateways(out.restarted_services, out.failed_or_stale_units, _drain_budget)
+                _restart_macos_launchd_gateways(
+                    out.restarted_services, out.failed_or_stale_units, _drain_budget, no_drain=no_drain)
 
-        _restart_manual_gateways(out, _drain_budget)
+        _restart_manual_gateways(out, _drain_budget, no_drain=no_drain)
 
         if out.failed_or_stale_units:
             out.incomplete = True

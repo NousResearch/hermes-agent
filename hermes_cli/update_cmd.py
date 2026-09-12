@@ -125,6 +125,123 @@ def _updates_config() -> dict:
     return section if isinstance(section, dict) else {}
 
 
+_UPDATE_DRAIN_DEFAULT_TIMEOUT = 1800.0
+_UPDATE_DRAIN_TIMEOUT_EXIT = 76
+_UPDATE_DRAIN_FOREIGN_ESTOP_EXIT = 75
+
+
+def _update_embedded_kanban_dispatcher_enabled() -> bool:
+    """Return whether this install uses the gateway-hosted dispatcher."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        section = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        return bool(section.get("dispatch_in_gateway", True)) if isinstance(section, dict) else True
+    except Exception as exc:
+        logger.warning("Could not read kanban dispatcher setting: %s", exc)
+        return True
+
+
+def _update_kanban_drain_timeout() -> float:
+    """Read the bounded update drain budget from the active config."""
+    try:
+        raw = _updates_config().get("drain_timeout_seconds", _UPDATE_DRAIN_DEFAULT_TIMEOUT)
+        value = float(raw)
+        if value != value or value < 0 or value == float("inf"):
+            raise ValueError("timeout must be finite and non-negative")
+        return value
+    except (TypeError, ValueError, OverflowError) as exc:
+        logger.warning("Invalid updates.drain_timeout_seconds; using %.0fs: %s", _UPDATE_DRAIN_DEFAULT_TIMEOUT, exc)
+    except Exception as exc:
+        logger.warning("Could not read updates.drain_timeout_seconds; using %.0fs: %s", _UPDATE_DRAIN_DEFAULT_TIMEOUT, exc)
+    return _UPDATE_DRAIN_DEFAULT_TIMEOUT
+
+
+def _count_running_kanban_tasks_for_update() -> int | None:
+    """Count running board tasks read-only; ``None`` means the safety query failed."""
+    import sqlite3
+    try:
+        root = Path(get_default_hermes_root()).expanduser()
+        paths = [root / "kanban.db"]
+        paths.extend((root / "kanban" / "boards").glob("*/kanban.db"))
+        override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+        if override:
+            paths.append(Path(override).expanduser())
+        unique = []
+        seen = set()
+        for path in paths:
+            resolved = str(path.resolve())
+            if resolved not in seen and path.is_file():
+                seen.add(resolved)
+                unique.append(path)
+        total = 0
+        for path in unique:
+            conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=1.0)
+            try:
+                row = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'running'").fetchone()
+                total += int(row[0])
+            finally:
+                conn.close()
+        return total
+    except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        logger.warning("Kanban drain query failed; refusing update: %s", exc)
+        return None
+
+
+def _prepare_kanban_drain_for_update(*, no_drain: bool = False) -> dict | None:
+    """Pause new board work and wait for running tasks; refuse fail-closed on uncertainty."""
+    if no_drain or not _update_embedded_kanban_dispatcher_enabled():
+        return None
+    from agent import estop
+    if estop.is_engaged():
+        print("✗ Update refused: Hermes is already paused by another operator or update; run `hermes resume` after that operation completes.")
+        return {"engaged": False, "ready": False, "keep_paused": False, "exit_code": _UPDATE_DRAIN_FOREIGN_ESTOP_EXIT}
+    estop.engage(reason="hermes update: drain embedded kanban workers", global_scope=True)
+    state = {"engaged": True, "ready": False, "keep_paused": True, "exit_code": _UPDATE_DRAIN_TIMEOUT_EXIT}
+    if not estop.is_engaged():
+        print("✗ Update refused: could not engage ESTOP; no update was attempted.")
+        return state
+    engagement = estop.get_state()
+    if not engagement or not engagement.get("engaged_at"):
+        print("✗ Update refused: could not verify ESTOP ownership; no update was attempted and ESTOP remains engaged.")
+        return state
+    state["engaged_at"] = engagement["engaged_at"]
+    timeout = _update_kanban_drain_timeout()
+    deadline = _time.monotonic() + timeout
+    print(f"→ Paused new work; draining kanban workers (up to {int(timeout)}s)...")
+    while True:
+        running = _count_running_kanban_tasks_for_update()
+        if running is None:
+            print("✗ Update refused: could not verify kanban running-task state; ESTOP remains engaged and no update was attempted.")
+            return state
+        if running == 0:
+            state.update(ready=True, keep_paused=False)
+            print("✓ Kanban drain complete (running=0); continuing with one update.")
+            return state
+        if _time.monotonic() >= deadline:
+            print(f"✗ Update refused: {running} kanban worker(s) still running after {int(timeout)}s; ESTOP remains engaged and no update was attempted.")
+            return state
+        print(f"  … waiting for {running} kanban worker(s) to finish")
+        _time.sleep(min(1.0, max(0.05, deadline - _time.monotonic())))
+
+
+def _finish_kanban_drain_for_update(state: dict | None) -> None:
+    """Lift only an ESTOP this update successfully acquired."""
+    if not state or not state.get("engaged") or state.get("keep_paused"):
+        return
+    try:
+        from agent import estop
+        current = estop.get_state()
+        expected = state.get("engaged_at")
+        if not expected or not current or current.get("engaged_at") != expected:
+            logger.warning("Hermes update left ESTOP engaged because ownership changed during the update")
+            return
+        estop.disengage()
+        print("▶️ Kanban dispatch resumed after Hermes update.")
+    except Exception as exc:
+        logger.error("Hermes update could not resume ESTOP: %s", exc)
+
+
 def _no_prompt_git_kwargs() -> dict:
     """``subprocess.run`` kwargs for network git: a 401 (GitHub outage) would block forever on
     ``Username for ...``; disable only the *prompt* (credential helpers still run) so it fails fast."""
@@ -968,6 +1085,7 @@ class _UpdateOptions:
     keep_stash: bool
     switch_branch: bool
     discard_local_changes: bool
+    no_drain: bool
 
 
 def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
@@ -1006,7 +1124,8 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, pre_update_version=pre_update_version,
         gw_input_fn=gw_input_fn, assume_yes=assume_yes, keep_stash=keep_stash,
-        switch_branch=switch_branch, discard_local_changes=discard_local_changes)
+        switch_branch=switch_branch, discard_local_changes=discard_local_changes,
+        no_drain=bool(getattr(args, "no_drain", False)))
 
 
 def _begin_update_receipt_and_plan(args):
@@ -1268,7 +1387,8 @@ def _apply_pulled_update(
     if gateway_mode:
         _write_gateway_update_exit_code(update_complete)
 
-    _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
+    _restart = _restart_gateway_fleet_after_update(
+        _pre_update_plan, gateway_mode, no_drain=opts.no_drain)
     _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
     _verify_fleet_after_update(
         _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,

@@ -163,6 +163,12 @@ export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessage
  *   NOT swallow a longer reasoning block that merely starts with it (#61447).
  * - Keeps all other part types (tool-call, image, etc.).
  * - Appends the final text as a new text part.
+ * - Keeps the streamed parts untouched when the final text restates text
+ *   already on screen (the final is equal to or contained in the streamed
+ *   text). The streamed tail is newer than the frame: wiping it would delete a
+ *   trailing segment the frame doesn't cover — e.g. a turn ending with text
+ *   after a tool call whose terminal frame restates only earlier narration
+ *   (#105927: live lost the conclusion until reload rehydrated it from rows).
  */
 export function mergeFinalAssistantText(
   parts: ChatMessagePart[],
@@ -186,7 +192,11 @@ export function mergeFinalAssistantText(
 
   // An authoritative final that is exactly the concatenation of streamed text
   // confirms the content without erasing text↔reasoning activity boundaries.
-  if (streamedText && streamedText === dedupeReference) {
+  // The same holds when the final only restates on-screen text (a subset of
+  // what streamed): the streamed tail already holds everything the frame
+  // says, plus newer segments the frame doesn't cover — deleting them would
+  // drop the turn's trailing text from the live view (#105927).
+  if (streamedText && dedupeReference && streamedText.includes(dedupeReference)) {
     return parts
   }
 

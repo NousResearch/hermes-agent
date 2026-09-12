@@ -1266,6 +1266,22 @@ describe('mergeFinalAssistantText', () => {
     expect(result.filter(p => p.type === 'text')).toHaveLength(1)
     expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'already on screen' })
   })
+
+  it('keeps streamed trailing text when the final restates only earlier text (#105927)', () => {
+    const parts = [
+      { type: 'text' as const, text: 'Let me check.' },
+      { type: 'tool-call' as const, toolCallId: 'tc1', toolName: 'terminal', args: {} as never, argsText: '{}' },
+      { type: 'text' as const, text: 'Here is the conclusion.' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Let me check.')
+
+    expect(result.map(part => part.type)).toEqual(['text', 'tool-call', 'text'])
+    expect(result.filter(p => p.type === 'text').map(p => (p as { text: string }).text)).toEqual([
+      'Let me check.',
+      'Here is the conclusion.'
+    ])
+  })
 })
 
 describe('collectUnspokenTurnSpeech', () => {

@@ -161,6 +161,7 @@ import {
   updateEligibility,
   upsertConnection
 } from './connection-registry'
+import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
@@ -398,6 +399,7 @@ import {
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { updateConnectionsBeforeLocal } from './update-order'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
@@ -4021,6 +4023,15 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
   updateInFlight = true
 
   try {
+    // The local handoff asks the window to exit and the update scripts only
+    // wait so long for that PID — never start that deadline while quit would
+    // still be gated on a managed SSH update or its recovery transaction
+    // (before-quit joins the same operations; the updater must not race them).
+    await waitForManagedUpdateOperations(() => [
+      ...managedConnectionUpdates.values(),
+      ...managedConnectionRecoveries.values()
+    ])
+
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
@@ -8190,7 +8201,6 @@ interface GatewayFileSaveContext {
 }
 
 interface GatewayFileSavePayload {
-  sessionId?: string
   connectionId?: unknown
   path?: unknown
   profile?: unknown
@@ -8224,10 +8234,8 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
   const fallbackName = path.basename(filePath) || suggested || 'download'
   const ctx = { suggested, fallbackName }
 
-  const requestPaths = gatewayFileRequestPaths(
-    filePath,
-    requestPath => gatewayFileRequestPath(connection, connectionId, profile, requestPath),
-    payload.sessionId
+  const requestPaths = gatewayFileRequestPaths(filePath, requestPath =>
+    gatewayFileRequestPath(connection, connectionId, profile, requestPath)
   )
 
   const url = `${connection.baseUrl}${requestPaths.download}`
@@ -15915,18 +15923,20 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
     Array.isArray((payload as any)?.excludeIds) ? (payload as any).excludeIds.map((id: unknown) => String(id)) : []
   )
 
-  const results = await Promise.all(
-    registry.connections
-      .filter(connection => !excludeIds.has(connection.id))
-      .map(async connection => {
-        const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
-        const eligibility = updateEligibility(connection)
+  // Remote entries settle before the local handoff runs: the local updater
+  // waits on the window PID exiting, so a still-running managed SSH update
+  // would eat into (or outlive) that deadline. Order of results is preserved.
+  const results = await updateConnectionsBeforeLocal(
+    registry.connections.filter(connection => !excludeIds.has(connection.id)),
+    async (connection: RegistryConnection) => {
+      const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
+      const eligibility = updateEligibility(connection)
 
-        if (!eligibility.eligible) {
+      if (!eligibility.eligible) {
           return { ...base, ok: false, skipped: true, reason: eligibility.reason }
-        }
+      }
 
-        try {
+      try {
           if (connection.kind === 'local') {
             // The app-managed runtime updates through the same pipeline as the
             // Settings → Updates button (marker + venv gate + relaunch flow).
@@ -15968,10 +15978,10 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
           }
 
           return { ...base, ok: true, detail: body?.message || 'update started' }
-        } catch (error: any) {
-          return { ...base, ok: false, error: String(error?.message || error) }
-        }
-      })
+      } catch (error: any) {
+        return { ...base, ok: false, error: String(error?.message || error) }
+      }
+    }
   )
 
   return { ok: true, results }

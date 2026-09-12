@@ -214,8 +214,28 @@ class MCPServerTransportMixin:
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
         command, safe_env = _config._resolve_stdio_command(command, _config._build_safe_env(config.get("env")))
+        # Apply the cua-driver overlay policy to *user-registered* MCP
+        # launches (#81220). A ``mcp_servers.cua-driver`` entry with
+        # ``args: [mcp]`` otherwise spawns verbatim, bypassing the
+        # normalization the embedded cua-backend performs at
+        # ``_resolve_mcp_invocation`` — so on Linux/X11 the fullscreen
+        # cursor-overlay window (an InputOutput override-redirect surface)
+        # can map across the whole virtual desktop and swallow every click
+        # outside Hermes until a manual recovery call. The helper is a
+        # strict no-op for any non-cua-driver command; it honours an
+        # explicit ``computer_use.no_overlay: false`` opt-in and never
+        # duplicates a user-supplied ``--no-overlay``. Runs BEFORE the OSV
+        # preflight and the watchdog wrap so both see the real launch line.
+        try:
+            from tools.computer_use.cua_backend_driver import normalize_user_cua_driver_args
+
+            config_args = normalize_user_cua_driver_args(command, config.get("args", []))
+        except ImportError:
+            # cua_backend is an optional module surface; without it there is
+            # no overlay policy to apply and the launch proceeds as before.
+            config_args = config.get("args", [])
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
-        command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
+        command, args = await _core._preflight_stdio_command(self.name, command, config_args)
         server_params = _core.StdioServerParameters(
             command=command, args=args, env=safe_env or None, cwd=config.get("cwd"),
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.

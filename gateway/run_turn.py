@@ -3571,6 +3571,10 @@ class GatewayTurnMixin:
         # guard will consult. Fail-safe in helper.
         await self._refresh_agent_cache_message_count(session_key, session_id)
 
+        # Clear the stream consumer holder before the recursive turn so the next inbound doesn't see
+        # the stale consumer and block follow-up delivery (#107668).
+        turn_ctx.stream_consumer_holder[0] = None
+
         followup_result = await self._run_agent(
             message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
             source=next_source, session_id=session_id, session_key=next_session_key,

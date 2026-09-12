@@ -275,6 +275,32 @@ describe("ChatPage", () => {
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
   });
 
+  it("redials after a clean 1012 service-restart close (#95951)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    // 1012 is a CLEAN close (wasClean=true) that is neither 1001 nor 1006 —
+    // the old guard fell through to "[session ended]" with no retry. The
+    // server is coming back, so the pane must redial: the 250ms first-attempt
+    // backoff re-runs the connect effect and opens a fresh socket.
+    FakeWebSocket.instances[0].onclose?.({
+      code: 1012,
+      reason: "",
+      wasClean: true,
+    });
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2), {
+      timeout: 3000,
+    });
+  });
+
   it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
     // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
     // route. The keyboard-inset/scroll-pin listeners must only be live while

@@ -146,6 +146,30 @@ describe("ChatSidebar event socket", () => {
       reloadMocks.maybeReloadForLoopbackWsAuthFailure,
     ).toHaveBeenCalledWith(4401);
   });
+
+  it("auto-redials the JSON-RPC sidecar after a transient close (#95951)", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" />);
+
+    // The sidecar subscribes state handlers via onState; the first
+    // subscription's mock call receives the handler we can drive.
+    await vi.waitFor(() => expect(gatewayMocks.onState).toHaveBeenCalled());
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1);
+
+    // A service-restart close reports 'closed'. The connection owner
+    // schedules a version bump after the 250ms first-attempt backoff,
+    // which rebuilds the client and dials again. (onState call [0] is the
+    // state badge subscription; the redial owner is call [1].)
+    const stateHandler = gatewayMocks.onState.mock
+      .calls[1][0] as (s: string) => void;
+    act(() => stateHandler("closed"));
+
+    await vi.waitFor(
+      () => expect(gatewayMocks.connect).toHaveBeenCalledTimes(2),
+      { timeout: 3000 },
+    );
+  });
 });
 
 describe("ChatSidebar event socket reconnect", () => {
@@ -203,6 +227,49 @@ describe("ChatSidebar event socket reconnect", () => {
     await advance(2_000);
     expect(FakeWebSocket.instances).toHaveLength(2);
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it("surfaces a gave-up banner when the sidecar redial budget is exhausted (#95951)", async () => {
+    // The file-wide onState mock immediately reports "open" to every new
+    // subscription — that would reset the sidecar's redial counter after
+    // every rebuild and the budget would never exhaust. Collect the
+    // handlers and drive the state sequence ourselves.
+    const originalImpl = gatewayMocks.onState.getMockImplementation();
+    const stateHandlers: Array<(s: string) => void> = [];
+    gatewayMocks.onState.mockImplementation((handler: (s: string) => void) => {
+      stateHandlers.push(handler);
+      return () => undefined;
+    });
+
+    try {
+      const { ChatSidebar } = await import("./ChatSidebar");
+      await render(<ChatSidebar channel="chat-1" />);
+      expect(stateHandlers.length).toBeGreaterThanOrEqual(2);
+
+      // Exhaust the budget: each failed attempt rebuilds the client (new
+      // handler subscribed), so drive the LATEST subscription each round and
+      // advance past that round's backoff (250 * 2^n, capped at 3s).
+      for (let round = 0; round < 5; round += 1) {
+        const handler = stateHandlers[stateHandlers.length - 1];
+        await act(async () => {
+          handler("error");
+        });
+        await advance(4_000);
+        expect(gatewayMocks.connect).toHaveBeenCalledTimes(2 + round);
+      }
+
+      // One more drop with the budget spent: no further connect is
+      // scheduled, and the banner reports give-up.
+      const finalHandler = stateHandlers[stateHandlers.length - 1];
+      await act(async () => {
+        finalHandler("closed");
+      });
+      await advance(4_000);
+      expect(gatewayMocks.connect).toHaveBeenCalledTimes(6);
+      expect(container?.textContent ?? "").toContain("gave up after 5 attempts");
+    } finally {
+      gatewayMocks.onState.mockImplementation(originalImpl!);
+    }
   });
 
   it("times out a stalled URL request and retries", async () => {

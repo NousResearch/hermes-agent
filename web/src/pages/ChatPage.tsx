@@ -1415,10 +1415,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setPtyState("closed");
         return;
       }
-      if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
-        // Transient transport drop (refresh, sleep/wake, signal loss).
-        // Reconnect with backoff; the same ?attach= token reattaches to
-        // the still-living PTY, so the conversation continues in place.
+      if (
+        !ev.wasClean ||
+        ev.code === 1001 ||
+        ev.code === 1006 ||
+        ev.code === 1012 ||
+        ev.code === 1013
+      ) {
+        // Transient transport drop (refresh, sleep/wake, signal loss), or a
+        // clean server-side restart signal: 1012 Service Restart / 1013 Try
+        // Again Later mean the server is coming back, so redial instead of
+        // stranding the pane on "[session ended]" (#95951).
         scheduleReconnect(ev.code);
         return;
       }

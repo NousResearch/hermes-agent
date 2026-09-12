@@ -613,6 +613,13 @@ def cron_edit(args):
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
+    if getattr(args, "prompt", None) is not None and not str(args.prompt).strip():
+        print(color(
+            "Error: --prompt must be non-empty; empty or whitespace-only "
+            "substitution is rejected.",
+            Colors.RED,
+        ))
+        return 1
     existing_skills = list(job.get("skills") or ([job["skill"]] if job.get("skill") else []))
     replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
     add_skills = _normalize_skills(None, getattr(args, "add_skills", None)) or []

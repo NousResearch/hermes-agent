@@ -43,6 +43,37 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
 # ── Chain initialisation ──────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("next_policy", [None, "normal", "unsupported"])
+def test_next_route_replaces_or_clears_tier_policy(next_policy, caplog):
+    from copy import deepcopy
+
+    chain = [
+        {"provider": "openai", "model": "gpt-4o", "service_tier_override": " NORMAL "},
+        {"provider": "custom", "model": "gpt-4.1", "service_tier_override": next_policy,
+         "base_url": "https://next.example.test/v1", "api_mode": "chat_completions"},
+    ]
+    before_chain = deepcopy(chain)
+    agent = _make_agent(fallback_model=chain)
+    agent.request_overrides = {"service_tier": "priority", "speed": "fast", "extra_body": {"store": False}}
+    before = deepcopy(agent.request_overrides)
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), None)):
+        assert agent._try_activate_fallback() is True
+        assert agent._active_fallback_service_tier_override == "normal"
+        wire = agent._build_api_kwargs([{"role": "user", "content": "fixture"}])
+        assert "service_tier" not in wire
+        assert "speed" not in wire
+        assert agent._try_activate_fallback() is True
+    assert agent._active_fallback_service_tier_override == ("normal" if next_policy == "normal" else None)
+    wire = agent._build_api_kwargs([{"role": "user", "content": "fixture"}])
+    assert wire.get("service_tier") == (None if next_policy == "normal" else "priority")
+    assert wire.get("speed") == (None if next_policy == "normal" else "fast")
+    assert wire["extra_body"]["store"] is False
+    if next_policy == "unsupported":
+        assert "Ignoring unsupported fallback service_tier_override" in caplog.text
+    assert agent.request_overrides == before
+    assert chain == before_chain
+
+
 class TestFallbackChainInit:
     def test_no_fallback(self):
         agent = _make_agent(fallback_model=None)

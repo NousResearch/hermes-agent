@@ -604,6 +604,15 @@ class _ToolHandlers:
         channels_list tool. You can also use human-friendly channel names
         that will be resolved automatically.
 
+        Attachments: a line reading MEDIA:<absolute path> uploads that file
+        and is stripped from the visible text. The path resolves on the
+        Hermes gateway host, not the MCP client. MEDIA: in code fences,
+        inline code, or blockquotes is ignored.
+
+        Whole-message directives: [[as_document]] sends images as documents
+        instead of recompressed photos; [[audio_as_voice]] sends audio as a
+        voice note.
+
         Examples:
             target="telegram:6308981865"
             target="discord:#general"

@@ -317,7 +317,7 @@ class RipgrepInvocationEnvironment(RecordingEnvironment):
         if "--files" in command:
             return {"output": "/repo/a.py\n", "returncode": 0}
         if "--line-number" in command:
-            return {"output": "/repo/a.py:1:needle\n", "returncode": 0}
+            return {"output": "/repo/a.py\x001:needle\n", "returncode": 0}
         if "--count-matches" in command:
             return {"output": "", "returncode": 1}
         return {"output": "", "returncode": 1}

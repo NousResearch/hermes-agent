@@ -118,13 +118,13 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
-# A real rg/grep output line is a whitespace-free path token followed by ``:``
-# (match/count), ``-`` (context), or nothing (files_only); tool diagnostics
-# ("rg: ...", indented carets) never match.
+# Count/files-only output retains its text format. Content records use a NUL
+# filename boundary so punctuation in paths or source text cannot move it.
 _SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
+_SEARCH_CONTENT_LINE_RE = re.compile(r'^([^\x00]+)\x00([1-9][0-9]*)([:-])(.*)$')
 
 
-def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+def _split_tool_diagnostics(output: str, output_mode: str = "content") -> tuple[str, str]:
     """Separate rg/grep diagnostic lines from real match output → ``(diagnostics, payload)``.
     ``_exec`` merges stderr into stdout; classifying by SHAPE lets the exit-2 guard
     tell a pure failure (no payload) from a partial one (one unreadable file, others
@@ -134,28 +134,25 @@ def _split_tool_diagnostics(output: str) -> tuple[str, str]:
     for line in output.split('\n'):
         if not line.strip():
             continue
-        # Prefix check first: a match path can contain "-<digit>" (".../pytest-686/...").
-        if line.lstrip().startswith(("rg: ", "grep: ")):
-            diagnostics.append(line)
-        elif line == "--" or _SEARCH_OUTPUT_RE.match(line):
-            payload.append(line)
+        if output_mode not in ("files_only", "count"):
+            if line == "--":
+                continue
+            is_record = _SEARCH_CONTENT_LINE_RE.match(line) is not None
         else:
+            is_record = not line.lstrip().startswith(("rg: ", "grep: ")) and bool(_SEARCH_OUTPUT_RE.match(line))
+        if not is_record:
             diagnostics.append(line)
+        else:
+            payload.append(line)
     return '\n'.join(diagnostics), '\n'.join(payload)
 
 
-def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
-    """Parse a ``path-line-content`` context line using the RIGHTMOST numeric
-    separator (filenames may contain ``-<digits>-`` segments):
-    ``dir/file-12-name.py-8-context`` → (``dir/file-12-name.py``, 8, ``context``)."""
-    if not line or line == "--":
+def _parse_search_content_line(line: str, context: int = 0) -> tuple[str, int, str] | None:
+    """Parse ``path NUL line-number [:|-] text`` without inspecting the text."""
+    match = _SEARCH_CONTENT_LINE_RE.match(line)
+    if match is None or (match.group(3) == "-" and context <= 0):
         return None
-    match = None
-    for candidate in re.finditer(r'-(\d+)-', line):
-        match = candidate
-    if match is None or match.start() == 0:
-        return None
-    return line[:match.start()], int(match.group(1)), line[match.end():]
+    return match.group(1), int(match.group(2)), match.group(4)
 
 
 _REGEX_NEWLINE_ESCAPE_RE = re.compile(r"(?<!\\)(?:\\\\)*\\n")
@@ -188,10 +185,6 @@ def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str
     return result
 
 
-# Match lines are "file:lineno:content". Windows paths carry a drive letter
-# ("C:\path"), so a naive split(":") breaks — the regex handles both.
-_MATCH_LINE_RE = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
-
 # Output-mode → engine flag (identical for rg and grep).
 _OUTPUT_MODE_FLAGS = {"files_only": "-l", "count": "-c"}
 
@@ -203,11 +196,11 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     errors (one unreadable file), so an error is surfaced only when exit==2 AND no
     usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
-    diagnostics, payload = _split_tool_diagnostics(stdout)
+    diagnostics, payload = _split_tool_diagnostics(stdout, output_mode)
     if result.exit_code == 2 and not payload.strip():
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
         return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-    lines = [ln for ln in payload.strip().split('\n') if ln]
+    lines = [ln for ln in payload.split('\n') if ln]
     if output_mode == "files_only":
         return SearchResult(
             files=lines[offset:offset + limit], total_count=len(lines),
@@ -226,19 +219,11 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
             truncated=bool(limit_reason), limit_reason=limit_reason)
     matches = []
     for line in lines:
-        if line == "--":
-            continue
-        m = _MATCH_LINE_RE.match(line)
-        if m:
+        parsed = _parse_search_content_line(line, context)
+        if parsed:
             matches.append(SearchMatch(
-                path=(m.group(1) or '') + m.group(2), line_number=int(m.group(3)), content=m.group(4)[:500],
+                path=parsed[0], line_number=parsed[1], content=parsed[2][:500],
             ))
-            continue
-        # Context lines only when requested, to avoid false positives on dashy paths.
-        if context > 0:
-            parsed = _parse_search_context_line(line)
-            if parsed:
-                matches.append(SearchMatch(path=parsed[0], line_number=parsed[1], content=parsed[2][:500]))
     total = len(matches)
     return SearchResult(
         matches=matches[offset:offset + limit], total_count=total,
@@ -858,7 +843,7 @@ class SearchMixin:
         # keeps a truncated prefix so the model still sees the hit. 2000 cols exceeds
         # the 500-char content clamp, so nothing previously visible is lost.
         if output_mode not in ("files_only", "count"):
-            cmd_parts.extend(["--max-columns", "2000", "--max-columns-preview"])
+            cmd_parts.extend(["--null", "--max-columns", "2000", "--max-columns-preview"])
         # A regex \n hard-errors in line-oriented mode; enable -U up front and say so.
         multiline = _pattern_has_regex_newline(pattern)
         if multiline:
@@ -889,6 +874,8 @@ class SearchMixin:
             parts.extend(["--include", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
+        else:
+            parts.append("--null")
         parts.append(self._escape_shell_arg(pattern))
         return parts
 

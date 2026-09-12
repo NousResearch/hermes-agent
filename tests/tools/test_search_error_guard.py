@@ -114,16 +114,28 @@ class TestSearchContentNewlineWarning:
 class TestSplitToolDiagnostics:
     """Unit coverage for the shape-based diagnostic/payload splitter."""
 
-    def test_pure_error_has_empty_payload(self):
-        out = "rg: regex parse error:\n    (?:[)\n       ^\nerror: unclosed character class\n"
+    @pytest.mark.parametrize("out", [
+        "rg: regex parse error:\n    (?:[)\n       ^\nerror: unclosed character class\n",
+        "grep: unsupported option\n--\n",
+        "clipped-12-path\x00\n",
+        "clipped-12-path\x0023\n",
+        "invalid-line\x000:payload\n",
+    ])
+    def test_pure_error_has_empty_payload(self, out):
         diagnostics, payload = _split_tool_diagnostics(out)
         assert payload.strip() == ""
-        assert "regex parse error" in diagnostics
+        assert diagnostics
+        from tools.file_operations import ExecuteResult
+        from tools.file_operations_search import _parse_search_output
+
+        result = _parse_search_output(ExecuteResult(out, 2), "content", 50, 0, 1)
+        assert result.error is not None
+        assert not result.matches
 
 
-    def test_context_lines_and_separator_are_payload(self):
-        out = "a.py:5:hit\na.py-6-after\n--\nb.py:9:hit\n"
+    def test_context_lines_are_payload_but_group_separator_is_not(self):
+        out = "a.py\x005:hit\na.py\x006-after\n--\nb.py\x009:hit\n"
         diagnostics, payload = _split_tool_diagnostics(out)
         assert diagnostics == ""
-        assert "--" in payload
-        assert "a.py-6-after" in payload
+        assert "--" not in payload
+        assert "a.py\x006-after" in payload

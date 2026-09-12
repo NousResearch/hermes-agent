@@ -822,6 +822,20 @@ class TestClassifyApiError:
         assert result.should_fallback is False
         assert result.should_compress is False
 
+    def test_zai_1210_disable_rejection_is_reasoning_mandatory(self):
+        """z.ai's own wording for the same disable-rejection (#108311), distinct from the Nous
+        Portal/OpenRouter phrasing covered above."""
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'code': '1210', 'message': 'This model always engages "
+            "in thinking and cannot be disabled; please use low, high, or max'}}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="zai", model="glm-5.3-flash")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True
+        assert result.should_fallback is False
+        assert result.should_compress is False
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):

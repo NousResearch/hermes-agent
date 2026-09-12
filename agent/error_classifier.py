@@ -382,8 +382,12 @@ _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded,
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
-# A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
-_REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
+# A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording,
+# plus z.ai's own code-1210 wording for GLM-5.2/5.3 rejecting ``thinking: {"type": "disabled"}``).
+_REASONING_MANDATORY_PATTERNS = (
+    "reasoning is mandatory",
+    "always engages in thinking and cannot be disabled",
+)
 
 
 def _billing_hints(error_msg: str) -> Verdict:
@@ -767,7 +771,7 @@ def _classify_400(c: _Ctx) -> Verdict:
     # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
     # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops
     # the disable and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg:
+    if any(p in msg for p in _REASONING_MANDATORY_PATTERNS):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

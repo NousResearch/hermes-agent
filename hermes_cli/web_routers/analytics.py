@@ -15,7 +15,7 @@ from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
 from hermes_cli.web_routers._common import corrupt_store_as_status
 from hermes_cli.web_server_profiles import (
-    _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
+    _approval_mode_of, _aux_task_summary, _aux_usage_daily, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
 from hermes_cli.web_models import RawConfigUpdate
 
@@ -76,6 +76,35 @@ def _rows(db, sql: str, cutoff: float) -> List[Dict[str, Any]]:
     return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
 
 
+# Auxiliary-usage keys carried by the daily/by_model/model rows. ``totals`` reports the same
+# figures under different column names, hence the mapping below.
+_AUX_DAILY_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens",
+                   "estimated_cost", "actual_cost", "api_calls")
+_TOTALS_FROM_DAILY = {"input_tokens": "total_input", "output_tokens": "total_output",
+                      "cache_read_tokens": "total_cache_read", "reasoning_tokens": "total_reasoning",
+                      "estimated_cost": "total_estimated_cost", "actual_cost": "total_actual_cost",
+                      "api_calls": "total_api_calls"}
+
+
+def _merge_aux_into_daily(
+    daily: List[Dict[str, Any]], aux_daily: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Fold auxiliary usage into the sessions-derived daily rows, keyed by day.
+
+    Add-only: the aux rows are exactly the ``task != ''`` slice the ``sessions`` counters never
+    carry, so a day present in both sources cannot be double-counted. ``sessions`` stays a
+    sessions-row count — an auxiliary call does not create a session. See #23270.
+    """
+    by_day: Dict[Any, Dict[str, Any]] = {row.get("day"): row for row in daily}
+    for aux in aux_daily:
+        day = aux.get("day")
+        target = by_day.setdefault(day, {"day": day, "sessions": 0,
+                                         **{key: 0 for key in _AUX_DAILY_KEYS}})
+        for key in _AUX_DAILY_KEYS:
+            target[key] = (target.get(key) or 0) + (aux.get(key) or 0)
+    return sorted(by_day.values(), key=lambda row: row.get("day") or "")
+
+
 def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
@@ -113,6 +142,7 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         # burning tokens (issue #23270).
         aux_rows = _aux_usage_rows(db, cutoff)
         by_model = _merge_aux_into_by_model(by_model, aux_rows)
+        daily = _merge_aux_into_daily(daily, _aux_usage_daily(db, cutoff))
 
         totals = _rows(db, """
             SELECT SUM(input_tokens) as total_input,
@@ -125,6 +155,12 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ?
         """, cutoff)[0]
+        # The scan above is main-loop only, so the additive counters are taken from the
+        # aux-reconciled daily rows instead: `totals` then equals the sum of the by_model rows
+        # this same response carries, instead of sitting below them (#23270). total_sessions
+        # stays the sessions-row count — an auxiliary call does not create a session.
+        for key, column in _TOTALS_FROM_DAILY.items():
+            totals[column] = sum((row.get(key) or 0) for row in daily)
         usage = InsightsEngine(db).get_usage_breakdown(days=days)
 
         return {
@@ -296,6 +332,13 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
         """, cutoff)[0]
+        # Same reconciliation as by_model in the usage endpoint: the sessions-only scan above
+        # misses the aux-only models appended to this list, so the additive counters and the
+        # model count come from the cards this response carries (#23270). total_sessions stays
+        # the sessions-row count — an auxiliary call does not create a session.
+        for key, column in _TOTALS_FROM_DAILY.items():
+            totals[column] = sum((card.get(key) or 0) for card in models)
+        totals["distinct_models"] = len({card["model"] for card in models})
 
         return {"models": models, "totals": totals, "period_days": days}
     finally:

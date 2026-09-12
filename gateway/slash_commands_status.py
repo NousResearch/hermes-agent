@@ -303,6 +303,12 @@ class GatewayStatusCommandsMixin:
             _int_value(session_row.get(k))
             for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
         )
+        # The sessions row holds the main agent loop only; auxiliary calls (vision, compression,
+        # title generation, ...) are recorded in session_model_usage with a task name, so adding
+        # them is what makes this a lifetime total rather than a main-loop one (#23270).
+        aux_tokens = await _quiet(lambda: db.get_session_auxiliary_tokens(session_id))
+        if isinstance(aux_tokens, int):
+            db_total_tokens += aux_tokens
         route = await _quiet(lambda: db.get_dominant_session_model_route(session_id))
         return title, session_row, db_total_tokens, route if isinstance(route, dict) else {}
 

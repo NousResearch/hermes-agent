@@ -1370,12 +1370,26 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     from agent.opencode_affinity import merge_opencode_session_headers
 
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
+    configured_extra_body = effective_request_overrides(agent).get("extra_body")
+    if isinstance(configured_extra_body, dict):
+        kwargs["extra_body"] = _deep_merge_extra_body(kwargs.get("extra_body"), configured_extra_body)
     return merge_opencode_session_headers(
         kwargs,
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
     )
+
+
+def _deep_merge_extra_body(base: Any, override: dict) -> dict:
+    """Merge configured body fields after transport-generated fields for every API mode."""
+    result = dict(base) if isinstance(base, dict) else {}
+    for key, value in override.items():
+        if isinstance(result.get(key), dict) and isinstance(value, dict):
+            result[key] = _deep_merge_extra_body(result[key], value)
+        elif not (isinstance(result.get(key), dict) and value is None):
+            result[key] = value
+    return result
 
 
 def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:

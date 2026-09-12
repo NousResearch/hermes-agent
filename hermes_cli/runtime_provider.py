@@ -849,7 +849,22 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
-    return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    return _apply_model_extra_body(runtime, _get_model_config())
+
+
+def _apply_model_extra_body(runtime: Dict[str, Any], model_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Layer ``model.extra_body`` over provider defaults without discarding nested fields."""
+    configured = model_cfg.get("extra_body") if isinstance(model_cfg, dict) else None
+    if not isinstance(configured, dict) or not configured:
+        return runtime
+    overrides = dict(runtime.get("request_overrides") or {})
+    existing = overrides.get("extra_body")
+    overrides["extra_body"] = (
+        _config_mod._deep_merge(existing, configured)
+        if isinstance(existing, dict) else dict(configured)
+    )
+    return {**runtime, "request_overrides": overrides}
 
 
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):

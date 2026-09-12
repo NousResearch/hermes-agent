@@ -80,6 +80,9 @@ _LIVE_ADAPTERS: Dict[str, Any] = {}
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
+# "Label: value" line (label ≤24 chars, no leading space, non-space content after
+# ": ") — the shape of structured confirmations like the /model switch summary.
+_LABEL_LINE_RE = re.compile(r"^\S[^:]{0,23}: \S")
 
 
 def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]") -> bool:
@@ -484,7 +487,15 @@ def _should_split_short_chat_block_for_weixin(block: str) -> bool:
     first = lines[0].strip()
     if _HEADER_RE.match(first) or (len(first) <= 24 and first.endswith((":", "："))):
         return False
-    return all(_looks_like_chatty_line_for_weixin(line) for line in lines)
+    if not all(_looks_like_chatty_line_for_weixin(line) for line in lines):
+        return False
+    # A block whose lines are mostly "Label: value" pairs is structured output
+    # (e.g. the /model switch confirmation), not a short chatty exchange — keep
+    # it in one bubble even when every line is short enough to look chatty.
+    # Majority, not mere presence: a genuine chat may carry a stray
+    # "meeting moved: 3pm" line and must still split (#107946).
+    label_lines = sum(1 for line in lines if _LABEL_LINE_RE.match(line.strip()))
+    return label_lines <= len(lines) // 2
 
 
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:

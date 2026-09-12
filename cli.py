@@ -4114,6 +4114,9 @@ def _run_quiet_single_query(cli, effective_query):
                 _exit_code = _RL_CODE
             except Exception:
                 _exit_code = 1
+    audit = getattr(cli, "_oneshot_invocation_audit", None)
+    if audit is not None and _exit_code != 0:
+        audit.set_outcome_hint("agent_error")
     sys.exit(_exit_code)
 
 
@@ -4226,6 +4229,11 @@ def _install_single_query_signal_handlers(cli):
                 # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
+            with suppress(Exception):
+                audit = getattr(cli, "_oneshot_invocation_audit", None)
+                if audit is not None:
+                    audit.bind_session(_oneshot_agent_and_session(cli)[1])
+                    audit.finish(130, "interrupted")
             _flush_logging_and_stdio()
             os._exit(0)
         raise KeyboardInterrupt()
@@ -4430,10 +4438,26 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         if _query_label:
             cli.console.print(f"[bold blue]Query:[/] {_query_label}")
         cli._show_security_advisories()
-        cli.chat(query, images=single_query_images or None)
+        response = cli.chat(query, images=single_query_images or None)
+        if response is None:
+            audit = getattr(cli, "_oneshot_invocation_audit", None)
+            if audit is not None:
+                audit.set_outcome_hint("agent_error")
         cli._print_exit_summary(clear_screen=False)
+    except BaseException as exc:
+        from hermes_cli.oneshot_audit import finish_from_exception
+
+        audit = getattr(cli, "_oneshot_invocation_audit", None)
+        if audit is not None:
+            audit.bind_session(_oneshot_agent_and_session(cli)[1])
+        finish_from_exception(audit, exc)
+        raise
     finally:
         _finalize_single_query(cli)
+        audit = getattr(cli, "_oneshot_invocation_audit", None)
+        if audit is not None:
+            audit.bind_session(_oneshot_agent_and_session(cli)[1])
+            audit.finish(0)
 
 
 def main(
@@ -4463,6 +4487,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    invocation_audit=None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -4517,15 +4542,28 @@ def main(
         _run_legacy_gateway()
         return
 
-    _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
-    cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
-                               verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+    if invocation_audit is None and (query or image) and not _should_seed_interactive(query, image, quiet, oneshot):
+        from hermes_cli.oneshot_audit import OneShotAudit
+
+        invocation_audit = OneShotAudit.start(query or "", "programmatic")
+    _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
+    try:
+        cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
+                                   verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
+    except BaseException as exc:
+        from hermes_cli.oneshot_audit import finish_from_exception
+
+        finish_from_exception(invocation_audit, exc)
+        raise
+    cli._oneshot_invocation_audit = invocation_audit
 
     # Join the background worktree creation before anything consumes TERMINAL_CWD.
     # A requested worktree whose setup failed aborts: never silently run without isolation.
     wt_info = _join_worktree() if _join_worktree is not None else None
     if _join_worktree is not None and not wt_info:
+        if invocation_audit is not None:
+            invocation_audit.finish(1, "agent_error")
         return
 
     # Inject worktree context into agent's system prompt

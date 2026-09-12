@@ -169,6 +169,7 @@ def run_oneshot(
     usage_file: Optional[str] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    invocation_audit: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -185,6 +186,8 @@ def run_oneshot(
     # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.
     env_model_early = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
     if provider and not ((model or "").strip() or env_model_early):
+        if invocation_audit is not None:
+            invocation_audit.set_outcome_hint("validation_error")
         sys.stderr.write(
             "hermes -z: --provider requires --model (or HERMES_INFERENCE_MODEL). "
             "Pass both explicitly, or neither to use your configured defaults.\n"
@@ -193,6 +196,8 @@ def run_oneshot(
 
     explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
     if toolsets_error:
+        if invocation_audit is not None:
+            invocation_audit.set_outcome_hint("validation_error")
         sys.stderr.write(toolsets_error)
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
@@ -225,6 +230,7 @@ def run_oneshot(
                 skills=skills,
                 resume=resume,
                 reasoning=reasoning,
+                invocation_audit=invocation_audit,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -238,6 +244,8 @@ def run_oneshot(
             _write_usage_file(usage_file, result, failure=repr(failure))
             raise failure
         _write_usage_file(usage_file, result, failure=str(failure))
+        if invocation_audit is not None:
+            invocation_audit.set_outcome_hint("agent_error")
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
         return 1
@@ -257,6 +265,8 @@ def run_oneshot(
         real_stdout.flush()
 
     if not (response or "").strip():
+        if invocation_audit is not None:
+            invocation_audit.set_outcome_hint("agent_error")
         if result.get("failed") or result.get("partial"):
             return 2
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
@@ -416,6 +426,7 @@ def _run_agent(
     skills: object = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    invocation_audit: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -493,12 +504,16 @@ def _run_agent(
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
             clarify_callback=_oneshot_clarify_callback,
         )
+        if invocation_audit is not None:
+            invocation_audit.bind_session(getattr(agent, "session_id", None))
         # Belt-and-braces: no streaming display callbacks may bypass our stdout capture.
         agent.suppress_status_output = True
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        if invocation_audit is not None:
+            invocation_audit.bind_session(result.get("session_id") or getattr(agent, "session_id", None))
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

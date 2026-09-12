@@ -142,6 +142,7 @@ def _run_and_exit_oneshot(
     usage_file: object = None,
     resume: object = None,
     reasoning: object = None,
+    invocation_audit: object = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -155,6 +156,7 @@ def _run_and_exit_oneshot(
             usage_file=usage_file,
             resume=resume,
             reasoning=reasoning,
+            invocation_audit=invocation_audit,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -174,6 +176,8 @@ def _run_and_exit_oneshot(
         except Exception:
             pass
         rc = 1
+    if invocation_audit is not None:
+        invocation_audit.finish(rc)
     try:
         _cleanup_oneshot_runtime()
     finally:
@@ -1650,6 +1654,8 @@ def _read_query_file(args) -> None:
     double-quoted shell argument truncates on quotes and executes $(...)
     (see tools/bot_mode_probe.py).
     """
+    if getattr(args, "_query_file_loaded", False):
+        return
     _qfile = getattr(args, "query_file", None)
     if not _qfile:
         return
@@ -1670,6 +1676,71 @@ def _read_query_file(args) -> None:
     if not (args.query or "").strip():
         print(f"Error: --query-file {_qfile} is empty", file=sys.stderr)
         sys.exit(2)
+    setattr(args, "_query_file_loaded", True)
+
+
+def _chat_args_are_oneshot(args) -> bool:
+    if not (getattr(args, "query", None) or getattr(args, "query_file", None) or getattr(args, "image", None)):
+        return False
+    if getattr(args, "oneshot_exit", False) or getattr(args, "quiet", False):
+        return True
+    try:
+        return not (sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:
+        return True
+
+
+def _prepare_oneshot_audit(args):
+    """Start one-shot provenance before provider/plugin/model setup."""
+    existing = getattr(args, "_oneshot_audit", None)
+    if existing is not None:
+        return existing
+    top_level_prompt = getattr(args, "oneshot", None)
+    if top_level_prompt:
+        input_mode, prompt = "prompt", top_level_prompt
+    else:
+        if getattr(args, "command", None) not in {None, "chat"}:
+            return None
+        if getattr(args, "query_file", None):
+            try:
+                _read_query_file(args)
+            except BaseException as exc:
+                from hermes_cli.oneshot_audit import OneShotAudit, finish_from_exception
+
+                audit = OneShotAudit.start(
+                    None,
+                    "query-file",
+                    session_source=getattr(args, "source", None),
+                )
+                setattr(args, "_oneshot_audit", audit)
+                finish_from_exception(audit, exc)
+                raise
+        if not _chat_args_are_oneshot(args):
+            return None
+        input_mode = "query-file" if getattr(args, "query_file", None) else "query"
+        prompt = getattr(args, "query", None) or ""
+    from hermes_cli.oneshot_audit import OneShotAudit
+
+    audit = OneShotAudit.start(
+        prompt,
+        input_mode,
+        session_source=getattr(args, "source", None),
+    )
+    setattr(args, "_oneshot_audit", audit)
+    return audit
+
+
+def _prepare_agent_startup_audited(args) -> None:
+    audit = _prepare_oneshot_audit(args)
+    try:
+        _prepare_agent_startup(args)
+    except BaseException as exc:
+        from hermes_cli.oneshot_audit import finish_from_exception
+
+        if audit is not None and isinstance(exc, SystemExit):
+            audit.set_outcome_hint("validation_error")
+        finish_from_exception(audit, exc)
+        raise
 
 
 # args attr -> (kwarg, default) passed through to _launch_tui / cli.main.
@@ -1681,7 +1752,7 @@ _CHAT_PASSTHROUGH = (
 )
 
 
-def cmd_chat(args):
+def _cmd_chat(args):
     """Run interactive chat CLI."""
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
@@ -1743,6 +1814,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
+        "invocation_audit": getattr(args, "_oneshot_audit", None),
         **{k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH},
     }
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -1752,6 +1824,9 @@ def cmd_chat(args):
 
         cli_main(**kwargs)
     except ValueError as e:
+        audit = getattr(args, "_oneshot_audit", None)
+        if audit is not None:
+            audit.set_outcome_hint("validation_error")
         print(f"Error: {e}")
         sys.exit(1)
     except ImportError as e:
@@ -1765,6 +1840,20 @@ def cmd_chat(args):
         if emit_partial_update_hint(e):
             sys.exit(1)
         raise
+
+
+def cmd_chat(args):
+    audit = _prepare_oneshot_audit(args)
+    try:
+        return _cmd_chat(args)
+    except BaseException as exc:
+        from hermes_cli.oneshot_audit import finish_from_exception
+
+        finish_from_exception(audit, exc)
+        raise
+    finally:
+        if audit is not None:
+            audit.finish(0)
 
 
 def cmd_gateway(args):
@@ -2913,11 +3002,20 @@ def _run_oneshot_from_args(args) -> None:
 
     Bypasses cli.py entirely; _run_and_exit_oneshot never returns.
     """
-    _confirm_startup_expensive_model_override(args)
-    # -z honors --resume/-c/--in exactly like chat (#105892): normalize BEFORE the
-    # oneshot exit path takes over, else the flags parse fine but silently do nothing
-    # and the turn starts a fresh session (every wire request loses all history).
-    _resolve_chat_session_args(args, use_tui=False)
+    invocation_audit = _prepare_oneshot_audit(args)
+    try:
+        _confirm_startup_expensive_model_override(args)
+        # -z honors --resume/-c/--in exactly like chat (#105892): normalize BEFORE the
+        # oneshot exit path takes over, else the flags parse fine but silently do nothing
+        # and the turn starts a fresh session (every wire request loses all history).
+        _resolve_chat_session_args(args, use_tui=False)
+    except BaseException as exc:
+        from hermes_cli.oneshot_audit import finish_from_exception
+
+        if invocation_audit is not None and isinstance(exc, SystemExit):
+            invocation_audit.set_outcome_hint("validation_error")
+        finish_from_exception(invocation_audit, exc)
+        raise
     _run_and_exit_oneshot(
         args.oneshot,
         model=getattr(args, "model", None),
@@ -2927,6 +3025,7 @@ def _run_oneshot_from_args(args) -> None:
         usage_file=getattr(args, "usage_file", None),
         resume=getattr(args, "resume", None),
         reasoning=getattr(args, "reasoning", None),
+        invocation_audit=invocation_audit,
     )
 
 
@@ -3025,7 +3124,7 @@ def _try_fast_chat_launch() -> bool:
 
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
-    _prepare_agent_startup(args)
+    _prepare_agent_startup_audited(args)
 
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)
@@ -3069,12 +3168,13 @@ def _try_termux_fast_cli_launch() -> bool:
         return True
 
     if getattr(args, "oneshot", None):
-        _prepare_agent_startup(args)
+        _prepare_agent_startup_audited(args)
         _run_oneshot_from_args(args)
 
     _promote_top_level_resume(args)
     if args.command in {None, "chat"}:
         _set_chat_arg_defaults(args)
+        _prepare_oneshot_audit(args)
         interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
         if interactive_prompt:
             # Reach the prompt first; agent-only discovery on the first turn.
@@ -3084,7 +3184,7 @@ def _try_termux_fast_cli_launch() -> bool:
             if getattr(args, "accept_hooks", False):
                 os.environ["HERMES_ACCEPT_HOOKS"] = "1"
         else:
-            _prepare_agent_startup(args)
+            _prepare_agent_startup_audited(args)
         cmd_chat(args)
         return True
 
@@ -3426,7 +3526,7 @@ def main():
     # Plugin discovery + shell hooks once, gated so introspection commands
     # (hooks list, cron list, gateway status, ...) pay no discovery cost and
     # trigger no consent prompts for hooks the user is still inspecting.
-    _prepare_agent_startup(args)
+    _prepare_agent_startup_audited(args)
 
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)

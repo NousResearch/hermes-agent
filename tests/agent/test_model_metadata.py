@@ -1495,6 +1495,24 @@ class TestParseContextLimitFromError:
         )
         assert get_context_length_from_provider_error(msg, 131072) == 32768
 
+    def test_output_cap_message_is_not_a_context_limit(self):
+        """An output-cap error must never be cached as the context window (salvage #106769):
+        the generic "limit ... of N" pattern matched Switchyard's message and clamped a
+        >117K-context model to 16K on every later request."""
+        from agent.model_metadata import (
+            is_output_cap_error,
+            parse_available_output_tokens_from_error,
+        )
+
+        msg = "max_tokens cannot exceed the configured model output limit of 16384"
+        assert parse_context_limit_from_error(msg) is None
+        assert parse_available_output_tokens_from_error(msg) == 16384
+        assert is_output_cap_error(msg)
+        # Genuine context messages still parse.
+        assert parse_context_limit_from_error(
+            "This model's maximum context length is 32768 tokens"
+        ) == 32768
+
 
 
 
@@ -1941,3 +1959,34 @@ class TestFallbackWarning:
             if r.levelno == logging.WARNING and "falling back" in r.getMessage()
         ]
         assert len(fallback_warnings) == 0
+
+
+# =========================================================================
+# get_model_context_length — OpenRouter routing-variant suffixes
+# =========================================================================
+
+class TestOpenRouterRoutingVariantContextLength:
+    """`:nitro`/`:floor`/`:exacto`/`:online` are request-time routing modifiers, not catalog
+    models: /models lists only the base id and the variant runs the same model, so a variant
+    must resolve to whatever its base resolves to instead of a generic family default (#97820).
+    `:free`/`:batch` are real SKUs with their own windows and must NOT be stripped."""
+
+    _CATALOG = {
+        "x-ai/grok-4.6": {"context_length": 2_000_000},
+        "thinkingmachines/inkling": {"context_length": 1_000_000},
+        "thinkingmachines/inkling:free": {"context_length": 64_000},
+    }
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_variant_matches_base_but_real_sku_keeps_own_window(
+        self, mock_fetch, mock_models_dev, mock_cache, suffix
+    ):
+        mock_fetch.return_value = self._CATALOG
+        base_ctx = get_model_context_length("x-ai/grok-4.6", provider="openrouter")
+        variant_ctx = get_model_context_length(f"x-ai/grok-4.6:{suffix}", provider="openrouter")
+        assert variant_ctx == base_ctx == 2_000_000
+        assert variant_ctx != DEFAULT_CONTEXT_LENGTHS.get("grok")
+        assert get_model_context_length("thinkingmachines/inkling:free", provider="openrouter") == 64_000

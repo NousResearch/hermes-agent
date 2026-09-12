@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from gateway.config import Platform, _dict_slot, _normalize_choice
+from gateway.config import Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -72,7 +72,7 @@ _TOPLEVEL_BRIDGE: tuple = (
     ("stt", "stt", "presence", lambda v: isinstance(v, dict), None),
     *_presence("stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user"),
     ("multiplex_profiles", "multiplex_profiles", "gwdata", None, None),
-    *_presence("multiplex_profile_allowlist", "room_link_url"),
+    *_presence("room_link_url"),
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
     *_presence("max_concurrent_sessions"),
     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
@@ -125,8 +125,8 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     ``gateway.platforms.*`` → top-level ``platforms.*`` → ``gateway.<platform>`` subsections (nested
     first so top-level config keeps precedence, matching the gateway.streaming fallback). An
     ``enabled`` key in any block sets the ``_enabled_explicit`` marker consumed by the env pass.
-    Finally api_server's port/key/host/cors_origins/model_name are bridged into ``extra`` so
-    ``gateway.api_server.port: 8642`` reaches the adapter (mirrors the env path).
+    Top-level adapter keys (``gateway.api_server.port: 8642``) reach ``extra`` in
+    ``PlatformConfig.from_dict``.
     """
     platforms_data = _dict_slot(gw_data, "platforms")
 
@@ -150,13 +150,6 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     merge(nested_gateway.get("platforms"))
     merge(yaml_cfg.get("platforms"))
     merge({k: v for k, v in nested_gateway.items() if k != "platforms" and isinstance(v, dict) and _is_platform_name(k)})
-
-    api_plat = platforms_data.get("api_server")
-    if isinstance(api_plat, dict):
-        api_extra = _dict_slot(api_plat, "extra")
-        for key in ("port", "key", "host", "cors_origins", "model_name"):
-            if key in api_plat and key not in api_extra:
-                api_extra[key] = api_plat.pop(key)
     return platforms_data
 
 
@@ -212,17 +205,15 @@ _SHARED_KEYS: tuple = (
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 
-# Top-level port/host/secret bridged into ``extra`` for adapters that read them from config.extra
-# (PlatformConfig.from_dict only reads the ``extra:`` sub-key, so ``platforms.webhook.port`` would be lost).
-_PORT_BRIDGE_KEYS: dict = {
-    Platform.WEBHOOK: ("port", "host", "secret"),
-    Platform.MSGRAPH_WEBHOOK: ("port", "host", "secret"),
-    Platform.API_SERVER: ("port", "host"),
-}
-
-
-def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
+def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:
+    """Shared-key bridge; a ROOT-level ``<platform>:`` block (which ``merge_platform_sections``
+    never copies into ``platforms_data``) also gets its adapter keys promoted into ``extra``, with
+    the same typed-key exclusion and explicit-``extra`` precedence as ``PlatformConfig.from_dict``."""
     bridged: dict = {}
+    if root_block:
+        typed = PlatformConfig._TYPED_KEYS | {"channel_overrides"}
+        bridged.update({k: v for k, v in platform_cfg.items() if k not in typed})
+        bridged.update(_coerce_dict(platform_cfg.get("extra", {})))
     for key, only, transform in _SHARED_KEYS:
         if key not in platform_cfg or (only is not None and plat not in only):
             continue
@@ -230,9 +221,6 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
             bridged[key] = _dm_behavior_choice(platform_cfg[key], gw_data.get("unauthorized_dm_behavior", "pair"))
         else:
             bridged[key] = transform(platform_cfg[key]) if transform else platform_cfg[key]
-    for key in _PORT_BRIDGE_KEYS.get(plat, ()):
-        if key in platform_cfg and key not in platform_cfg.get("extra", {}):
-            bridged[key] = platform_cfg[key]
     return bridged
 
 
@@ -262,7 +250,7 @@ def bridge_platform_shared_keys(
         platform_cfg, cfg_toplevel = platform_section(yaml_cfg, plat.value, gateway_platforms)
         if not isinstance(platform_cfg, dict):
             continue
-        bridged = _bridged_keys(plat, platform_cfg, gw_data)
+        bridged = _bridged_keys(plat, platform_cfg, gw_data, root_block=cfg_toplevel)
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
             plat_data = _dict_slot(platforms_data, plat.value)

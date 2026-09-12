@@ -1400,3 +1400,29 @@ class TestReplyContextResolution:
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
 
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_sent_image_attaches_the_file(self, tmp_path):
+        """The bot sends an uncaptioned image (a cron job delivering a chart); the user quotes it
+        and asks "what is this?". Meta's ``context`` carries only the wamid, so the bytes must come
+        from the outbound index written at send time — otherwise the agent never sees the image."""
+        adapter = _make_adapter()
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG fake")
+        adapter._upload_media = AsyncMock(return_value=("MEDIA-ID", None))
+        adapter._post_messages = AsyncMock(return_value=([{"id": "wamid.BOT_IMG"}], None))
+        adapter._http_client = MagicMock()
+
+        sent = await adapter.send_image_file("15551234567", str(image))
+        assert sent.success and sent.message_id == "wamid.BOT_IMG"
+
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.REPLY", "type": "text",
+             "text": {"body": "what is this?"},
+             "context": {"id": "wamid.BOT_IMG", "from": "15550000000"}},
+            {"15551234567": "Alice"}, {"display_phone_number": "15550000000"},
+        )
+        assert event is not None
+        assert event.reply_to_is_own_message is True
+        assert event.media_urls == [str(image)]
+        assert event.media_types == ["image/png"]
+

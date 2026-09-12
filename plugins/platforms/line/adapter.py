@@ -383,13 +383,15 @@ _ENV_SEED_KEYS = (("LINE_HOST", "host"), ("LINE_PUBLIC_URL", "public_url"), ("LI
 
 class LineAdapter(BasePlatformAdapter):
     """LINE Messaging API gateway adapter (no message editing → REQUIRES_EDIT_FINALIZE stays False)."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("line"))
         extra = getattr(config, "extra", {}) or {}
 
         def env_or(env: str, key: str, default: Any = "") -> Any:
-            return os.getenv(env) or extra.get(key, default)
+            return _get_scoped_secret(env) or extra.get(key, default)
 
         def allowlist(env: str, key: str) -> Set[str]:
             # Scoped read: under multiplex os.environ is the DEFAULT profile's allowlist.
@@ -461,15 +463,14 @@ class LineAdapter(BasePlatformAdapter):
         self._app.router.add_get(f"{DEFAULT_MEDIA_PATH_PREFIX}/{{token}}/{{filename}}", self._handle_media)
         # Plugin-registered routes must be wired before AppRunner.setup() freezes the router.
         self._wire_plugin_handlers(self._app)
-        self._runner = web.AppRunner(self._app)
+        from gateway.platforms.shared_ingress import bind_listener
         try:
-            await self._runner.setup()
             # SO_REUSEADDR: on macOS/BSD two sockets with it can silently split traffic →
             # disable; on Linux it only allows rebinding past TIME_WAIT → keep default.
-            self._site = web.TCPSite(
-                self._runner, self.webhook_host, self.webhook_port,
+            # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/line/webhook.
+            self._runner = await bind_listener(
+                self, self._app, self.webhook_host, self.webhook_port, self.webhook_path,
                 reuse_address=False if sys.platform == "darwin" else None)
-            await self._site.start()
         except OSError as exc:
             return self._fail(
                 "bind_failed",
@@ -477,12 +478,13 @@ class LineAdapter(BasePlatformAdapter):
                 f"{self.webhook_port}: {exc}",
                 retryable=True)
         self._mark_connected()
-        logger.info(
-            "LINE: webhook listening on %s:%s%s%s",
-            self.webhook_host or "* (all interfaces, IPv4+IPv6)",
-            self.webhook_port,
-            self.webhook_path,
-            f" (public: {self.public_base_url})" if self.public_base_url else "")
+        if self._runner is not None:
+            logger.info(
+                "LINE: webhook listening on %s:%s%s%s",
+                self.webhook_host or "* (all interfaces, IPv4+IPv6)",
+                self.webhook_port,
+                self.webhook_path,
+                f" (public: {self.public_base_url})" if self.public_base_url else "")
         return True
 
     async def disconnect(self) -> None:
@@ -580,7 +582,8 @@ class LineAdapter(BasePlatformAdapter):
         if chat_type == "dm" and self._client:  # best-effort typing indicator (DM only)
             asyncio.create_task(self._client.loading(chat_id))
         source_obj = self.build_source(
-            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id)
+            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id,
+            message_id=message_id)
         await self.handle_message(MessageEvent(
             text=text, message_type=_LINE_MESSAGE_TYPES.get(msg_type, MessageType.TEXT), source=source_obj,
             raw_message=event, message_id=message_id, media_urls=media_urls, media_types=media_types))
@@ -765,6 +768,8 @@ class LineAdapter(BasePlatformAdapter):
     def _media_url(self, token: str, filename: str) -> str:
         if self.public_base_url:
             base = self.public_base_url
+        elif getattr(self, "_shared_ingress_base", None):
+            base = self._shared_ingress_base  # default listener's /p/<profile> prefix (multiplex secondary)
         else:
             # Wildcard/dual-stack binds have no fetchable hostname (the _missing_public_url
             # guard should have fired); fall back to localhost so the URL is well-formed.
@@ -777,7 +782,9 @@ class LineAdapter(BasePlatformAdapter):
 
     def _missing_public_url(self) -> bool:
         """True when no LINE_PUBLIC_URL is set and the bind host is wildcard/dual-stack ``None``."""
-        return not self.public_base_url and (self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS)
+        if self.public_base_url or getattr(self, "_shared_ingress_base", None):
+            return False
+        return self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS
 
     def _check_media_file(self, kind: str, file_path: str) -> Tuple[Optional[Path], Optional[SendResult]]:
         """Shared preflight for send_image_file/send_voice/send_video → ``(path, error)``."""
@@ -936,10 +943,10 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     if not _env_credentials_present():
         return None
     seeded: Dict[str, Any] = {}
-    if os.getenv("LINE_PORT"):
+    if _get_scoped_secret("LINE_PORT"):
         with contextlib.suppress(ValueError):
-            seeded["port"] = int(os.environ["LINE_PORT"])
-    seeded.update({key: os.environ[env] for env, key in _ENV_SEED_KEYS if os.getenv(env)})
+            seeded["port"] = int(_get_scoped_secret("LINE_PORT"))
+    seeded.update({key: _get_scoped_secret(env) for env, key in _ENV_SEED_KEYS if _get_scoped_secret(env)})
     return seeded
 
 

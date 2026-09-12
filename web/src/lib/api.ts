@@ -875,8 +875,10 @@ export const api = {
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
+  // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
+  // new credentials right away (no gateway restart needed).
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string }>(
+    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",
@@ -956,6 +958,10 @@ export const api = {
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  getGatewayMigratePlan: () =>
+    fetchJSON<GatewayMigratePlan>("/api/gateway/migrate/plan"),
+  migrateGatewayToMultiplex: () =>
+    fetchJSON<ActionResponse>("/api/gateway/migrate", { method: "POST" }),
   updateHermes: () =>
     fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
   checkHermesUpdate: (force = false) =>
@@ -1355,6 +1361,16 @@ export interface AuthMeResponse {
   expires_at: number;
 }
 
+/** Preflight for `hermes gateway migrate --multiplex` (mirrors the CLI plan JSON). */
+export interface GatewayMigratePlan {
+  already_multiplexed: boolean;
+  blockers: string[];
+  command: string;
+  eligible: boolean;
+  notices: string[];
+  profiles: { profile: string; pid: number | null; service: { kind: string; system: boolean } | null }[];
+}
+
 export interface ActionResponse {
   archive?: string;
   name: string;
@@ -1576,6 +1592,8 @@ export interface MessagingPlatform {
   error_message: string | null;
   updated_at: string | null;
   home_channel: { platform: string; chat_id: string; name: string; thread_id?: string } | null;
+  /** Multiplex secondary served on the default profile's shared listener: the vendor callback URL. */
+  ingress_url?: string | null;
   whatsapp_setup?: {
     mode?: string;
     allowed_users_set?: boolean;

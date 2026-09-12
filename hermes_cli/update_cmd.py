@@ -535,7 +535,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # The depth-1 fetch above leaves the previous tip behind as a ``.git/shallow`` graft
         # (git never removes old grafts); prune the stale ones so the file stops growing and
         # merge-base / the orphan-divergence heuristic keep working (#105951).
-        from hermes_cli.gitlock import prune_stale_shallow_grafts
+        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
+        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
+        if repaired:
+            print(f"  (restored {repaired} broken shallow boundary(ies))")
         pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
         if pruned:
             print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
@@ -585,9 +588,9 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
         print("✓ Already up to date.")
         return
     if behind is not None:
-        print(f"⚕ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
+        print(f"☤ Update available: {behind} {'commit' if behind == 1 else 'commits'} behind {compare_branch}.")
     else:
-        print(f"⚕ Update available (behind {compare_branch}).")
+        print(f"☤ Update available (behind {compare_branch}).")
     from hermes_cli.config import recommended_update_command
     print(f"  Run '{recommended_update_command()}' to install.")
 
@@ -1279,7 +1282,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
-    print("⚕ Updating Hermes Agent...")
+    print("☤ Updating Hermes Agent...")
     print()
 
     _pre_update_plan = _begin_update_receipt_and_plan(args)
@@ -1340,7 +1343,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  (removed %d aborted-fetch pack temp file(s))" % len(swept))
         # Shallow installer checkouts collect one `.git/shallow` graft per past depth-1 fetch
         # (#105951); stale grafts break merge-base and push this run into the divergence path.
-        from hermes_cli.gitlock import prune_stale_shallow_grafts
+        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
+        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
+        if repaired:
+            print(f"  (restored {repaired} broken shallow boundary(ies))")
         pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
         if pruned:
             print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")

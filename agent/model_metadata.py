@@ -24,7 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -105,8 +105,10 @@ def _strip_provider_prefix(model: str) -> str:
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
-_endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
-_endpoint_model_metadata_cache_time: Dict[str, float] = {}
+# In-memory memo keyed by (base_url, api-key fingerprint): per-key gateways return a per-key catalog, and
+# in a multiplexed process two profiles may share a URL with different keys. The disk memo stays per URL.
+_endpoint_model_metadata_cache: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
+_endpoint_model_metadata_cache_time: Dict[Tuple[str, str], float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 # Server-type verdicts (server_type, monotonic_ts): positive ones live an hour so a
 # server swap on the same port is re-detected; None gets the short TTL so a
@@ -474,6 +476,45 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
         if url_part in host:
             return provider
     return None
+
+
+def _strip_openrouter_routing_variant(
+    model: str, base_url: str = "", provider: str = ""
+) -> str:
+    """Strip an OpenRouter routing-variant suffix for catalog lookup.
+
+    ``:nitro`` / ``:floor`` / ``:exacto`` / ``:online`` are request-time
+    routing modifiers, NOT catalog entries — OpenRouter's ``/models`` lists
+    only the base id, and a variant shares the base model's context window.
+    Without this, every lookup below misses and the resolver falls through to
+    a generic family default (``x-ai/grok-4.6:nitro`` → the 131K ``grok``
+    catch-all instead of its real 2M window).
+
+    Only the id used for LOOKUP is rewritten. The suffixed id the caller holds
+    stays on the wire, so the routing opt-in is preserved — the same rule
+    :func:`hermes_cli.models.validate_requested_model` applies. Sharing the
+    base's cache key is intentional: the window is identical, so a variant and
+    its base must never disagree.
+
+    Narrow by design: only applied when the request actually routes through
+    OpenRouter, so a local ``model:tag`` that happens to end in one of these
+    words is untouched.
+    """
+    if not model:
+        return model
+    is_openrouter = (provider or "").strip().lower() == "openrouter" or (
+        bool(base_url) and _infer_provider_from_url(base_url) == "openrouter"
+    )
+    if not is_openrouter:
+        return model
+    base = openrouter_variant_base(model)
+    if base is None:
+        return model
+    logger.debug(
+        "Resolving context length for OpenRouter routing variant %r via base id %r",
+        model, base,
+    )
+    return base
 
 
 def _is_known_provider_base_url(base_url: str) -> bool:
@@ -901,9 +942,15 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _remember_endpoint_models(normalized: str, cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    _endpoint_model_metadata_cache[normalized] = cache
-    _endpoint_model_metadata_cache_time[normalized] = time.time()
+def _endpoint_memo_key(normalized: str, api_key: object) -> Tuple[str, str]:
+    from agent.credential_persistence import fingerprint_secret_value
+    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
+    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
+
+
+def _remember_endpoint_models(memo_key: Tuple[str, str], cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    _endpoint_model_metadata_cache[memo_key] = cache
+    _endpoint_model_metadata_cache_time[memo_key] = time.time()
     return cache
 
 
@@ -923,13 +970,14 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     _ensure_requests()
     local = is_local_endpoint(normalized)
+    memo_key = _endpoint_memo_key(normalized, api_key)
     if not force_refresh:
-        cached = _endpoint_model_metadata_cache.get(normalized)
-        if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(normalized, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
+        cached = _endpoint_model_metadata_cache.get(memo_key)
+        if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
         memo = _endpoint_disk_cache_get(normalized) if not local else None
         if memo is not None:
-            return _remember_endpoint_models(normalized, memo)
+            return _remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
     if _endpoint_blackholed(normalized):
         return {}
@@ -941,7 +989,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     if local:
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                return _remember_endpoint_models(normalized, _lmstudio_native_models(normalized, headers))
+                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -966,7 +1014,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
                 _endpoint_disk_cache_put(normalized, cache)
-            return _remember_endpoint_models(normalized, cache)
+            return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -975,7 +1023,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 response.close()
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    return _remember_endpoint_models(normalized, {})
+    return _remember_endpoint_models(memo_key, {})
 
 
 def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
@@ -1072,8 +1120,13 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
 
 
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
-    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any."""
+    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
+
+    A message about only an OUTPUT cap ("... model output limit of 16384") never says "context";
+    bail out so the generic "limit ... of N" pattern can't cache the output cap as the window."""
     error_lower = error_msg.lower()
+    if ("output limit" in error_lower or "output tokens" in error_lower or "output token" in error_lower) and "context" not in error_lower:
+        return None
     patterns = (
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
@@ -1115,6 +1168,8 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
+        # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
+        r'output limit (?:of|is)\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1158,6 +1213,7 @@ _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1172,6 +1228,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",),
 )
 
 
@@ -1897,6 +1954,14 @@ def get_model_context_length(
         logger.info("No model id provided for context length resolution — defaulting to %s tokens.", f"{DEFAULT_FALLBACK_CONTEXT:,}")
         return DEFAULT_FALLBACK_CONTEXT
     model = _strip_provider_prefix(model)  # "local:x" -> "x"; Ollama "model:tag" colons preserved
+    # OpenRouter routing variants (":nitro", ":floor", ...) are request-time
+    # modifiers, not catalog entries — resolve the window from the BASE id.
+    # Deliberately placed AFTER the explicit config overrides above (0b/0c) so
+    # a user who pinned the fully-suffixed id keeps winning, and BEFORE every
+    # cache/catalog lookup below so the base's real window is found instead of
+    # a generic family default. Mirrors the validation path's base/suffix split
+    # in hermes_cli.models.validate_requested_model.
+    model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.
     endpoint_context = _endpoint_scoped_context_length(model, base_url)

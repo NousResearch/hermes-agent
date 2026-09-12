@@ -423,10 +423,10 @@ class CLIStreamMixin:
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "⚕ Hermes")
+                label = _skin.get_branding("response_label", "☤ Hermes")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
-                label = "⚕ Hermes"
+                label = "☤ Hermes"
                 _text_hex = "#FFF8DC"
             try:  # true-color escape so streamed text matches the Rich Panel appearance
                 _r, _g, _b = (int(_text_hex[i:i + 2], 16) for i in (1, 3, 5))
@@ -519,6 +519,8 @@ class CLIStreamMixin:
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
+        # A batch cancelled/errored before any tool.started would otherwise mute the next turn's line.
+        self.__dict__.pop("_tool_gen_announced", None)
         self._stream_table_buf = []
         self._in_stream_table = False
         self._stream_box_live = False
@@ -621,12 +623,20 @@ class CLIStreamMixin:
 
     def _on_tool_gen_start(self, tool_name: str) -> None:
         """Model began generating tool-call arguments: close open boxes once, then print a status
-        line so a large payload (e.g. 45 KB write_file) doesn't look like a frozen screen."""
+        line so a large payload (e.g. 45 KB write_file) doesn't look like a frozen screen.
+
+        Fires once per tool CALL, so a batch of parallel calls to the same tool printed the same
+        line N times (#10478); repeats within one generation batch are coalesced. The set is
+        cleared when a tool actually starts (``tool.started``), i.e. on the next batch."""
         from cli import _cprint
-        if getattr(self, "_stream_box_opened", False):
+        if getattr(self, '_stream_box_opened', False):
             self._flush_stream()
             self._stream_box_opened = False
         self._close_reasoning_box()
+        announced = self.__dict__.setdefault("_tool_gen_announced", set())
+        if tool_name in announced:
+            return
+        announced.add(tool_name)
         from agent.display import get_tool_emoji
         _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {tool_name}…")
 
@@ -666,6 +676,7 @@ class CLIStreamMixin:
         # Feed the pet: tools mean "running"; a failed tool latches the turn to end on a sulk.
         if event_type == "tool.started":
             self._pet_reasoning = False
+            self.__dict__.pop("_tool_gen_announced", None)
         elif event_type == "tool.completed" and kwargs.get("is_error"):
             self._pet_turn_error = True
         elif event_type and event_type.startswith("reasoning"):

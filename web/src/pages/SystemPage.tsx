@@ -59,6 +59,7 @@ import type {
   CuratorStatus,
   PortalStatus,
   DebugShareResponse,
+  GatewayMigratePlan,
 } from "@/lib/api";
 
 function formatBytes(n: number): string {
@@ -207,6 +208,7 @@ export default function SystemPage() {
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
+  const [migratePlan, setMigratePlan] = useState<GatewayMigratePlan | null>(null);
 
   // Add-credential form.
   const [credProvider, setCredProvider] = useState("openrouter");
@@ -266,8 +268,9 @@ export default function SystemPage() {
       // Cached (non-forced) check so the version row shows update status on
       // load without a separate effect / a forced network round-trip.
       api.checkHermesUpdate(false),
+      api.getGatewayMigratePlan(),
     ])
-      .then(([s, st, m, p, c, h, cur, prt, upd]) => {
+      .then(([s, st, m, p, c, h, cur, prt, upd, mig]) => {
         if (s.status === "fulfilled") setStatus(s.value);
         if (st.status === "fulfilled") setStats(st.value);
         if (m.status === "fulfilled") setMemory(m.value);
@@ -277,6 +280,7 @@ export default function SystemPage() {
         if (cur.status === "fulfilled") setCurator(cur.value);
         if (prt.status === "fulfilled") setPortal(prt.value);
         if (upd.status === "fulfilled") setUpdateInfo(upd.value);
+        if (mig.status === "fulfilled") setMigratePlan(mig.value);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -302,6 +306,17 @@ export default function SystemPage() {
       setTimeout(loadAll, 3000);
     } catch (e) {
       showToast(`Gateway ${verb} failed: ${e}`, "error");
+    }
+  };
+
+  const migrateToMultiplex = async () => {
+    try {
+      await api.migrateGatewayToMultiplex();
+      setActiveAction("gateway-migrate");
+      showToast("Migrating to a single multiplexed gateway", "success");
+      setTimeout(loadAll, 5000);
+    } catch (e) {
+      showToast(`Gateway migration failed: ${e}`, "error");
     }
   };
 
@@ -1081,6 +1096,29 @@ export default function SystemPage() {
               </Button>
             </div>
           </CardContent>
+          {migratePlan && !migratePlan.already_multiplexed && migratePlan.profiles.length > 1 && (
+            migratePlan.eligible || migratePlan.blockers.length > 0
+          ) && (
+            <CardContent className="flex flex-col gap-2 border-t border-border py-4 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">
+                  Your profiles each run their own gateway. One multiplexed gateway serves every profile from a single process.
+                </span>
+                <Button
+                  size="sm"
+                  className="uppercase"
+                  onClick={migrateToMultiplex}
+                  disabled={!migratePlan.eligible}
+                  title={migratePlan.eligible ? undefined : "Fix the blockers below first"}
+                >
+                  Migrate to a single multiplexed gateway
+                </Button>
+              </div>
+              {migratePlan.blockers.map((b) => (
+                <div key={b} className="text-warning">• {b}</div>
+              ))}
+            </CardContent>
+          )}
         </Card>
       </section>
 

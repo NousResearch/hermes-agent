@@ -95,6 +95,40 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 # see `_log_redaction_status()` in gateway/run.py and cli.py.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
+# Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile
+# served under a HERMES_HOME override resolves its own ``security.redact_secrets`` (its ``.env``
+# value first, like the standalone bridge in hermes_cli/main.py), cached per home so the hot path
+# stays a dict lookup. Still not a live ``os.environ`` read, so a shell ``export`` cannot flip it.
+_REDACT_ENABLED_BY_HOME: dict = {}
+_REDACT_ENABLED_LOCK = threading.Lock()
+
+
+def _redact_enabled() -> bool:
+    """Effective redaction switch for the active profile (launch snapshot when no override)."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _REDACT_ENABLED
+    home_key = hermes_home_key()
+    cached = _REDACT_ENABLED_BY_HOME.get(home_key)
+    if cached is not None:
+        return cached
+    enabled = True
+    try:
+        from agent.secret_scope import current_secret_scope
+        scope = current_secret_scope()
+        raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
+        if raw is None:
+            from hermes_cli.config import load_config_readonly
+            cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
+            raw = None if cfg_val is None else str(cfg_val)
+        if raw is not None:
+            enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        enabled = True  # unreadable policy: keep the secure default
+    with _REDACT_ENABLED_LOCK:
+        _REDACT_ENABLED_BY_HOME[home_key] = enabled
+    return enabled
+
 # Known API key prefixes -- match the prefix + contiguous token chars.
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
@@ -125,7 +159,10 @@ _PREFIX_PATTERNS = [
     r"pypi-[A-Za-z0-9_-]{10,}",         # PyPI API token
     r"dop_v1_[A-Za-z0-9]{10,}",         # DigitalOcean PAT
     r"doo_v1_[A-Za-z0-9]{10,}",         # DigitalOcean OAuth
-    r"am_[A-Za-z0-9_-]{10,}",           # AgentMail API key
+    # AgentMail API key: ``am_`` / ``am_org_`` + an opaque alphanumeric body. The body has no ``_``/``-``,
+    # which is what separates it from ``am_example_identifier_123`` (#10983); public docs pin only the
+    # prefix, so the charset stays broad and the length floor does the discriminating.
+    r"am_(?:org_)?[A-Za-z0-9]{20,}",
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
@@ -645,7 +682,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         return text
     # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
     text = redact_registered_vault_values(text)
-    if not (force or _REDACT_ENABLED):
+    if not (force or _redact_enabled()):
         return text
     code_file = code_file or file_read
 

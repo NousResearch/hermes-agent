@@ -662,11 +662,16 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _hud_surface_note(session: dict) -> str:
-    """The HUD-mode note for this turn, or "" when it was not typed there."""
-    if session.get("client_surface") != "hud":
-        return ""
-    from agent.prompt_builder import hud_surface_note
-    return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+    """The per-surface note for this turn ("" for the plain app window): HUD → the read-the-window-below
+    prior; voice-live → the spoken-delegation contract (transcript in, speakable prose out)."""
+    surface = session.get("client_surface")
+    if surface == "hud":
+        from agent.prompt_builder import hud_surface_note
+        return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+    if surface == "voice-live":
+        from tools.voice_live import voice_live_turn_note
+        return voice_live_turn_note(session.get("voice_live_context") or "")
+    return ""
 
 
 def _prepend_note(run_message: Any, note: str) -> Any:

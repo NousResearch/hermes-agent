@@ -453,18 +453,15 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     sudo invocations the best signal is SUDO_USER: root is only doing the
     privileged install/start action; the profile store belongs to the user.
     """
-    if name == "default" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+    if name == "default":
         return None
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if not sudo_user or sudo_user == "root":
-        return None
-    try:
-        import pwd
+    from hermes_constants import sudo_invoker_default_home
 
-        candidate = Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes" / "profiles" / name
-        return str(candidate) if candidate.is_dir() else None
-    except Exception:
+    sudo_home = sudo_invoker_default_home()
+    if sudo_home is None:
         return None
+    candidate = sudo_home / "profiles" / name
+    return str(candidate) if candidate.is_dir() else None
 
 
 def _under_gateway_supervisor(argv: list) -> bool:

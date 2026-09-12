@@ -499,6 +499,79 @@ class TestSearchFilesFallbackHiddenPaths:
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
 
+class TestSearchFilesPartialTraversal:
+    """GNU find exits 1 when it cannot descend into SOME directory (EACCES)
+    even after printing every readable match. Those results must survive as
+    a partial success with a warning, not be discarded as a hard failure."""
+
+    def _make_env(self):
+        return LocalEnvironment("/")
+
+    def test_unreadable_sibling_keeps_printed_matches(self, tmp_path, monkeypatch):
+        root = tmp_path / "repro"
+        readable = root / "readable"
+        blocked = root / "blocked"
+        readable.mkdir(parents=True)
+        blocked.mkdir(parents=True)
+        probe = readable / "probe-target.txt"
+        probe.write_text("x")
+        os.chmod(blocked, 0)
+
+        try:
+            ops = ShellFileOperations(self._make_env())
+            monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+            result = ops._search_files("probe-target*", str(root), limit=50, offset=0)
+        finally:
+            os.chmod(blocked, 0o755)
+
+        assert result.error is None
+        assert result.files == [str(probe)]
+        assert result.total_count == 1
+        assert result.warning is not None
+        assert "could not be traversed" in result.warning
+
+    def test_exit_one_with_no_matches_still_fails_closed(self, tmp_path, monkeypatch):
+        """Exit 1 with an empty payload stays a hard error: without printed
+        matches there is no evidence the traversal produced anything usable."""
+        root = tmp_path / "repo"
+        root.mkdir()
+
+        env = MagicMock()
+        env.cwd = str(root)
+        env.execute.return_value = {"output": "", "returncode": 1}
+        ops = ShellFileOperations(env)
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+
+        result = ops._search_files("*.log", str(root), limit=50, offset=0)
+
+        assert result.error is not None
+        assert result.files == []
+
+    def test_modified_order_exit_one_stays_capability_error(
+        self, tmp_path, monkeypatch
+    ):
+        """order='modified' keeps its distinct capability error: the -printf
+        pipeline's exit 1 means something else than a partial traversal."""
+        root = tmp_path / "repo"
+        root.mkdir()
+
+        env = MagicMock()
+        env.cwd = str(root)
+        env.execute.return_value = {
+            "output": "1690000000.0000000000 /repo/a.log\n",
+            "returncode": 1,
+        }
+        ops = ShellFileOperations(env)
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+
+        result = ops._search_files(
+            "*.log", str(root), limit=50, offset=0, order="modified"
+        )
+
+        assert result.error is not None
+        assert "exact modification-time order" in result.error.lower()
+
+
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")

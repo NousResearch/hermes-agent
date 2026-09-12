@@ -78,7 +78,8 @@ def _requires_hermes_spec_valid(spec: str) -> bool:
     time), validation REJECTS clauses whose version segment doesn't parse —
     a typo'd spec should fail admission, not silently gate nothing.
     """
-    from hermes_cli.plugins import _VERSION_COMPARATOR_RE, _version_tuple
+    # The decomposition moved the spec helpers out of hermes_cli.plugins.
+    from hermes_cli.plugins_manifest import _VERSION_COMPARATOR_RE, _version_tuple
 
     for clause in spec.split(","):
         clause = clause.strip()

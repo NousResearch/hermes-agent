@@ -112,3 +112,29 @@ class TestCapabilityProbe:
         )
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
+
+
+class TestRequiresHermesSpec:
+    """A manifest that declares ``requires_hermes`` must still validate end to end.
+
+    The spec is checked by importing the version helpers; when that import goes
+    stale the whole command dies before any check runs, so a declared spec — valid
+    or typo'd — is the contract worth pinning here.
+    """
+
+    def test_valid_spec_passes_admission(self, tmp_path):
+        d = _make_plugin(tmp_path, manifest={**BASE_MANIFEST, "requires_hermes": ">=0.21.1"})
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        assert ("requires_hermes", True, "spec '>=0.21.1' parses") in report.checks
+
+    def test_typoed_clause_fails_admission(self, tmp_path):
+        d = _make_plugin(
+            tmp_path, manifest={**BASE_MANIFEST, "requires_hermes": ">=0.21.1,<0.x"}
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        assert any(
+            "requires_hermes" in f and "does not parse" in f for f in report.failures
+        ), report.failures
+

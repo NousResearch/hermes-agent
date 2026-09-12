@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
+from tools import mcp_tool_config as _config
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
 
@@ -177,7 +178,7 @@ class MCPServerRunMixin:
             if (config.get("transport") != "sse" and not config.get("skip_preflight")
                     and not self._ready.is_set() and self._auth_type != "oauth"):
                 await self._preflight_content_type(
-                    config["url"], headers=dict(config.get("headers") or {}),
+                    config["url"], headers=_config._resolve_headers_with_env(config),
                     ssl_verify=config.get("ssl_verify", True),
                     client_cert=_errors._resolve_client_cert(self.name, config))
         except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:

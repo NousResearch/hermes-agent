@@ -349,6 +349,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Recall: pending prefetch block + count, and the indicator state (recall_status()).
         self._prefetch_result, self._prefetch_count = "", 0
+        self._prefetch_failed = False
+        self._recall_failure_warned = False
+        self._session_generation = 0
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._last_recall_returned, self._last_recall_count = False, 0
@@ -878,27 +881,41 @@ class HindsightMemoryProvider(MemoryProvider):
         )
         return resp.text
 
-    def _do_recall(self, query: str) -> tuple[str, int]:
+    def _do_recall(self, query: str, *, generation: int | None = None) -> tuple[str, int, bool]:
         """One recall/reflect for *query* (background prefetch and ``recall_sync`` paths)
-        -> (text, memory count); the count is 0 for reflect (synthesis) and on error."""
+        -> (text, memory count, failed); an error is distinct from a healthy empty result."""
+        if generation is None:
+            with self._prefetch_lock:
+                generation = self._session_generation
         if self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
         try:
             if self._prefetch_method == "reflect":
                 logger.debug("Recall: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                return self._reflect(query) or "", 0
+                return self._reflect(query) or "", 0, False
             logger.debug("Recall: calling recall (bank=%s, query_len=%d, budget=%s)",
                          self._bank_id, len(query), self._budget)
             results = self._recall(query)
             logger.debug("Recall: returned %d results", len(results))
-            return "\n".join(f"- {r.text}" for r in results if r.text), len(results)
+            return "\n".join(f"- {r.text}" for r in results if r.text), len(results), False
         except Exception as e:
-            logger.debug("Hindsight recall failed: %s", e, exc_info=True)
-            return "", 0
+            logger.warning("Hindsight recall FAILED (%s); continuing without recalled context", type(e).__name__)
+            logger.debug("Hindsight recall failure details", exc_info=True)
+            with self._prefetch_lock:
+                if generation == self._session_generation and not self._recall_failure_warned:
+                    self._recall_failure_warned = True
+                    # A closed/redirected stdout must not break best-effort recall.
+                    with contextlib.suppress(Exception):
+                        print("  ⚠ Hindsight recall FAILED; continuing without recalled context. "
+                              "Check the Hindsight connection and logs.", flush=True)
+            return "", 0, True
 
-    def _finish_prefetch(self, result: str, count: int) -> str:
+    def _finish_prefetch(self, result: str, count: int, failed: bool = False) -> str:
         """Record indicator state (cleared on empty turns, never a stale count); format the block."""
         self._last_recall_returned, self._last_recall_count = bool(result), count if result else 0
+        if failed:
+            logger.warning("Prefetch: recall failed; no context injected")
+            return ""
         if not result:
             logger.debug("Prefetch: no results available")
             return ""
@@ -926,9 +943,9 @@ class HindsightMemoryProvider(MemoryProvider):
         # Default: the background worker's result for the previous turn (capped join).
         self._join_prefetch(3.0, log=True)
         with self._prefetch_lock:
-            result, count = self._prefetch_result, self._prefetch_count
-            self._prefetch_result, self._prefetch_count = "", 0
-        return self._finish_prefetch(result, count)
+            result, count, failed = self._prefetch_result, self._prefetch_count, self._prefetch_failed
+            self._prefetch_result, self._prefetch_count, self._prefetch_failed = "", 0, False
+        return self._finish_prefetch(result, count, failed)
 
     def recall_status(self) -> Optional[RecallStatus]:
         """Count injected by the last prefetch; None if nothing injected or ``recall_indicator=false``."""
@@ -941,15 +958,20 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_sync or self._recall_disabled():
             return
 
+        # Capture before the retain drain: a blocked old worker belongs to the
+        # session that queued it, not the one active when its recall begins.
+        with self._prefetch_lock:
+            generation = self._session_generation
+
         def _run():
             # Wait (bounded, off the reply path) for the just-completed turn's
             # retain to be recall-visible so the warmed context includes it.
             if self._prefetch_waits_for_retain:
                 self._wait_for_retains_drained(self._prefetch_retain_drain_timeout)
-            text, count = self._do_recall(query)
-            if text:
-                with self._prefetch_lock:
-                    self._prefetch_result, self._prefetch_count = text, count
+            text, count, failed = self._do_recall(query, generation=generation)
+            with self._prefetch_lock:
+                if generation == self._session_generation:
+                    self._prefetch_result, self._prefetch_count, self._prefetch_failed = text, count, failed
 
         self._prefetch_thread = _context_thread(_run, "hindsight-prefetch")
         self._prefetch_thread.start()
@@ -1166,7 +1188,12 @@ class HindsightMemoryProvider(MemoryProvider):
         # 2. Drain the old session's in-flight prefetch and drop its result.
         self._join_prefetch(3.0)
         with self._prefetch_lock:
-            self._prefetch_result = ""
+            # The capped join may leave old workers running. Invalidate both
+            # their result publication and their once-per-session warning.
+            self._session_generation += 1
+            self._prefetch_result, self._prefetch_count, self._prefetch_failed = "", 0, False
+            self._recall_failure_warned = False
+            self._last_recall_returned, self._last_recall_count = False, 0
 
         # 3. Rotate to the new session.
         if parent_session_id:

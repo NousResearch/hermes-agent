@@ -810,6 +810,153 @@ class TestPrefetchServerRetainVisibility:
 # ---------------------------------------------------------------------------
 
 
+class TestRecallFailureObservability:
+    @pytest.mark.parametrize("fails", [True, False])
+    @pytest.mark.parametrize("blocked_at", ["recall", "retain_drain"])
+    def test_late_worker_cannot_publish_into_new_session(
+        self, provider_with_config, monkeypatch, capsys, caplog, fails, blocked_at
+    ):
+        import logging
+        import threading
+
+        p = provider_with_config(auto_retain=False)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def block():
+            entered.set()
+            assert release.wait(timeout=10), "test did not release old worker"
+
+        async def old_recall(**kwargs):
+            if blocked_at == "recall":
+                block()
+            if fails:
+                raise RuntimeError("old session transport failed")
+            return SimpleNamespace(results=[SimpleNamespace(text="old memory")])
+
+        p._client.arecall.side_effect = old_recall
+        p._prefetch_waits_for_retain = blocked_at == "retain_drain"
+        monkeypatch.setattr(p, "_wait_for_retains_drained", lambda timeout: block())
+        caplog.set_level(logging.WARNING)
+        p.queue_prefetch("old session query")
+        worker = p._prefetch_thread
+        try:
+            assert entered.wait(timeout=5)
+            # Reproduce the capped join expiring without a real three-second wait.
+            with monkeypatch.context() as m:
+                m.setattr(worker, "join", lambda timeout: None)
+                p.on_session_switch("new-session")
+            assert worker.is_alive()
+        finally:
+            release.set()
+            worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert p._session_id == "new-session"
+        assert capsys.readouterr().out == ""
+        if fails:
+            assert "Hindsight recall FAILED" in caplog.text
+        caplog.clear()
+        assert p.prefetch("new session query") == ""
+        assert "Prefetch: recall failed" not in caplog.text
+        assert p.recall_status() is None
+
+        # A late failure must not spend the new session's stdout allowance.
+        p._prefetch_waits_for_retain = False
+        p._client.arecall.side_effect = RuntimeError("new session transport failed")
+        p.queue_prefetch("new session failure")
+        p._prefetch_thread.join(timeout=5)
+        assert not p._prefetch_thread.is_alive()
+        assert p.prefetch("new session failure") == ""
+        assert capsys.readouterr().out.count("Hindsight recall FAILED") == 1
+
+
+    def test_warning_resets_on_session_switch(self, provider_with_config, capsys):
+        p = provider_with_config(recall_sync=True, auto_retain=False)
+        p._client.arecall.side_effect = RuntimeError("broken transport")
+        p.prefetch("first session query")
+        assert capsys.readouterr().out.count("Hindsight recall FAILED") == 1
+        p.on_session_switch("next-session")
+        p.prefetch("next session query")
+        assert capsys.readouterr().out.count("Hindsight recall FAILED") == 1
+
+
+    @pytest.mark.parametrize("sync", [True, False])
+    @pytest.mark.parametrize("stdout_failure", ["closed", "broken_pipe"])
+    def test_stdout_failure_does_not_escape_recall(
+        self, provider_with_config, monkeypatch, caplog, sync, stdout_failure
+    ):
+        import io
+        import logging
+        import threading
+
+        p = provider_with_config(recall_sync=sync)
+        p._client.arecall.side_effect = RuntimeError("broken transport")
+        caplog.set_level(logging.DEBUG)
+        thread_errors = []
+        monkeypatch.setattr(threading, "excepthook", thread_errors.append)
+        stream = io.StringIO()
+        if stdout_failure == "closed":
+            stream.close()
+        else:
+            def broken_flush():
+                raise BrokenPipeError("stdout pipe closed")
+            monkeypatch.setattr(stream, "flush", broken_flush)
+
+        with monkeypatch.context() as m:
+            m.setattr(sys, "stdout", stream)
+            p.queue_prefetch("meaningful recall query")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5)
+                assert not p._prefetch_thread.is_alive()
+            assert not thread_errors
+            assert p.prefetch("meaningful recall query") == ""
+        assert "Hindsight recall FAILED" in caplog.text
+        assert "Prefetch: recall failed" in caplog.text
+        assert any(
+            r.levelno == logging.DEBUG and r.exc_info
+            and r.message == "Hindsight recall failure details"
+            for r in caplog.records
+        )
+        assert all(not r.exc_info for r in caplog.records if r.levelno >= logging.WARNING)
+
+
+    @pytest.mark.parametrize("sync", [True, False])
+    @pytest.mark.parametrize("method", ["recall", "reflect"])
+    def test_failure_visible_and_distinct_from_empty(
+        self, provider_with_config, caplog, capsys, sync, method
+    ):
+        import logging
+
+        p = provider_with_config(recall_sync=sync, recall_prefetch_method=method)
+        client_method = p._client.areflect if method == "reflect" else p._client.arecall
+        client_method.side_effect = RuntimeError("broken transport")
+        caplog.set_level(logging.WARNING)
+
+        for _ in range(2):
+            p.queue_prefetch("meaningful recall query")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5)
+            assert p.prefetch("meaningful recall query") == ""
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("Hindsight recall FAILED" in r.message for r in warnings)
+        assert any("Prefetch: recall failed" in r.message for r in warnings)
+        assert all(not r.exc_info for r in warnings)
+        assert capsys.readouterr().out.count("Hindsight recall FAILED") == 1
+
+        caplog.clear()
+        client_method.side_effect = None
+        client_method.return_value = SimpleNamespace(results=[], text="")
+        p.queue_prefetch("empty bank query")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=5)
+        assert p.prefetch("empty bank query") == ""
+        assert not caplog.records
+        assert capsys.readouterr().out == ""
+        assert p.recall_status() is None
+
+
+
 class TestRecallStatus:
     def test_none_before_any_prefetch(self, provider):
         # Nothing recalled yet → no indicator.

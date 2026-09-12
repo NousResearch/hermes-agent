@@ -1004,6 +1004,7 @@ Inspect and manage the shadow git store at `~/.hermes/checkpoints/` — the stor
 | `status` (default) | Show total size, project count, and per-project breakdown. Bare `hermes checkpoints` is equivalent. |
 | `list` | Alias for `status`. |
 | `prune` | Force a cleanup sweep — delete orphan and stale projects, GC the store, enforce the size cap. Ignores the 24h idempotency marker. |
+| `repair` | Remove refs that point at missing objects. They make every `git gc` fail ("does not point to a valid object!"), which stops the store ever shrinking back under its size cap. Lossless: only refs that resolve to nothing are touched, and a ref whose valid packed twin exists keeps that twin. |
 | `clear` | Delete the entire checkpoint base. Irreversible; asks for confirmation unless `-f`. |
 | `clear-legacy` | Delete only the `legacy-<timestamp>/` archives produced by the v1→v2 migration. |
 
@@ -1023,6 +1024,7 @@ Inspect and manage the shadow git store at `~/.hermes/checkpoints/` — the stor
 hermes checkpoints                                  # status overview
 hermes checkpoints prune --retention-days 3         # aggressive cleanup
 hermes checkpoints prune --max-size-mb 200          # tighten size cap once
+hermes checkpoints repair                           # unblock git gc after a dangling ref
 hermes checkpoints clear-legacy -f                  # drop v1 archive dirs
 hermes checkpoints clear -f                         # wipe everything
 ```

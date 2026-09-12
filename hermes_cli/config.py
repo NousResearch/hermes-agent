@@ -30,7 +30,7 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load
+from utils import atomic_replace, atomic_write_text, atomic_yaml_write, fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -3382,10 +3382,223 @@ def _exit_invalid(msg: str) -> None:
     sys.exit(1)
 
 
+def _yaml_line_indent(line: str) -> Optional[int]:
+    """Space-only indent of *line*, or ``None`` when a tab is present."""
+    indent = 0
+    for ch in line:
+        if ch == " ":
+            indent += 1
+        elif ch == "\t":
+            return None
+        else:
+            break
+    return indent
+
+
+def _yaml_is_dash_item(stripped: str) -> bool:
+    """True when *stripped* (indent already removed) is a block-style list item."""
+    if not stripped.startswith("-") or stripped.startswith("--"):
+        return False
+    return len(stripped) == 1 or stripped[1] in " \t#\n\r"
+
+
+def _yaml_line_is_key(stripped: str, key: Any) -> bool:
+    """True when *stripped* starts a mapping entry for *key* (plain or simple-quoted)."""
+    if not stripped or stripped.startswith("#"):
+        return False
+    forms = (f"{key}:", f'"{key}":', f"'{key}':")
+    head = stripped.split("\n", 1)[0].rstrip("\r")
+    for form in forms:
+        if head == form or head.startswith(form + " ") or head.startswith(form + "\t") or head.startswith(form + "#"):
+            return True
+    return False
+
+
+def _yaml_inline_value(line: str) -> str:
+    """Same-line value after ``key:`` with a trailing comment stripped; ``''`` means block form."""
+    if ":" not in line:
+        return ""
+    after = line.split(":", 1)[1]
+    if "#" in after:
+        after = after.split("#", 1)[0]
+    return after.strip()
+
+
+def _yaml_block_end(lines: List[str], start: int, key_indent: int, *, include_flush_dashes: bool) -> int:
+    """Exclusive end index of a mapping/list body starting at *start*."""
+    i = start
+    while i < len(lines):
+        raw = lines[i]
+        indent = _yaml_line_indent(raw)
+        if indent is None:
+            break
+        stripped = raw[indent:]
+        if not stripped.strip() or stripped.startswith("#"):
+            i += 1
+            continue
+        if indent > key_indent:
+            i += 1
+            continue
+        if include_flush_dashes and indent == key_indent and _yaml_is_dash_item(stripped):
+            i += 1
+            continue
+        break
+    return i
+
+
+def _yaml_find_key_line(lines: List[str], path: tuple, start: int, end: int, parent_indent: int) -> Optional[int]:
+    """Index of the unique direct-child *path[0]* key in ``lines[start:end]``, else ``None``."""
+    if not path:
+        return None
+    key, rest = path[0], path[1:]
+    child_indent: Optional[int] = None
+    matches: List[int] = []
+    i = start
+    while i < end:
+        raw = lines[i]
+        indent = _yaml_line_indent(raw)
+        if indent is None:
+            return None
+        stripped = raw[indent:]
+        if not stripped.strip() or stripped.startswith("#"):
+            i += 1
+            continue
+        if indent <= parent_indent:
+            i += 1
+            continue
+        if child_indent is None:
+            child_indent = indent
+        if indent != child_indent:
+            i += 1
+            continue
+        if _yaml_line_is_key(stripped, key):
+            matches.append(i)
+        i += 1
+    if len(matches) != 1:
+        return None
+    idx = matches[0]
+    if not rest:
+        return idx
+    this_indent = _yaml_line_indent(lines[idx])
+    if this_indent is None:
+        return None
+    body_end = _yaml_block_end(lines, idx + 1, this_indent, include_flush_dashes=True)
+    return _yaml_find_key_line(lines, rest, idx + 1, body_end, this_indent)
+
+
+def _extract_block_style_list(text: str, path: tuple) -> Optional[Tuple[str, int, int]]:
+    """``(block, start, end)`` for a block-style list at *path*, or ``None`` if unsafe."""
+    lines = text.splitlines(keepends=True)
+    idx = _yaml_find_key_line(lines, path, 0, len(lines), -1)
+    if idx is None:
+        return None
+    key_indent = _yaml_line_indent(lines[idx])
+    if key_indent is None or _yaml_inline_value(lines[idx]):
+        return None
+    body_end = _yaml_block_end(lines, idx + 1, key_indent, include_flush_dashes=True)
+    body = lines[idx + 1:body_end]
+    while body and not body[-1].strip():
+        body.pop()
+        body_end -= 1
+    if not any(
+        _yaml_is_dash_item(line[_yaml_line_indent(line) or 0:])
+        for line in body
+        if line.strip() and _yaml_line_indent(line) is not None and not line.lstrip().startswith("#")
+    ):
+        return None
+    block_lines = [lines[idx]] + body
+    start = sum(len(line) for line in lines[:idx])
+    end = start + sum(len(line) for line in block_lines)
+    return "".join(block_lines), start, end
+
+
+def _iter_mapping_list_paths(data: Any, prefix: tuple = ()) -> List[Tuple[tuple, list]]:
+    """List-valued keys nested only through mappings (not through list items)."""
+    found: List[Tuple[tuple, list]] = []
+    if not isinstance(data, dict):
+        return found
+    for key, value in data.items():
+        path = prefix + (key,)
+        if isinstance(value, list):
+            found.append((path, value))
+        elif isinstance(value, dict):
+            found.extend(_iter_mapping_list_paths(value, path))
+    return found
+
+
+def _value_at_path(data: Any, path: tuple) -> Any:
+    current = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return _MISSING
+        current = current[key]
+    return current
+
+
+def _restore_unchanged_yaml_list_blocks(original_text: str, new_text: str) -> str:
+    """Splice original block-style list YAML back when the parsed list value is unchanged.
+
+    Used only by ``_write_user_config`` so an unrelated scalar ``config set`` does not
+    reindent flush-left lists that IndentDumper would otherwise canonicalize (#107511).
+    Lists whose parsed value changed (the mutated key is the list, or a path inside it)
+    are left in the writer's canonical 2-indent form (#31999). Flow-style / unreadable
+    blocks are skipped.
+    """
+    try:
+        old_data = yaml.safe_load(original_text)
+        new_data = yaml.safe_load(new_text)
+    except yaml.YAMLError:
+        return new_text
+    if not isinstance(old_data, dict) or not isinstance(new_data, dict):
+        return new_text
+
+    result = new_text
+    for path, old_list in _iter_mapping_list_paths(old_data):
+        new_list = _value_at_path(new_data, path)
+        if new_list is _MISSING or new_list != old_list:
+            continue
+        old_block = _extract_block_style_list(original_text, path)
+        new_block = _extract_block_style_list(result, path)
+        if old_block is None or new_block is None:
+            continue
+        old_src, _, _ = old_block
+        new_src, start, end = new_block
+        if old_src == new_src:
+            continue
+        candidate = result[:start] + old_src + result[end:]
+        try:
+            if yaml.safe_load(candidate) != new_data:
+                continue
+        except yaml.YAMLError:
+            continue
+        result = candidate
+    return result
+
+
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
+    original_text = ""
+    if config_path.exists():
+        try:
+            original_text = config_path.read_text(encoding="utf-8")
+        except OSError:
+            original_text = ""
     atomic_yaml_write(config_path, user_config, sort_keys=False)
+    if not original_text:
+        return
+    try:
+        new_text = config_path.read_text(encoding="utf-8")
+        restored = _restore_unchanged_yaml_list_blocks(original_text, new_text)
+        if restored != new_text:
+            atomic_write_text(
+                config_path,
+                restored,
+                preserve_mode=True,
+                tmp_prefix=f".{config_path.stem}_",
+            )
+    except Exception:
+        logger.debug("unrelated YAML list restore skipped", exc_info=True)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

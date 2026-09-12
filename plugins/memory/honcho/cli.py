@@ -984,7 +984,8 @@ def _seen_gateway_accounts(db_path: Path) -> list[dict]:
                 )).fetchall()
             except sqlite3.OperationalError:
                 rows = [r + (None,) for r in conn.execute(query.format(profiles_col="")).fetchall()]
-    except sqlite3.Error:
+    except sqlite3.Error as e:
+        print(f"  (state.db unreadable: {e}; the accounts list is unavailable)", file=sys.stderr)
         return []
 
     accounts = []
@@ -1092,14 +1093,13 @@ def _api_peer_detail(client, peer_id: str) -> str:
 
 def _classify_workspace_peers(
     peer_ids: list[str], cfg: dict, accounts: list[dict],
-    aliases: dict, prefix: str,
+    aliases: dict, prefix: str, profile_rows: list[tuple[str, str, dict]],
 ) -> dict[str, str]:
     """Label workspace peers from local config; 'unrecognized' when honest."""
     labels: dict[str, str] = {}
     active_host = _host_key()
     root_peer = cfg.get("peerName") or ""
 
-    profile_rows = _all_profile_host_configs()
     hermes_hosts = {hostk for _, hostk, _ in profile_rows}
     for name, hostk, block in profile_rows:
         pn = block.get("peerName") or root_peer
@@ -1137,10 +1137,10 @@ def _classify_workspace_peers(
     }
 
 
-def _sibling_resolutions(cfg: dict, acct: dict) -> dict[str, str]:
+def _sibling_resolutions(cfg: dict, acct: dict, profile_rows: list[tuple[str, str, dict]]) -> dict[str, str]:
     """Resolved peer per profile for one account (profile name → peer)."""
     out = {}
-    for name, _hostk, block in _all_profile_host_configs():
+    for name, _hostk, block in profile_rows:
         pin, aliases, prefix, _, _ = _resolve_effective_identity_mapping(cfg, block)
         out[name] = _resolution_base(_preview_peer_resolution(
             acct["user_id"], pin=pin, aliases=aliases, prefix=prefix,
@@ -1152,7 +1152,7 @@ def _sibling_resolutions(cfg: dict, acct: dict) -> dict[str, str]:
 
 def _render_peers_map_view(
     workspace: str, ws_peers: list[str] | None, labels: dict,
-    accounts: list[dict], cfg: dict, *,
+    accounts: list[dict], cfg: dict, profile_rows: list[tuple[str, str, dict]], *,
     pin: bool, working: dict, prefix: str, peer_name: str,
 ) -> None:
     if ws_peers is None:
@@ -1188,7 +1188,7 @@ def _render_peers_map_view(
         mine = _resolution_base(resolved)
         marker = "" if ws_peers is None else (" ✓" if mine in known else " ○ new")
         diverging = {
-            n: v for n, v in _sibling_resolutions(cfg, acct).items()
+            n: v for n, v in _sibling_resolutions(cfg, acct, profile_rows).items()
             if n != active_profile and v != mine
         }
         div = "  ≠ " + ", ".join(f"{n}→{v}" for n, v in sorted(diverging.items())) if diverging else ""
@@ -1299,10 +1299,12 @@ def cmd_peers_map(args) -> None:
         or hermes_host.get("workspace") or cfg.get("workspace") or host
     )
     ws_peers = _api_workspace_peers(client)
+    # list_profiles() parses every profile's config.yaml; one scan serves every row and re-render.
+    profile_rows = _all_profile_host_configs()
 
     def show() -> dict[str, str]:
-        labels = _classify_workspace_peers(ws_peers or [], cfg, accounts, working, prefix)
-        _render_peers_map_view(workspace, ws_peers, labels, accounts, cfg,
+        labels = _classify_workspace_peers(ws_peers or [], cfg, accounts, working, prefix, profile_rows)
+        _render_peers_map_view(workspace, ws_peers, labels, accounts, cfg, profile_rows,
                                pin=pin, working=working, prefix=prefix, peer_name=peer_name)
         return labels
 

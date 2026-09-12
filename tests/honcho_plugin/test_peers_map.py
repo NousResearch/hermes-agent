@@ -284,15 +284,15 @@ class TestSaveScope:
 
 def test_classify_workspace_peers_labels_from_local_config(monkeypatch):
     monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-    monkeypatch.setattr(honcho_cli, "_all_profile_host_configs", lambda: [
+    rows = [
         ("default", "hermes", {"peerName": "eri", "aiPeer": "hermetika"}),
         ("dreamer", "hermes.dreamer", {"aiPeer": "dreamer-ai"}),
-    ])
+    ]
     cfg = {"peerName": "eri", "hosts": {"claude_code": {"aiPeer": "clawd"}}}
     accounts = [{"platform": "telegram", "user_id": "7654321", "user_id_alt": ""}]
     labels = honcho_cli._classify_workspace_peers(
         ["eri", "hermetika", "dreamer-ai", "clawd", "7654321", "tg_7654321", "friend", "user-default-root", "meow"],
-        cfg, accounts, {"999": "friend"}, "tg_",
+        cfg, accounts, {"999": "friend"}, "tg_", rows,
     )
     assert labels == {
         "eri": "your peer (peerName)",

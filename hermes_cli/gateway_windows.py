@@ -340,6 +340,16 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     (#54220/#56747; the previous console-less pythonw.exe gateway forced exactly that per-descendant flash).
     No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
     ``_resolve_detached_python``).
+
+    Pre-launch guard (issue #103597): before ``sh.Run``, check this profile's own ``gateway.pid``
+    and verify that PID is still a live gateway process via a single-row WMI query. A stale PID
+    file, an unreadable WMI row, or any inspection error falls through to the normal spawn
+    (fail-open): the guard only suppresses the spawn when it positively identifies a live
+    gateway for THIS profile. The in-Python single-instance guard stays authoritative for the
+    residual race (two launchers firing the same millisecond); this VBS check only removes the
+    common autostart-duplicate (logon firing while a gateway is already stable). Both autostart
+    paths funnel through this script (Scheduled Task runs it directly; the Startup shim chains
+    to it), so one site covers the class.
     """
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
@@ -363,6 +373,33 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
+        # Pre-launch guard (issue #103597): skip the spawn when this profile's gateway is
+        # already alive. Fail-open by design — any inspection error resumes into sh.Run.
+        "On Error Resume Next",
+        "Dim fsoG, pidFileG, pidTextG, reG, matchesG, pidG, wmiG, procsG, procG, cmdG, skipLaunchG",
+        "skipLaunchG = False",
+        'Set fsoG = CreateObject("Scripting.FileSystemObject")',
+        'pidFileG = env.Item("HERMES_HOME") & "\\gateway.pid"',
+        "If fsoG.FileExists(pidFileG) Then",
+        "  pidTextG = fsoG.OpenTextFile(pidFileG, 1).ReadAll()",
+        "  Set reG = New RegExp",
+        '  reG.Pattern = """pid""\\s*:\\s*(\\d+)"',
+        "  reG.IgnoreCase = True",
+        "  Set matchesG = reG.Execute(pidTextG)",
+        "  If matchesG.Count > 0 Then",
+        "    pidG = CLng(matchesG(0).SubMatches(0))",
+        "    If pidG > 0 Then",
+        '      Set wmiG = GetObject("winmgmts:\\\\.\\root\\cimv2")',
+        '      Set procsG = wmiG.ExecQuery("SELECT CommandLine FROM Win32_Process WHERE ProcessId = " & pidG)',
+        "      For Each procG In procsG",
+        '        cmdG = LCase(procG.CommandLine & "")',
+        '        If InStr(cmdG, "gateway run") > 0 Or InStr(cmdG, "gateway restart") > 0 Then skipLaunchG = True',
+        "      Next",
+        "    End If",
+        "  End If",
+        "End If",
+        "On Error Goto 0",
+        "If skipLaunchG Then WScript.Quit 0",
         # Window style 0 = hidden; bWaitOnReturn False = detached/async.
         f"sh.Run {q(command_line)}, 0, False",
     ]

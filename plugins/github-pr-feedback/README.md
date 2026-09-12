@@ -467,7 +467,12 @@ An enabled post-merge hook uses a dedicated clean deployment worktree. It
 proves the configured protected runtime is absent, fast-forwards the configured
 base branch, runs a fixed package argv, verifies the bundle identity, relaunches
 only that bundle, and repeats the runtime census. Merge and deployment receipts
-are separate, so a rebuild failure never rewrites merge truth.
+are separate, so a rebuild failure never rewrites merge truth. The package
+command must emit a JSON object containing the full 40-character `source_sha`
+of the source used to build the bundle. Failed deployment receipts remain
+durable and can be retried explicitly with `hermes github-pr-feedback
+retry-deployment --repository OWNER/REPO --pr-number N`; routine merge scans do
+not relaunch protected runtimes implicitly.
 
 In `auto_dispatch` mode, the worker must independently validate the finding,
 re-read the canonical PR immediately before any GitHub write, and require that

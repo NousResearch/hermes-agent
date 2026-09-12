@@ -121,13 +121,15 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
     re.IGNORECASE,
 )
 # Inline credential assignments commonly arrive embedded in JSON/stringified
-# provider payloads, where a line-start anchor is unavailable. Keep this
-# deliberately narrow: only credential keywords are accepted, and the value
-# must be non-empty and end at a payload delimiter.
+# provider payloads, where a line-start anchor is unavailable. Require a
+# structural delimiter before the key so prose, dotted technical settings,
+# relative URLs, and form bodies remain available to their dedicated passes.
 _INLINE_SECRET_ASSIGN_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:token|secret|password|passwd|credential|auth|api[_-]?key)"
-    r"\s*=\s*(?!<redacted(?:-[^>]+)?>)(?:'[^']*'|\"[^\"]*\"|[^\s,;]+)",
-    re.IGNORECASE,
+    r"(^|[{[(,;:]\s*|\s+(?=(?:token|auth|key)\s*=)|[\"'])"
+    r"(token|secret|password|passwd|credential|auth|api[_-]?key)"
+    r"(\s*=\s*)(?!<redacted(?:-[^>]+)?>)"
+    r"((?:'[^']*'|\"[^\"]*\"|os\.(?:getenv|environ)\([^)]*\)|process\.env(?:\.[A-Za-z_]\w*|\[[^]]+\])|\$ENV\{[^}]+\}|[^\s,;&\"')\]}]+))",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # Lowercase / dotted config-file keys (``spring.datasource.password=x``,
@@ -210,7 +212,7 @@ _KEY_KEYWORD_RE = re.compile(
 # are gated on value shape (_looks_like_opaque_credential).
 _STRONG_KEY_KEYWORD_RE = re.compile(
     r"(?:api|auth|access|refresh|session|id|bearer)[ _.\\-]?(?:key|token)"
-    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|auth|bearer",
+    r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|bearer|auth",
     re.IGNORECASE,
 )
 
@@ -270,6 +272,8 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     # Same programmatic-env-lookup exception as _redact_env above (issue #2852): api_key: os.getenv('X') is
     # a code snippet, not a leaked secret value.
     if _ENV_LOOKUP_VALUE_RE.match(value):
+        return False
+    if key.casefold() == "auth" and value.casefold() == "none":
         return False
     if check_keyword and not _key_has_secret_keyword(key):
         return False
@@ -524,7 +528,13 @@ def _redact_assignments(text: str) -> str:
             # params; the lowercase one would (issue #77484).
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
             text = _INLINE_SECRET_ASSIGN_RE.sub(
-                lambda match: match.group(0).split("=", 1)[0] + "=***",
+                lambda match: (
+                    match.group(0)
+                    if not _should_redact_assignment(
+                        match.group(2), match.group(4), check_keyword=True
+                    )
+                    else f"{match.group(1)}{match.group(2)}{match.group(3)}***"
+                ),
                 text,
             )
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks

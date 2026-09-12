@@ -31,6 +31,7 @@ from github_pr_feedback.merge_controller import (
     CIReceiptComment,
     MergeController,
     MergeSnapshot,
+    _codex_clean_head,
     _codex_reviewed_head,
     _is_ci_receipt_comment_for_head,
     ci_receipt_comment_from_feedback,
@@ -934,3 +935,28 @@ def test_worker_ci_comment_is_admitted_only_for_exact_bot_identity() -> None:
     assert _is_ci_receipt_comment_for_head(
         bot_comment, expected_login="worker-bot", head_sha=HEAD_SHA
     )
+
+
+def test_codex_clean_head_true_when_review_completed_and_no_findings() -> None:
+    feedback = (_codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA[:7])),)
+
+    assert _codex_clean_head(feedback, HEAD_SHA) is True
+
+
+def test_codex_clean_head_false_when_actionable_finding_present() -> None:
+    """A completed review + actionable finding comment is not a clean head."""
+
+    finding = _codex_feedback(
+        "You should rename this variable.", login="chatgpt-codex-connector[bot]"
+    )
+    feedback = (
+        _codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA[:7])),
+        finding,
+    )
+
+    assert _codex_reviewed_head(feedback, HEAD_SHA) is True   # reviewed
+    assert _codex_clean_head(feedback, HEAD_SHA) is False      # but not clean
+
+
+def test_codex_clean_head_false_when_not_reviewed() -> None:
+    assert _codex_clean_head((), HEAD_SHA) is False

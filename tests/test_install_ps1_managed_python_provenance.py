@@ -99,7 +99,7 @@ def test_venv_stage_rejects_third_party_python_and_uses_managed_path(
     hermes_home = tmp_path / "hermes-home"
     install_dir = tmp_path / "install"
     managed_root = install_dir / ".hermes-runtime" / "python"
-    managed_python = managed_root / "cpython-3.11" / "python.exe"
+    managed_python = managed_root / "cpython-3.13.6" / "python.exe"
     third_party = tmp_path / "KiCad" / "bin" / "python.exe"
     log = tmp_path / "uv.log"
     uv = hermes_home / "bin" / "uv.exe"
@@ -130,7 +130,7 @@ def test_venv_stage_rejects_third_party_python_and_uses_managed_path(
     assert frames[-1]["ok"] is True
     commands = log.read_text(encoding="utf-8").splitlines()
     assert any(
-        command.startswith("python find 3.11") and "--managed-python" in command
+        command.startswith("python find 3.13.6") and "--managed-python" in command
         for command in commands
     )
     venv_command = next(command for command in commands if command.startswith("venv venv"))
@@ -189,7 +189,7 @@ def test_python_find_drains_large_stderr_without_deadlock(tmp_path: Path) -> Non
     hermes_home = tmp_path / "hermes-home"
     install_dir = tmp_path / "install"
     managed_python = (
-        install_dir / ".hermes-runtime" / "python" / "cpython-3.11" / "python.exe"
+        install_dir / ".hermes-runtime" / "python" / "cpython-3.13.6" / "python.exe"
     )
     uv = hermes_home / "bin" / "uv.exe"
     uv.parent.mkdir(parents=True)
@@ -206,7 +206,7 @@ def test_python_find_drains_large_stderr_without_deadlock(tmp_path: Path) -> Non
     run = _run_venv_stage(powershell, tmp_path, hermes_home, install_dir, env)
 
     assert run.returncode == 0, run.stdout + run.stderr
-    assert "Creating virtual environment with Python 3.11" in run.stdout
+    assert "Creating virtual environment with Python 3.13.6" in run.stdout
 
 
 def test_python_find_timeout_kills_uv_and_fails_stage(tmp_path: Path) -> None:
@@ -229,7 +229,7 @@ def test_python_find_timeout_kills_uv_and_fails_stage(tmp_path: Path) -> None:
     run = _run_venv_stage(powershell, tmp_path, hermes_home, install_dir, env)
 
     assert run.returncode != 0
-    assert "uv python find 3.11 timed out after 30000 ms" in (run.stdout + run.stderr)
+    assert "uv python find 3.13.6 timed out after 30000 ms" in (run.stdout + run.stderr)
 
 
 def test_venv_failure_fails_stage_and_restores_existing_environment(
@@ -242,7 +242,7 @@ def test_venv_failure_fails_stage_and_restores_existing_environment(
     hermes_home = tmp_path / "hermes-home"
     install_dir = tmp_path / "install"
     managed_python = (
-        install_dir / ".hermes-runtime" / "python" / "cpython-3.11" / "python.exe"
+        install_dir / ".hermes-runtime" / "python" / "cpython-3.13.6" / "python.exe"
     )
     old_python = install_dir / "venv" / "Scripts" / "python.exe"
     uv = hermes_home / "bin" / "uv.exe"

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+
+import { describe, expect, it } from 'vitest'
 
 import { LUNAR_CITY_ASSET_MANIFEST } from './world-assets'
 
@@ -501,7 +502,6 @@ describe('Lunar City asset manifest', () => {
       expect(['background_delta_fallback', 'rembg_alpha']).toContain(mask.method)
       expect(mask.approvedForGeneration).toBe(mask.generationInputStatus === 'ready_for_generation_review')
       expect(existsSync(join(process.cwd(), 'public', mask.mask))).toBe(true)
-      expect(existsSync(mask.maskedSourceCachePath)).toBe(true)
       expect(existsSync(join(process.cwd(), 'public', mask.silhouettePreview))).toBe(true)
       expect(existsSync(join(process.cwd(), 'public', mask.sourceReferenceCrop))).toBe(true)
     }

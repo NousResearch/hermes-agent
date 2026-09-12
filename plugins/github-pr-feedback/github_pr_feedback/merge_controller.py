@@ -233,7 +233,14 @@ _CODEX_REVIEW_ROW = re.compile(
 
 
 def _codex_reviewed_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
-    short_head = head_sha[:7].casefold()
+    """Return True if Codex has posted a completed review for this exact head.
+
+    This predicate is used only for the ``codex_review_pending`` merge gate.
+    It intentionally ignores whether Codex left actionable findings — the
+    ``feedback_clear`` gate handles that separately.
+    Use ``_codex_clean_head`` when you need both completion *and* no findings.
+    """
+    full_head = head_sha.casefold()
     for item in feedback:
         if (
             item.reviewer.login.casefold() != _CODEX_REVIEW_LOGIN
@@ -242,11 +249,29 @@ def _codex_reviewed_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
             continue
         for match in _CODEX_REVIEW_ROW.finditer(item.body):
             if (
-                match.group("sha").casefold() == short_head
+                full_head.startswith(match.group("sha").casefold())
                 and "completed" in match.group("status").casefold()
             ):
                 return True
     return False
+
+
+def _codex_clean_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
+    """Return True only when Codex completed a review *and* left no actionable findings.
+
+    Used for queue-ordering priority: a PR where Codex posted an actionable
+    comment is not eligible for the clean-head fast lane even if the summary
+    row shows "completed".  The canonical ``feedback_clear`` gate remains the
+    authority for merge eligibility; this predicate only affects queue order.
+    """
+    if not _codex_reviewed_head(feedback, head_sha):
+        return False
+    # Any non-summary comment from the Codex bot is an actionable finding.
+    return not any(
+        item.reviewer.login.casefold() == _CODEX_REVIEW_LOGIN
+        and _CODEX_REVIEW_MARKER not in item.body
+        for item in feedback
+    )
 
 
 def _is_governed_approval_receipt(

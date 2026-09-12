@@ -88,7 +88,7 @@ describe('PixelEggSprite scheduling', () => {
       getImageData: vi.fn(() => ({ data: new Uint8ClampedArray(32 * 32 * 4) })),
       imageSmoothingEnabled: false,
       putImageData: vi.fn()
-    } as unknown as CanvasRenderingContext2D)
+    } as never)
   })
 
   afterEach(() => {

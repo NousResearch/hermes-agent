@@ -88,6 +88,7 @@ _jobs_lock_state = threading.local()
 _fire_fence_locks: Dict[str, threading.RLock] = {}
 _fire_fence_locks_guard = threading.Lock()
 _fire_fence_lock_state = threading.local()
+_process_held_fences = set()
 
 # Upper bound on waiting for the cross-process .jobs.lock. Every cron function funnels through
 # _jobs_lock(), so blocking forever on a wedged sibling process would freeze the ticker and every
@@ -330,9 +331,15 @@ def _fire_job_lock(job_id: str):
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
 
         held_locks[lock_key] = acquired
+        if acquired:
+            with _fire_fence_locks_guard:
+                _process_held_fences.add(lock_key)
         try:
             yield acquired
         finally:
+            if acquired:
+                with _fire_fence_locks_guard:
+                    _process_held_fences.discard(lock_key)
             held_locks.pop(lock_key, None)
             if lock_fd is not None:
                 if acquired:
@@ -2603,6 +2610,14 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
+
+    cron_dir = _current_cron_store().cron_dir
+    lock_key = f"{cron_dir.resolve()}::{job_id}"
+    with _fire_fence_locks_guard:
+        process_holds = lock_key in _process_held_fences
+
+    if process_holds:
+        return _with_job(job_id, apply, False)
 
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 

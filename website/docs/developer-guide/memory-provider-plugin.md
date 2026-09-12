@@ -412,3 +412,20 @@ plugins/memory/my-provider/
 ## Single Provider Rule
 
 Only **one** external memory provider can be active at a time. If a user tries to register a second, the MemoryManager rejects it with a warning. This prevents tool schema bloat and conflicting backends.
+
+## Choosing between an MCP server and a memory provider
+
+A memory-oriented MCP server and a memory provider can talk to the same product, but they are different Hermes surfaces. Providers are selected with `memory.provider` and run inside the MemoryManager lifecycle. MCP servers are listed under `mcp_servers` and are tools only — recall happens only when the model decides to call a tool.
+
+| | Memory provider (`memory.provider`) | MCP server (`mcp_servers`) |
+|---|---|---|
+| Recall trigger | `prefetch()` injects recalled context before each API call | Tools only; recall only when the model calls a tool |
+| Turn persistence | `sync_turn()` persists the turn without a tool call | No provider persist hook — a write happens only if the model calls a tool |
+| Pre-compression | `on_pre_compress()` can checkpoint before a lossy rewrite | No pre-compression hook |
+| Built-in memory mirroring | `on_memory_write()` can mirror MEMORY.md / USER.md writes | No built-in memory mirroring |
+| Tool loading | Provider `get_tool_schemas()` / `handle_tool_call()` when the provider is active | MCP client discovery of the server's tools |
+| Consumers | MemoryManager — one active external provider | Any session that loads the server via `mcp_servers` |
+
+Pointing both surfaces at the same backend is not forbidden, but can duplicate recall and writes and costs extra tokens and API calls. Prompt-discipline ("search memory first") is not a substitute for the provider lifecycle.
+
+A provider must reach its backend through its own API (HTTP / stdio / CLI), not through the Hermes MCP session — the host owns MCP connections.

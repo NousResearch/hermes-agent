@@ -50,7 +50,12 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
             # right profile (#54937).
             t = threading.Thread(
                 name=thread_name, target=_worker, daemon=True,
-                args=(weakref.ref(self, weakref_cb), self._work_queue, self._initializer, self._initargs),
+                args=(
+                    weakref.ref(self, weakref_cb),
+                    self._work_queue,
+                    getattr(self, "_initializer", None),
+                    getattr(self, "_initargs", ()),
+                ),
             )
             t.start()
             self._threads.add(t)

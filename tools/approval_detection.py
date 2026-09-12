@@ -290,7 +290,9 @@ DANGEROUS_PATTERNS = [
     # xxd uses -r for decode, not -d.
     (r'\bxxd\s+-r\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe xxd-decoded content to shell (possible command obfuscation)"),
     # `echo 'eq -pe v/' | tr 'eqv' 'rmf' | bash` decodes to `rm -rf /`.
-    (r'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
+    # Bounded to separator-free segments: a pipeline gap cannot contain ;/& or newline, so
+    # [^|] → [^|;&\n] keeps coverage while eliminating O(n²) on separator-rich input.  #108451
+    (r'\becho\b[^|;&\n]*\|\s*\btr\b[^|;&\n]*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
     (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),

@@ -510,7 +510,7 @@ def test_resolve_runtime_provider_auto_uses_custom_config_base_url(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="auto")
 
-    assert resolved["provider"] == "openrouter"
+    assert resolved["provider"] == "custom"
     assert resolved["base_url"] == "https://custom.example/v1"
 
 

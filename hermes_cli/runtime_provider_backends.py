@@ -152,8 +152,12 @@ def _resolve_openrouter_runtime(
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "")
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
     cfg_api_mode = rp._parse_api_mode(model_cfg.get("api_mode"))
-    # Explicit "custom" stays "custom" rather than relabeling to "openrouter".
-    if requested_norm != "custom":
+    # Explicit "custom" stays "custom". auto/unset + a non-OpenRouter URL must also stay custom:
+    # relabeling those as openrouter makes the CLI demand OPENROUTER_API_KEY for local servers.
+    treat_as_custom = requested_norm == "custom" or (
+        not is_openrouter_context and requested_norm in {"", "auto"}
+    )
+    if not treat_as_custom:
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                            api_key, source=source)
     if base_url:

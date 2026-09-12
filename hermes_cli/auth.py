@@ -34,7 +34,8 @@ from hermes_cli.config import (
     get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+from utils import (  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+    atomic_replace, atomic_yaml_write, base_url_host_matches, env_float, is_truthy_value)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -1441,7 +1442,8 @@ def resolve_provider(
     """Determine which inference provider to use.
 
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
-    "openrouter"; 2. config.yaml ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
+    "openrouter" (or "custom" when ``explicit_base_url`` is a non-OpenRouter host); 2. config.yaml
+    ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
     "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
     7. Nous free tier when it is on and its identity exists (never created here);
     8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
@@ -1464,7 +1466,10 @@ def resolve_provider(
                 "or run 'hermes doctor' to diagnose config issues.")
         raise AuthError(f"Unknown provider '{normalized}'." + tail, code="invalid_provider")
 
-    if explicit_api_key or explicit_base_url:  # one-off CLI creds always mean openrouter/custom
+    if explicit_api_key or explicit_base_url:  # one-off CLI creds: OpenRouter, unless the URL is not
+        # openrouter.ai (local/custom OpenAI-compatible servers must not inherit the OpenRouter gate).
+        if explicit_base_url and not base_url_host_matches(str(explicit_base_url), "openrouter.ai"):
+            return "custom"
         return "openrouter"
 
     _model_cfg, cfg_provider = _config_model_provider()

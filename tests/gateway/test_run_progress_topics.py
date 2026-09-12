@@ -1059,6 +1059,49 @@ async def _run_with_agent(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_inner_passes_normalized_route_to_subagent_status_factory(
+    monkeypatch, tmp_path
+):
+    import gateway.run as gateway_run
+
+    captured = []
+
+    def prepare(self, **kwargs):
+        captured.append(kwargs)
+        return None
+
+    class QuietAgent:
+        def __init__(self, **kwargs):
+            self.tools = []
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            return {"final_response": "done", "messages": [], "api_calls": 1}
+
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner, "_prepare_subagent_status_owner", prepare
+    )
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QuietAgent,
+        session_id="sess-subagent-status-wiring",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {"long_running_notifications": "generic"}
+                }
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert len(captured) == 1
+    assert captured[0]["adapter"] is adapter
+    assert captured[0]["surface_mode"] == "generic"
+    assert captured[0]["route_metadata"]["thread_id"] == "17585"
+
+
+@pytest.mark.asyncio
 async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id(
     monkeypatch, tmp_path
 ):

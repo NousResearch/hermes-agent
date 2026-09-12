@@ -93,3 +93,7 @@ class TurnContext:
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None
+
+    # Privacy-empty detached status owner for this one gateway turn. Bound only
+    # around AIAgent.run_conversation and sealed as the worker returns.
+    subagent_status_owner: Any = None

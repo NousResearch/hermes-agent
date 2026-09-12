@@ -395,3 +395,39 @@ def test_a_routed_profile_script_receives_its_own_profile_env(hermes_env, monkey
     assert ok, output
     assert output.strip() == "routed|routed-only"
     assert os.environ["CUSTOM_CRON_VALUE"] == "launch"  # the parent process was not mutated
+
+
+def test_a_routed_profile_script_never_receives_a_launch_profile_only_value(hermes_env, monkeypatch):
+    """Negative control for the overlay above (#107695 review): a name the LAUNCH profile's .env
+    defines and the routed scope does not must reach the routed child UNSET — not with the launch
+    value. The secret scrub only knows classified names, so a custom or unclassified secret would
+    otherwise cross the profile boundary; the launch profile's dotenv residue is dropped first."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    (launch / ".env").write_text("LAUNCH_ONLY_VALUE=launch-only\nCUSTOM_CRON_VALUE=launch\n", encoding="utf-8")
+    monkeypatch.setenv("LAUNCH_ONLY_VALUE", "launch-only")
+    monkeypatch.setenv("CUSTOM_CRON_VALUE", "launch")
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    # Under the routed home override the runner resolves scripts against THAT profile's scripts dir.
+    script = routed / "scripts" / "probe_launch_only.sh"
+    script.write_text('#!/bin/bash\necho "${CUSTOM_CRON_VALUE}|${LAUNCH_ONLY_VALUE:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope({"CUSTOM_CRON_VALUE": "routed"})
+    try:
+        ok, output = _run_job_script("probe_launch_only.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "routed|<unset>"
+    assert os.environ["LAUNCH_ONLY_VALUE"] == "launch-only"  # the parent process was not mutated

@@ -1197,11 +1197,16 @@ def _apply_display_config(agent, _agent_cfg, platform):
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
+    # agent_context feeds the provider skip-writes contract (MemoryProvider.initialize:
+    # "primary" | "subagent" | "cron" | "flush"). The scheduler passes platform="cron" and
+    # delegate_task children platform="subagent", so deriving from platform keeps the
+    # contract live; anything else (cli, gateway platforms, batch, empty) is primary.
+    _platform = platform or "cli"
     kwargs = {
         "session_id": agent.session_id,
-        "platform": platform or "cli",
+        "platform": _platform,
         "hermes_home": str(get_hermes_home()),
-        "agent_context": "primary",
+        "agent_context": _platform if _platform in ("cron", "subagent", "flush") else "primary",
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning

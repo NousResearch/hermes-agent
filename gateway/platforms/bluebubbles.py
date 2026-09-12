@@ -228,12 +228,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # — keep it out of aiohttp access logs.
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
-        await site.start()
+        try:
+            site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
+            await site.start()
+            logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
+                        self.webhook_path)
+            await self._register_webhook()  # the server only sends events to webhooks registered via its API
+        except OSError as exc:
+            # Another process (e.g. the running gateway) already holds the
+            # webhook port. Sending does not need the webhook server, so
+            # degrade to send-only mode instead of failing the whole connect —
+            # this is the normal case for cron-delivery standalone fallbacks.
+            logger.warning("[bluebubbles] webhook bind failed on %s:%s (%s); running in send-only mode",
+                           self.webhook_host, self.webhook_port, exc)
+            await self._runner.cleanup()
+            self._runner = None
         self._mark_connected()
-        logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
-                    self.webhook_path)
-        await self._register_webhook()  # the server only sends events to webhooks registered via its API
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True

@@ -74,6 +74,28 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
     assert build_kanban_stop_nudge(messages=messages) is None
 
 
+@pytest.mark.parametrize("tool_name", ["kanban_request_review", "kanban_request_changes"])
+def test_no_nudge_after_review_transition(clear_kanban_env, tool_name):
+    """Review transitions end the current run even though the task remains open."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_review")
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "review-1",
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "name": tool_name, "tool_call_id": "review-1", "content": "ok"},
+    ]
+    assert session_called_kanban_terminal(messages) is True
+    assert build_kanban_stop_nudge(messages=messages) is None
+
+
 
 
 

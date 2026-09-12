@@ -1123,6 +1123,37 @@ class HindsightMemoryProvider(MemoryProvider):
 
     # -- session lifecycle -------------------------------------------------------
 
+    def _enqueue_shutdown_retain(self) -> None:
+        """Queue the partial final batch after MemoryManager has drained sync work."""
+        batch_size = getattr(self, "_retain_every_n_turns", 0)
+        if (
+            not self._session_turns
+            or (batch_size > 0 and self._turn_counter % batch_size == 0)
+            or self._shutting_down.is_set()
+        ):
+            return
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        turns_snapshot = list(self._session_turns)
+        if update_mode == "append":
+            turns_snapshot = turns_snapshot[self._last_retained_turn_count:]
+        if not turns_snapshot:
+            return
+        job = self._make_turn_retain_job(
+            turns_snapshot,
+            document_id=document_id,
+            update_mode=update_mode,
+            label="flush-on-shutdown",
+            track_ops=False,
+        )
+
+        def _flush() -> None:
+            try:
+                job()
+            except Exception as exc:
+                logger.warning("Hindsight flush-on-shutdown failed: %s", exc, exc_info=True)
+
+        self._enqueue_retain(_flush)
+
     def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "",
                           reset: bool = False, **kwargs) -> None:
         """Rotate per-session state (/resume, /branch, /reset, /new, compression) so
@@ -1193,8 +1224,11 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client.close()
 
     def shutdown(self) -> None:
-        logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
-        # Stop accepting retain jobs first so late sync_turn() calls are dropped.
+        logger.debug("Hindsight shutdown: flushing buffered turns + waiting for background threads")
+        # MemoryManager drains its sync worker before provider shutdown, so every
+        # accepted turn is now visible here. Queue the partial final batch before
+        # closing admission; the writer drains it before the sentinel.
+        self._enqueue_shutdown_retain()
         self._shutting_down.set()
         # The writer finishes in-flight work then exits on the sentinel; the
         # bounded join keeps shutdown predictable even if the daemon is wedged.

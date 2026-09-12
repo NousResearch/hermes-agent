@@ -7,7 +7,7 @@ other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 
 import os
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import Any, Iterator
 
 # "Never set here" (falls back to os.environ for CLI/cron) vs "" = explicitly cleared (no fallback).
@@ -144,16 +144,39 @@ def set_session_vars(
     return tokens
 
 
+def _restore_or_baseline(var: ContextVar, token: Any, baseline: Any) -> None:
+    """``var.reset(token)`` when this ``set_session_vars`` call was NESTED inside an
+    already-admitted outer scope (``token.old_value`` is the outer value, restored exactly —
+    an outer turn's identity must survive an inner set/clear pair, e.g. bot-capability sync or
+    ``_persist_live_session_system_prompt`` re-deriving context mid-turn).  Otherwise — this was
+    the first bind in this task/context (``token.old_value is Token.MISSING``), OR the var was
+    only ever explicitly reset to the raw ``_UNSET`` sentinel before this call (e.g.
+    ``reset_session_vars()`` at a fresh task's top, or a test fixture's teardown) — explicitly
+    set *baseline*, matching the pre-existing top-level "cleared" contract.  Both cases mean
+    "nothing was genuinely admitted here before"; only a real bound value counts as an outer
+    scope worth restoring."""
+    old = token.old_value
+    if old is Token.MISSING or old is _UNSET:
+        var.set(baseline)
+    else:
+        var.reset(token)
+
+
 def clear_session_vars(tokens: list) -> None:
-    """Mark session context variables as explicitly cleared (``""``, not ``_UNSET``), so
-    ``get_session_env`` returns empty instead of stale ``os.environ`` values.  Async-delivery
-    goes back to ``_UNSET``: a cleared context is default-supported, not opted-out.  Wake
-    capability goes back to ``_UNSET`` too — but for the opposite reason: a cleared context has
+    """Unwind a ``set_session_vars`` call via its tokens.  A NESTED call (this task already had
+    an outer session bound — ``token.old_value`` is not ``Token.MISSING``) restores the outer
+    values exactly via ``var.reset(token)``, so an inner set/clear pair never disturbs a
+    still-active outer admission.  A top-level call (nothing bound before it in this task)
+    explicitly clears to ``""`` (not ``_UNSET``) so ``get_session_env`` returns empty instead of
+    falling back to a stale ``os.environ`` value.  Async-delivery's top-level baseline is
+    ``_UNSET``: a cleared context is default-supported, not opted-out.  Wake capability's
+    top-level baseline is ``_UNSET`` too — but for the opposite reason: a cleared context has
     declared nothing, and an undeclared capability FAILS CLOSED (#98619)."""
-    for var in _SESSION_VARS:
-        var.set("")
-    _SESSION_ASYNC_DELIVERY.set(_UNSET)
-    _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    for var, token in zip(_SESSION_VARS, tokens):
+        _restore_or_baseline(var, token, "")
+    for var, token in zip(
+            (_SESSION_ASYNC_DELIVERY, _SESSION_HISTORY_DELIVERY), tokens[len(_SESSION_VARS):]):
+        _restore_or_baseline(var, token, _UNSET)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -168,6 +191,20 @@ def reset_session_vars() -> None:
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _runtime_cwd("clear_session_cwd")
+
+
+def bound_identity_for_session(session_key: str) -> tuple[str, str, str] | None:
+    """If THIS task already has a session bound for ``session_key`` (a NESTED
+    ``set_session_vars`` call within an already-admitted turn, not a fresh admission), return
+    its ``(user_id, browser_control_principal, browser_control_transport_family)`` so the
+    caller can keep the admitting principal immutable for the rest of the turn instead of
+    re-deriving it from a live transport that may have been reattached to a different
+    principal in the meantime.  ``None`` means this is a fresh admission — no session bound yet
+    in this task, or it's for a DIFFERENT session_key — and the caller should derive fresh from
+    the current transport."""
+    if _SESSION_KEY.get() is _UNSET or _SESSION_KEY.get() != session_key:
+        return None
+    return (_SESSION_USER_ID.get(), _BROWSER_CONTROL_PRINCIPAL.get(), _BROWSER_CONTROL_TRANSPORT_FAMILY.get())
 
 
 def get_session_env(name: str, default: str = "") -> str:

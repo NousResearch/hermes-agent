@@ -351,3 +351,25 @@ class TestRunJobTerminalCwd:
 
         assert success is True
         assert observed["script_workdir"] == str(workdir)
+
+
+def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch, tmp_path):
+    """Callers that skip the wake-gate (no cached ``prerun_script``) run the script inline from
+    ``_build_job_prompt``; that path must honour the job's workdir too."""
+    from cron import scheduler_prompt, scheduler_script
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    observed: dict = {}
+
+    def run_script(script_path, workdir=None, cancel_event=None):
+        observed["script_workdir"] = workdir
+        return True, "collected data"
+
+    monkeypatch.setattr(scheduler_script, "_run_job_script", run_script)
+    prompt = scheduler_prompt._build_job_prompt(
+        {"id": "inline", "name": "inline", "prompt": "Review.", "script": "collect.py",
+         "workdir": str(workdir)})
+
+    assert observed["script_workdir"] == str(workdir)
+    assert "collected data" in prompt

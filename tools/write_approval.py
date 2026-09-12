@@ -249,12 +249,33 @@ def _find_skill_path(name: str) -> Optional[Path]:
     return found["path"] if found else None
 
 
+def _batch_pending_diff(payload: Dict[str, Any], fallback_name: str) -> str:
+    """A gated ``operations[]`` batch stages as one pending write; render each op in
+    order (per-op gist header + the same create-content/diff body as a solo op)."""
+    ops = payload.get("operations")
+    if not isinstance(ops, list) or not ops:
+        return f"(batch on '{fallback_name}')" if fallback_name else "(empty batch)"
+    blocks = []
+    for i, op in enumerate(ops, 1):
+        op = op if isinstance(op, dict) else {}
+        header = skill_gist(op.get("action", ""), op.get("name", "") or fallback_name,
+                            content=op.get("content") or "",
+                            file_path=op.get("file_path") or "",
+                            old_string=op.get("old_string") or "",
+                            new_string=op.get("new_string") or "")
+        body = skill_pending_diff({"payload": op}) or "(empty)"
+        blocks.append(f"## op {i}/{len(ops)}: {header}\n\n{body}")
+    return "\n\n".join(blocks)
+
+
 def skill_pending_diff(record: Dict[str, Any]) -> str:
     """Full content (create) or unified diff vs. the on-disk skill (edit/patch/write_file),
     rendered by /skills diff <id> on surfaces that can show it."""
     payload = record.get("payload", {})
     action = payload.get("action", "")
     name = payload.get("name", "")
+    if action == "batch":
+        return _batch_pending_diff(payload, name)
     if action == "create":
         return payload.get("content") or ""
     if action not in {"edit", "patch", "write_file"}:

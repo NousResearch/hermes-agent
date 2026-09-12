@@ -720,6 +720,19 @@ class TestInstallUvInternals:
         if sys.platform != "win32":
             assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
 
+    def test_windows_installer_is_profile_free_noninteractive_and_bounded(self, monkeypatch):
+        import hermes_cli.managed_uv as managed_uv
+
+        run = SimpleNamespace(returncode=0)
+        monkeypatch.setattr(managed_uv.subprocess, "run", MagicMock(return_value=run))
+
+        managed_uv._install_uv_windows({"UV_INSTALL_DIR": "C:/managed"})
+
+        argv = managed_uv.subprocess.run.call_args.args[0]
+        assert argv[:3] == ["powershell", "-NoProfile", "-NonInteractive"]
+        assert argv[-2:] == ["-Command", "irm https://astral.sh/uv/install.ps1 | iex"]
+        assert managed_uv.subprocess.run.call_args.kwargs["timeout"] == 300
+
 
 class TestRuntimeRequestMinorLine:
     """The repair must request the CPython minor line, not the exact patch.

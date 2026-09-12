@@ -97,7 +97,13 @@ def test_find_agent_browser_lazy_install_cycle_terminates(monkeypatch):
 
 
 @pytest.mark.windows_only
-def test_ensure_dependency_uses_powershell_on_windows(tmp_path):
+@pytest.mark.parametrize(
+    ("interactive", "expected_prefix"),
+    [(False, ["-NoProfile", "-NonInteractive"]), (True, ["-NoProfile"])],
+)
+def test_ensure_dependency_uses_powershell_on_windows(
+    tmp_path, interactive, expected_prefix
+):
     """``windows_only``: the assertion is that we shell out to a real
     PowerShell. Faking ``_IS_WINDOWS`` on Linux also required faking
     ``shutil.which`` into inventing a powershell.exe that isn't there."""
@@ -114,9 +120,11 @@ def test_ensure_dependency_uses_powershell_on_windows(tmp_path):
         mock_shutil.which.side_effect = lambda name: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" if name == "powershell" else None
         mock_stdin.isatty.return_value = False
         mock_run.return_value = type("R", (), {"returncode": 0})()
-        ensure_dependency("node", interactive=False)
+        ensure_dependency("node", interactive=interactive)
         cmd = mock_run.call_args[0][0]
         assert "powershell" in cmd[0].lower()
+        assert cmd[1:1 + len(expected_prefix)] == expected_prefix
+        assert ("-NonInteractive" in cmd) is (not interactive)
         assert "-Ensure" in cmd
         assert cmd[cmd.index("-Ensure") + 1] == "node"
         assert "-HermesHome" in cmd

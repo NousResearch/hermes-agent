@@ -103,7 +103,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     proxy_cfg = _setup_write_config(console, args, mappings, *ca)
     if proxy_cfg is None:
         return 1
-    _setup_restart_daemon(console, args, proxy_cfg)
+    _setup_restart_daemon(console, args)
     console.print()
     console.print("[green]✓ iron-proxy is configured.[/green]  Sandboxes will route outbound traffic through it.")
     console.print(
@@ -289,7 +289,7 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
     return proxy_cfg
 
 
-def _setup_restart_daemon(console: Console, args: argparse.Namespace, proxy_cfg: dict) -> None:
+def _setup_restart_daemon(console: Console, args: argparse.Namespace) -> None:
     """Stop a running daemon and decide whether to (re)start it with the new config.
 
     --restart → always (re)start; --no-restart → never (print the manual hint); neither + tty →
@@ -312,18 +312,9 @@ def _setup_restart_daemon(console: Console, args: argparse.Namespace, proxy_cfg:
     else:
         do_restart = False
     if do_restart:
-        try:
-            new_status = ip.start_proxy(install_if_missing=bool(proxy_cfg.get("auto_install", True)))
-        except Exception as exc:  # noqa: BLE001 — user-facing funnel
-            console.print(f"  [yellow]⚠ could not start iron-proxy with the new config: {exc}[/yellow]")
+        # Setup restarts need the same credential refresh and refusal policy as explicit starts.
+        if cmd_start(args) != 0:
             console.print("  Run [cyan]hermes egress start[/cyan] manually before launching new Docker sandboxes.")
-        else:
-            listening = "listening" if new_status.listening else "not yet listening"
-            verb = "restarted" if was_running else "started"
-            console.print(
-                f"  [green]✓[/green] {verb} iron-proxy with the new config "
-                f"(pid={new_status.pid}, port={new_status.tunnel_port}, {listening})"
-            )
     elif was_running:
         console.print(
             "  [yellow]⚠ stopped the running iron-proxy; config or tokens "

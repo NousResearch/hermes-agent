@@ -467,6 +467,43 @@ class TestBackendCdpResolution:
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://browser.example/cdp/abc"
 
+    def test_managed_nous_selection_exports_gateway_cdp(self, monkeypatch):
+        """Regression for #93865. The picker writes ``browser.cloud_provider: nous`` and STRIPS the
+        legacy ``use_gateway`` flag, so a managed pick must be recognised by the selection alone: the
+        gateway provisions the browser server-side and its CDP URL has to reach the harness. Reading
+        only ``use_gateway`` made this fall through to the direct-Browser-Use branch, which exports
+        nothing and leaves the harness to reach BU cloud with a credential it does not have."""
+        class _BrowserUseProvider:
+            name = "browser-use"
+
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BrowserUseProvider())
+        monkeypatch.setattr("hermes_cli.config.read_raw_config",
+                            lambda: {"browser": {"cloud_provider": "nous"}})
+        monkeypatch.setattr(bt_session, "_get_session_info",
+                            lambda task_id: {"cdp_url": "wss://gateway.example/cdp/xyz"})
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/xyz"
+
+    def test_direct_browser_use_selection_still_autospawns(self, monkeypatch):
+        """The other side of the #93865 branch must not regress: a DIRECT Browser Use pick
+        (own API key, no managed selection) reaches BU cloud natively, so Hermes must NOT
+        provision a second, redundant session for it."""
+        class _BrowserUseProvider:
+            name = "browser-use"
+
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BrowserUseProvider())
+        monkeypatch.setattr("hermes_cli.config.read_raw_config",
+                            lambda: {"browser": {"cloud_provider": "browser-use"}})
+        monkeypatch.setattr(bt_session, "_get_session_info",
+                            lambda task_id: pytest.fail("direct BU config must not create a session"))
+        env = self._env()
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
+        assert env[bu_cli._PRIVATE_BROWSER_SENTINEL] == "1"
+
     def test_no_provider_drives_packaged_chromium_not_user_chrome(self, monkeypatch, _fake_managed_chromium):
         """Local mode must hand the harness the agent-browser-launched Chromium (same browser the built-in
         tools use) — never leave BU_CDP_* unset, which makes the harness hunt for the user's installed

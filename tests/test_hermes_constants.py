@@ -156,6 +156,36 @@ class TestGetProcessHermesHome:
 
 
 class TestHermesManagedNode:
+    def test_managed_node_dirs_move_to_front_in_iterator_order(
+        self, tmp_path, monkeypatch
+    ):
+        first_managed = tmp_path / "first-managed"
+        second_managed = tmp_path / "second-managed"
+        first_managed.mkdir()
+        second_managed.mkdir()
+        monkeypatch.setattr(
+            hermes_constants,
+            "iter_hermes_node_dirs",
+            lambda: [first_managed, second_managed],
+        )
+        original = [
+            "system-a",
+            str(second_managed),
+            "system-b",
+            str(first_managed),
+            "system-a",
+        ]
+
+        result = with_hermes_node_path({"PATH": os.pathsep.join(original)})
+
+        assert result["PATH"].split(os.pathsep) == [
+            str(first_managed),
+            str(second_managed),
+            "system-a",
+            "system-b",
+            "system-a",
+        ]
+
     @pytest.mark.windows_only
     def test_windows_node_dir_prefers_portable_root(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"

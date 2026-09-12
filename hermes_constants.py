@@ -730,9 +730,10 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     """Return *env* with Hermes-managed Node directories prepended to PATH."""
     merged = dict(os.environ if env is None else env)
     parts = [p for p in merged.get("PATH", "").split(os.pathsep) if p]
-    for entry in reversed([str(path) for path in iter_hermes_node_dirs() if path.is_dir()]):
-        if entry not in parts:
-            parts.insert(0, entry)
+    managed = [str(path) for path in iter_hermes_node_dirs() if path.is_dir()]
+    parts = [entry for entry in parts if entry not in managed]
+    for entry in reversed(managed):
+        parts.insert(0, entry)
     merged["PATH"] = os.pathsep.join(parts)
     return merged
 

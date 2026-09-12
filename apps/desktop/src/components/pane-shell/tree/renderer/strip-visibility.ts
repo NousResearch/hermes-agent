@@ -19,6 +19,8 @@ import { paneChrome } from './track-model'
 export interface StripPane {
   /** A tool panel (terminal / logs) that collapses rather than closes. */
   collapsePane: boolean
+  /** Standing chrome tab (sessions / Bots) that hides instead of closing. */
+  hideOnly?: boolean
   /** Contribution placement — `'main'` marks a docked tile (session, page,
    *  preview) as opposed to standing side chrome. */
   placement?: string
@@ -27,6 +29,8 @@ export interface StripPane {
 }
 
 export interface StripZone {
+  /** All panes in the zone, including chrome-hidden ones. */
+  all?: readonly StripPane[]
   /** The ACTIVE pane declines to be tabbed (a full-page view). */
   headerVeto?: boolean
   /** The zone's standing choice; undefined = auto. */
@@ -67,6 +71,18 @@ function stranded(shown: readonly StripPane[]): boolean {
   return only.collapsePane || (!only.uncloseable && only.placement === 'main')
 }
 
+/** Sessions and Bot Mode are not interchangeable content tabs; together they
+ *  are the sidebar's mode switcher. If that hide-only chrome pair is in the
+ *  zone, the strip is the only visible affordance for switching modes and for
+ *  right-clicking the Show/Hide rows that recover a hidden sibling. A saved
+ *  `never` choice must not turn that switcher into an invisible preference. */
+function hideOnlyModeSwitcher(zone: StripZone): boolean {
+  const all = zone.all ?? zone.shown
+  const hideOnlyCount = all.filter(pane => pane.hideOnly).length
+
+  return hideOnlyCount > 1 && zone.shown.some(pane => pane.hideOnly)
+}
+
 export function resolveTabStripVisible(zone: StripZone): boolean {
   if (zone.shown.length === 0) {
     return false
@@ -80,6 +96,10 @@ export function resolveTabStripVisible(zone: StripZone): boolean {
   }
 
   if (stranded(zone.shown)) {
+    return true
+  }
+
+  if (hideOnlyModeSwitcher(zone)) {
     return true
   }
 
@@ -99,6 +119,8 @@ export function resolveTabStripVisible(zone: StripZone): boolean {
  * fold in the app-wide default.
  */
 export function tabStripVisibleForZone(zone: {
+  /** All panes in the zone, including chrome-hidden ones. */
+  all?: readonly string[]
   /** The zone's ACTIVE pane. */
   active: string
   isCollapsePane: (id: string) => boolean
@@ -108,17 +130,21 @@ export function tabStripVisibleForZone(zone: {
   /** Panes currently rendered as chips. */
   shown: readonly string[]
 }): boolean {
+  const toStripPane = (id: string): StripPane => {
+    const chrome = paneChrome(zone.paneFor(id))
+
+    return {
+      collapsePane: zone.isCollapsePane(id),
+      hideOnly: chrome.hideOnly,
+      placement: chrome.placement,
+      uncloseable: chrome.uncloseable
+    }
+  }
+
   return resolveTabStripVisible({
+    all: (zone.all ?? zone.shown).map(toStripPane),
     headerVeto: paneChrome(zone.paneFor(zone.active)).headerVeto,
     mode: effectiveTabStripMode(zone.mode),
-    shown: zone.shown.map(id => {
-      const chrome = paneChrome(zone.paneFor(id))
-
-      return {
-        collapsePane: zone.isCollapsePane(id),
-        placement: chrome.placement,
-        uncloseable: chrome.uncloseable
-      }
-    })
+    shown: zone.shown.map(toStripPane)
   })
 }

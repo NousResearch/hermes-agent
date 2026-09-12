@@ -104,14 +104,24 @@ describe('hide-only strip tabs', () => {
     expect(hideOnlyZoneTabs('g-main')).toEqual([])
   })
 
-  it('honors never on the sessions/Bots strip', () => {
+  it('keeps the sessions/Bots strip visible when a saved never choice would hide the mode switcher', () => {
     sessionsBotsTree()
     setTreeGroupTabStrip('g-side', 'never')
 
     const side = $layoutTree.get()
     const group = side && side.type === 'split' ? side.children[0] : side
 
-    expect(group && group.type === 'group' ? tabStripVisibleForGroup(group) : true).toBe(false)
+    expect(group && group.type === 'group' ? tabStripVisibleForGroup(group) : false).toBe(true)
+  })
+
+  it('keeps the remaining sessions tab visible when Bots is hidden so the show menu stays reachable', () => {
+    sessionsBotsTree()
+    setStripTabHidden('hermes-bots:pane', true)
+
+    const side = $layoutTree.get()
+    const group = side && side.type === 'split' ? side.children[0] : side
+
+    expect(group && group.type === 'group' ? tabStripVisibleForGroup(group) : false).toBe(true)
   })
 
   it('excludes hide-only tabs from every close verb', () => {

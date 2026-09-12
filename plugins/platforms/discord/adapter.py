@@ -3379,7 +3379,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
                 return True
-            vc = await channel.connect()
+            from .voice_connection import DiscordVoiceClient
+
+            vc = await channel.connect(cls=DiscordVoiceClient)
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
             if text_channel_id is not None:

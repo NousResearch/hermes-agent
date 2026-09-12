@@ -191,6 +191,11 @@ def _ensure_discord_mock() -> None:
 
     from types import SimpleNamespace
 
+    # Lifecycle tests use fake transports. Real dependency composition is tested
+    # separately in tests/test_discord_voice_connection.py.
+    sys.modules["plugins.platforms.discord.voice_connection"] = SimpleNamespace(
+        DiscordVoiceClient=type("FakeVoiceClient", (), {})
+    )
     discord_mod = MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
     discord_mod.Client = MagicMock

@@ -501,6 +501,50 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         bot.send_message.assert_not_awaited()
 
+    def test_caption_fallback_error_surfaces_in_warnings(self, tmp_path, monkeypatch):
+        """When the caption-fallback send for a missing media file fails, the
+        sanitized error must appear in the result warnings **with its operation
+        prefix** — a bare transport string is indistinguishable from any other
+        media warning (issue #69252)."""
+        # A nonexistent media file triggers the missing-media branch; the
+        # caption is short enough to ride as a media caption, so _tg_caption
+        # is set and the text send is suppressed — making the fallback send
+        # the only delivery attempt.
+        missing_path = str(tmp_path / "nonexistent.png")
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        async def retry_raises(*args, **kwargs):
+            raise Exception("connection refused")
+
+        monkeypatch.setattr(
+            "tools.send_message_senders._send_telegram_message_with_retry",
+            retry_raises,
+        )
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "Caption for missing file",
+                media_files=[(missing_path, False)],
+            )
+        )
+
+        warnings = result.get("warnings", [])
+        assert any(
+            w.startswith("Telegram caption-fallback send failed for missing media: ")
+            and "connection refused" in w
+            for w in warnings
+        ), f"expected the operation-prefixed fallback error in warnings, got {warnings}"
+
 
 # ---------------------------------------------------------------------------
 # Regression: long messages are chunked before platform dispatch

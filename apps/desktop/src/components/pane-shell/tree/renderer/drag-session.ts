@@ -227,6 +227,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   const restoreCursor = document.body.style.cursor
   const restoreSelect = document.body.style.userSelect
   let engaged = false
+  let finished = false
   let releaseEscapeLayer: (() => void) | null = null
   let releaseGuests: (() => void) | null = null
   let ghost: DragGhost | null = null
@@ -313,11 +314,29 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   }
 
   const onMove = (ev: PointerEvent) => {
+    if (ev.pointerId !== pointerId) {
+      return
+    }
+
+    // A native window gesture can consume pointerup. A released pointer
+    // returning to the renderer must cancel, not resume the abandoned drag.
+    if (!(ev.buttons & 1)) {
+      finish(false, false)
+
+      return
+    }
+
     pending = { shift: ev.shiftKey, x: ev.clientX, y: ev.clientY }
     raf ||= requestAnimationFrame(flushMove)
   }
 
-  const finish = (commit: boolean) => {
+  const finish = (commit: boolean, suppressClick = true) => {
+    if (finished) {
+      return
+    }
+
+    finished = true
+
     if (raf) {
       cancelAnimationFrame(raf)
       raf = 0
@@ -349,9 +368,13 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     window.removeEventListener('pointerup', onUp, true)
     window.removeEventListener('pointercancel', onCancel, true)
     window.removeEventListener('keydown', onKey, true)
+    window.removeEventListener('blur', onInterrupted)
+    handle.removeEventListener('lostpointercapture', onLostCapture)
 
     if (engaged) {
-      suppressDragClick(commit)
+      if (suppressClick) {
+        suppressDragClick(commit)
+      }
 
       if (commit) {
         spec.onCommit($dropHint.get())
@@ -365,8 +388,27 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     $treeDragging.set(null)
   }
 
-  const onUp = () => finish(true)
-  const onCancel = () => finish(false)
+  const onUp = (ev: PointerEvent) => {
+    if (ev.pointerId === pointerId) {
+      finish(true)
+    }
+  }
+
+  const onCancel = (ev: PointerEvent) => {
+    if (ev.pointerId === pointerId) {
+      finish(false)
+    }
+  }
+
+  // There is no pending release click after focus/capture loss. Arming the
+  // Esc-style click trap here would swallow the user's next unrelated click.
+  const onInterrupted = () => finish(false, false)
+
+  const onLostCapture = (ev: PointerEvent) => {
+    if (ev.pointerId === pointerId) {
+      onInterrupted()
+    }
+  }
 
   // Esc aborts the drag — the target selection vanishes and nothing moves,
   // the universal "never mind" for an in-flight drag. Capture-phase + stop so
@@ -384,6 +426,8 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   window.addEventListener('pointerup', onUp, true)
   window.addEventListener('pointercancel', onCancel, true)
   window.addEventListener('keydown', onKey, true)
+  window.addEventListener('blur', onInterrupted)
+  handle.addEventListener('lostpointercapture', onLostCapture)
 }
 
 // ---------------------------------------------------------------------------

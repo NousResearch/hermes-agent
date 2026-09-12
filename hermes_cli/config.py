@@ -2010,7 +2010,8 @@ TERMINAL_CONFIG_ENV_MAP = {
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
             "docker_persist_across_processes", "docker_shared_container_key",
-            "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
+            "docker_orphan_reaper", "sandbox_dir", "persistent_shell", "nsjail_config",
+            "nsjail_allow_net", "nsjail_forward_env")}}
 
 
 def _terminal_env_value(value: Any) -> str:

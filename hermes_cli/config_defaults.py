@@ -344,6 +344,11 @@ DEFAULT_CONFIG = {
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
         # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,
+        # Linux-only lightweight namespace sandbox. Empty uses Hermes defaults;
+        # set a protobuf-text nsjail.cfg to supply a custom policy.
+        "nsjail_config": "",
+        "nsjail_allow_net": False,
+        "nsjail_forward_env": [],
     },
 
     "web": {
@@ -1799,6 +1804,9 @@ DEFAULT_CONFIG = {
         # rebound per cell — that runtime boundary is the cross-cell enforcement.
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
+        # Optional backend override for execute_code. Empty inherits terminal.backend.
+        # This permits terminal=local while routing generated Python through nsjail.
+        "backend": "",
     },
     # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
     # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools

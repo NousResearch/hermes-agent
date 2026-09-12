@@ -14,9 +14,9 @@ from pathlib import Path, PurePosixPath
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "nsjail", "singularity", "modal", "daytona", "vercel_sandbox"})
 # Backend name inferred from the live environment's class name (first match wins).
-_ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "singularity", "modal", "daytona")
+_ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "nsjail", "singularity", "modal", "daytona")
 
 
 def _expand_tilde(path: str) -> str:

@@ -100,18 +100,36 @@ def _spill_full_stdout(stdout_text: str) -> Optional[str]:
         return None
 
 
+def _resolve_code_execution_env_type() -> str:
+    """Resolve the execute_code backend: explicit code_execution.backend first,
+    then the terminal backend for backward compatibility."""
+    override = str(_load_config().get("backend", "") or "").strip().lower()
+    if override:
+        return override
+    try:
+        from tools.terminal_tool import _get_env_config
+        return str(_get_env_config().get("env_type") or "local").strip().lower()
+    except Exception:
+        return "local"
+
+
 def check_sandbox_requirements() -> bool:
-    """check_fn: available unless the vercel_sandbox backend fails its own checks."""
+    """check_fn: validate the effective execute_code backend when it has one."""
     if not SANDBOX_AVAILABLE:
         return False
     try:
         from tools.terminal_tool import _get_env_config
-        from tools.terminal_tool_backends import _check_vercel_sandbox_requirements
+        from tools.terminal_tool_backends import _check_nsjail, _check_vercel
         config = _get_env_config()
     except Exception:
         logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
         return False
-    return config.get("env_type") != "vercel_sandbox" or _check_vercel_sandbox_requirements(config)
+    env_type = _resolve_code_execution_env_type()
+    if env_type == "vercel_sandbox":
+        return _check_vercel(config)
+    if env_type == "nsjail":
+        return _check_nsjail(config)
+    return True
 
 
 # ---- hermes_tools.py code generator ----
@@ -398,54 +416,82 @@ def _call(tool_name, args):
 # ---- Remote execution support (file-based RPC via terminal backend) ----
 
 def _get_or_create_env(task_id: str):
-    """``(env, env_type)`` — the environment the terminal/file tools share for *task_id*, created on
-    first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
-    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
+    """Return the execute_code environment, optionally separate from terminal.backend.
+
+    An explicit ``code_execution.backend`` gets a namespaced cache key so it cannot
+    reuse the terminal tool's environment for the same task. Empty inherits the
+    terminal backend for backward compatibility.
+    """
+    from tools.terminal_tool_backends import (
+        _container_config_from_config, _create_environment, _ssh_config_from_config,
+    )
     from tools.terminal_tool import (
         _active_environments, _env_lock, _get_env_config, _last_activity,
-        _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
+        _start_cleanup_thread, _creation_locks, _creation_locks_lock,
+        _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend,
+        _select_image, resolve_task_overrides,
     )
-    effective_task_id = _resolve_container_task_id(task_id)
+
+    base_config = dict(_get_env_config())
+    terminal_env_type = str(base_config.get("env_type") or "local").strip().lower()
+    env_type = _resolve_code_execution_env_type()
+    raw_task_id = task_id or "default"
+    effective_task_id = (
+        f"_code_exec/{env_type}/{raw_task_id}"
+        if env_type != terminal_env_type
+        else _resolve_container_task_id(raw_task_id)
+    )
+
     def _cached():
         with _env_lock:
             env = _active_environments.get(effective_task_id)
             if env is not None:
                 _last_activity[effective_task_id] = time.time()
         return env
+
     env = _cached()
     if env is not None:
-        return env, _get_env_config()["env_type"]
+        return env, env_type
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
     with task_lock:
         env = _cached()
         if env is not None:
-            return env, _get_env_config()["env_type"]
-        config = _get_env_config()
-        env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
-        container_config = None
-        if _is_container_backend(env_type):
-            # Shared shaper: execute_code's own key subset dropped docker_extra_args / docker_forward_env /
-            # docker_env, so a sandbox created from this path lost the operator's configured settings.
-            container_config = _container_config_from_config(config)
+            return env, env_type
+
+        config = base_config
+        overrides = resolve_task_overrides(raw_task_id)
+        # When terminal remains local but execute_code selects nsjail, terminal.*
+        # values may not have been parsed into the env config. Read explicit
+        # nsjail policy from config.yaml for this independent backend.
+        if env_type == "nsjail":
+            try:
+                from hermes_cli.config import read_raw_config
+                terminal_cfg = read_raw_config().get("terminal", {})
+                if isinstance(terminal_cfg, dict):
+                    for key in ("nsjail_config", "nsjail_allow_net", "nsjail_forward_env"):
+                        if key in terminal_cfg:
+                            config[key] = terminal_cfg[key]
+            except Exception:
+                logger.debug("Could not load nsjail config overrides", exc_info=True)
+
+        container_config = _container_config_from_config(config) if _is_container_backend(env_type) else None
         logger.info("Creating new %s environment for execute_code task %s...",
-                     env_type, effective_task_id[:8])
+                    env_type, effective_task_id[:8])
         env = _create_environment(
             env_type=env_type, image=_select_image(env_type, overrides, config),
             cwd=overrides.get("cwd") or config["cwd"], timeout=config["timeout"],
             ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
             container_config=container_config,
             local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
-            task_id=effective_task_id, host_cwd=_resolve_task_host_cwd(config, task_id),
+            task_id=effective_task_id, host_cwd=_resolve_task_host_cwd(config, raw_task_id),
         )
         with _env_lock:
             _active_environments[effective_task_id] = env
             _last_activity[effective_task_id] = time.time()
         _start_cleanup_thread()
         logger.info("%s environment ready for execute_code task %s",
-                     env_type, effective_task_id[:8])
+                    env_type, effective_task_id[:8])
         return env, env_type
 
 
@@ -702,13 +748,14 @@ def execute_code(
             )
     from tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()
-    env_type = _env_config["env_type"]
+    env_type = _resolve_code_execution_env_type()
     # Arbitrary Python never passes through terminal()/DANGEROUS_PATTERNS, so guard the whole
     # script before either dispatch path spawns it — in this (tool-executor) thread, which holds
     # the session context. A Docker sandbox with host bind mounts gets no container fast-path.
     # See #30882.
     from tools.approval import check_execute_code_guard
-    _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
+    has_host_access = _docker_has_host_access(_env_config) if env_type == "docker" else False
+    _guard = check_execute_code_guard(code, env_type, has_host_access=has_host_access)
     if not _guard.get("approved", False):
         return _error_result(_guard.get("message") or "execute_code blocked by approval guard.")
     # Clear a stale interrupt bit that landed during the blocking approval-wait so it can't

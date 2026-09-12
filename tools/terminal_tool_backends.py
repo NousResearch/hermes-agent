@@ -6,6 +6,7 @@ import functools
 import importlib.util
 import inspect
 import logging
+import platform
 import shutil
 import subprocess
 from typing import Any, Dict, Optional
@@ -14,6 +15,7 @@ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from tools.environments.nsjail import NsjailEnvironment as _NsjailEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
@@ -26,7 +28,7 @@ logger = logging.getLogger("tools.terminal_tool")
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh"
+_BUILTIN_BACKENDS = "local, nsjail, docker, singularity, modal, daytona, vercel_sandbox, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -41,6 +43,7 @@ _CONTAINER_KEYS = (
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True), ("docker_snap_compat", False),
+    ("nsjail_config", ""), ("nsjail_allow_net", False), ("nsjail_forward_env", []),
 )
 _DOCKER_KWARGS = (
     ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
@@ -102,6 +105,21 @@ def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
 # --- Environment builders. Signature: (*, env_type, image, cwd, timeout, cc, task_id, ssh_config, host_cwd)
 def _build_local_env(*, cwd, timeout, **_):
     return _LocalEnvironment(cwd=cwd, timeout=timeout)
+
+
+def _build_nsjail_env(*, cwd, timeout, cc, task_id, **_):
+    res = _resources(cc)
+    return _NsjailEnvironment(
+        cwd=cwd,
+        timeout=timeout,
+        cpu=res["cpu"],
+        memory=res["memory"],
+        disk=res["disk"],
+        task_id=task_id,
+        config_file=cc.get("nsjail_config") or None,
+        allow_net=bool(cc.get("nsjail_allow_net", False)),
+        forward_env=cc.get("nsjail_forward_env", []) or [],
+    )
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
@@ -202,7 +220,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
 
 
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
-_ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
+_ENV_BUILDERS = {"local": _build_local_env, "nsjail": _build_nsjail_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
                  "modal": _build_modal_env, "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
                  "ssh": _build_ssh_env}
 
@@ -263,6 +281,26 @@ def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
     return None
 
 
+def _check_nsjail(config: Dict[str, Any]) -> bool:
+    if platform.system() != "Linux":
+        logger.error("The nsjail terminal backend is supported only on Linux")
+        return False
+    from tools.environments.nsjail import find_nsjail
+    executable = find_nsjail()
+    if not executable:
+        logger.error("nsjail binary not found in PATH and HERMES_NSJAIL_BINARY is unset")
+        return False
+    try:
+        probe = subprocess.run(
+            [executable, "--help"], capture_output=True, text=True,
+            timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.error("nsjail preflight failed: %s", exc)
+        return False
+    return bool("Usage:" in (probe.stdout + probe.stderr) or probe.returncode in (0, 1))
+
+
 def _ssh_pre(config: Dict[str, Any]) -> bool:
     if config.get("ssh_host") and config.get("ssh_user"):
         return True
@@ -279,6 +317,7 @@ def _daytona_post(config: Dict[str, Any]) -> bool:
 
 _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
     "local": {},
+    "nsjail": {"pre": _check_nsjail},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
                           "Docker executable not found in PATH or common install locations")},
     "singularity": {"binary": (lambda: shutil.which("apptainer") or shutil.which("singularity"), "--version", None)},

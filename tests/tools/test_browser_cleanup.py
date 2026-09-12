@@ -128,7 +128,7 @@ class TestInactivityJanitorMultiplex:
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
         p1 = tmp_path / "profiles" / "p1"
         p1.mkdir(parents=True)
-        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n")
+        (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n", encoding="utf-8")
 
         # Profile p1's turn opens the session; the janitor later runs unscoped.
         home_tok = set_hermes_home_override(str(p1))

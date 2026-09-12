@@ -516,8 +516,11 @@ def _apply_profile_override() -> None:
     # we must still read active_profile — the user may have run
     # `hermes profile use` and the gateway should honour it (#22502).
     hermes_home_env = os.environ.get("HERMES_HOME", "")
-    if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
-        return
+    if profile_name is None and hermes_home_env:
+        if Path(hermes_home_env).parent.name == "profiles":
+            return
+        if os.environ.get("HERMES_TUI_DASHBOARD") == "1":
+            return
 
     if profile_name is None and not _under_gateway_supervisor(argv) and not _desktop_ssh_backend(argv):
         try:

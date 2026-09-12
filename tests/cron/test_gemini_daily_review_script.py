@@ -174,6 +174,7 @@ def test_no_agent_entrypoint_emits_empty_stdout_on_success(
 
     assert module.main() == 0
     assert capsys.readouterr() == ("", "")
+    assert os.access(script, os.X_OK)
     source = script.read_text(encoding="utf-8")
     assert "AIAgent" not in source
     assert "from agent.gemini_daily_review import main" in source

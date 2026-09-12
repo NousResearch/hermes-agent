@@ -29,6 +29,7 @@ def test_repair_node_deps_runs_config_migration_on_version_bump(capsys):
             "_run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": ["migrated to v38"], "warnings": []},
         ) as mock_migrate,
+        patch.object(update_cmd, "_rebuild_desktop_after_update", return_value=True),
     ):
         update_cmd._repair_node_deps_on_current_checkout(completion)
 
@@ -52,6 +53,7 @@ def test_repair_node_deps_up_to_date_config(capsys):
         patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
         patch.object(update_cmd, "_run_migrate_config_fresh") as mock_migrate,
+        patch.object(update_cmd, "_rebuild_desktop_after_update", return_value=True),
     ):
         update_cmd._repair_node_deps_on_current_checkout(completion)
 

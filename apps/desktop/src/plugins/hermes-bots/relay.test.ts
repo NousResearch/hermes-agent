@@ -511,6 +511,31 @@ describe('the drain loop wires drain → deliver → reply', () => {
     stopBotRelay()
   })
 
+  it('tells the target which connection the sender is on, so its author id names the machine', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return {
+          envelopes: call.connectionId === 'a' ? [{ ...envelope, from_handle: 'scout', from_profile: 'scout' }] : []
+        }
+      }
+
+      return { reply: 'ok' }
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')?.params).toMatchObject({
+      from_connection: 'a',
+      from_handle: 'scout',
+      from_profile: 'scout'
+    })
+
+    stopBotRelay()
+  })
+
   it('still posts a reply when the target connection is gone — the waiter must never dangle', async () => {
     const calls = respondWith(call =>
       call.method === 'bot_relay.outbox.drain'

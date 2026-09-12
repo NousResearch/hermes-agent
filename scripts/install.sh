@@ -618,21 +618,64 @@ install_uv() {
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
-        if command -v python >/dev/null 2>&1; then
-            PYTHON_PATH="$(command -v python)"
-            if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-                log_success "Python found: $PYTHON_FOUND_VERSION"
-                return 0
+        # Hermes currently declares requires-python >=3.11,<3.14.  Termux can
+        # expose a newer default `python` before dependencies have compatible
+        # wheels, so do not accept the default interpreter until the upper bound
+        # is verified. Prefer the project's pinned minor when present, then
+        # other explicit compatible interpreters.
+        for python_cmd in python3.11 python3.12 python3.13 python; do
+            if command -v "$python_cmd" >/dev/null 2>&1; then
+                local candidate_path
+                candidate_path="$(command -v "$python_cmd")"
+                if "$candidate_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                    PYTHON_PATH="$candidate_path"
+                    PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+                    log_success "Python found: $PYTHON_FOUND_VERSION"
+                    return 0
+                fi
             fi
-        fi
+        done
 
         log_info "Installing Python via pkg..."
         pkg install -y python >/dev/null
         PYTHON_PATH="$(command -v python)"
-        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-        log_success "Python installed: $PYTHON_FOUND_VERSION"
-        return 0
+        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+            log_success "Python installed: $PYTHON_FOUND_VERSION"
+            return 0
+        fi
+
+        # Termux's default `python` package is outside the supported range
+        # (e.g. 3.14.x before Rust transitives ship cp314 wheels). The Termux
+        # User Repository (TUR) publishes versioned CPython packages
+        # (python3.13, python3.11), so try to provision a supported
+        # interpreter from there before giving up.
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null || true)"
+        log_warn "Termux Python $PYTHON_FOUND_VERSION is outside the supported range (>=3.11,<3.14)"
+        log_info "Trying the Termux User Repository (TUR) for a supported Python..."
+        pkg install -y tur-repo >/dev/null 2>&1 || true
+        local tur_pkg
+        for tur_pkg in python3.13 python3.12 python3.11; do
+            if ! pkg install -y "$tur_pkg" >/dev/null 2>&1; then
+                continue
+            fi
+            if ! command -v "$tur_pkg" >/dev/null 2>&1; then
+                continue
+            fi
+            local tur_path
+            tur_path="$(command -v "$tur_pkg")"
+            if "$tur_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                PYTHON_PATH="$tur_path"
+                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+                log_success "Python installed from TUR: $PYTHON_FOUND_VERSION"
+                return 0
+            fi
+        done
+
+        log_error "Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+        log_info "Install a supported interpreter and re-run this script:"
+        log_info "  pkg install tur-repo && pkg install python3.13"
+        exit 1
     fi
 
     log_info "Checking Python $PYTHON_VERSION..."
@@ -890,6 +933,14 @@ check_cxx_compiler() {
 # replaced with the Hermes-managed Node $NODE_VERSION.
 node_satisfies_build() {
     local ver="${1#v}"
+    # Pre-release builds are rejected outright, however new they are. `node-pty`
+    # ships no Linux prebuild, so every install compiles it with node-gyp, which
+    # fetches the headers named by `process.release.headersUrl` — a URL only
+    # published for final releases. nodejs.org/dist/latest-v26.x currently
+    # serves node-v26.8.0-<os>-<arch>.tar.xz whose binary reports
+    # v26.8.0-alpha.0.0.0; its headers 404, and the install dies at
+    # `node-gyp rebuild` with the underlying error swallowed by the
+    # `node scripts/prebuild.js || node-gyp rebuild` fallback.
     case "$ver" in *-*) return 1 ;; esac
     local major="${ver%%.*}"
     local minor="${ver#*.}"; minor="${minor%%.*}"
@@ -974,14 +1025,150 @@ check_node() {
     install_node
 }
 
+# Download and adopt one Node release line (e.g. 26) into ~/.hermes/node/.
+#
+# Split out of install_node() so the caller can walk a list of candidate lines.
+# A line is rejected — and the caller should try an older one — when nodejs.org
+# publishes no tarball for this platform, when the download or extraction
+# fails, or when the tree it ships fails node_satisfies_build.
+#
+# Returns 0 with the tree in place, PATH exported and HAS_NODE=true; 1 when the
+# line is unusable. Nothing on disk is replaced until the candidate passes, so
+# a rejected line leaves any existing managed Node untouched.
+install_node_line() {
+    local node_line="$1"
+    local node_os="$2"
+    local node_arch="$3"
+
+    # Resolve the latest v${node_line}.x.x tarball name from the index page
+    local index_url="https://nodejs.org/dist/latest-v${node_line}.x/"
+    local tarball_name
+    tarball_name=$(curl -fsSL "$index_url" \
+        | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+        | head -1)
+
+    # Fallback to .tar.gz if .tar.xz not available
+    if [ -z "$tarball_name" ]; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \
+            | head -1)
+    fi
+
+    if [ -z "$tarball_name" ]; then
+        log_warn "Could not find Node.js $node_line binary for $node_os-$node_arch"
+        return 1
+    fi
+
+    local download_url="${index_url}${tarball_name}"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    log_info "Downloading $tarball_name..."
+    if ! curl -fsSL "$download_url" -o "$tmp_dir/$tarball_name"; then
+        log_warn "Download failed"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    log_info "Extracting to ~/.hermes/node/..."
+    if [[ "$tarball_name" == *.tar.xz ]]; then
+        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+    else
+        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
+    fi
+
+    local extracted_dir
+    extracted_dir=$(ls -d "$tmp_dir"/node-v* 2>/dev/null | head -1)
+
+    if [ ! -d "$extracted_dir" ]; then
+        log_warn "Extraction failed"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # Trust the binary, not the filename. A tarball named for a final release
+    # can still carry a pre-release build — latest-v26.x serves
+    # node-v26.8.0-<os>-<arch>.tar.xz whose `node --version` is
+    # v26.8.0-alpha.0.0.0 — and adopting it leaves node-pty unbuildable for the
+    # life of the install. Probe the extracted tree before it replaces anything.
+    local candidate_ver
+    candidate_ver=$("$extracted_dir/bin/node" --version 2>/dev/null)
+    if ! node_satisfies_build "$candidate_ver"; then
+        log_warn "Node.js ${candidate_ver:-unreadable} from ${index_url} cannot build native modules — trying an older release line..."
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
+    # the hermes command uses (get_command_link_dir): /usr/local/bin for root
+    # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
+    rm -rf "$HERMES_HOME/node"
+    mkdir -p "$HERMES_HOME"
+    mv "$extracted_dir" "$HERMES_HOME/node"
+    rm -rf "$tmp_dir"
+
+    # Node's official linux-x64 builds (observed: v26.7.0) link
+    # libatomic.so.1, which minimal Debian/Ubuntu images do not ship —
+    # the freshly downloaded binary then fails to start. Install the
+    # library up front, best-effort; the version probe below reports
+    # clearly if the binary still cannot run (#87460).
+    if [ "$OS" = "linux" ] && { [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; }; then
+        if command -v apt-get >/dev/null 2>&1; then
+            local sudo_cmd=""
+            if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
+                command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
+            fi
+            $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libatomic1 >/dev/null 2>&1 || true
+        fi
+    fi
+
+    local node_link_dir
+    node_link_dir="$(get_command_link_dir)"
+    mkdir -p "$node_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+
+    configure_managed_node_npm_prefix
+
+    export PATH="$HERMES_HOME/node/bin:$PATH"
+
+    local installed_ver
+    if ! installed_ver=$("$HERMES_HOME/node/bin/node" --version 2>&1); then
+        # The adopted Node exists but cannot start (observed: missing
+        # libatomic.so.1 on minimal Debian/Ubuntu, #87460). Degrade loudly,
+        # surface the loader's real error, and remove the broken tree and
+        # bin links so later steps and retry runs start clean. Signal the
+        # caller to try an older release line rather than claiming success.
+        log_error "Downloaded Node.js failed to start:"
+        printf '%s\n' "$installed_ver" >&2
+        log_info "On Debian/Ubuntu the usual fix is: sudo apt-get install -y libatomic1"
+        rm -rf "$HERMES_HOME/node"
+        rm -f "$node_link_dir/node" "$node_link_dir/npm" "$node_link_dir/npx"
+        return 1
+    fi
+    log_success "Node.js $installed_ver installed to ~/.hermes/node/"
+    HAS_NODE=true
+    return 0
+}
+
 install_node() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Installing Node.js via pkg..."
         if pkg install -y nodejs >/dev/null; then
             local installed_ver
-            installed_ver=$(node --version 2>/dev/null)
-            log_success "Node.js $installed_ver installed via pkg"
-            HAS_NODE=true
+            installed_ver=$(node --version 2>/dev/null || true)
+            if [ -n "$installed_ver" ]; then
+                log_success "Node.js $installed_ver installed via pkg"
+                HAS_NODE=true
+            else
+                # pkg succeeded but the binary cannot start — the same
+                # silent-success class the managed-download probe guards
+                # against (#87460). Degrade instead of claiming success.
+                log_error "Node.js installed via pkg failed to start:"
+                node --version >&2 || true
+                HAS_NODE=false
+            fi
         else
             log_warn "Failed to install Node.js via pkg"
             HAS_NODE=false
@@ -1014,79 +1201,21 @@ install_node() {
             ;;
     esac
 
-    # Resolve the latest v${NODE_VERSION}.x.x tarball name from the index page
-    local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
-    local tarball_name
-    tarball_name=$(curl -fsSL "$index_url" \
-        | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
-        | head -1)
+    # Try the target line first, then the two previous even-numbered (LTS)
+    # lines. Whether a line is usable cannot be known from its index page —
+    # see install_node_line — and stepping down beats adopting a Node that
+    # leaves every native dependency unbuildable.
+    local node_line
+    for node_line in "$NODE_VERSION" "$((NODE_VERSION - 2))" "$((NODE_VERSION - 4))"; do
+        if install_node_line "$node_line" "$node_os" "$node_arch"; then
+            return 0
+        fi
+    done
 
-    # Fallback to .tar.gz if .tar.xz not available
-    if [ -z "$tarball_name" ]; then
-        tarball_name=$(curl -fsSL "$index_url" \
-            | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \
-            | head -1)
-    fi
-
-    if [ -z "$tarball_name" ]; then
-        log_warn "Could not find Node.js $NODE_VERSION binary for $node_os-$node_arch"
-        log_info "Install manually: https://nodejs.org/en/download/"
-        HAS_NODE=false
-        return 0
-    fi
-
-    local download_url="${index_url}${tarball_name}"
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-
-    log_info "Downloading $tarball_name..."
-    if ! curl -fsSL "$download_url" -o "$tmp_dir/$tarball_name"; then
-        log_warn "Download failed"
-        rm -rf "$tmp_dir"
-        HAS_NODE=false
-        return 0
-    fi
-
-    log_info "Extracting to ~/.hermes/node/..."
-    if [[ "$tarball_name" == *.tar.xz ]]; then
-        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
-    else
-        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
-    fi
-
-    local extracted_dir
-    extracted_dir=$(ls -d "$tmp_dir"/node-v* 2>/dev/null | head -1)
-
-    if [ ! -d "$extracted_dir" ]; then
-        log_warn "Extraction failed"
-        rm -rf "$tmp_dir"
-        HAS_NODE=false
-        return 0
-    fi
-
-    # Place into ~/.hermes/node/ and symlink binaries into the same bin dir
-    # the hermes command uses (get_command_link_dir): /usr/local/bin for root
-    # FHS installs, $PREFIX/bin on Termux, ~/.local/bin otherwise.
-    rm -rf "$HERMES_HOME/node"
-    mkdir -p "$HERMES_HOME"
-    mv "$extracted_dir" "$HERMES_HOME/node"
-    rm -rf "$tmp_dir"
-
-    local node_link_dir
-    node_link_dir="$(get_command_link_dir)"
-    mkdir -p "$node_link_dir"
-    ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
-
-    configure_managed_node_npm_prefix
-
-    export PATH="$HERMES_HOME/node/bin:$PATH"
-
-    local installed_ver
-    installed_ver=$("$HERMES_HOME/node/bin/node" --version 2>/dev/null)
-    log_success "Node.js $installed_ver installed to ~/.hermes/node/"
-    HAS_NODE=true
+    log_warn "No usable Node.js release line found for $node_os-$node_arch"
+    log_info "Install manually: https://nodejs.org/en/download/"
+    HAS_NODE=false
+    return 0
 }
 
 check_network_prerequisites() {
@@ -1470,7 +1599,57 @@ EOF
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            # GitHub throttles packfile generation for large repos (this one:
+            # ~9.6k files at HEAD plus thousands of auto-generated branches)
+            # with repo-scoped HTTP 429s that are NOT client IP rate limits —
+            # an anonymous clone of a small repo succeeds and the API quota
+            # is untouched, but the single big pack behind `--depth 1` dies
+            # mid-transfer with "RPC failed; HTTP 429 / expected 'packfile'"
+            # (#89624, same throttle as the update path in #89287). Retry
+            # with backoff, then degrade to a blobless partial clone + fetch
+            # (many small packs instead of one big one — what gets past the
+            # throttle). Fully materialize the tree afterwards so the rest of
+            # the installer sees the normal files.
+            local clone_ok=false
+            local attempt=0
+            local max_attempts=4
+            for attempt in $(seq 1 "$max_attempts"); do
+                [ "$attempt" -gt 1 ] && log_info "Retrying HTTPS clone (attempt $attempt/$max_attempts)..."
+                if git clone --depth 1 --single-branch --branch "$BRANCH" \
+                     "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    clone_ok=true
+                    break
+                fi
+                rm -rf "$INSTALL_DIR" 2>/dev/null  # partial clone is unusable
+                [ "$attempt" -lt "$max_attempts" ] && sleep $((attempt * 5))
+            done
+            if [ "$clone_ok" != true ]; then
+                log_info "Direct clone throttled — trying blobless partial clone..."
+                # --no-checkout keeps the clone itself to commits+trees (small,
+                # gets past the pack throttle). Without it the blob fetch runs
+                # inside `git clone`'s own checkout step, the throttle kills
+                # the whole clone, and this fallback degrades to one more
+                # failed clone. The blobs are fetched by the reset below — a
+                # separate request the retry can actually wrap.
+                if git clone --depth 1 --single-branch --filter=blob:none \
+                     --no-checkout --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    # Materialize the working tree: on a --no-checkout clone
+                    # this reset is the step that fetches the blobs (several
+                    # small packs instead of one big one). Fail closed — a
+                    # half-materialized checkout must not report success and
+                    # hand the rest of the installer an unusable tree.
+                    if (cd "$INSTALL_DIR" \
+                        && (git reset --hard HEAD >/dev/null 2>&1 \
+                            || { sleep 5; git reset --hard HEAD >/dev/null 2>&1; })); then
+                        clone_ok=true
+                    else
+                        rm -rf "$INSTALL_DIR" 2>/dev/null  # unusable checkout
+                    fi
+                else
+                    rm -rf "$INSTALL_DIR" 2>/dev/null
+                fi
+            fi
+            if [ "$clone_ok" = true ]; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -2128,7 +2307,7 @@ copy_config_templates() {
     # here is self-healing, but keep them in sync to avoid a churn on first run.
     if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
         cat > "$HERMES_HOME/SOUL.md" << 'SOUL_EOF'
-You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
+You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask — a one-line question gets a one-line answer, and finished work gets a short report of what changed, what's verified, and what's left, never a replay of the process. No filler ("Great question," "I'd be happy to"), no restating the request back, no re-summarizing what you already said, no narrating tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree because it's right, not because the user said it. Depth is earned — give it when the user asks for detail, teaches, or the stakes demand it, not by default.
 SOUL_EOF
         log_success "Created ~/.hermes/SOUL.md (edit to customize personality)"
     fi
@@ -2440,6 +2619,36 @@ configure_browser_env_from_system_browser() {
     log_success "Configured browser tools to use $browser_path"
 }
 
+# Select the npm workspaces a CLI install actually needs, into the
+# NODE_DEPS_WORKSPACE_ARGS array.
+#
+# A bare `npm install` at the repo root resolves package.json's `apps/*`
+# glob, which materializes apps/desktop — and with it node-pty, which ships
+# no Linux prebuild and falls back to `node-gyp rebuild`. On a host without
+# make/gcc that rebuild fails, and since #85297 made a failed npm install
+# fatal it aborts the whole install of a machine that will never launch
+# Electron or a PTY addon (#38311, #38772). Desktop dependencies are
+# installed by install_desktop(), reachable only via --include-desktop.
+#
+# Naming ui-tui/web excludes the unnamed apps/* workspaces, and
+# --include-workspace-root keeps the root's own devDependencies (the shared
+# ESLint flat config each workspace imports) from being pruned by the scoped
+# install — the same closure `hermes update` installs
+# (hermes_cli/main.py::_update_node_dependencies). Prebuilt/partial checkouts
+# can lack a workspace, and naming a missing one makes npm fail hard, so fall
+# back to a root-only install that still skips apps/*.
+node_deps_workspace_args() {
+    local install_dir="$1"
+    NODE_DEPS_WORKSPACE_ARGS=()
+    [ -f "$install_dir/ui-tui/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--workspace ui-tui)
+    [ -f "$install_dir/web/package.json" ] && NODE_DEPS_WORKSPACE_ARGS+=(--workspace web)
+    if [ "${#NODE_DEPS_WORKSPACE_ARGS[@]}" -eq 0 ]; then
+        NODE_DEPS_WORKSPACE_ARGS=(--workspaces=false)
+        return 0
+    fi
+    NODE_DEPS_WORKSPACE_ARGS+=(--include-workspace-root)
+}
+
 install_node_deps() {
     if [ "$HAS_NODE" = false ]; then
         log_info "Skipping Node.js dependencies (Node not installed)"
@@ -2462,9 +2671,12 @@ install_node_deps() {
         # installed", hiding the degradation from the user (#77003). Now it
         # fails the install outright instead of burying the warning (#85297).
         # Capture npm output so failures are diagnosable (#87340).
+        # Scoped to the workspaces a CLI install needs so apps/desktop's
+        # node-pty is never built here — see node_deps_workspace_args().
+        node_deps_workspace_args "$INSTALL_DIR"
         local npm_log
         npm_log="$(mktemp)"
-        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install --silent \
+        if ! run_with_timeout "$NODE_DEPS_TIMEOUT" npm install "${NODE_DEPS_WORKSPACE_ARGS[@]}" --silent \
                 >"$npm_log" 2>&1; then
             log_error "npm install failed or timed out; Node.js dependencies were not installed"
             if [ -s "$npm_log" ]; then

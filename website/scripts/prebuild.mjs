@@ -32,7 +32,10 @@ const websiteDir = resolve(scriptDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
+const pluginsScript = join(scriptDir, "extract-plugins.py");
 const outputFile = join(websiteDir, "static", "api", "skills.json");
+const pluginsOutputFile = join(websiteDir, "static", "api", "plugins.json");
+const pluginsMetaOutputFile = join(websiteDir, "static", "api", "plugins-meta.json");
 const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
   "https://hermes-agent.nousresearch.com/docs/api/skills-index.json";
@@ -143,3 +146,22 @@ runPython(llmsScript, "generate-llms-txt.py");
 // 3) automation-blueprints-index.json — Automation Blueprints catalog page. Non-fatal; the page
 //    renders an empty state if the generator can't run.
 runPython(cronBlueprintsScript, "extract-automation-blueprints.py");
+
+// 4) plugins.json + plugins-meta.json — Plugin Catalog page. The script itself
+//    degrades gracefully (empty catalog, exit 0) when plugin-catalog/ is absent;
+//    if python3 is missing entirely, write the same empty fallback so the page
+//    renders its "just getting started" state instead of a fetch error.
+if (!runPython(pluginsScript, "extract-plugins.py")) {
+  mkdirSync(dirname(pluginsOutputFile), { recursive: true });
+  writeFileSync(pluginsOutputFile, "[]\n");
+  writeFileSync(
+    pluginsMetaOutputFile,
+    JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      total: 0,
+      byTier: { official: 0, community: 0 },
+      removedCount: 0,
+    }) + "\n",
+  );
+  console.warn("[prebuild] wrote empty plugins.json fallback");
+}

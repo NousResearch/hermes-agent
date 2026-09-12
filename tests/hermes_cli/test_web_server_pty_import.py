@@ -70,3 +70,19 @@ def test_pty_bridge_import_block_is_platform_branched():
     assert 'sys.platform.startswith("win")' in src or "sys.platform.startswith('win')" in src
     assert "from hermes_cli.win_pty_bridge import" in src
     assert "from hermes_cli.pty_bridge import" in src
+
+
+def test_pty_unavailable_banner_matches_platform(monkeypatch):
+    """The no-bridge banner must prescribe the fix that exists: pywinpty on
+    Windows (which HAS a ConPTY bridge), WSL2 elsewhere."""
+    from hermes_cli.web_routers import chat_ws
+
+    monkeypatch.setattr(chat_ws.sys, "platform", "win32")
+    win_text = chat_ws._pty_unavailable_banner()
+    assert "pywinpty" in win_text
+    assert "WSL2" not in win_text
+
+    monkeypatch.setattr(chat_ws.sys, "platform", "linux")
+    posix_text = chat_ws._pty_unavailable_banner()
+    assert "WSL2" in posix_text
+    assert "pywinpty" not in posix_text

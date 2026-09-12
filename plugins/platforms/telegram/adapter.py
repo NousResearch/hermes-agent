@@ -299,18 +299,116 @@ _RICH_PROTECTED_REGION_RE = re.compile(
     re.MULTILINE)
 
 
+_RICH_VISUAL_PARAGRAPH_SPACER = "\u00a0"
+_RICH_SINGLE_LINEBREAK_RE = re.compile(r'(?<!  )(?<!\n)\n(?!\n)')
+_RICH_PARAGRAPH_PROTECTED_REGION_RE = re.compile(
+    _RICH_PROTECTED_REGION_RE.pattern
+    + r'|(?:~~~[^\n]*\n[\s\S]*?~~~)'
+    + r'|(?:^\$\$[^\n]*\n[\s\S]*?^\$\$[ \t]*$)'
+    + r'|(?:^\\\[[^\n]*\n[\s\S]*?^\\\][ \t]*$)'
+    + r'|(?i:<details\b[^>]*>[\s\S]*?</details>)',
+    re.MULTILINE,
+)
+
+
+def _rich_is_prose_line(line: str) -> bool:
+    """Return whether *line* can safely share one rich prose paragraph."""
+    if line[:1].isspace():
+        return False
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if re.match(
+        r"^(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|```|~~~|\$\$|\\\[)",
+        stripped,
+    ):
+        return False
+    if re.match(r"^</?(?:details|summary)(?:\s|>|$)", stripped, re.IGNORECASE):
+        return False
+    return not bool(re.fullmatch(r"(?:[-*_]\s*){3,}", stripped))
+
+
+def _rich_materialize_prose_paragraphs(text: str) -> str:
+    """Render authored prose breaks as one explicit blank Rich Message row.
+
+    Telegram's Rich Message Markdown parser can retain ``\\n\\n`` in the
+    request while clients render the adjacent prose blocks with no visible
+    blank row. A non-breaking-space line bounded by Markdown hard breaks gives
+    that boundary one stable visual row without the oversized two-paragraph
+    spacer produced by adding more raw blank lines.
+
+    Structural Markdown boundaries stay raw so headings, lists, blockquotes,
+    details, and math keep their block semantics. Fenced code and pipe tables
+    are excluded by the caller's protected-region split.
+    """
+    if "\n\n" not in text:
+        return text
+
+    protected = [
+        (match.start(), match.end())
+        for match in _RICH_PARAGRAPH_PROTECTED_REGION_RE.finditer(text)
+    ]
+    protected_index = 0
+    out: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"\n{2,}", text):
+        while (
+            protected_index < len(protected)
+            and protected[protected_index][1] <= match.start()
+        ):
+            protected_index += 1
+        inside_protected = (
+            protected_index < len(protected)
+            and protected[protected_index][0] < match.end()
+        )
+        previous_start = text.rfind("\n", 0, match.start()) + 1
+        next_end = text.find("\n", match.end())
+        if next_end < 0:
+            next_end = len(text)
+        previous_line = text[previous_start : match.start()]
+        next_line = text[match.end() : next_end]
+        out.append(text[cursor : match.start()])
+        if (
+            not inside_protected
+            and _rich_is_prose_line(previous_line)
+            and _rich_is_prose_line(next_line)
+        ):
+            out.append(f"\n{_RICH_VISUAL_PARAGRAPH_SPACER}\n")
+        else:
+            out.append(match.group(0))
+        cursor = match.end()
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 def _rich_normalize_linebreaks(text: str) -> str:
-    """Convert lone ``\\n`` (a Markdown soft break) to hard breaks for sendRichMessage; ``\\n\\n``,
-    fenced code and pipe tables are left untouched."""
+    """Materialize prose paragraphs and harden single rich-message newlines.
+
+    Standard Markdown treats a lone ``\n`` as whitespace (soft break), so
+    Bot API 10.1 ``sendRichMessage`` collapses multi-line content — e.g.
+    slash-command lists joined with ``"\n".join(lines)`` — into a single
+    paragraph.  Adding two trailing spaces before each single newline
+    forces a hard line break (``<br>``) in the rendered output.
+
+    Prose paragraph breaks become one explicit spacer row because raw
+    ``\n\n`` is visually collapsed by Telegram Rich Message clients. Fenced
+    code blocks and GFM pipe-table blocks stay untouched because hard breaks
+    inside either would corrupt their syntax.
+    """
     if not text or '\n' not in text:
         return text
     out: list[str] = []
+    # Split off every structural region whose internal newlines are meaningful,
+    # then normalize only the prose between them. Boundary newlines are handled
+    # by the single-newline regex on each prose run.
     pos = 0
-    for m in _RICH_PROTECTED_REGION_RE.finditer(text):
-        out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', text[pos:m.start()]))
+    for m in _RICH_PARAGRAPH_PROTECTED_REGION_RE.finditer(text):
+        prose = _rich_materialize_prose_paragraphs(text[pos:m.start()])
+        out.append(_RICH_SINGLE_LINEBREAK_RE.sub('  \n', prose))
         out.append(m.group(0))  # protected region kept verbatim
         pos = m.end()
-    out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', text[pos:]))
+    tail = _rich_materialize_prose_paragraphs(text[pos:])
+    out.append(_RICH_SINGLE_LINEBREAK_RE.sub('  \n', tail))
     return ''.join(out)
 
 
@@ -1212,8 +1310,16 @@ class TelegramAdapter(BasePlatformAdapter):
     # RAW agent markdown so tables, task lists, <details>, math render natively; legacy MarkdownV2 send()
     # is the fallback. Streaming edits stay on the MarkdownV2 edit path.
     def _content_fits_rich_limits(self, content: str) -> bool:
-        """Pre-check the 32,768-char cap only; other rich limits surface as BadRequest (permanent)."""
-        return len(content) <= self.RICH_MESSAGE_MAX_CHARS
+        """Check the normalized payload against the countable rich text limit.
+
+        Newline normalization can expand the source, so count the same Markdown
+        shape sent to Telegram. Other Bot API rich limits (500 blocks, 16
+        nesting levels, 20 table columns, ...) are not pre-counted; if exceeded
+        Telegram returns a BadRequest, which
+        :meth:`_is_rich_fallback_error` classifies as permanent so the send
+        degrades to the legacy chunking path.
+        """
+        return len(_rich_normalize_linebreaks(content)) <= self.RICH_MESSAGE_MAX_CHARS
 
     def _bot_supports_rich(self) -> bool:
         """True when ``do_api_request`` is an *async* callable (real Bot or AsyncMock); plain MagicMock

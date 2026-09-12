@@ -26,6 +26,7 @@ from unittest.mock import patch
 
 import pytest
 
+import cron.incidents as incidents_mod
 import cron.scheduler as scheduler_mod
 
 
@@ -143,6 +144,171 @@ class TestTickReapsDeadOwnerClaims:
         )
 
         assert _run_tick() == 0
+
+
+class TestReclaimedExecutionAlerts:
+    @staticmethod
+    def _job(job_id: str, **overrides):
+        job = {
+            "id": job_id,
+            "name": f"job {job_id}",
+            "deliver": "local",
+        }
+        job.update(overrides)
+        return job
+
+    def test_reclaim_creates_durable_incident(self, monkeypatch, executions):
+        execution_id = _orphan_claimed_row(executions, "incident-job")
+        monkeypatch.setattr(
+            "cron.jobs.get_job", lambda job_id: self._job(job_id)
+        )
+
+        _run_tick()
+
+        incident = incidents_mod.list_incidents()[0]
+        assert incident["job_id"] == "incident-job"
+        assert incident["state"] == "detected"
+        record = executions.get_execution(execution_id)
+        assert record["status"] == "unknown"
+        assert record["delivery_outcome"] == "suppressed"
+
+    def test_reclaim_routes_one_summary_through_failure_lane(
+        self, monkeypatch, executions
+    ):
+        execution_id = _orphan_claimed_row(executions, "routed-job")
+        monkeypatch.setattr(
+            "cron.jobs.get_job",
+            lambda job_id: self._job(
+                job_id,
+                deliver="slack:D0MAIN",
+                failure_deliver="slack:D0ALERTS",
+            ),
+        )
+        deliveries = []
+
+        def _deliver(job, content, **kwargs):
+            deliveries.append((job, content, kwargs))
+            return None
+
+        monkeypatch.setattr(scheduler_mod, "_deliver_result", _deliver)
+
+        _run_tick()
+
+        assert len(deliveries) == 1
+        assert deliveries[0][2]["for_failure"] is True
+        assert "unknown" in deliveries[0][1].lower()
+        incident = incidents_mod.list_incidents()[0]
+        assert incident["state"] == "alerted"
+        record = executions.get_execution(execution_id)
+        assert record["status"] == "unknown"
+        assert record["delivery_outcome"] == "delivered"
+
+    def test_failure_deliver_local_is_silent_but_persists_incident(
+        self, monkeypatch, executions
+    ):
+        execution_id = _orphan_claimed_row(executions, "silent-job")
+        monkeypatch.setattr(
+            "cron.jobs.get_job",
+            lambda job_id: self._job(
+                job_id,
+                deliver="slack:D0MAIN",
+                failure_deliver="local",
+            ),
+        )
+
+        _run_tick()
+
+        incident = incidents_mod.list_incidents()[0]
+        assert incident["job_id"] == "silent-job"
+        assert incident["state"] == "detected"
+        record = executions.get_execution(execution_id)
+        assert record["status"] == "unknown"
+        assert record["delivery_outcome"] == "suppressed"
+
+    def test_acknowledged_incident_suppresses_reclaimed_notice(
+        self, monkeypatch, executions
+    ):
+        execution_id = _orphan_claimed_row(executions, "acked-job")
+        error = (
+            "Scheduler restarted after this execution's owner exited before a durable "
+            "terminal state; whether side effects ran is unknown."
+        )
+        incident_id, _ = incidents_mod.upsert_incident("acked-job", error)
+        assert incidents_mod.ack_incident(incident_id)
+        monkeypatch.setattr(
+            "cron.jobs.get_job",
+            lambda job_id: self._job(job_id, failure_deliver="slack:D0ALERTS"),
+        )
+        monkeypatch.setattr(
+            scheduler_mod,
+            "_deliver_result",
+            lambda *_args, **_kwargs: pytest.fail("acked incident was delivered"),
+        )
+
+        _run_tick()
+
+        assert incidents_mod.get_incident(incident_id)["state"] == "closed"
+        record = executions.get_execution(execution_id)
+        assert record["status"] == "unknown"
+        assert record["delivery_outcome"] == "suppressed_acked"
+
+    def test_lookup_storage_and_delivery_fail_open_per_record(
+        self, monkeypatch, executions
+    ):
+        execution_ids = {
+            job_id: _orphan_claimed_row(executions, job_id)
+            for job_id in ("lookup-job", "storage-job", "delivery-job", "healthy-job")
+        }
+
+        def _get_job(job_id):
+            if job_id == "lookup-job":
+                raise RuntimeError("job store unavailable")
+            return self._job(job_id, failure_deliver="slack:D0ALERTS")
+
+        monkeypatch.setattr("cron.jobs.get_job", _get_job)
+        real_upsert = incidents_mod.upsert_incident
+
+        def _upsert(job_id, error, **kwargs):
+            if job_id == "storage-job":
+                raise RuntimeError("incident store unavailable")
+            return real_upsert(job_id, error, **kwargs)
+
+        monkeypatch.setattr(incidents_mod, "upsert_incident", _upsert)
+        delivered = []
+
+        def _deliver(job, _content, **kwargs):
+            assert kwargs["for_failure"] is True
+            if job["id"] == "delivery-job":
+                raise RuntimeError("delivery unavailable")
+            delivered.append(job["id"])
+            return None
+
+        monkeypatch.setattr(scheduler_mod, "_deliver_result", _deliver)
+
+        _run_tick()
+
+        assert set(delivered) == {"storage-job", "healthy-job"}
+        assert len(delivered) == 2
+        outcomes = {
+            job_id: executions.get_execution(execution_id)["delivery_outcome"]
+            for job_id, execution_id in execution_ids.items()
+        }
+        assert outcomes == {
+            "lookup-job": "failed",
+            "storage-job": "delivered",
+            "delivery-job": "failed",
+            "healthy-job": "delivered",
+        }
+        assert all(
+            executions.get_execution(execution_id)["status"] == "unknown"
+            for execution_id in execution_ids.values()
+        )
+        incident_by_job = {
+            incident["job_id"]: incident for incident in incidents_mod.list_incidents()
+        }
+        assert "storage-job" not in incident_by_job
+        assert incident_by_job["delivery-job"]["state"] == "detected"
+        assert incident_by_job["healthy-job"]["state"] == "alerted"
 
 
 class TestOneShotCliRunIsSynchronous:

@@ -31,6 +31,20 @@ _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
 
+class RecoveredExecutions(int):
+    """Recovered records that remain compatible with the former integer count result."""
+
+    records: tuple[Dict[str, Any], ...]
+
+    def __new__(cls, records: List[Dict[str, Any]]):
+        result = super().__new__(cls, len(records))
+        result.records = tuple(records)
+        return result
+
+    def __iter__(self):
+        return iter(self.records)
+
+
 # --- executions ledger --------------------------------------------------------------------------
 
 def _connect() -> sqlite3.Connection:
@@ -261,10 +275,25 @@ def finish_execution(
     return record
 
 
-def recover_interrupted_executions() -> int:
-    """Mark provably abandoned attempts unknown without scheduling retries."""
+def record_execution_delivery_outcome(
+    execution_id: str, delivery_outcome: str,
+) -> Optional[Dict[str, Any]]:
+    """Record notification outcome for a recovered attempt without changing ``unknown``."""
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET delivery_outcome=? WHERE id=? AND status='unknown'",
+            (str(delivery_outcome), execution_id),
+        )
+        if cur.rowcount != 1:
+            return None
+        record = _fetch(conn, execution_id)
+    _emit_execution_state(record, delivery_outcome=delivery_outcome)
+    return record
+
+
+def recover_interrupted_executions() -> RecoveredExecutions:
+    """Mark provably abandoned attempts unknown and return count-compatible records."""
     now = _hermes_now().isoformat()
-    changed = 0
     recovered: List[Dict[str, Any]] = []
     with _transaction() as conn:
         rows = conn.execute(
@@ -299,16 +328,15 @@ def recover_interrupted_executions() -> int:
                  row["id"], row["status"], row["process_id"], row["pid"],
                  row["handoff_pending"], row["handoff_started_at"]),
             )
-            changed += cur.rowcount
             if cur.rowcount:
                 record = _fetch(conn, row["id"])
                 if record is not None:
                     recovered.append(record)
-        if changed:
+        if recovered:
             _prune_unlocked(conn)
     for record in recovered:
         _emit_execution_state(record)
-    return changed
+    return RecoveredExecutions(recovered)
 
 
 def list_executions(

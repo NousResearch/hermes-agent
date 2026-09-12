@@ -164,11 +164,11 @@ class TestProfileScopedMessagingWrites:
 
         # Enablement lands in the target profile's config.yaml.
         worker_cfg = yaml.safe_load(
-            (isolated_profiles["worker_alpha"] / "config.yaml").read_text()
+            (isolated_profiles["worker_alpha"] / "config.yaml").read_text(encoding="utf-8")
         ) or {}
         assert worker_cfg.get("platforms", {}).get("telegram", {}).get("enabled") is True
         root_cfg = yaml.safe_load(
-            (isolated_profiles["default"] / "config.yaml").read_text()
+            (isolated_profiles["default"] / "config.yaml").read_text(encoding="utf-8")
         ) or {}
         assert "telegram" not in (root_cfg.get("platforms") or {})
 
@@ -253,7 +253,7 @@ class TestMultiplexPortBindingGuard:
             json={"enabled": False},
         )
         assert resp.status_code == 200
-        cfg = yaml.safe_load((worker_home / "config.yaml").read_text())
+        cfg = yaml.safe_load((worker_home / "config.yaml").read_text(encoding="utf-8"))
         assert cfg["platforms"]["api_server"]["enabled"] is False
 
         catalog = client.get(

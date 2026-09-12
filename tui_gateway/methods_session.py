@@ -1680,8 +1680,12 @@ def _(rid, params: dict, session: dict) -> dict:
     updated = next((_status_dt(meta[f], created) for f in ("updated_at", "last_updated_at", "last_activity_at")
                     if meta.get(f)), created)
     mirror = _metadata_mirror(session)
-    provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
-    model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
+    if session.get("_compute_host_active"):
+        provider = mirror.get("provider") or getattr(agent, "provider", None) or "unknown"
+        model = mirror.get("model") or getattr(agent, "model", None) or "(unknown)"
+    else:
+        provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
+        model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
     project = _project_info_for_cwd(_display_session_cwd(session))
     title = (meta.get("title") or "").strip()
     lines = [

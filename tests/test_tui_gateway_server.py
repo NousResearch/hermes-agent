@@ -11593,6 +11593,31 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
     assert "Agent Running: Yes" in out
 
 
+def test_session_status_reads_live_compute_host_metadata(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="stale-gateway-model",
+        provider="stale-gateway-provider",
+    )
+    server._sessions["sid"] = _session(
+        agent=agent,
+        _compute_host_active=True,
+        _metadata_mirror={
+            "model": "live-host-model",
+            "provider": "live-host-provider",
+        },
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "Model: live-host-model (live-host-provider)" in resp["result"]["output"]
+
+
 def test_skills_reload_runs_in_gateway_process(monkeypatch):
     import agent.skill_commands as skill_commands
 

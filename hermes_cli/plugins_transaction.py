@@ -82,7 +82,8 @@ class PluginPublication:
         recover_plugin_publication(self.project, self.row, self.journal)
 
 
-def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict) -> None:
+def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
+                   *, require_consent: bool = False) -> None:
     from hermes_cli import plugins_cmd
     from hermes_cli.runtime_state import recover_publication, runtime_lock
     from pm import paths
@@ -106,6 +107,12 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
     # PM snapshots the staged inputs into the candidate generation's workspace.
     active = target.resolve() in member_sources(enabled_plugin_dirs())
     if active:
+        if require_consent:
+            consented, reason = plugins_cmd._install_plugin_python_deps(
+                plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())
+            if not consented:
+                raise plugins_cmd.PluginOperationError(
+                    f"Reinstall declined: {reason}. The installed plugin and active environment are unchanged.")
         sync_venv(explicit=True, plugin_dirs=candidate_members,
                   before_publish=lambda: PluginPublication(project, staged, target, new_metadata))
     else:

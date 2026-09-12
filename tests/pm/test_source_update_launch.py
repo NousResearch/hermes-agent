@@ -23,7 +23,7 @@ from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, sele
 from pm import paths
 from pm.lock import Facts
 from pm.package import InstallError
-from tests.pm.test_worker import isolated_python  # noqa: F401
+from tests.pm._fixtures import isolated_python  # noqa: F401
 
 
 @pytest.fixture

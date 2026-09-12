@@ -31,7 +31,7 @@ import {
   systemPreferences
 } from 'electron'
 
-import { classifyActiveRuntime } from './active-runtime-state'
+import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
@@ -389,6 +389,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
+import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
@@ -420,7 +421,6 @@ import {
 } from './updater'
 import {
   observeUpdaterHandoff,
-  resolveInstallationLauncher,
   resolveStagedUpdaterBinary,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker
@@ -2718,35 +2718,6 @@ function getVenvPython(venvRoot) {
   return path.join(venvRoot, IS_WINDOWS ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'))
 }
 
-// Map a selected interpreter back to the venv that OWNS it (the directory
-// above bin/ or Scripts/), but only when that venv lives inside `root`.
-// Returns null for system pythons — they own no site-packages we should mount.
-//
-// This exists because findPythonForRoot() probes `.venv` before `venv`, and a
-// checkout can legitimately have BOTH (dev tooling venv + the CLI install
-// venv, possibly on different Python versions). The interpreter and the
-// site-packages placed on PYTHONPATH must come from the SAME venv: pairing a
-// .venv 3.12 python with venv/lib/python3.11/site-packages makes the backend
-// die on its first native import (pydantic_core) before the gateway binds —
-// the renderer then reports "Gateway offline" on every profile.
-function venvRootForPython(python: string, root: string) {
-  const parent = path.dirname(python)
-  const binName = path.basename(parent).toLowerCase()
-
-  if (binName !== 'bin' && binName !== 'scripts') {
-    return null
-  }
-
-  const candidate = path.dirname(parent)
-  const relative = path.relative(root, candidate)
-
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-    return null
-  }
-
-  return candidate
-}
-
 // Windows console-window flashes are governed by the *parent's* console, not by
 // each child spawn. A GUI-subsystem parent (pythonw.exe) has no console, so every
 // console-subsystem child it spawns (git, gh, cmd, ...) must allocate its own —
@@ -4115,25 +4086,22 @@ function readBootstrapMarker() {
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
 function isSourceRuntimeUsable(root: string): boolean {
-  const launcher: string | null = resolveInstallationLauncher(root, IS_WINDOWS, HERMES_HOME)
-
-  return isHermesSourceRoot(root) && launcher !== null && verifyHermesCli(
-    isCommandScript(launcher) ? `"${launcher}"` : launcher,
-    { shell: isCommandScript(launcher) }
-  )
+  return resolveSourceInstallationBackend(root, [], { hermesHome: HERMES_HOME }) !== null
 }
 
 function isActiveRuntimeUsable(): boolean {
   return isSourceRuntimeUsable(ACTIVE_HERMES_ROOT)
 }
 
-function activeRuntimeState() {
+function activeRuntimeState(
+  backend: SourceBackend | null = resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, [], { hermesHome: HERMES_HOME })
+): ActiveRuntimeState {
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
   // update`, which moves HEAD legitimately. The marker only attests "a
   // desktop-managed bootstrap ran here at least once"; runtime usability is
   // what decides whether we can actually launch.
-  const state = classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, isActiveRuntimeUsable())
+  const state: ActiveRuntimeState = classifyActiveRuntime(readBootstrapMarker(), BOOTSTRAP_MARKER_SCHEMA_VERSION, backend !== null)
 
   // The canonical install stamp (written next to the runtime by the bootstrap)
   // tells the UI where this runtime came from. Prefer it over the marker so
@@ -4414,57 +4382,7 @@ function writeDefaultProjectDir(dir) {
   }
 }
 
-function createPythonBackend(root, label, backendArgs, options: any = {}) {
-  const python = findPythonForRoot(root)
-
-  if (!python) {
-    return null
-  }
-
-  // The venv interpreter self-locates (pyvenv.cfg) and `cwd: root` puts the
-  // checkout first on sys.path for `-m hermes_cli.main`. No PYTHONPATH.
-  const venvRoot = venvRootForPython(python, root) ?? path.join(root, 'venv')
-  const venvPython = getVenvPython(venvRoot)
-  const command = IS_WINDOWS && fileExists(venvPython) ? venvPython : python
-
-  return {
-    kind: 'python',
-    label,
-    command,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    env: buildDesktopBackendEnv(),
-    root,
-    bootstrap: Boolean(options.bootstrap),
-    shell: false,
-    // A resolved local runtime — already on this machine (checkout or
-    // installed). The setup choice's local card reads this to offer the
-    // "use existing" variant instead of an install.
-    local: 'installed'
-  }
-}
-
-// createActiveBackend — build a backend pointing at ACTIVE_HERMES_ROOT, the
-// canonical install location shared with the CLI installer. The venv at
-// VENV_ROOT may not exist yet on first run; bootstrap=true tells
-// ensureRuntime() to create / refresh it before launch.
-function createActiveBackend(backendArgs) {
-  const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython) ? venvPython : findSystemPython()
-
-  return {
-    kind: 'python',
-    label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
-    command,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
-    env: buildDesktopBackendEnv(),
-    root: ACTIVE_HERMES_ROOT,
-    bootstrap: true,
-    shell: false,
-    local: 'installed'
-  }
-}
-
-function resolveHermesBackend(backendArgs) {
+function resolveHermesBackend(backendArgs: string[]): ResolvedHermesBackend {
   const payload = bundledPayload(process.resourcesPath)
 
   if (payload) {
@@ -4487,10 +4405,10 @@ function resolveHermesBackend(backendArgs) {
 
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
-  const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+  const overrideRoot: string | undefined = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
 
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
+    const backend: SourceBackend | null = createSourcePythonBackend(overrideRoot, findPythonForRoot(overrideRoot), backendArgs)
 
     if (backend) {
       return backend
@@ -4502,7 +4420,7 @@ function resolveHermesBackend(backendArgs) {
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
+    const backend: SourceBackend | null = createSourcePythonBackend(SOURCE_REPO_ROOT, findPythonForRoot(SOURCE_REPO_ROOT), backendArgs)
 
     if (backend) {
       return backend
@@ -4513,20 +4431,21 @@ function resolveHermesBackend(backendArgs) {
   //    %LOCALAPPDATA%\\hermes\\hermes-agent (Windows) or ~/.hermes/hermes-agent.
   //    A valid bootstrap marker proves Desktop finished the first-run install
   //    flow, but marker provenance is NOT the same thing as runtime usability:
-  //    the CLI can create the exact same repo+venv layout, and older desktop
+  //    the CLI can publish the same installation launcher, and older desktop
   //    builds could leave a healthy install behind without the marker. If the
   //    active runtime is usable, launch it directly; only fall through to
   //    bootstrap when the runtime itself is unusable.
-  const activeRuntime = activeRuntimeState()
+  const activeBackend: SourceBackend | null = resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, { hermesHome: HERMES_HOME })
+  const activeRuntime: ActiveRuntimeState = activeRuntimeState(activeBackend)
 
-  if (activeRuntime.shouldUseActiveRuntime && !bootstrapRepairRequested) {
+  if (activeBackend && !bootstrapRepairRequested) {
     if (!activeRuntime.hasValidMarker) {
       rememberLog(
         `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
       )
     }
 
-    return createActiveBackend(backendArgs)
+    return activeBackend
   }
 
   if (bootstrapRepairRequested) {
@@ -4622,6 +4541,8 @@ interface ResolvedHermesBackend {
   root?: string
   installStamp?: Readonly<InstallStamp> | null
   activeRoot?: string
+  isPackaged?: boolean
+  platform?: NodeJS.Platform
   readyFile?: boolean
 }
 
@@ -4750,50 +4671,11 @@ async function ensureRuntime(backend: ResolvedHermesBackend): Promise<ResolvedHe
 
     rememberLog('[bootstrap] bootstrap complete; marker written. Re-resolving backend.')
 
-    // Re-resolve now that the install exists. The new resolution lands in
-    // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
+    // Resolve the newly published launcher after the installer completes.
     return ensureRuntime(resolveHermesBackend(backend.args))
   }
 
-  // bootstrap=true with a real backend (createActiveBackend path) means we
-  // have a checkout and need to ensure the venv-derived Python command is
-  // wired into the backend before launch. Same code path the old factory
-  // sync flow exited through, minus all the factory/pip/marker machinery
-  // (install.ps1 owns those concerns now and the bootstrap-complete marker
-  // attests they ran successfully).
-  if (!isHermesSourceRoot(ACTIVE_HERMES_ROOT)) {
-    throw new Error(
-      `Hermes install at ${ACTIVE_HERMES_ROOT} is missing or incomplete. ` +
-        'Reinstall via the desktop installer or scripts/install.ps1.'
-    )
-  }
-
-  const venvPython = getVenvPython(VENV_ROOT)
-
-  if (!fileExists(venvPython)) {
-    // No venv at the expected location AND no bootstrap-needed sentinel
-    // means we have a half-installed checkout: .git exists, source files
-    // exist, but venv is missing or broken. This shouldn't happen in
-    // normal flow because activeRuntimeState() requires isHermesSourceRoot()
-    // plus an importable hermes_cli before it hands back the active runtime.
-    // If we hit this, the user (or a deleted venv) broke the invariant; tell
-    // them to re-run the install.
-    throw new Error(
-      `Hermes venv missing at ${VENV_ROOT}. Re-run the desktop installer or ` + '`scripts/install.ps1` to rebuild it.'
-    )
-  }
-
-  backend.command = getVenvPython(VENV_ROOT)
-  backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
-  updateBootProgress({
-    phase: 'runtime.ready',
-    message: 'Hermes runtime is ready',
-    progress: 82,
-    running: true,
-    error: null
-  })
-
-  return backend
+  throw new Error(`Unexpected bootstrap backend: ${backend.kind}`)
 }
 
 // Assemble a single-file multipart/form-data body (FastAPI `UploadFile`

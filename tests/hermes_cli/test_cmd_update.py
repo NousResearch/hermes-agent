@@ -790,7 +790,7 @@ class TestZipDesktopPreservation:
 
         monkeypatch.setattr(update_cmd, "_print_curator_first_run_notice", lambda: None)
         monkeypatch.setattr(update_cmd, "_print_curator_recent_run_notice", lambda: None)
-        monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda: None)
+        monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **kwargs: None)
         monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path / "hermes-home")
 
         with (

@@ -55,7 +55,7 @@ def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, loc
 def test_ci_packages_exports_python_and_preserves_real_child_exit(tmp_path, monkeypatch, local_toolchain):
     import pm
     from scripts.ci import python_packages
-    from tests.pm.test_workspace_build_inputs import _wheel
+    from tests.pm._fixtures import _wheel
 
     wheels = tmp_path / "wheels"
     wheels.mkdir()
@@ -87,7 +87,7 @@ def test_ci_packages_exports_python_and_preserves_real_child_exit(tmp_path, monk
 def test_termux_gate_checks_real_offline_wheels_and_application_uses_same_graph(tmp_path, local_toolchain):
     from pm.package import InstallError
     from scripts.termux import build_wheels, build_environment
-    from tests.pm.test_workspace_build_inputs import _wheel
+    from tests.pm._fixtures import _wheel
 
     wheels = tmp_path / "wheelhouse"
     wheels.mkdir()

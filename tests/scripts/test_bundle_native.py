@@ -198,7 +198,7 @@ def test_staged_cache_installs_built_wheel_without_unsigned_zip(tmp_path):
 def test_native_dispatch_reuses_pm_cache_offline(tmp_path, monkeypatch):
     import pm
     from pm.packages import uv_cache_dir
-    from tests.pm.test_workspace_build_inputs import _wheel
+    from tests.pm._fixtures import _wheel
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "setup-pm"))

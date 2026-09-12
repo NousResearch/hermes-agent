@@ -24,32 +24,17 @@ def _safe_which(cmd: str) -> str | None:
 
 
 def _pm_tool_path(name: str) -> Path | None:
-    """Answer a tool's binary from the pm store (facts.json), not PATH.
+    """Use PM's current selection, including writable payload extensions.
 
-    Doctor probes tools (git, rg, ...) that pinned installs run out of
-    the store; nothing puts the store on an interactive shell's PATH, so
-    a PATH-only probe reports a healthy managed install as "not found".
-    This answers from pm's registry/store/package authority: the recorded
-    entry's binary when it exists on disk, None when unstaged or the
-    recorded binary is gone (deleted = report missing, never guess).
-    Contract tests: tests/hermes_cli/test_doctor_pm_store_probe.py.
+    Old facts are diagnostic evidence, not an available runtime tool.
     """
     try:
-        import pm  # noqa: F401 — imports pm.packages, registering the definitions
-        from pm import paths, registry, store
-        from pm.lock import Facts
+        from pm import installed_package
 
-        fact = Facts(paths.facts_path()).get(name) or {}
-        entry_name = fact.get("entry")
-        if not entry_name:
-            return None
-        package = registry.get_package(name)
-        binary = package.binary(store.Store(paths.store_root()).entry(entry_name), store.current_target())
+        installed = installed_package(name)
     except Exception:
         return None
-    if binary is None or not binary.is_file():
-        return None
-    return binary
+    return installed.binary if installed is not None else None
 
 
 def _pm_package_for_command(command: str) -> str | None:

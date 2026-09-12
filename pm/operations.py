@@ -39,7 +39,7 @@ def build_environment(
     Failure removes only the destination exclusively created by this invocation.
     Sealed builds prune only the .pth files that refer to build-time state.
     """
-    from pm.environment import managed_environment, prune_site_pth
+    from pm.environment import _fresh_build, managed_environment
 
     source, out = Path(source).absolute(), Path(out).absolute()
     if not (source / "pyproject.toml").is_file():
@@ -54,17 +54,9 @@ def build_environment(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
-    out.mkdir(parents=True)
-    try:
-        environment.create()
+    with _fresh_build(environment, sealed=sealed):
         environment.sync(source, extras=extras, groups=groups, only_groups=only_groups, all_extras=all_extras,
                          no_install_project=no_install_project, frozen=frozen, timeout=timeout)
-        environment.check()
-        if sealed:
-            prune_site_pth(out)
-    except BaseException:
-        shutil.rmtree(out, ignore_errors=True)
-        raise
     return environment.executable
 
 

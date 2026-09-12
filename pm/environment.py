@@ -6,11 +6,13 @@ staged toolchain directly without recursing through the worker it is building.
 from __future__ import annotations
 
 import codecs
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 import io
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import time
@@ -121,6 +123,23 @@ def managed_environment(destination: Path, *, python: Path | None = None,
         destination=destination.absolute(), cache=uv_cache_dir() if cache is None else cache.absolute(),
         env=_base_environment(env), offline=offline, output=output,
     )
+
+
+@contextmanager
+def _fresh_build(environment: PythonEnvironment, *, sealed: bool) -> Iterator[None]:
+    """Own only the output claimed by this build, including failed validation."""
+    out = environment.destination
+    # A concurrent creator wins intact: never enter cleanup before mkdir succeeds.
+    out.mkdir(parents=True)
+    try:
+        environment.create()
+        yield
+        environment.check()
+        if sealed:
+            prune_site_pth(out)
+    except BaseException:
+        shutil.rmtree(out, ignore_errors=True)
+        raise
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -5,14 +5,7 @@ stores."""
 
 from __future__ import annotations
 
-import hashlib
-import io
-import json
-import os
-import tarfile
 import threading
-from functools import partial
-from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
 import pytest
@@ -20,9 +13,10 @@ import pytest
 import pm.paths as paths
 import pm.registry as registry
 from pm.lock import Facts, Lockfile
-from pm.package import InstallError, Package, StatePackage, compose_env
+from pm.package import InstallError, compose_env
 from pm.packages import BinaryPackage
 from pm.store import Store, current_target, flatten_single_dir
+from tests.pm._fixtures import make_tar, served as served
 
 
 class FakeTool(BinaryPackage):
@@ -61,32 +55,6 @@ class MultiTool(BinaryPackage):
 
     def fetch_url(self, version, target):
         return self.fetch_urls(version, target)[0]
-
-
-def make_tar(docroot: Path, name: str, files: dict[str, str]) -> tuple[str, str]:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for rel, content in files.items():
-            data = content.encode()
-            info = tarfile.TarInfo(rel)
-            info.size = len(data)
-            info.mode = 0o755
-            tf.addfile(info, io.BytesIO(data))
-    payload = buf.getvalue()
-    (docroot / name).write_bytes(payload)
-    return name, hashlib.sha256(payload).hexdigest()
-
-
-@pytest.fixture
-def served(tmp_path):
-    docroot = tmp_path / "www"
-    docroot.mkdir()
-    handler = partial(SimpleHTTPRequestHandler, directory=str(docroot))
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield docroot, f"http://127.0.0.1:{server.server_port}"
-    server.shutdown()
 
 
 @pytest.fixture
@@ -592,80 +560,6 @@ def test_adopt_noop_without_facts(pm_env, monkeypatch):
 
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(paths.store_root() / "nowhere"))
     assert pm.adopt() is False
-
-
-class FakeVenv(StatePackage):
-    name = "venv"
-
-    def __init__(self):
-        self.applied: list[list[str]] = []
-        self.lock_content = b"lock-v1"
-
-    def expected_stamp(self, extras):
-        import hashlib
-
-        h = hashlib.sha256(self.lock_content)
-        h.update(",".join(sorted(extras)).encode())
-        return h.hexdigest()
-
-    def apply(self, extras):
-        self.applied.append(list(extras))
-        from hermes_cli.runtime_paths import install_state_dir
-
-        environment = install_state_dir(paths.repo_root()) / "environments" / str(len(self.applied)) / "venv"
-        environment.mkdir(parents=True)
-        (environment / "pyvenv.cfg").write_text("home = test\n", encoding="utf-8")
-        return {"environment": environment}
-
-
-@pytest.fixture
-def venv_env(pm_env, tmp_path, monkeypatch):
-    project = tmp_path / "venv-project"
-    project.mkdir()
-    monkeypatch.setattr(paths, "repo_root", lambda: project)
-    fake = FakeVenv()
-    registry._packages["venv"] = fake
-    return pm_env, fake
-
-
-def test_sync_venv_applies_once_then_stamps(venv_env):
-    from pm.ensure import sync_venv
-
-    _, fake = venv_env
-    sync_venv()
-    sync_venv()
-    assert fake.applied == [[]]
-
-
-def test_sync_venv_unions_extras(venv_env):
-    from pm.ensure import sync_venv
-
-    _, fake = venv_env
-    sync_venv(["telegram"])
-    sync_venv(["anthropic"])
-    sync_venv(["telegram"])
-    assert fake.applied == [["telegram"], ["anthropic", "telegram"]]
-
-
-def test_check_reports_venv_drift_and_missing_tools(venv_env):
-    from pm.ensure import check, ensure, sync_venv
-
-    (pm_env_tuple, fake) = venv_env
-    lockfile_path, runtime, *_ = pm_env_tuple
-
-    assert check() == []  # pm never touched this install: silent
-
-    ensure("faketool", base_env={})
-    sync_venv()
-    assert check() == []
-
-    fake.lock_content = b"lock-v2"  # uv.lock changed underneath
-    problems = check()
-    assert problems == ["venv: out of sync with uv.lock"]
-
-    _pin(lockfile_path, "faketool", "9.9", "0" * 64)  # tool outdated now
-    problems = check()
-    assert "faketool: not installed or outdated" in problems
 
 
 def test_bundle_package_names_include_browsers(monkeypatch, tmp_path):

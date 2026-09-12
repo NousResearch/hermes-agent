@@ -113,6 +113,16 @@ def stage_native(args) -> int:
         return subprocess.run(command, cwd=root, env=env).returncode
 
 
+def prune_staged_store(store_dir: Path, names: list[str]) -> None:
+    """Prune this build's store, never the ambient user's tool store."""
+    facts = Facts(store_dir / "facts.json", strict=True)
+    facts.retain({package.name for package in walk(names)})
+    keep = facts.entries_in_use()
+    for entry in store_dir.iterdir():
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:
+            shutil.rmtree(entry)
+
+
 def _stage_native(args) -> int:
     """Stage a complete payload for THIS machine's target into --out:
     repo snapshot + store + facts (via the normal install path, redirected)
@@ -156,12 +166,7 @@ def _stage_native(args) -> int:
     # Only this build's store is ours to prune; machine-wide partials are not.
     # Cached facts may still name packages removed from the current selection.
     # Retain the dependency closure before using facts as the deletion roots.
-    facts = Facts(store_dir / "facts.json", strict=True)
-    facts.retain({package.name for package in walk(names)})
-    keep = facts.entries_in_use()
-    for entry in store_dir.iterdir():
-        if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:
-            shutil.rmtree(entry)
+    prune_staged_store(store_dir, names)
 
 
     python_fact = _facts().get("python")

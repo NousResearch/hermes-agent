@@ -33,7 +33,7 @@ branch's vocabulary: stamps via ``hermes_cli.steward``, managed tools via
 """
 from __future__ import annotations
 
-from hermes_cli.runtime_paths import install_state_dir, installs_root
+from hermes_cli.runtime_paths import install_state_dir
 import json
 import logging
 import os
@@ -136,128 +136,6 @@ def current_install_identity(project_root: Path) -> str | None:
 # ---------------------------------------------------------------------------
 # the per-install state folder: installs/<SHA16>/ under the DEFAULT home
 # ---------------------------------------------------------------------------
-
-def ensure_install_dir(project_root: Path) -> Path:
-    """The state folder, created with its identity record on first touch.
-
-    install.json is the REVERSE map (sha16 → canonical root) that makes
-    orphan GC possible: `hermes doctor` enumerates installs/*/install.json
-    and flags entries whose recorded root no longer exists. Written once,
-    under the same single-flight lock the records use; the steward comes
-    from hermes_cli.steward so the record says who owns the tree, not who
-    touched it first.
-    """
-    state = install_state_dir(project_root)
-    marker = state / "install.json"
-    if marker.is_file():
-        return state
-    state.mkdir(parents=True, exist_ok=True)
-    lock = _RecordLock(state / ".install-json.lock")
-    if not lock.acquire():
-        return state  # someone else is writing it right now — theirs wins
-    try:
-        if not marker.is_file():
-            from datetime import datetime, timezone
-
-            from hermes_cli.steward import sealed_steward
-
-            steward = sealed_steward(Path(project_root))
-            payload = {
-                "root": str(Path(project_root).resolve()),
-                "steward": steward if steward is not None else "checkout",
-                "firstSeen": datetime.now(timezone.utc).isoformat(),
-            }
-            tmp = marker.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-            os.replace(tmp, marker)
-    finally:
-        lock.release()
-    return state
-
-
-def orphaned_installs() -> list[tuple[Path, str]]:
-    """State folders whose recorded root no longer exists.
-
-    ``(folder, recorded_root)`` pairs for `hermes doctor`'s sweep. A
-    folder without a readable install.json is orphaned by definition —
-    nothing can ever claim it again, because claiming goes through
-    ensure_install_dir which writes the record first.
-    """
-    root = installs_root()
-    if not root.is_dir():
-        return []
-    orphans: list[tuple[Path, str]] = []
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
-            continue
-        try:
-            recorded = json.loads(
-                (entry / "install.json").read_text(encoding="utf-8-sig")
-            ).get("root", "")
-        except (OSError, ValueError):
-            orphans.append((entry, "<unreadable install.json>"))
-            continue
-        if not recorded or not Path(recorded).exists():
-            orphans.append((entry, recorded or "<empty>"))
-    return orphans
-
-
-def orphaned_store_entries() -> list[tuple[Path, int]]:
-    """Tool-store entries the installed-state ledger no longer references.
-
-    ``(entry_dir, size_bytes)`` pairs for `hermes doctor`'s sweep. pm's
-    facts.json is the only authority consulted — the same ledger
-    ``pm.ensure`` resolves by, so this can never flag an entry pm would
-    still hand out. An entry is REFERENCED when facts records it (tool
-    entries) or when it is a ``fetch-*`` archive cache entry backing a
-    referenced install. Everything else is bytes no lookup can ever
-    return: superseded versions left behind by pin bumps.
-
-    Doubt errs toward KEEP: a facts file that exists but cannot be read
-    aborts the whole sweep (empty result), because its references are
-    unknowable and any entry might be one of them. No facts file at all
-    means pm never installed anything — nothing is referenced, but there
-    is also nothing to GC against, so the sweep reports nothing.
-    """
-    from pm import paths as pm_paths
-    from pm.lock import Facts
-
-    store = pm_paths.store_root()
-    if not store.is_dir():
-        return []
-    facts_file = pm_paths.facts_path()
-    if not facts_file.is_file():
-        return []
-    try:
-        raw = json.loads(facts_file.read_text(encoding="utf-8-sig"))
-        if not isinstance(raw, dict):
-            return []
-    except (OSError, ValueError):
-        # Unreadable ledger: references unknowable — keep everything.
-        return []
-    referenced = Facts(facts_file).entries_in_use()
-
-    orphans: list[tuple[Path, int]] = []
-    for entry in sorted(store.iterdir()):
-        # Scratch dirs (.staging-*), the ledger itself, and stray files
-        # are pm's own cleanup problem, never GC candidates. fetch-*
-        # archive cache entries are content-addressed and cheap to keep;
-        # skip them too (re-fetch avoidance is their whole point).
-        if not entry.is_dir() or entry.name.startswith("."):
-            continue
-        if entry.name.startswith("fetch-"):
-            continue
-        if entry.name in referenced:
-            continue
-        size = 0
-        for f in entry.rglob("*"):
-            try:
-                if f.is_file() and not f.is_symlink():
-                    size += f.stat().st_size
-            except OSError:
-                continue
-        orphans.append((entry, size))
-    return orphans
 
 
 def record_path(project_root: Path, scope: str) -> Path:

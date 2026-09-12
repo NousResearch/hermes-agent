@@ -1,36 +1,18 @@
-"""Retired import names suppress old updater work without claiming success."""
+"""Retired import names hand off old updater work without claiming success."""
 
-import importlib
+from contextvars import ContextVar
+from copy import deepcopy
+from dataclasses import dataclass
 import os
-from pathlib import Path
-import socket
-import subprocess
-import urllib.request
+import sys
+from types import SimpleNamespace
 
 import pytest
 
-
-@pytest.fixture
-def no_external_work(monkeypatch):
-    import pm
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("old-updater shim attempted external work")
-
-    for name in ("sync_venv", "ensure_environment", "build_environment", "ensure_import"):
-        monkeypatch.setattr(pm, name, forbidden)
-    monkeypatch.setattr(subprocess, "Popen", forbidden)
-    monkeypatch.setattr(os, "system", forbidden)
-    monkeypatch.setattr(os, "kill", forbidden)
-    monkeypatch.setattr(socket, "create_connection", forbidden)
-    monkeypatch.setattr(urllib.request, "urlopen", forbidden)
-    monkeypatch.setattr(urllib.request, "urlretrieve", forbidden)
-    before_env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
-    home = Path(os.environ["HERMES_HOME"])
-    before_files = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
-    yield forbidden
-    assert {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"} == before_env
-    assert {p: p.read_bytes() for p in home.rglob("*") if p.is_file()} == before_files
+from tests.compat.old_updater_support import (
+    fresh_child as fresh_child,
+    no_external_work as no_external_work,
+)
 
 
 @pytest.mark.parametrize("command,profile", [
@@ -55,43 +37,36 @@ def test_retired_code_identity_is_unknown(refresh, no_external_work, monkeypatch
     assert get_code_identity(refresh)["sha"] is None
 
 
-def test_retired_constants_reload_stops_old_gateway_recovery(no_external_work, monkeypatch, capsys):
+def test_retired_constants_reload_handoffs_old_gateway_recovery(fresh_child, monkeypatch):
     import hermes_constants
 
     # Shipped get_python_path uses this fallback when its constants module is stale.
     monkeypatch.delattr(hermes_constants, "venv_python_path")
     before = dict(vars(hermes_constants))
-    monkeypatch.setattr(importlib, "reload", no_external_work)
-    with pytest.raises(SystemExit) as exc:
+    with fresh_child.exits():
         try:
             from hermes_constants import venv_python_path
         except ImportError:
             from hermes_cli.managed_uv import _reload_hermes_constants
             venv_python_path = _reload_hermes_constants().venv_python_path
         pytest.fail(f"old recovery continued with {venv_python_path}")
-    assert exc.value.code == 0
-    assert "run `hermes` again" in capsys.readouterr().err.lower()
     assert vars(hermes_constants) == before
 
 
 @pytest.mark.parametrize("kwargs", [{}, {"timeout": 120, "capture_output": False}])
-def test_retired_pip_install_stops_before_reporting_success(kwargs, no_external_work, capsys):
+def test_retired_pip_install_handoffs_before_reporting_success(kwargs, fresh_child):
     from hermes_cli.tools_config import _pip_install
 
-    with pytest.raises(SystemExit) as exc:
+    with fresh_child.exits():
         result = _pip_install(["--quiet", "honcho-ai"], **kwargs)
         pytest.fail(f"retired installer returned a result: {result}")
-    assert exc.value.code == 0
-    assert "run `hermes` again" in capsys.readouterr().err.lower()
 
 
-def test_retired_root_stops_before_inventing_portable_git_path(no_external_work, capsys):
+def test_retired_root_handoffs_before_inventing_portable_git_path(fresh_child):
     from hermes_cli.update_cmd import get_default_hermes_root
 
-    with pytest.raises(SystemExit) as exc:
+    with fresh_child.exits():
         get_default_hermes_root() / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-    assert exc.value.code == 0
-    assert "run `hermes` again" in capsys.readouterr().err.lower()
 
 
 @pytest.mark.parametrize("prompt", [True, False])
@@ -120,23 +95,69 @@ def test_live_dingtalk_dependencies_use_pm_not_retired_installer(monkeypatch):
 
 
 @pytest.mark.parametrize("specs", [[], ["honcho-ai"]])
-def test_retired_install_specs_stops_before_reporting_success(specs, no_external_work, capsys):
+def test_retired_install_specs_handoffs_before_reporting_success(specs, fresh_child):
     from tools.lazy_deps import install_specs
 
-    with pytest.raises(SystemExit) as exc:
+    before = list(specs)
+    with fresh_child.exits():
         result = install_specs(specs, timeout=120)
         pytest.fail(f"retired installer returned a result: {result}")
-    assert exc.value.code == 0
-    assert "run `hermes` again" in capsys.readouterr().err.lower()
+    assert specs == before
 
 
-def test_retired_subprocess_run_stops_powershell_installer(no_external_work, capsys):
+@pytest.mark.parametrize("handled", [False, True], ids=["unacknowledged", "child-completed"])
+def test_historical_payload_survives_bridge_and_cleanup_requires_ack(handled, fresh_child, monkeypatch):
+    from hermes_cli import update_receipt
+    from hermes_cli.managed_uv import ensure_uv
+
+    @dataclass
+    class HistoricalPlan:
+        profiles: list[str]
+        snapshots: dict[str, str]
+
+    # These names belong to real old updater frames, not parameters added to the
+    # shim. Preserve opaque data and arguments, including spaces and Unicode.
+    had_desktop_app_before_update = True
+    pre_update_snapshot_id = "snapshot before pull"
+    pre_update_version = "old-version"
+    gateway_mode = True
+    assume_yes = False  # Old frame state takes precedence over argv's --yes.
+    _pre_update_plan = HistoricalPlan(["ops team", "日本"], {"ops team": "snapshot before pull"})
+    _windows_gateway_resume = {"resume_needed": True, "profiles": {"ops team": "old-pid"}}
+    receipt = SimpleNamespace(data={"update_id": "original-id", "steps": [{"name": "pull", "ok": True}]})
+    slot = ContextVar("test_historical_receipt", default=receipt)
+    monkeypatch.setattr(update_receipt, "_current", slot)
+    argv = ["hermes", "--profile", "ops team", "update", "--gateway", "--yes"]
+    monkeypatch.setattr(sys, "argv", argv)
+    expected = deepcopy({
+        "desktop": had_desktop_app_before_update,
+        "pre_update_snapshot_id": pre_update_snapshot_id,
+        "pre_update_version": pre_update_version,
+        "gateway_mode": gateway_mode,
+        "assume_yes": assume_yes,
+        "windows_resume": _windows_gateway_resume,
+        "plan": {"profiles": _pre_update_plan.profiles, "snapshots": _pre_update_plan.snapshots},
+        "receipt": receipt.data,
+        "argv": argv,
+    })
+    fresh_child.result = {"resume_handled": handled, "receipt_handled": handled}
+    with fresh_child.exits():
+        ensure_uv()
+    request = fresh_child.requests[0]
+    assert {key: request[key] for key in expected} == expected
+    assert _pre_update_plan.profiles == expected["plan"]["profiles"]
+    assert _pre_update_plan.snapshots == expected["plan"]["snapshots"]
+    assert receipt.data == expected["receipt"]
+    assert sys.argv == expected["argv"]
+    assert slot.get() is (None if handled else receipt)
+    assert _windows_gateway_resume == {**expected["windows_resume"], "resume_needed": not handled}
+
+
+def test_retired_subprocess_run_handoffs_instead_of_running_powershell(fresh_child):
     from hermes_cli import _subprocess_compat
 
-    with pytest.raises(SystemExit) as exc:
+    with fresh_child.exits():
         _subprocess_compat.run(
             ["powershell", "-ExecutionPolicy", "Bypass", "-c", "irm https://astral.sh/uv/install.ps1 | iex"],
             env=dict(os.environ), check=True, capture_output=True,
         )
-    assert exc.value.code == 0
-    assert "run `hermes` again" in capsys.readouterr().err.lower()

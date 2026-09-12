@@ -9,6 +9,35 @@
       },
       "version": "0.26.0"
     },
+    "bws": {
+      "artifacts": {
+        "darwin-arm64": {
+          "sha256": "67ab9bc345e2ec3b5dfddd116f938fdab79538042623a6bcca5ca0c1b0c42d95",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-macos-universal-2.0.0.zip"
+        },
+        "darwin-x64": {
+          "sha256": "67ab9bc345e2ec3b5dfddd116f938fdab79538042623a6bcca5ca0c1b0c42d95",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-macos-universal-2.0.0.zip"
+        },
+        "linux-arm64": {
+          "sha256": "de61bfbacbcf6e3648ddc8dbd6ca8bb2245438ccf5f94d54129997528f5a752d",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-aarch64-unknown-linux-musl-2.0.0.zip"
+        },
+        "linux-x64": {
+          "sha256": "ea6eb18f1270388f12d15a35f919ccb3488d32a777433baefe883d561f46fc73",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-x86_64-unknown-linux-musl-2.0.0.zip"
+        },
+        "win32-arm64": {
+          "sha256": "1a02fca3a855ba32d8f0c40813af8da705cf1e7cf9b932164959531e57eccbe0",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-aarch64-pc-windows-msvc-2.0.0.zip"
+        },
+        "win32-x64": {
+          "sha256": "4284944f3b0c7b97a4d4105c715cd814c744ceff0405481a213937955e31d866",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-x86_64-pc-windows-msvc-2.0.0.zip"
+        }
+      },
+      "version": "2.0.0"
+    },
     "chromium": {
       "artifacts": {
         "darwin-arm64": {
@@ -141,6 +170,83 @@
         }
       },
       "version": "2.53.0+3"
+    },
+    "iron-proxy": {
+      "artifacts": {
+        "darwin-arm64": [
+          {
+            "sha256": "6aa2d3d78ba87bdfacaef8f8465ffd289f8d23ab4d3f433e8c0b2b77f887632a",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_darwin_arm64.tar.gz"
+          },
+          {
+            "sha256": "8fb3193b53ca296e2f93ff0fd69d289340cffe9a36c0de22e47ea5cfea899b37",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt"
+          },
+          {
+            "sha256": "1ff70f0bd8699b2f1c2c3545e6aa9034d24267fc01d1b9aaa93d73e893cb610b",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt.asc"
+          },
+          {
+            "sha256": "ce685e36e7e7d184ffa82b35bd5cbe83db010ac38bc504a0e225333453992c56",
+            "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
+          }
+        ],
+        "darwin-x64": [
+          {
+            "sha256": "9c278663d2e9c04fb3f6b1c18588fc2095974b42347c7885d10014835fc4b24a",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_darwin_amd64.tar.gz"
+          },
+          {
+            "sha256": "8fb3193b53ca296e2f93ff0fd69d289340cffe9a36c0de22e47ea5cfea899b37",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt"
+          },
+          {
+            "sha256": "1ff70f0bd8699b2f1c2c3545e6aa9034d24267fc01d1b9aaa93d73e893cb610b",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt.asc"
+          },
+          {
+            "sha256": "ce685e36e7e7d184ffa82b35bd5cbe83db010ac38bc504a0e225333453992c56",
+            "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
+          }
+        ],
+        "linux-arm64": [
+          {
+            "sha256": "1316cb4f20fcfba5042b06d07cd523ffa617de9de2999cd5f1f44474777c48ad",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_linux_arm64.tar.gz"
+          },
+          {
+            "sha256": "8fb3193b53ca296e2f93ff0fd69d289340cffe9a36c0de22e47ea5cfea899b37",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt"
+          },
+          {
+            "sha256": "1ff70f0bd8699b2f1c2c3545e6aa9034d24267fc01d1b9aaa93d73e893cb610b",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt.asc"
+          },
+          {
+            "sha256": "ce685e36e7e7d184ffa82b35bd5cbe83db010ac38bc504a0e225333453992c56",
+            "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
+          }
+        ],
+        "linux-x64": [
+          {
+            "sha256": "0ab2e031074a01410caecaa2769c0b38f69cbdf4b6333bce498fe73919f6f9f6",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_linux_amd64.tar.gz"
+          },
+          {
+            "sha256": "8fb3193b53ca296e2f93ff0fd69d289340cffe9a36c0de22e47ea5cfea899b37",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt"
+          },
+          {
+            "sha256": "1ff70f0bd8699b2f1c2c3545e6aa9034d24267fc01d1b9aaa93d73e893cb610b",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt.asc"
+          },
+          {
+            "sha256": "ce685e36e7e7d184ffa82b35bd5cbe83db010ac38bc504a0e225333453992c56",
+            "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
+          }
+        ]
+      },
+      "version": "0.39.0"
     },
     "llamacpp-cpu": {
       "artifacts": {
@@ -354,6 +460,83 @@
         }
       },
       "version": "sha256:c14ffb703abf44f2d3bf7fdffdcc50df7d1454d09c705be190e0342a0b47f303"
+    },
+    "tirith": {
+      "artifacts": {
+        "darwin-arm64": [
+          {
+            "sha256": "551f9a6ebf58344e7d0aa06bcc78d7a4f2f7b44b8011be563e0a91976cc9c4df",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-aarch64-apple-darwin.tar.gz"
+          },
+          {
+            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
+          },
+          {
+            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
+          },
+          {
+            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
+          }
+        ],
+        "darwin-x64": [
+          {
+            "sha256": "dda8a14df00a49c4b0f607c15a82259f96c94da91b09718a7ebbc34a831d6f54",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-x86_64-apple-darwin.tar.gz"
+          },
+          {
+            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
+          },
+          {
+            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
+          },
+          {
+            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
+          }
+        ],
+        "linux-arm64": [
+          {
+            "sha256": "c550b1bfb0c8c872ab3421cd6ef756f260f7cf4981a18cedd49f141fa2d77569",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-aarch64-unknown-linux-gnu.tar.gz"
+          },
+          {
+            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
+          },
+          {
+            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
+          },
+          {
+            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
+          }
+        ],
+        "linux-x64": [
+          {
+            "sha256": "efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-x86_64-unknown-linux-gnu.tar.gz"
+          },
+          {
+            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
+          },
+          {
+            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
+          },
+          {
+            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
+          }
+        ]
+      },
+      "version": "0.4.2"
     },
     "uv": {
       "artifacts": {

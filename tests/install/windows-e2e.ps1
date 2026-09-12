@@ -23,7 +23,7 @@
 #                            target sha, marker cleanup, result JSON (when
 #                            the script path wrote one), working hermes,
 #                            and the relaunched app window.
-#                 update     run `hermes update` from the installed venv
+#                 update     run `hermes update` from the installed command
 #                            (the CLI route a GUI user might take).
 #                 installer  re-run the bootstrap installer over the
 #                            existing install (download Hermes-Setup.exe
@@ -321,10 +321,24 @@ function Save-InstallSideState([string]$Label) {
 
 function Test-HermesRuns([string]$Label) {
     Save-InstallSideState $Label
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
-    Assert-True (Test-Path -LiteralPath $hermesExe) "$Label -- venv\Scripts\hermes.exe exists"
-    & $hermesExe --version 2>&1 | ForEach-Object { Write-Host "    hermes --version| $_" }
-    Assert-True ($LASTEXITCODE -eq 0) "$Label -- hermes --version exits 0"
+    $hermesExe = Get-SourceHermes $InstallDir
+    & python -B (Join-Path $AssetsDir 'source_driver.py') --root $InstallDir --launcher $hermesExe --desktop $script:ExpectedDesktop
+    Assert-True ($LASTEXITCODE -eq 0) "$Label -- read-only install verification (no repair)"
+    $prevLazy = $env:HERMES_DISABLE_LAZY_INSTALLS
+    $prevBytecode = $env:PYTHONDONTWRITEBYTECODE
+    $prevEap = $ErrorActionPreference
+    try {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = '1'
+        $env:PYTHONDONTWRITEBYTECODE = '1'
+        $ErrorActionPreference = 'Continue'
+        & $hermesExe --version 2>&1 | ForEach-Object { Write-Host "    hermes --version| $_" }
+        $versionExit = $LASTEXITCODE
+    } finally {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = $prevLazy
+        $env:PYTHONDONTWRITEBYTECODE = $prevBytecode
+        $ErrorActionPreference = $prevEap
+    }
+    Assert-True ($versionExit -eq 0) "$Label -- hermes --version exits 0"
 }
 
 # ----------------------------------------------------------------------------
@@ -334,6 +348,7 @@ function Test-HermesRuns([string]$Label) {
 # ----------------------------------------------------------------------------
 # shellcheck source=../e2e-assets/ts-prefix.ps1
 . (Join-Path $PSScriptRoot "e2e-assets\ts-prefix.ps1")
+. (Join-Path $PSScriptRoot "e2e-assets\source-driver.ps1")
 
 function Write-LogGroup([string]$Title, [string]$LogPath) {
     Write-Host "::group::$Title"
@@ -372,12 +387,17 @@ function Assert-DesktopArtifact([string]$Label) {
 }
 
 function Invoke-HermesUpdate {
-    # The venv updater. --yes reaches the update subcommand only in later
+    # --yes reaches the update subcommand only in later
     # releases; ask the installed binary, never parse its source.
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
+    $hermesExe = Get-SourceHermes $InstallDir
     $updateArgs = @("update")
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     $helpText = & $hermesExe update --help 2>&1 | Out-String
+    $helpExit = $LASTEXITCODE
+    if ($helpExit -ne 0) {
+        $ErrorActionPreference = $prevEap
+        throw "Installed update --help failed: $helpText"
+    }
     if ($helpText -match '--yes') { $updateArgs += "--yes" }
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\update.log"
@@ -398,7 +418,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     # real pipeline; the driver intercepts the product's final spawn
     # (argv/cwd/env captured by e2e-assets/launch-capture/sitecustomize.py)
     # and re-executes it under Playwright, which clicks Update now.
-    $hermesExe = Join-Path $InstallDir "venv\Scripts\hermes.exe"
+    $hermesExe = Get-SourceHermes $InstallDir
     $spec = Join-Path $WorkRoot "launch-spec.json"
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\desktop-launch-capture.log"
@@ -439,6 +459,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     Assert-True ($npmExit -eq 0) "npm install @playwright/test@$PlaywrightVersion into the driver dir"
 
     Copy-Item (Join-Path $AssetsDir "launch-from-spec.mjs") (Join-Path $driverDir "launch-from-spec.mjs") -Force
+    Copy-Item (Join-Path $AssetsDir "source-update-observer.mjs") (Join-Path $driverDir "source-update-observer.mjs") -Force
     Copy-Item (Join-Path $AssetsDir "window-input.cjs") (Join-Path $driverDir "window-input.cjs") -Force
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     Push-Location $driverDir
@@ -923,6 +944,7 @@ function Invoke-PhaseInstall {
     # checkout at OLD, hermes runs, and state carries how OLD landed so any
     # update arm can follow any install arm.
     $state = Read-State
+    $script:ExpectedDesktop = if ($InstallMethod -eq 'installer-script') { 'absent' } else { 'present' }
     # Isolated install target for every arm; serve.git's file:// origin
     # looks like a fork to the updater, whose "add the official repo as
     # upstream?" prompt would hang a headless run - the marker is the
@@ -951,6 +973,9 @@ function Invoke-PhaseInstall {
 
 function Invoke-PhaseUpdate {
     $state = Read-State
+    $script:ExpectedDesktop = if ($InstallMethod -ne 'installer-script' -or $Route -in @(
+        'installer-script+desktop', 'desktop-installer@latest', 'open-app-update', 'hermes-desktop-app-update'
+    )) { 'present' } else { 'absent' }
     $env:HERMES_HOME = $HermesHome
     # Match the POSIX driver's explicit opt-out when a detached updater bypasses
     # the PATH shim and sees our local transport as a fork.

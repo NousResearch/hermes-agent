@@ -1,43 +1,25 @@
 """Historical main imports must not restart pre-PM updater work after a swap."""
 
-import builtins
 from copy import deepcopy
-import importlib
-import io
-import os
 from pathlib import Path
-import socket
-import subprocess
-import urllib.request
 
 import pytest
 
+from tests.compat.old_updater_support import (
+    fresh_child as fresh_child,
+    no_external_work as no_external_work,
+)
+
 
 @pytest.fixture
-def inert_main(monkeypatch):
-    # Import real current modules before guarding work: CLI startup is not a shim.
+def historical_main(no_external_work):
     from hermes_cli import main
-    import pm
 
-    def forbidden(*args, **kwargs):
-        pytest.fail("historical main shim attempted updater work")
-
-    for name in ("ensure", "sync_venv", "ensure_environment", "build_environment", "ensure_python_tool"):
-        monkeypatch.setattr(pm, name, forbidden)
-    for name in ("Popen", "run"):
-        monkeypatch.setattr(subprocess, name, forbidden)
-    for name in ("system", "kill", "rename", "replace", "unlink", "mkdir"):
-        monkeypatch.setattr(os, name, forbidden)
-    for name in ("write_text", "write_bytes", "touch", "rename", "replace", "unlink", "mkdir"):
-        monkeypatch.setattr(Path, name, forbidden)
-    monkeypatch.setattr(socket, "create_connection", forbidden)
-    monkeypatch.setattr(urllib.request, "urlopen", forbidden)
-    monkeypatch.setattr(urllib.request, "urlretrieve", forbidden)
-    return main, forbidden
+    return main
 
 
-def test_historical_main_data_and_skipped_probes_preserve_caller_shapes(inert_main, tmp_path):
-    main, _ = inert_main
+def test_historical_main_data_and_skipped_probes_preserve_caller_shapes(historical_main, tmp_path):
+    main = historical_main
     from hermes_cli import main_web_build
 
     # Old recorders compose this name with PROJECT_ROOT. It remains data only.
@@ -53,6 +35,7 @@ def test_historical_main_data_and_skipped_probes_preserve_caller_shapes(inert_ma
         assert exc.failed_shims is not failed
         assert failed[0] in str(exc)
 
+    before_files = set(tmp_path.rglob("*"))
     prefix = ["uv", "pip"]
     env = {"VIRTUAL_ENV": str(tmp_path)}
     # None means indeterminate to the historical repair caller, NOT healthy [].
@@ -65,8 +48,22 @@ def test_historical_main_data_and_skipped_probes_preserve_caller_shapes(inert_ma
     assert main._write_web_ui_build_stamp(tmp_path, tmp_path / "web") is None
     assert prefix == ["uv", "pip"]
     assert env == {"VIRTUAL_ENV": str(tmp_path)}
+    assert set(tmp_path.rglob("*")) == before_files
 
 
+def test_historical_marker_cleanup_preserves_path_and_is_idempotent(historical_main, tmp_path, monkeypatch):
+    # The retired writer now hands off. Cleanup of an existing legacy marker
+    # remains supported; PM's recovery lifecycle is covered in test_early_recovery.
+    monkeypatch.setattr(historical_main, "PROJECT_ROOT", tmp_path)
+    marker = historical_main._update_marker_path()
+    assert marker == tmp_path / ".update-incomplete"
+    marker.write_text("started=1\npid=0\n", encoding="utf-8")
+    assert historical_main._clear_update_incomplete_marker() is None
+    assert not marker.exists()
+    assert historical_main._clear_update_incomplete_marker() is None
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["cold-lookup", "cached-export"])
 @pytest.mark.parametrize(
     "name,args,kwargs",
     [
@@ -81,76 +78,52 @@ def test_historical_main_data_and_skipped_probes_preserve_caller_shapes(inert_ma
         ("_reload_updated_runtime_modules", (), {}),
     ],
 )
-def test_historical_main_lazy_dependency_hooks_stop_without_work(
-    name, args, kwargs, inert_main, monkeypatch, capsys,
-):
-    main, forbidden = inert_main
-    before_args = deepcopy((args, kwargs))
-    before_env = dict(os.environ)
-    with monkeypatch.context() as guard:
-        # Exercise PEP 562 even if an earlier test already cached this export.
-        # The temporary slot also makes monkeypatch restore an absent attribute.
-        guard.setitem(main.__dict__, name, None)
-        guard.delitem(main.__dict__, name)
-        guard.setattr(importlib, "reload", forbidden)
-        guard.setattr(builtins, "open", forbidden)
-        guard.setattr(io, "open", forbidden)
-        for _ in range(2):  # both the cold lookup and cached historical caller
-            with pytest.raises(SystemExit) as exc:
-                try:
-                    getattr(main, name)(*args, **kwargs)
-                except Exception:
-                    forbidden()
-                forbidden()
-            assert exc.value.code == 0
-            assert "run `hermes` again" in capsys.readouterr().err.lower()
-    assert (args, kwargs) == before_args
-    assert dict(os.environ) == before_env
+def test_historical_main_lazy_hooks_handoff(name, args, kwargs, cached, historical_main, fresh_child, monkeypatch):
+    main = historical_main
+    before = deepcopy((args, kwargs))
+    # Exercise PEP 562 even if an earlier test cached this export. Register the
+    # temporary slot with monkeypatch so it also restores an absent attribute.
+    monkeypatch.setitem(main.__dict__, name, None)
+    monkeypatch.delitem(main.__dict__, name)
+    if cached:
+        getattr(main, name)
+    with fresh_child.exits():
+        getattr(main, name)(*args, **kwargs)
+    assert (args, kwargs) == before
 
 
-def test_historical_main_entrypoints_stop_before_install_or_success_fallback(
-    inert_main, tmp_path, capsys,
-):
-    main, forbidden = inert_main
-    cmd = ["uv", "pip", "install", "-e", "."]
-    env = {"VIRTUAL_ENV": str(tmp_path)}
-    failed = []
-    calls = [
+@pytest.mark.parametrize(
+    "name,args,kwargs",
+    [
         ("_desktop_stamp_path", (), {}),
         ("_expected_windows_pe_machines", (), {}),
-        ("_hermes_exe_shims", (tmp_path,), {}),
-        ("_insert_python_pin", (cmd,), {}),
+        ("_hermes_exe_shims", (Path("venv"),), {}),
+        ("_insert_python_pin", (["uv", "pip", "install", "-e", "."],), {}),
         ("_interpreter_scripts_dir", (), {}),
         ("_load_installable_optional_extras", (), {"group": "termux-all"}),
-        ("_parse_pe_machine", (tmp_path / "Hermes.exe",), {}),
-        ("_quarantine_running_hermes_exe", (tmp_path,), {"max_attempts": 1, "failed_out": failed}),
-        ("_repair_broken_lazy_refresh_imports", (cmd[:2], ["certifi"]), {"env": env}),
-        ("_run_install_with_heartbeat", (cmd,), {"env": env, "heartbeat_interval_seconds": 1}),
-        ("_run_package_only_install", (cmd,), {"env": env}),
-        ("_run_quarantined_install", (cmd,), {"env": env, "scripts_dir": tmp_path, "strict_quarantine": True}),
-        ("_run_quarantined_install", (cmd,), {}),
-        ("_run_with_idle_timeout", (cmd, tmp_path), {"env": env, "idle_timeout_seconds": 1, "indent": ""}),
+        ("_parse_pe_machine", (Path("Hermes.exe"),), {}),
+        ("_quarantine_running_hermes_exe", (Path("venv"),), {"max_attempts": 1, "failed_out": []}),
+        ("_repair_broken_lazy_refresh_imports", (["uv", "pip"], ["certifi"]), {"env": {"VIRTUAL_ENV": "venv"}}),
+        ("_run_install_with_heartbeat", (["uv", "pip", "install", "-e", "."],),
+         {"env": {"VIRTUAL_ENV": "venv"}, "heartbeat_interval_seconds": 1}),
+        ("_run_package_only_install", (["uv", "pip", "install", "-e", "."],), {"env": {"VIRTUAL_ENV": "venv"}}),
+        ("_run_quarantined_install", (["uv", "pip", "install", "-e", "."],),
+         {"env": {"VIRTUAL_ENV": "venv"}, "scripts_dir": Path("venv"), "strict_quarantine": True}),
+        ("_run_quarantined_install", (["uv", "pip", "install", "-e", "."],), {}),
+        ("_run_with_idle_timeout", (["uv", "pip", "install", "-e", "."], Path("venv")),
+         {"env": {"VIRTUAL_ENV": "venv"}, "idle_timeout_seconds": 1, "indent": ""}),
         ("_self", (), {}),
-        ("_verify_console_scripts_installed", (cmd[:2],), {"env": env}),
-        ("_verify_core_dependencies_installed", (cmd[:2],), {"env": env, "group": "all"}),
-        ("_web_ui_build_needed", (tmp_path / "web",), {}),
+        ("_verify_console_scripts_installed", (["uv", "pip"],), {"env": {"VIRTUAL_ENV": "venv"}}),
+        ("_verify_core_dependencies_installed", (["uv", "pip"],), {"env": {"VIRTUAL_ENV": "venv"}, "group": "all"}),
+        ("_web_ui_build_needed", (Path("web"),), {}),
         ("_windows_native_machine", (), {}),
         ("_windows_shim_in_process_chain", (), {}),
-    ]
-    before_env = dict(os.environ)
-    for name, args, kwargs in calls:
-        shim = getattr(main, name)
-        with pytest.raises(SystemExit) as exc:
-            try:
-                shim(*args, **kwargs)
-            except Exception:
-                # Historical installers catch ordinary failures to retry pip/uv.
-                forbidden()
-            # Returning also lets old callers claim completion or try a fallback.
-            forbidden()
-        assert exc.value.code == 0, name
-        assert "run `hermes` again" in capsys.readouterr().err.lower(), name
-    assert cmd == ["uv", "pip", "install", "-e", "."]
-    assert env == {"VIRTUAL_ENV": str(tmp_path)}
-    assert failed == []
-    assert dict(os.environ) == before_env
+    ],
+)
+def test_historical_main_entrypoints_handoff_without_install_or_success_fallback(
+    name, args, kwargs, historical_main, fresh_child,
+):
+    before = deepcopy((args, kwargs))
+    with fresh_child.exits():
+        getattr(historical_main, name)(*args, **kwargs)
+    assert (args, kwargs) == before

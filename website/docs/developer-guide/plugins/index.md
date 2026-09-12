@@ -319,20 +319,20 @@ requires_plugins:
   - id: other-plugin
     version_range: ">=1.0,<2"
 python_dependencies:
-  - "somepkg>=1.0,<2"     # surfaced, never auto-installed
+  - "somepkg>=1.0,<2"     # consent before PM admission
 config_schema:
   api_url: {type: str, default: "", description: "Service endpoint"}
 ```
 
-:::note pip-dependency isolation is deferred
-`python_dependencies` is intentionally declare-and-surface only. Installing
-arbitrary packages into Hermes' shared venv is a conflict and supply-chain
-surface, so the install seam's isolation design (constraints-file installs
-against the host lock vs. per-plugin vendored dirs vs. conflict detection
-with refusal) is an explicitly deferred follow-up — see the round-2 review on
-[#64165](https://github.com/NousResearch/hermes-agent/issues/64165) and
-[#15220](https://github.com/NousResearch/hermes-agent/issues/15220). Plugin
-packs (#64166) build on these v2 fields.
+:::note Shared dependency admission
+Plugin installation requests Python dependency consent. Enabling the plugin
+prepares its requirements with core dependencies, extras, and enabled plugins
+through PM. Pack enables use the same admission transaction. Reinstalling an
+active plugin requests consent against its staged declaration before publication.
+A refusal preserves the installed plugin and selected environment.
+
+The installer and PM admission reject unsupported `manifest_version` values
+and unmet `requires_hermes` constraints before publication.
 :::
 
 ## Step 3: Write the tool schemas
@@ -808,12 +808,14 @@ running process. Already available dependencies need no installation, even
 when `security.allow_lazy_installs` is false.
 
 For a directory plugin's own Python dependencies, declare `dependencies` under
-`[project]` in its `pyproject.toml`. Legacy `pip_dependencies` and
-`python_dependencies` lists in `plugin.yaml` also join the PM workspace.
+`[project]` in its `pyproject.toml`. Without an authored project file, PM combines
+legacy `pip_dependencies` and `python_dependencies` lists from `plugin.yaml` or
+`plugin.yml`. Old PM-generated project files do not override these lists.
+Consent, workspace membership, and currency checks use the same declaration.
 PM prepares their dependencies together with core requirements before enabling
 the plugin. The generated workspace does not rewrite the plugin directory or
 the shipped lockfile. Dependency conflicts refuse admission and preserve the
-previous selection; PM does not automatically disable other plugins.
+previous selection. PM does not automatically disable other plugins.
 
 Dependencies installed manually with pip are not durable PM declarations.
 A later environment replacement need not retain them. Wrapper plugins whose

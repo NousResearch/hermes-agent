@@ -15,33 +15,12 @@ from pm.package import InstallError
 from pm.runtime import runtime_python
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 from tests.pm.test_runtime_wheelhouse import locked_wheelhouse  # noqa: F401
-
-
-@pytest.fixture(scope="module")
-def isolated_python(tmp_path_factory):
-    from pm.runtime_stage import stage_runtime
-
-    root = tmp_path_factory.mktemp("pm-python")
-    uv = shutil.which("uv")
-    assert uv, "the worker contract requires real uv"
-    python = stage_runtime(Path(uv), Path(sys.executable), root)
-    probe = subprocess.run(
-        [str(python), "-I", "-c", "import importlib.util; assert importlib.util.find_spec('yaml') is None"],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert probe.returncode == 0, probe.stderr
-    return python
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch, isolated_python):
-    client = importlib.import_module("pm.client")
-    monkeypatch.setattr("pm.runtime.runtime_python", lambda **kwargs: isolated_python)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
-    monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
-    return client
+from tests.pm._fixtures import (
+    _wheel,
+    build_worker as build_worker,
+    client as client,
+    isolated_python as isolated_python,
+)
 
 
 def test_isolated_worker_preserves_install_error(client, monkeypatch):
@@ -55,28 +34,18 @@ def test_isolated_worker_preserves_install_error(client, monkeypatch):
     assert not paths.facts_path().exists()
 
 
-def test_worker_build_owns_creation_and_preserves_parent_environment(client, tmp_path, monkeypatch, isolated_python):
+def test_worker_build_owns_creation_and_preserves_parent_environment(build_worker, tmp_path, monkeypatch):
     import json
-    from pm import operations
-
-    uv = shutil.which("uv")
-    assert uv
-    worker = Path(client.__file__).with_name("worker.py")
-    script = (
-        "import runpy, sys; "
-        f"sys.path.insert(0, {str(worker.parent.parent)!r}); "
-        "import pm._uv; "
-        f"pm._uv._toolchain = lambda **kwargs: (__import__('pathlib').Path({uv!r}), "
-        f"__import__('pathlib').Path({sys.executable!r})); "
-        f"runpy.run_path({str(worker)!r}, run_name='__main__')"
-    )
-    monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: [str(isolated_python), "-I", "-B", "-c", script])
-    monkeypatch.setattr(operations, "build_environment", lambda **kwargs: pytest.fail("build ran in caller"))
+    client = build_worker
     source = tmp_path / "project with spaces"
     source.mkdir()
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _wheel(wheels, "worker_dep")
     (source / "pyproject.toml").write_text(
         '[project]\nname="worker-proof"\nversion="1"\nrequires-python=">=3.11"\n'
-        '[tool.uv]\npackage=false\n', encoding="utf-8",
+        'dependencies=["worker-dep==1.0"]\n[tool.uv]\npackage=false\nno-index=true\n'
+        f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8",
     )
     monkeypatch.setenv("UV_PYTHON", "/not-the-interpreter")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "wrong-environment"))
@@ -84,10 +53,11 @@ def test_worker_build_owns_creation_and_preserves_parent_environment(client, tmp
     before = dict(os.environ)
     python = client.build_environment(source=source, out=tmp_path / "dependency tree",
                                       frozen=False, offline=True, explicit=True)
-    result = subprocess.run([str(python), "-I", "-c", "import json,sys; print(json.dumps(sys.prefix))"],
+    result = subprocess.run([str(python), "-I", "-c", "import json,sys,worker_dep; print(json.dumps([sys.prefix, worker_dep.__version__]))"],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
-    assert Path(json.loads(result.stdout)) == python.parent.parent
+    assert json.loads(result.stdout) == [str(python.parent.parent), "1.0"]
+    assert "worker_dep" not in sys.modules
     assert not (tmp_path / "wrong-environment").exists()
     assert dict(os.environ) == before
     with pytest.raises(OSError, match="already exists"):
@@ -333,8 +303,10 @@ def _node_archive(server, body=b"#!/bin/sh\nexit 0\n"):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("operation", ["ensure", "stage_only"])
-def test_worker_installs_real_archive_and_relays_progress(client, dl_server, operation):
-    from pm.lock import Facts
+def test_worker_artifact_lifecycle_keeps_identity_and_relays_progress(client, dl_server, operation):
+    import hashlib
+    from pm.lock import Facts, Lockfile
+    from pm.store import tree_digest
 
     target, relative, body = _node_archive(dl_server)
     stages, downloads = [], []
@@ -361,6 +333,35 @@ def test_worker_installs_real_archive_and_relays_progress(client, dl_server, ope
         assert all(isinstance(row, tuple) for rows in downloads[-1][2].values() for row in rows)
     assert (entry / relative).read_bytes() == body
     assert stages and stages[0][0] == "download"
+
+    def install():
+        if operation == "stage_only":
+            return client.stage_only("node", target)
+        client.ensure("node", explicit=True)
+        return entry
+
+    first_tree = tree_digest(entry)
+    RangeHandler.payloads.clear()
+    assert install() == entry
+    assert tree_digest(entry) == first_tree
+    _, _, replacement = _node_archive(dl_server, b"#!/bin/sh\nexit 0\n# repinned\n")
+    assert install() == entry
+    assert (entry / relative).read_bytes() == replacement
+    assert not list(paths.store_root().glob("fetch-*"))
+    good_tree = tree_digest(entry)
+    previous_facts = paths.facts_path().read_bytes() if paths.facts_path().exists() else None
+    lock = Lockfile(paths.lockfile_path())
+    RangeHandler.payloads["/node.zip"] = b"not an archive"
+    lock.set_pin("node", "1", {target: {"url": url(dl_server, "/node.zip"),
+                                      "sha256": hashlib.sha256(b"not an archive").hexdigest()}})
+    lock.save()
+    with pytest.raises(RuntimeError if operation == "stage_only" else InstallError, match="zip"):
+        install()
+    assert tree_digest(entry) == good_tree
+    if operation == "stage_only":
+        assert not paths.facts_path().exists(), "foreign staging cannot publish host identity"
+    else:
+        assert paths.facts_path().read_bytes() == previous_facts
 
 
 @pytest.mark.platforms("posix")
@@ -584,7 +585,6 @@ def test_cold_manager_build_does_not_bootstrap_a_worker(client, tmp_path, monkey
 def test_worker_side_environment_reuses_and_keeps_selection_on_failed_tool(client, tmp_path, monkeypatch, isolated_python):
     import zipfile
     from pm import environment_python, python_tool
-    from tests.pm.test_environment_build import _wheel
 
     uv = shutil.which("uv")
     assert uv

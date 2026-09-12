@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-import shutil
 import sys
 
 from pm.package import InstallError
@@ -64,7 +63,7 @@ def build_requirements_environment(
     Wheelhouse builds disable indexes and source builds. Failure removes only
     this invocation's exclusively claimed output, not prior builds.
     """
-    from pm.environment import managed_environment, prune_site_pth
+    from pm.environment import _fresh_build, managed_environment
     from pm.operations import _require_install_allowed, _requirements
 
     _require_install_allowed(explicit)
@@ -80,16 +79,8 @@ def build_requirements_environment(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
-    out.mkdir(parents=True)
-    try:
-        environment.create()
+    with _fresh_build(environment, sealed=sealed):
         environment.install_requirements(requirements, wheelhouse=wheelhouse)
-        environment.check()
-        if sealed:
-            prune_site_pth(out)
-    except BaseException:
-        shutil.rmtree(out, ignore_errors=True)
-        raise
     return environment.executable
 
 

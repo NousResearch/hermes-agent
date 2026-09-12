@@ -49,8 +49,9 @@ def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> NoRetur
     stop_for_relaunch()
 
 
-def _relaunch_stopped_serves(token: dict) -> NoReturn:
-    stop_for_relaunch()
+def _relaunch_stopped_serves(token: dict) -> None:
+    from hermes_cli._old_updater import relaunch_stopped_serves
+    relaunch_stopped_serves(token)
 
 
 def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> NoReturn:

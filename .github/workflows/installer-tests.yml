@@ -44,3 +44,16 @@ jobs:
       - name: System Node and npm compatibility (Windows PowerShell 5.1)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-node-compatibility.ps1
+
+      - name: Prepare native publication-test tools
+        uses: ./.github/actions/setup-pm
+
+      - name: Prepare isolated acceptance-test dependencies
+        shell: bash
+        run: python -m scripts.ci.python_packages pytest==9.1.1 pytest-asyncio==1.3.0 ruamel.yaml==0.18.17 packaging==26.0 distlib==0.4.3
+
+      - name: Whole-script launcher publication (PowerShell 5.1 and 7)
+        shell: bash
+        env:
+          HERMES_TEST_FILE_RETRIES: '0'
+        run: bash scripts/run_tests.sh tests/test_source_launcher_stages.py -k powershell_stage -q -j 1

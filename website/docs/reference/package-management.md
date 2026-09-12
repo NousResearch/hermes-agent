@@ -33,11 +33,12 @@ loading application dependencies. Failed syncs keep the previous selection and
 retry on the next launch; no pending-update marker is required. Developer checkouts
 and packaged installations retain their existing owner.
 
-Historical updaters can still be executing old Python code after swapping in this
-source tree. Their retired helper names are inert compatibility shims; dependency
-entry shims stop the old updater cleanly and ask for a relaunch instead of invoking
-PM or falling back to pip. Completion belongs to the new launcher, not that mixed
-old-code/new-files process.
+Historical updaters can still execute old Python code after replacing the source
+tree. Compatibility entry points start a fresh child, wait for completion, and
+return its exit status. The child bootstrap asks PM to provision required tools
+and select the Python generation before application imports. Completion runs in
+that interpreter with the update context and receipt. The parent does not clear
+`sys.modules`, import the new application graph, or resume a pip fallback.
 
 Current source updates use one PM sync for the recorded extras and enabled
 plugins, then build frontend products in a fresh process on the selected
@@ -50,6 +51,11 @@ Use `hermes pm repair` for damaged dependency files.
 
 Source installers provision the required tools plus Python. They select the
 `all` Python extra. Named optional tools install when requested.
+
+For a canonical source installation, Desktop checks and runs the published
+installation launcher. PM owns its interpreter and dependency selection. Desktop
+does not replace that command with a guessed `venv` path. Developer overrides
+retain their selected interpreter.
 
 Native desktop bundles stage the supported tool set and all target-compatible
 Python extras before packaging. `--extra all` and `--all-extras` are not
@@ -103,17 +109,22 @@ the same lock.
 ## Optional Python dependencies and plugins
 
 A built-in feature requests a project extra through `pm.ensure_import`.
-Directory plugins declare Python requirements in `pyproject.toml`, or through
-legacy `pip_dependencies` or `python_dependencies` lists in `plugin.yaml`.
+Directory plugins declare Python requirements in `pyproject.toml`. Without an
+authored project file, PM combines the legacy `pip_dependencies` and
+`python_dependencies` lists from `plugin.yaml` or `plugin.yml`. An old
+PM-generated project file does not override those lists. Consent, dependency
+membership, and currency checks use the same declaration reader.
 
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
 The generated workspace and extended lock remain outside shipped source.
 
-A failed candidate does not replace the selected environment or silently
-disable other plugins. If preparation succeeds, a restart can still be required
-to activate the new environment in a running Hermes process.
+Plugin selection changes, including pack enables, use the same admission
+transaction. PM reads the latest selection under its shared lock before applying
+each change. A failed candidate does not replace the selected environment or
+silently disable other plugins. If preparation succeeds, a running Hermes process
+can still require a restart to activate the new environment.
 
 Ordinary Hermes application updates preserve user plugin directories. Explicit
 plugin updates can change the selected plugin's files. A wrapper with no Python
@@ -139,6 +150,26 @@ Docker additionally sets the internal lazy-install disable flag in the image.
 
 PM is a dependency manager, not a sandbox for plugin code. Installing a plugin
 requires trust in that plugin and its dependencies.
+
+## Optional security tools
+
+PM owns the pinned `bws`, `tirith`, and `iron-proxy` packages in
+`pm/security_packages.py`. Their versions, artifact URLs, and SHA-256 hashes
+come from `pm/lock.json`. Downloads and publication use the shared tool store,
+not private installers under `$HERMES_HOME/bin`.
+
+For Tirith and iron-proxy, PM also acquires pinned signature files and checks
+that the release checksums cover the pinned archive. Package staging calls the
+integration's signature checker. Cosign and GPG checks remain conditional on
+available executables. Locked provenance files must still be available and
+match their hashes. An explicit signature rejection aborts installation.
+External executables remain outside PM's hash and signature guarantees.
+
+`bws` and iron-proxy honor an executable on `PATH` before checking PM selection.
+Tirith honors `security.tirith_path`, then uses `PATH` before its PM selection
+for the default name. An explicit Tirith path never triggers a replacement
+download. Lazy installation obeys PM policy. Explicit install commands check
+and repair managed entries, including requests with `--force`.
 
 ## Developer workflow {#developer-workflow}
 

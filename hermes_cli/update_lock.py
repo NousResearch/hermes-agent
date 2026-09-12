@@ -48,18 +48,12 @@ def update_marker_path() -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True when a process with ``pid`` currently exists.
-
-    Delegates to :func:`gateway.status._pid_exists`. Do NOT hand-roll ``os.kill(pid, 0)``: on
-    Windows CPython routes ``sig=0`` to ``GenerateConsoleCtrlEvent``, which Ctrl+C's the
-    target's whole console process group (bpo-14484). Any pid we cannot evaluate counts as
-    dead so a corrupt marker never wedges the lock.
-    """
+    """Use the dependency-free, Windows-safe probe before PM is available."""
     if pid <= 0:
         return False
     try:
-        from gateway.status import _pid_exists
-        return bool(_pid_exists(pid))
+        from hermes_cli._early_recovery import _pid_is_running
+        return _pid_is_running(pid)
     except Exception as exc:
         logger.debug("Could not probe pid %s: %s", pid, exc)
         return False
@@ -84,6 +78,8 @@ def _is_ancestor_pid(pid: int) -> bool:
     """
     if pid <= 0:
         return False
+    if pid == os.getppid():
+        return True
     try:
         import psutil
         return any(parent.pid == pid for parent in psutil.Process().parents())

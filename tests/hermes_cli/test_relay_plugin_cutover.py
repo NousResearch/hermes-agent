@@ -86,7 +86,7 @@ def test_doctor_reports_legacy_exporter_env_without_new_config(monkeypatch):
 def test_enable_rejects_removed_relay_plugin_without_discovery(name, capsys):
     with (
         patch("hermes_cli.plugins_cmd._resolve_plugin_key_and_source") as resolve,
-        patch("hermes_cli.plugins_cmd._save_enabled_set") as save_enabled,
+        patch("hermes_cli.plugins_cmd._set_plugin_enabled") as save_enabled,
     ):
         from hermes_cli.plugins_cmd import cmd_enable
 
@@ -107,7 +107,7 @@ def test_enable_rejects_alias_resolving_to_removed_relay_plugin(capsys):
             "hermes_cli.plugins_cmd._resolve_plugin_key_and_source",
             return_value=("observability/nemo_relay", "user"),
         ),
-        patch("hermes_cli.plugins_cmd._save_enabled_set") as save_enabled,
+        patch("hermes_cli.plugins_cmd._set_plugin_enabled") as save_enabled,
     ):
         from hermes_cli.plugins_cmd import cmd_enable
 

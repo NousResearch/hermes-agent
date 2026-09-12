@@ -200,7 +200,7 @@ def test_repin_failure_preserves_previous_staged_entry(sandbox, monkeypatch, fai
         raise InstallError("stage-test", "injected staging failure")
 
     if failure == "fetch":
-        monkeypatch.setattr(sandbox, "fetch", fail)
+        monkeypatch.setattr(sandbox, "fetch_many", fail)
     else:
         monkeypatch.setattr(sandbox, "publish", fail)
     with pytest.raises(InstallError, match="injected staging failure"):

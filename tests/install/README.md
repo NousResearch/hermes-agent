@@ -40,9 +40,10 @@ Each leg with the script drivers has these phases:
 
 1. Stage: make the bare clone, park `main` at the old release.
 2. Install: run the old release's own installer script. Make sure that the checkout is at the old commit and that `hermes --version` works.
-3. Desktop smoke: run `hermes desktop --build-only` from the installed CLI. This proves that the installed version can build the desktop app. If the installed version does not have this flag, the phase reports a skip and continues.
-4. Update: move `main` to HEAD. Apply one update method. Make sure that the checkout is at HEAD and that `hermes --version` works.
-5. Desktop smoke again, at HEAD.
+3. Update: move `main` to HEAD. Apply one update method. An app update must produce a new successful receipt or handoff result; a changed checkout alone is not completion.
+4. Verify the installed command and products before running `hermes --version`. Select the command under the installation's `.hermes/bin`; use the old venv only for a source tree without PM. Check PM currency and compiler receipts where supported. Preserve the no-desktop scenario for a plain install. Do not rebuild, remove dependencies, or force-stop an updater during verification. Historical installs without these receipts get artifact-presence checks, not a freshness claim.
+
+The cheap fixture checks are `tests/scripts/test_source_driver.py` and `tests-js/source-update-observer.test.mjs`. They do not run installers or prove native GUI relaunch. The source app helper does not relaunch the updated app for it; the native packaged-update drivers own automatic-relaunch acceptance. The observer does not change source files, products, dependency selections, or facts.
 
 The Windows `desktop-installer@latest` install downloads the published
 `Hermes-Setup.exe` and drives its GUI with AutoHotkey. The selected update

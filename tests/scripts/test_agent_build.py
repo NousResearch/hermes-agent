@@ -234,6 +234,56 @@ def test_fixed_launcher_accepts_explicit_external_python_without_path_guessing(t
 
 
 @pytest.mark.platforms("posix")
+def test_payload_smoke_uses_relocated_manifest_commands(tmp_path):
+    out, data = inputs_fixture(tmp_path)
+    source = Path(data["code"])
+    (source / "pyproject.toml").write_text(
+        '[project]\nname="smoke-fixture"\nversion="1"\n'
+        '[project.scripts]\nhermes="entry:main"\n', encoding="utf-8")
+    (source / "entry.py").write_text(
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "def main():\n"
+        f" assert not Path({str(out)!r}).exists(), 'payload was not moved'\n"
+        " assert 'HERMES_PYTHON' not in os.environ\n"
+        " assert not Path.cwd().is_relative_to(Path(__file__).parent)\n"
+        " if sys.argv[1:] == ['tools', 'list']:\n"
+        "  import dependency\n"
+        "  print(json.dumps([sys.argv[1:], dependency.VALUE]))\n"
+        " else: print('fast path')\n", encoding="utf-8")
+    data["bin_dir"] = "libexec"
+    assert build_cli(data, out, tmp_path).returncode == 0
+    shutil.rmtree(source)
+    env = dict(os.environ, PYTHONPATH="/foreign", PYTHONHOME="/foreign", HERMES_PYTHON="/foreign")
+    command = ["bash", str(ROOT / "scripts/smoke-payload.sh"), str(out)]
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '"prepared"' in result.stdout
+    assert out.is_dir(), "smoke must restore the artifact for packaging"
+    dependency = Path(data['site_packages']) / 'dependency.py'
+    dependency.unlink()
+    missing_dep = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert missing_dep.returncode != 0
+    assert 'SMOKE OK' not in missing_dep.stdout
+    # A broken published command cannot be rescued by importing raw Python.
+    (out / "libexec/hermes").unlink()
+    failed = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+    assert failed.returncode != 0
+    assert "SMOKE OK" not in failed.stdout
+    assert out.is_dir(), "failed smoke must also restore the artifact"
+    # Even an executable reporting success is not a payload command if it escapes.
+    manifest = json.loads((out / 'manifest.json').read_text())
+    external = shutil.which('true')
+    assert external
+    (out / 'libexec/hermes').symlink_to(external)
+    for path in (external, 'libexec/hermes'):
+        manifest['runtime']['commands']['hermes'] = path
+        (out / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+        escaped = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
+        assert escaped.returncode != 0, escaped.stdout
+        assert 'SMOKE OK' not in escaped.stdout
+
+
+@pytest.mark.platforms("posix")
 def test_stage_passes_explicit_products_to_the_single_assembler(tmp_path, monkeypatch):
     from scripts.bundles import stage
     from scripts.build.agent import assemble

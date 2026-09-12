@@ -13,7 +13,7 @@ from pm.lock import Facts
 from pm.store import Store
 
 
-@pytest.mark.parametrize("state", ["held", "recent-pair", "unused"])
+@pytest.mark.parametrize("state", ["held", "recent-part", "recent-ranges", "unused"])
 def test_gc_respects_partial_ownership_and_recent_resume(tmp_path, monkeypatch, state):
     partials = tmp_path / "partials"
     partials.mkdir()
@@ -24,8 +24,8 @@ def test_gc_respects_partial_ownership_and_recent_resume(tmp_path, monkeypatch, 
     old = time.time() - 10 * 24 * 60 * 60
     for path in (part, side):
         os.utime(path, (old, old))
-    if state == "recent-pair":
-        side.touch()
+    if state.startswith("recent-"):
+        (part if state == "recent-part" else side).touch()
     monkeypatch.setattr("pm.paths.partials_root", lambda: partials)
     store = Store(tmp_path / "store")
     with partial_lock(partials, "example") if state == "held" else nullcontext():

@@ -13,7 +13,7 @@ import sys
 import tempfile
 import urllib.parse
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -260,7 +260,12 @@ def _repo_name_from_url(url: str) -> str:
 
 def _native_manifest_file(plugin_dir: Path) -> Optional[Path]:
     """``plugin.yaml`` (or ``plugin.yml``) under *plugin_dir*, or None when neither exists."""
-    return next((p for p in (plugin_dir / "plugin.yaml", plugin_dir / "plugin.yml") if p.exists()), None)
+    from pm.plugin_declarations import native_manifest_file
+
+    try:
+        return native_manifest_file(plugin_dir)
+    except ValueError as exc:
+        raise PluginOperationError(str(exc)) from exc
 
 
 def _has_portable_manifest(plugin_dir: Path) -> bool:
@@ -271,9 +276,9 @@ def _has_portable_manifest(plugin_dir: Path) -> bool:
 
 def _load_yaml_manifest(manifest_file: Path):
     """``yaml.safe_load`` of *manifest_file* (``{}`` when empty); raises on any read/parse error."""
-    import hermes_yaml as yaml
-    with open(manifest_file, encoding="utf-8-sig") as f:
-        return yaml.safe_load(f) or {}
+    from pm.plugin_declarations import read_native_manifest
+
+    return read_native_manifest(manifest_file)
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
@@ -348,11 +353,11 @@ def _install_plugin_python_deps(
     needed); a decline/skip returns False and NOTHING is installed.
     Never raises — the caller keeps the plugin installed-but-disabled.
     """
-    deps = manifest.get("python_dependencies") or []
-    if not isinstance(deps, list):
-        return True, None
-    deps = [d.strip() for d in deps if isinstance(d, str) and d.strip()]
-    has_pyproject = (target / "pyproject.toml").is_file()
+    from pm.plugin_declarations import read_python_declaration
+
+    declaration = read_python_declaration(target)
+    deps = declaration.requirements
+    has_pyproject = declaration.pyproject is not None
     has_package_json = (target / "package.json").is_file()
     if not deps and not has_pyproject and not has_package_json:
         return True, None  # no declared deps at all
@@ -603,27 +608,12 @@ def _scrub_cloned_origin(repo: Path, git_exe: str, git_url: str) -> None:
 
 def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
     """Reject manifests declaring a newer ``manifest_version`` than this installer supports."""
-    from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION, requires_hermes_error
+    from pm.plugin_declarations import manifest_version_error
 
-    reason = requires_hermes_error(manifest)
+    reason = manifest_version_error(manifest, plugin_name)
     if reason:
-        raise PluginOperationError(f"Plugin '{plugin_name}' {reason}")
-    mv = manifest.get("manifest_version")
-    if mv is None:
-        return
-    try:
-        mv_int = int(mv)
-    except (ValueError, TypeError):
-        raise PluginOperationError(
-            f"Plugin '{plugin_name}' has invalid manifest_version '{mv}' (expected an integer).",
-        ) from None
-    if mv_int > SUPPORTED_MANIFEST_VERSION:
         from hermes_cli.config import recommended_update_command
-        raise PluginOperationError(
-            f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-            f"but this installer only supports up to {SUPPORTED_MANIFEST_VERSION}. "
-            f"Run {recommended_update_command()} to update Hermes.",
-        ) from None
+        raise PluginOperationError(f"{reason} Run {recommended_update_command()} to update Hermes.")
 
 
 def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -> str:
@@ -747,7 +737,7 @@ def _install_plugin_core(
         from hermes_cli.plugins_transaction import publish_plugin
 
         try:
-            publish_plugin(tmp_target, target, old_metadata, new_metadata)
+            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
         except Exception as exc:
             raise PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 
@@ -823,11 +813,16 @@ def cmd_install(
             f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.")
     _prompt_plugin_env_vars(installed_manifest, console)
 
+    from pm.workspace import enabled_plugin_dirs
+
+    # Active replacements settled consent against the staged tree before PM
+    # prepared or published it. Do not present a second, ineffective veto.
+    already_active = target.resolve() in enabled_plugin_dirs()
     should_enable = enable
-    if should_enable is None:
+    if should_enable is None and not already_active:
         should_enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
     deps_ok, deps_reason = (True, None)
-    if should_enable:
+    if should_enable and not already_active:
         deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console)
 
     _display_after_install(target, identifier)
@@ -849,21 +844,13 @@ def cmd_install(
         )
         should_enable = False
 
-    if should_enable:
+    if already_active:
+        console.print("[dim]Replacement installed; plugin selection was not changed.[/dim]")
+    elif should_enable:
         from hermes_cli.plugins_admission import AdmissionRefused
 
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
         try:
-            _admit_and_save_plugin_sets(
-                enabled,
-                disabled,
-                extra_dirs=[target],
-                console=console,
-                action=f"Enable '{installed_name}'",
-            )
+            _set_plugin_enabled(installed_name, enable=True, console=console)
         except AdmissionRefused:
             console.print(
                 "[dim]The plugin stays installed but disabled; re-enable "
@@ -1004,22 +991,16 @@ _get_disabled_set = functools.partial(_config_name_set, "plugins", "disabled")
 _get_enabled_set = functools.partial(_config_name_set, "plugins", "enabled")
 
 
-def _save_disabled_set(disabled: set) -> None:
-    _write_config_value("plugins", "disabled", sorted(disabled))
-
-
 def _save_enabled_set(enabled: set) -> None:
-    _write_config_value("plugins", "enabled", sorted(enabled))
+    """Frozen old-updater import: never resurrect a raw plugin-selection write."""
+    from hermes_cli._old_updater import stop_for_relaunch
 
-
-def _save_plugin_sets(enabled: set, disabled: set) -> None:
-    from hermes_cli.plugins_admission import admit_plugin_set_change
-
-    admit_plugin_set_change(enabled, disabled, active_plugins_dir=_plugins_dir())
+    stop_for_relaunch()
 
 
 def _admit_and_save_plugin_sets(
-    enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable"
+    enabled: set | Callable[[], tuple[set, set]], disabled: set | None,
+    *, extra_dirs=(), console=None, action: str = "enable"
 ) -> None:
     """ONE admission authority for proposed enabled/disabled sets (C13):
     the candidate union is resolved against the ACTIVE environment and
@@ -1069,13 +1050,23 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
     names.discard(key.split("/")[-1])
 
 
-def _set_plugin_enabled(name: str, *, enable: bool) -> None:
-    """Persist the proposed selection through the same dependency transaction."""
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    (enabled.add if enable else enabled.discard)(name)
-    (disabled.discard if enable else disabled.add)(name)
-    _save_plugin_sets(enabled, disabled)
+def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
+    """Apply the command's delta to the latest selection under PM's lock."""
+    def selection():
+        from pm.plugins_state import _read_home_config
+
+        config = _read_home_config(get_hermes_home()) or {}
+        plugins = config.get("plugins") or {}
+        enabled = set(plugins.get("enabled") or ())
+        disabled = set(plugins.get("disabled") or ())
+        removed = disabled if enable else enabled
+        _discard_key_and_leaf(removed, name)
+        removed.difference_update(aliases)
+        (enabled if enable else disabled).add(name)
+        return enabled, disabled
+
+    _admit_and_save_plugin_sets(selection, None, console=console,
+                                action=f"{'Enable' if enable else 'Disable'} '{name}'")
 
 
 def _resolve_plugin_key(name: str) -> Optional[str]:
@@ -1139,15 +1130,11 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     if key in enabled and key not in disabled:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
     else:
-        enabled.add(key)
         # The loader's disable check matches BOTH the canonical key (``web/firecrawl``) and the
         # manifest name (``web-firecrawl``); a stale entry under either form would silently veto
         # this enable ("explicit disable wins"), so drop the key, its bare leaf, and the name.
-        _discard_key_and_leaf(disabled, key)
         manifest_name = next((e[0] for e in _discover_all_plugins() if e[5] == key), None)
-        if manifest_name is not None:
-            disabled.discard(manifest_name)
-        _admit_and_save_plugin_sets(enabled, disabled, console=console, action=f"Enable '{key}'")
+        _set_plugin_enabled(key, enable=True, aliases=(() if manifest_name is None else (manifest_name,)), console=console)
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
 
     # Built-in tool override is a privileged grant; bundled plugins are trusted.
@@ -1318,10 +1305,7 @@ def cmd_disable(name: str) -> None:
     if key not in enabled and key in disabled:
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
-    # Also drop a stale legacy bare-name entry so it can't keep a nested plugin loading.
-    _discard_key_and_leaf(enabled, key)
-    disabled.add(key)
-    _save_plugin_sets(enabled, disabled)
+    _set_plugin_enabled(key, enable=False, console=console)
     console.print(
         f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
 

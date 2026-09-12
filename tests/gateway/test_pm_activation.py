@@ -61,20 +61,16 @@ def test_gateway_main_activates_pm_store(gateway_main, tmp_path, monkeypatch):
             calls.append("adopt")
 
         @staticmethod
-        def check():
-            calls.append("check")
-            return []  # healthy
-
-        @staticmethod
         def activate():
             calls.append("activate")
+            return []  # healthy
 
     import sys
 
     monkeypatch.setitem(sys.modules, "pm", _FakePm)
     with patch("sys.argv", ["gateway"]):
         gateway_main()
-    assert calls == ["adopt", "check", "activate"]
+    assert calls == ["adopt", "activate"]
 
 
 def test_gateway_main_warns_but_boots_when_store_out_of_sync(
@@ -88,12 +84,8 @@ def test_gateway_main_warns_but_boots_when_store_out_of_sync(
             pass
 
         @staticmethod
-        def check():
-            return ["uv not installed", "ffmpeg outdated"]
-
-        @staticmethod
         def activate():
-            raise AssertionError("activate must not run on a broken store")
+            return ["uv not installed", "ffmpeg outdated"]
 
     import sys
 

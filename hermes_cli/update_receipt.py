@@ -173,12 +173,12 @@ class UpdateReceipt:
 
 
 def _receipt_dir() -> Path:
-    from hermes_cli.config import get_hermes_home
+    from hermes_constants import get_hermes_home
 
     return get_hermes_home() / "logs" / "update_receipts"
 
 
-def begin_update_receipt() -> None:
+def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | None = None) -> None:
     """Start recording a new update receipt.
 
     Nested updates are safe: the previous receipt (if any) is preserved
@@ -187,6 +187,10 @@ def begin_update_receipt() -> None:
     correlation. Never raises."""
     try:
         receipt = UpdateReceipt()
+        if previous:
+            receipt.data.update(copy.deepcopy(previous))
+        receipt.correlation_id = correlation_id or receipt.correlation_id
+        receipt.data.update(update_id=receipt.correlation_id, outcome="running", finished_at=None)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         return
@@ -290,15 +294,16 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         # the same process+second — the correlation id makes the name unique
         # per update run. Atomic write for BOTH the stamped receipt and the
         # latest.json pointer (no torn readers).
-        import utils
+        from hermes_cli.runtime_state import _atomic_bytes
 
         path = directory / (
             f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_"
             f"{receipt.correlation_id}.json"
         )
-        utils.atomic_json_write(path, receipt.data, default=str)
+        payload = (json.dumps(receipt.data, indent=2, default=str) + "\n").encode("utf-8")
+        _atomic_bytes(path, payload)
         with suppress(Exception):  # stable pointer for the dashboard/desktop
-            utils.atomic_json_write(directory / "latest.json", receipt.data, default=str)
+            _atomic_bytes(directory / "latest.json", payload)
         _prune_old_receipts(directory)
         return path
     except Exception as exc:  # pragma: no cover - defensive

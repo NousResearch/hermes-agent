@@ -73,3 +73,4 @@ __all__ = [
 ]
 
 import pm.packages  # noqa: E402,F401  (registers the built-in definitions)
+import pm.security_packages  # noqa: E402,F401

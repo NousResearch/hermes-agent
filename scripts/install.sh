@@ -337,8 +337,12 @@ bootstrap_python() {
         path[2] == "packages" && path[3] == "python" && $2 == "version" && depth == 3 { print $4; exit }
     ' "$INSTALL_DIR/pm/lock.json" | cut -d+ -f1 | cut -d. -f1,2)"
     [ -n "$_py" ] || _py="3.14"
-    "$UV_CMD" python install --no-bin "$_py" || fail "bootstrap Python installation failed"
-    boot_py="$("$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
+    # Stages are separate processes. Reuse uv's current managed interpreter
+    # without rewriting its installation on every warm path publication.
+    if ! boot_py="$("$UV_CMD" python find --managed-python "$_py" 2>/dev/null)"; then
+        "$UV_CMD" python install --no-bin "$_py" || fail "bootstrap Python installation failed"
+        boot_py="$("$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
+    fi
     boot_py="${boot_py%$'\r'}"
 }
 

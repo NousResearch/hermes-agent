@@ -31,7 +31,7 @@ def isolated_machine_home(tmp_path, monkeypatch):
 @pytest.fixture
 def layout(tmp_path, monkeypatch):
     """A fake install: core repo with pyproject, plugin dirs, store."""
-    from tests.pm.test_workspace_build_inputs import _wheel
+    from tests.pm._fixtures import _wheel
 
     wheels = tmp_path / "wheels"
     wheels.mkdir()
@@ -159,7 +159,7 @@ def test_member_stamp_missing_pyproject_does_not_crash(tmp_path):
     """A member dir whose pyproject vanished mid-scan hashes on path only."""
     plug = tmp_path / "ghost"
     plug.mkdir()
-    (plug / "pyproject.toml").write_text("x\n", encoding="utf-8")
+    (plug / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
     first = ws.members_stamp([plug])
     (plug / "pyproject.toml").unlink()
     second = ws.members_stamp([plug])

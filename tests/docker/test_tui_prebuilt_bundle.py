@@ -30,7 +30,7 @@ def _exec_py(image: str, py: str) -> str:
     # Drop to the hermes user (UID 10000) so we exercise the same path the
     # dashboard PTY child runs as — not root.
     cmd = [
-        "docker", "run", "--rm", "--entrypoint", "su", image,
+        "docker", "run", "--rm", "--network=none", "--entrypoint", "su", image,
         "hermes", "-s", "/bin/bash", "-c", inner,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -49,6 +49,24 @@ def test_hermes_tui_dir_env_is_set(built_image: str) -> None:
     assert r.stdout.strip() == "/opt/hermes/ui-tui", (
         f"HERMES_TUI_DIR={r.stdout.strip()!r} (expected /opt/hermes/ui-tui)"
     )
+
+
+def test_photon_baked_dependencies_load_without_writes_or_network(built_image: str) -> None:
+    """The non-root runtime uses the baked sidecar, including its npm patch."""
+    py = '''
+import subprocess
+from plugins.platforms.photon.sidecar_paths import SOURCE_SIDECAR_DIR, resolve_sidecar_dir, dir_writable
+sidecar = resolve_sidecar_dir()
+assert sidecar == SOURCE_SIDECAR_DIR, sidecar
+assert not dir_writable(sidecar / 'node_modules')
+child = subprocess.run(['node', '--input-type=module', '-e',
+    "import {patchSpectrumTs} from './patch-spectrum-mixed-attachments.mjs'; "
+    "patchSpectrumTs(); await import('spectrum-ts'); console.log('PHOTON_LOADED')"],
+    cwd=sidecar, capture_output=True, text=True, timeout=30)
+assert child.returncode == 0, child.stderr
+print(child.stdout.strip())
+'''
+    assert _exec_py(built_image, py).endswith('PHOTON_LOADED')
 
 
 def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> None:

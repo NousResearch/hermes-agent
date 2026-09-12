@@ -258,6 +258,10 @@ def test_npm_consumers_execute_with_pm_node(npm_probe, npm_consumers, consumer):
     result = json.loads((output_dir / "called.json").read_text())
     assert Path(result["argv"][1]) == binary
     assert shutil.which("node", path=result["env"]["PATH"]) == str(node)
+    if consumer == "lsp":
+        assert result["argv"][2:] == [
+            "install", "--prefix", str(output_dir), "--silent", "--no-fund", "--no-audit", "test-pkg",
+        ]
 
 
 @pytest.mark.platforms("posix")

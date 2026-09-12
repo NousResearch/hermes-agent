@@ -1,116 +1,47 @@
-"""Shallow-checkout guard on the `hermes update` apply path (#53479).
+"""The real apply planner must not trust ancestry counts from shallow Git."""
 
-`rev-list --count HEAD..origin/<branch>` on a shallow install can enumerate
-the entire remote ancestry ("Found 9980 new commit(s)" on a depth-1 clone).
-The apply path now detects shallow state, recovers the real count via the
-GitHub compare API, and reports count-free wording when that fails —
-mirroring the check path fixed in PR #86257.
-
-These tests exercise the real _cmd_update_impl decision block by faking only
-the subprocess layer (git) and the compare API — the count/print logic runs
-for real.
-"""
-
-from unittest.mock import MagicMock, patch
+import subprocess
+from unittest.mock import Mock
 
 import pytest
 
-import hermes_cli.update_cmd as update_cmd
+from hermes_cli import banner, main, update_cmd
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
 
 
-def _git_responder(*, shallow: bool, count: str):
-    """Answer the git subprocess calls the count block makes."""
+@pytest.mark.parametrize("shallow,raw_count,api_count,expected", [
+    (False, 7, None, 7),
+    (True, 9980, 12, 12),
+    (True, 9980, None, -1),
+    (True, 3, 0, 0),
+    (True, 0, None, 0),
+], ids=["full", "shallow-api", "shallow-offline", "local-ahead", "equal-tips"])
+def test_apply_plan_counts_supplied_git_results(monkeypatch, tmp_path, shallow, raw_count, api_count, expected):
+    monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
+    responses = {
+        ("status", "--porcelain"): "",
+        ("rev-list", "HEAD..origin/main", "--count"): str(raw_count),
+        ("rev-parse", "--is-shallow-repository"): "true" if shallow else "false",
+        ("rev-parse", "HEAD"): SHA_A,
+        ("rev-parse", "origin/main"): SHA_B,
+    }
 
-    def fake_run(cmd, **kwargs):
-        joined = " ".join(cmd)
-        if "rev-list" in joined and "--count" in joined:
-            return MagicMock(returncode=0, stdout=f"{count}\n", stderr="")
-        if "--is-shallow-repository" in joined:
-            return MagicMock(returncode=0, stdout=("true\n" if shallow else "false\n"), stderr="")
-        if "rev-parse HEAD" in joined:
-            return MagicMock(returncode=0, stdout=f"{SHA_A}\n", stderr="")
-        if "rev-parse origin/main" in joined:
-            return MagicMock(returncode=0, stdout=f"{SHA_B}\n", stderr="")
-        return MagicMock(returncode=0, stdout="", stderr="")
+    def git(cmd, **kwargs):
+        assert cmd[0] == "git"
+        return subprocess.CompletedProcess(cmd, 0, responses[tuple(cmd[1:])] + "\n", "")
 
-    return fake_run
-
-
-def _run_count_block(*, shallow: bool, raw_count: str, api_count):
-    """Execute exactly the apply-path count block with a faked git layer."""
-    import subprocess as real_subprocess
-
-    fake = _git_responder(shallow=shallow, count=raw_count)
-    with patch.object(update_cmd, "subprocess") as sub:
-        sub.run = MagicMock(side_effect=fake)
-        sub.CalledProcessError = real_subprocess.CalledProcessError
-        with patch("hermes_cli.banner._github_compare_behind", return_value=api_count):
-            # Reproduce the block's logic against the real module state.
-            git_cmd = ["git"]
-            result = sub.run(
-                git_cmd + ["rev-list", "HEAD..origin/main", "--count"],
-                capture_output=True, text=True, check=True,
-            )
-            commit_count = int(result.stdout.strip())
-            apply_is_shallow = (
-                sub.run(
-                    git_cmd + ["rev-parse", "--is-shallow-repository"],
-                    capture_output=True, text=True,
-                ).stdout.strip()
-                == "true"
-            )
-            if commit_count > 0 and apply_is_shallow:
-                from hermes_cli.banner import _github_compare_behind
-
-                head_sha = sub.run(git_cmd + ["rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-                target_sha = sub.run(
-                    git_cmd + ["rev-parse", "origin/main"], capture_output=True, text=True
-                ).stdout.strip()
-                counted = _github_compare_behind(head_sha, target_sha)
-                commit_count = counted if counted is not None else -1
-    return commit_count
-
-
-def test_source_matches_exercised_logic():
-    """Guard: the block tested above must still exist in _cmd_update_impl.
-
-    If the apply path's shallow-count recovery is refactored away, this fails
-    and the mirrored logic in _run_count_block must be updated with it.
-    """
-    import inspect
-
-    src = inspect.getsource(update_cmd._prepare_checkout_for_update)
-    assert "apply_is_shallow" in src
-    assert "_github_compare_behind" in src
-    # The "count unknown" print stays in _cmd_update_impl, which consumes the plan.
-    assert "commit count unknown on this shallow checkout" in inspect.getsource(
-        update_cmd._cmd_update_impl
+    monkeypatch.setattr(subprocess, "run", git)
+    compare = Mock(return_value=api_count)
+    monkeypatch.setattr(banner, "_github_compare_behind", compare)
+    plan = update_cmd._prepare_checkout_for_update(
+        ["git"], "main", "main", is_fork=False, assume_yes=False,
+        gateway_mode=False, gw_input_fn=None, switch_branch=False,
+        _windows_gateway_resume=None,
     )
-
-
-def test_full_clone_keeps_exact_count():
-    assert _run_count_block(shallow=False, raw_count="7", api_count=None) == 7
-
-
-def test_shallow_bogus_count_recovers_via_compare_api():
-    """FAIL-BEFORE: reported the bogus 9980 as 'Found 9980 new commit(s)'."""
-    assert _run_count_block(shallow=True, raw_count="9980", api_count=12) == 12
-
-
-def test_shallow_bogus_count_offline_reports_unknown():
-    assert _run_count_block(shallow=True, raw_count="9980", api_count=None) == -1
-
-
-def test_shallow_local_ahead_treated_as_up_to_date():
-    assert _run_count_block(shallow=True, raw_count="3", api_count=0) == 0
-
-
-def test_shallow_zero_count_short_circuits_without_api():
-    with patch("hermes_cli.banner._github_compare_behind") as api:
-        got = _run_count_block(shallow=True, raw_count="0", api_count=None)
-    # The block only consults the API when count > 0; a 0 count is trustworthy
-    # (HEAD == origin tip counts 0 even on shallow graphs).
-    assert got == 0
+    assert plan.commit_count == expected
+    if shallow and raw_count:
+        compare.assert_called_once_with(SHA_A, SHA_B)
+    else:
+        compare.assert_not_called()

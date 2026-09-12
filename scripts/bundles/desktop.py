@@ -35,19 +35,8 @@ def release_version(repo: Path, tag: str) -> str:
 
 
 def npm_command(node: str) -> list[str]:
-    # npm.cmd needs cmd.exe; Node's CLI accepts argv directly, including spaces.
-    npm = shutil.which("npm")
-    if not npm:
-        raise FileNotFoundError("npm is required")
-    prefix = Path(npm).resolve().parent
-    candidates = [prefix / "node_modules/npm/bin/npm-cli.js", prefix.parent / "lib/node_modules/npm/bin/npm-cli.js"]
-    for candidate in candidates:
-        if candidate.is_file():
-            return [node, str(candidate)]
-    # POSIX npm is normally a symlink to its CLI file.
-    if os.name != "nt":
-        return [node, str(Path(npm).resolve())]
-    raise FileNotFoundError(f"npm CLI missing beside {npm}")
+    # Dependency preparation and packaging must resolve the same npm identity.
+    return [node, str(ROOT / "scripts/build/node-deps.mjs"), "--npm"]
 
 
 def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],

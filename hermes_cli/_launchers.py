@@ -229,6 +229,7 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "os.environ.pop('PYTHONPATH', None)\n"
         f"sys.path.insert(0, {str(repo_root.resolve())!r})\n"
         "if sys.argv[1:2] == ['--print-runtime-command']:\n"
+        "    sys.dont_write_bytecode = True\n"
         "    from pathlib import Path\n"
         "    from hermes_cli._launchers import print_runtime_command\n"
         f"    print_runtime_command(Path({str(repo_root.resolve())!r}), sys.argv[2:])\n"

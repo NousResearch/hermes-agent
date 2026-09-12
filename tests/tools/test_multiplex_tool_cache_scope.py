@@ -94,8 +94,6 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     import tools.tirith_security as tir
     from tools import mcp_tool_loop
 
-    monkeypatch.setattr(tir, "_resolved_path", None)
-    monkeypatch.setattr(tir, "_resolved_path_by_home", {})
     ac._reset_aux_semaphores()
     cu._AUX_VISION_ROUTE_CACHE.clear()
 
@@ -156,29 +154,21 @@ def test_debounced_sync_push_fires_in_the_scheduling_profiles_context(two_homes,
 def test_endpoint_model_catalog_memo_is_keyed_by_credential(two_homes, monkeypatch):
     """Two profiles, same base_url, different api_key: a per-key gateway's catalog fetched with A's
     key must not be served to B from the in-memory memo (the disk memo already lives per home)."""
+    from contextlib import contextmanager
+    import httpx
     import agent.model_metadata as mm
 
     a, b = two_homes
     mm._endpoint_model_metadata_cache.clear()
     mm._endpoint_model_metadata_cache_time.clear()
-    mm._ensure_requests()
 
-    class _Resp:
-        status_code, ok = 200, True
+    @contextmanager
+    def stream(url, headers=None, **kwargs):
+        who = headers.get("Authorization", "").rsplit("-", 1)[-1]
+        yield httpx.Response(200, request=httpx.Request("GET", url),
+                             json={"data": [{"id": f"model-for-{who}", "context_length": 1}]})
 
-        def __init__(self, headers):
-            self._who = headers.get("Authorization", "").rsplit("-", 1)[-1]
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"data": [{"id": f"model-for-{self._who}", "context_length": 1}]}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(mm.requests, "get", lambda url, headers=None, **k: _Resp(headers or {}))
+    monkeypatch.setattr(mm.model_metadata_http, "stream", stream)
     with _scoped(a):
         assert set(mm.fetch_endpoint_model_metadata("http://gw.example/v1", api_key="key-A")) == {"model-for-A"}
     with _scoped(b):

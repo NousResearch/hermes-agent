@@ -136,10 +136,13 @@ jobs:
           path: ${{ steps.pm.outputs.uv-cache-path }}
           key: ${{ steps.pm.outputs.python-cache-key }}
 
-      # The payload must boot with nothing from this checkout: the staged
-      # venv's interpreter, cwd at the staged REPO (the desktop spawn
-      # convention — sys.path[0] from cwd survives relocation where the
-      # editable install's absolute path would not), no PYTHONPATH.
-      - name: Smoke test the payload
+      # The generated command must survive relocation without checkout env/cwd.
+      - name: Smoke test the relocated payload (network disabled)
+        if: startsWith(matrix.target.label, 'linux-')
+        shell: bash
+        run: sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh build/agent-payload
+
+      - name: Smoke test the relocated payload (native launchers)
+        if: ${{ !startsWith(matrix.target.label, 'linux-') }}
         shell: bash
         run: bash scripts/smoke-payload.sh build/agent-payload

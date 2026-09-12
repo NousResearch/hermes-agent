@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 
 class AdmissionRefused(RuntimeError):
@@ -75,8 +75,8 @@ def _config_commit(candidate_enabled: set, candidate_disabled: set):
 
 
 def admit_plugin_set_change(
-    candidate_enabled: set,
-    candidate_disabled: set,
+    candidate_enabled: set | Callable[[], tuple[set, set]],
+    candidate_disabled: set | None,
     *,
     active_plugins_dir: Optional[Path] = None,
     extra_dirs: Iterable[Path] = (),
@@ -93,13 +93,26 @@ def admit_plugin_set_change(
     from pm.client import sync_venv
 
     extra_dirs = tuple(extra_dirs)
+    selection = None
+
+    def members():
+        nonlocal selection
+        # Commands supply a read/modify/write proposal, evaluated only after
+        # the worker holds the shared lock. A second acknowledged enable must
+        # extend the first, not overwrite its pre-lock snapshot.
+        selection = (candidate_enabled() if callable(candidate_enabled)
+                     else (set(candidate_enabled), set(candidate_disabled or ())))
+        return candidate_member_dirs(*selection, active_plugins_dir=active_plugins_dir, extra_dirs=extra_dirs)
+
+    def commit():
+        assert selection is not None, "PM must select members before publication"
+        return _config_commit(*selection)
+
     try:
         sync_venv(
             explicit=True,
-            plugin_dirs=lambda: candidate_member_dirs(
-                candidate_enabled, candidate_disabled, active_plugins_dir=active_plugins_dir, extra_dirs=extra_dirs
-            ),
-            before_publish=lambda: _config_commit(candidate_enabled, candidate_disabled),
+            plugin_dirs=members,
+            before_publish=commit,
         )
     except Exception as exc:
         raise AdmissionRefused(str(exc)) from exc

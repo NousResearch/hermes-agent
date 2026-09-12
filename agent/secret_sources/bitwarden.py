@@ -1,7 +1,7 @@
 """Bitwarden Secrets Manager (`bws` CLI) integration.
 
 Pulls API keys from BSM at startup so they need not live in ``~/.hermes/.env``.
-``bws`` is auto-installed into ``<hermes_home>/bin/bws`` (one pinned version,
+``bws`` is auto-installed into the PM tool store (one pinned version,
 SHA-256-verified against the published checksum). The one bootstrap secret is
 the access token in ``.env``; every other key can live in BSM. One
 ``bws secret list <project_id>`` call per fetch, cached in-process and on disk
@@ -12,19 +12,12 @@ purpose: one cross-platform binary beats the ``bitwarden-sdk-secrets`` Rust whee
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 import os
-import platform
 import re
 import shutil
-import subprocess
-import tempfile
 import time
-import urllib.error
-import urllib.request
-import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -39,12 +32,6 @@ from agent.secret_sources.base import (
 
 logger = logging.getLogger(__name__)
 
-# Pinned upstream version — never auto-resolve "latest": release shape (asset
-# names, CLI flags) may change between majors and updates must be deliberate.
-_BWS_VERSION = "2.0.0"
-_BWS_RELEASE_BASE = f"https://github.com/bitwarden/sdk-sm/releases/download/bws-v{_BWS_VERSION}"
-_BWS_CHECKSUM_NAME = f"bws-sha256-checksums-{_BWS_VERSION}.txt"
-_BWS_DOWNLOAD_TIMEOUT = 60
 _BWS_RUN_TIMEOUT = 30
 
 # <hermes_home>/cache/bws_cache.json holds only secret VALUES (never the access
@@ -90,146 +77,30 @@ def _classify_bws_error(message: str) -> ErrorKind:
 # --- Binary discovery + lazy install ----------------------------------------
 
 
-def _hermes_bin_dir() -> Path:
-    """Where Hermes stores its managed binaries. Profile-aware."""
-    from hermes_constants import get_hermes_home
-
-    return get_hermes_home() / "bin"
-
-
 def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
-    """Managed ``<hermes_home>/bin/bws`` first, then PATH, then optional auto-install."""
-    managed = _hermes_bin_dir() / _platform_binary_name()
-    if managed.exists() and os.access(managed, os.X_OK):
-        return managed
-    system = shutil.which("bws")
-    if system:
+    """External tools do not require PM platform support; acquire only on a miss."""
+    if system := shutil.which("bws"):
         return Path(system)
+    import pm
+
+    selected = pm.installed_package("bws")
+    if selected is not None:
+        return selected.binary
     if install_if_missing:
         try:
-            return install_bws()
+            pm.ensure("bws")
+            return pm.installed_package("bws").binary
         except Exception as exc:  # noqa: BLE001 — never block startup
             logger.warning("bws auto-install failed: %s", exc)
     return None
 
 
-def _platform_binary_name() -> str:
-    return "bws.exe" if platform.system() == "Windows" else "bws"
-
-
-def _platform_asset_name() -> str:
-    """Map (uname, arch, libc) → upstream asset filename (Rust target-triple style)."""
-    system = platform.system()
-    machine = platform.machine().lower()
-    arch = "aarch64" if machine in ("arm64", "aarch64") else "x86_64"
-
-    if system == "Darwin":  # universal binary covers Intel + Apple Silicon
-        return f"bws-macos-universal-{_BWS_VERSION}.zip"
-    if system == "Windows":
-        return f"bws-{arch}-pc-windows-msvc-{_BWS_VERSION}.zip"
-    if system == "Linux":
-        # glibc default; musl only if ldd says so (a wrong guess surfaces as a loader error).
-        libc = "gnu"
-        try:
-            res = subprocess.run(["ldd", "--version"], capture_output=True, text=True, encoding='utf-8',
-                                 errors='replace', timeout=2, stdin=subprocess.DEVNULL)
-            if "musl" in (res.stdout + res.stderr).lower():
-                libc = "musl"
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return f"bws-{arch}-unknown-linux-{libc}-{_BWS_VERSION}.zip"
-
-    raise RuntimeError(f"Unsupported platform for bws auto-install: {system} {machine}")
-
-
 def install_bws(*, force: bool = False) -> Path:
-    """Download, verify, and install the pinned ``bws`` binary; raises on any failure
-    (the auto-install path catches; the setup wizard shows the error)."""
-    bin_dir = _hermes_bin_dir()
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    target = bin_dir / _platform_binary_name()
-    if target.exists() and not force:
-        return target
+    """Explicit setup/repair; PM re-verifies even a warm entry (including force)."""
+    import pm
 
-    asset_name = _platform_asset_name()
-    with tempfile.TemporaryDirectory(prefix="hermes-bws-") as tmpdir:
-        tmp = Path(tmpdir)
-        zip_path = tmp / asset_name
-        checksum_path = tmp / _BWS_CHECKSUM_NAME
-
-        logger.info("Downloading %s", f"{_BWS_RELEASE_BASE}/{asset_name}")
-        _http_download(f"{_BWS_RELEASE_BASE}/{asset_name}", zip_path)
-        _http_download(f"{_BWS_RELEASE_BASE}/{_BWS_CHECKSUM_NAME}", checksum_path)
-
-        expected = _expected_sha256(checksum_path, asset_name)
-        actual = _sha256_file(zip_path)
-        if expected.lower() != actual.lower():
-            raise RuntimeError(f"Checksum mismatch for {asset_name}: expected {expected}, got {actual}")
-
-        with zipfile.ZipFile(zip_path) as zf:
-            member = _pick_zip_member(zf, _platform_binary_name())
-            extracted = _safe_extract_member(zf, member, tmp)
-
-        # Stage in the final directory so the rename can't cross filesystems.
-        fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".bws_")
-        os.close(fd)
-        shutil.copy2(extracted, staged)
-        os.chmod(staged, 0o755)
-        os.replace(staged, target)
-
-    logger.info("Installed bws %s at %s", _BWS_VERSION, target)
-    return target
-
-
-def _http_download(url: str, dest: Path) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent"})
-    try:
-        with urllib.request.urlopen(req, timeout=_BWS_DOWNLOAD_TIMEOUT) as resp, open(dest, "wb") as f:  # noqa: S310
-            shutil.copyfileobj(resp, f)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to download {url}: {exc}") from exc
-
-
-def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    """Parse standard ``sha256sum`` output (``<hex>  <filename>`` per line)."""
-    for line in checksum_file.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2 and parts[-1] == asset_name:
-            return parts[0]
-    raise RuntimeError(f"No checksum entry for {asset_name} in {checksum_file.name}")
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _pick_zip_member(zf: zipfile.ZipFile, binary_name: str) -> str:
-    """Find the binary in the zip; tolerate a top-level dir, prefer the shortest path."""
-    candidates = [n for n in zf.namelist() if n.split("/")[-1] == binary_name]
-    if not candidates:
-        raise RuntimeError(f"Could not find {binary_name} inside downloaded archive "
-                           f"(members: {zf.namelist()[:5]}...)")
-    return min(candidates, key=len)
-
-
-def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: Path) -> Path:
-    """Extract one member, refusing zip-slip: ``ZipFile.extract`` never verifies the
-    joined path stays inside ``dest_dir``, so containment is checked here first."""
-    dest_root = os.path.realpath(dest_dir)
-    target = os.path.realpath(os.path.join(dest_root, member))
-    try:  # commonpath raises for e.g. different Windows drives — treat as escape
-        contained = os.path.commonpath([dest_root, target]) == dest_root and target != dest_root
-    except ValueError:
-        contained = False
-    if not contained:
-        raise RuntimeError(f"Refusing to extract unsafe archive member {member!r}: "
-                           f"it escapes the extraction directory")
-    zf.extract(member, dest_root)
-    return Path(target)
+    pm.ensure("bws", explicit=True)
+    return pm.installed_package("bws").binary
 
 
 # --- Encrypted last-good cache (opt-in) -------------------------------------

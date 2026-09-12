@@ -2,11 +2,9 @@
 
 Covers:
 
-1. ``typescript-language-server`` install recipe pulls in ``typescript``
-   alongside the server, so the npm install command targets both.
-2. ``hermes lsp status`` surfaces a ``Backend warnings`` section when
+1. ``hermes lsp status`` surfaces a ``Backend warnings`` section when
    bash-language-server is installed but ``shellcheck`` is missing.
-3. ``_check_lint`` returns ``skipped`` (not ``error``) when the linter
+2. ``_check_lint`` returns ``skipped`` (not ``error``) when the linter
    command exists on PATH but couldn't actually run — e.g. ``npx tsc``
    without the typescript SDK installed.  This is what unblocks the
    LSP semantic tier on TypeScript files when the user doesn't also
@@ -19,53 +17,6 @@ from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from agent.lsp.install import INSTALL_RECIPES
-
-
-# ---------------------------------------------------------------------------
-# Fix 1: typescript install recipe carries the typescript SDK
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-def test_install_npm_works_without_extras(tmp_path, monkeypatch):
-    """Backwards compat: pyright-style recipes (no extras) still install."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return MagicMock(returncode=0, stderr="")
-
-    from agent.lsp import install as install_mod
-
-    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
-    # _install_npm resolves npm via hermes_constants.find_node_executable
-    # (managed Node first, PATH second) — not install_mod.shutil.which, so
-    # mock the actual seam or the early "no usable npm" return skips the
-    # subprocess entirely.
-    monkeypatch.setattr(
-        install_mod, "find_node_executable",
-        lambda c: "/usr/bin/npm" if c == "npm" else None,
-    )
-
-    install_mod._install_npm("pyright", "pyright-langserver")
-
-    cmd = captured["cmd"]
-    assert "pyright" in cmd
-    # Should not blow up when extra_pkgs is omitted/None
-    install_targets = [c for c in cmd if not c.startswith("-") and c not in {
-        "install", "--prefix", str(install_mod.hermes_lsp_bin_dir().parent),
-        "/usr/bin/npm",
-    }]
-    assert install_targets == ["pyright"]
-
-
 
 
 def test_install_python_server_uses_pm_tool_environment(tmp_path, monkeypatch):

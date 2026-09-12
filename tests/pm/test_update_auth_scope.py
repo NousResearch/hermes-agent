@@ -9,12 +9,14 @@ import urllib.response
 import pytest
 
 from pm import update
+from pm import packages
 
 
 class IndexTransport(urllib.request.HTTPHandler, urllib.request.HTTPSHandler):
-    def __init__(self, redirects=None):
+    def __init__(self, redirects=None, body=b'{}'):
         super().__init__()
         self.redirects = redirects or {}
+        self.body = body
         self.sent = []
 
     def http_open(self, request):
@@ -24,7 +26,7 @@ class IndexTransport(urllib.request.HTTPHandler, urllib.request.HTTPSHandler):
         if destination:
             headers["Location"] = destination
         response = urllib.response.addinfourl(
-            io.BytesIO(b'{}'), headers, request.full_url, 302 if destination else 200,
+            io.BytesIO(self.body), headers, request.full_url, 302 if destination else 200,
         )
         response.msg = "Found" if destination else "OK"
         return response
@@ -56,7 +58,7 @@ def test_index_credentials_match_the_exact_origin(monkeypatch, url, token):
     assert headers["user-agent"] == "hermes-pm"
 
 
-@pytest.mark.parametrize("reader", [update._get_json, update._get_text], ids=["json", "text"])
+@pytest.mark.parametrize("reader", ["json", "text", "release-digest"])
 @pytest.mark.parametrize("destination,credential_survives", [
     ("https://api.github.com/second", True),
     ("https://unrelated.invalid/second", False),
@@ -64,12 +66,22 @@ def test_index_credentials_match_the_exact_origin(monkeypatch, url, token):
     ("http://api.github.com/second", False),
 ])
 def test_index_redirects_use_the_credential_safe_opener(monkeypatch, reader, destination, credential_survives):
-    origin = "https://api.github.com/first"
-    transport = IndexTransport({origin: destination})
+    origin = "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/b123"
+    transport = IndexTransport(
+        {origin: destination},
+        body=b'{"assets": [{"name": "tool.zip", "digest": "sha256:abc123"}]}',
+    )
     monkeypatch.setattr(urllib.request, "_opener", urllib.request.build_opener(transport))
     monkeypatch.setenv("GH_TOKEN", "dummy-gh")
 
-    reader(origin)
+    if reader == "release-digest":
+        monkeypatch.setattr(packages, "_release_digest_cache", {})
+        package = packages.LlamaCpp()
+        assert package.known_sha256("123", "https://github.com/example/tool.zip") == "abc123"
+        # A cache hit must retain the parsed result without making another request.
+        assert package.known_sha256("123", "https://github.com/example/tool.zip") == "abc123"
+    else:
+        {"json": update._get_json, "text": update._get_text}[reader](origin)
 
     assert [url for url, _ in transport.sent] == [origin, destination]
     initial, redirected = [{key.lower(): value for key, value in headers.items()} for _, headers in transport.sent]

@@ -14,7 +14,7 @@ import hermes_yaml as yaml
 from hermes_cli import memory_setup
 from hermes_cli.runtime_paths import selected_venv
 from pm import paths
-from tests.pm.test_workspace_build_inputs import _wheel
+from tests.pm._fixtures import _wheel
 
 
 @pytest.mark.parametrize('picker', [False, True])

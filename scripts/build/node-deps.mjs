@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -16,10 +16,14 @@ export function npmCommand({ env = process.env } = {}) {
       const bin = join(dir, name)
       if (!existsSync(bin)) continue
       const prefix = dirname(realpathSync(bin))
+      const lib = join(prefix, '../lib')
       candidates.push(
         join(prefix, 'node_modules/npm/bin/npm-cli.js'),
         join(prefix, '../lib/node_modules/npm/bin/npm-cli.js'),
-        join(prefix, '../lib/npm/bin/npm-cli.js'),
+        // Nix packages use lib/npm or a versioned lib/npm* directory.
+        // Discover the installed JS entrypoint, never parse/execute its shell wrapper.
+        ...(existsSync(lib) ? readdirSync(lib).filter(name => name.startsWith('npm')).sort()
+          .map(name => join(lib, name, 'bin/npm-cli.js')) : []),
         realpathSync(bin),
       )
     }
@@ -95,6 +99,13 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  // The Python bundle driver uses this same resolver, not a second layout probe.
+  if (process.argv[2] === '--npm') {
+    const [node, ...command] = npmCommand()
+    const child = spawnSync(node, [...command, ...process.argv.slice(3)], { stdio: 'inherit' })
+    if (child.error) throw child.error
+    process.exit(child.status ?? 1)
+  }
   const { values } = parseArgs({ options: {
     source: { type: 'string' }, workspace: { type: 'string', multiple: true },
     reuse: { type: 'boolean', default: false },

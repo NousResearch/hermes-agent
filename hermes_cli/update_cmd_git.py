@@ -45,7 +45,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False):
 
 def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
     """Stripped stdout of a successful ``_git_run``; ``None`` on non-zero exit or any exception."""
-    from hermes_cli.update_cmd_git import _git_run
+    from hermes_cli.update_cmd import _git_run
     with suppress(Exception):
         result = _git_run(git_cmd, args, cwd, **kw)
         if result.returncode == 0:

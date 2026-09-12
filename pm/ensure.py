@@ -7,6 +7,7 @@ import json
 import logging
 import shutil
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -26,11 +27,32 @@ LOG = logging.getLogger(__name__)
 # liveness to a UI.
 
 
-def _artifact_progress(progress, index: int, count: int):
-    if progress is None:
-        return None
-    label = f"{index + 1}/{count}" if count > 1 else ""
-    return lambda done, total: progress("download", done, total, label)
+def _prepare_artifacts(package, store, scratch, artifacts, version, target, *,
+                       progress=None, pause_event=None, download_progress=None):
+    def tick(done, total, ranges):
+        if progress is not None:
+            active = next(reversed(ranges))
+            index = next(i for i, artifact in enumerate(artifacts) if artifact["url"] == active)
+            label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
+            progress("download", done, total, label)
+        if download_progress is not None:
+            download_progress(done, total, ranges)
+
+    staged = scratch / "tree"
+    archives = store.fetch_many(artifacts, scratch, progress=tick, pause_event=pause_event)
+    for index, archive in enumerate(archives):
+        if pause_event is not None and pause_event.is_set():
+            raise DownloadPaused("install paused")
+        if progress is not None:
+            label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
+            progress("unpack", 0, 0, label)
+        # unpack empties its destination; extract additional archives separately.
+        destination = staged if index == 0 else scratch / f"extra-{index}"
+        package.unpack(archive, destination, target)
+        if index:
+            merge_tree(destination, staged)
+    package.stage(store, staged, version, target)
+    return staged
 
 
 def _lockfile() -> Lockfile:
@@ -221,6 +243,25 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
         _remove_entry(store, displaced.name)
 
 
+@contextmanager
+def _publish_entry(package, store, staged, entry, previous_entry, target):
+    """Keep rollback live through the caller's native facts commit, if any."""
+    if entry.exists() or entry.is_symlink():
+        entry.rename(previous_entry)
+    try:
+        store.publish(staged, entry.name)
+        reason = package.verify(entry, target)
+        if reason:
+            raise InstallError(package.name, f"published entry failed verification: {reason}")
+        yield
+    except BaseException:
+        if previous_entry.exists():
+            _restore_previous_entry(store, entry, previous_entry)
+        raise
+    if previous_entry.exists():
+        _remove_entry(store, previous_entry.name)
+
+
 def _install(
     package: Package,
     lockfile: Lockfile,
@@ -275,15 +316,6 @@ def _install(
             staged = scratch / "tree"
             previous = facts.get(package.name)
             try:
-                def tick(done, total, ranges):
-                    if progress is not None:
-                        active = next(reversed(ranges))
-                        index = next(i for i, artifact in enumerate(artifacts) if artifact["url"] == active)
-                        label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
-                        progress("download", done, total, label)
-                    if download_progress is not None:
-                        download_progress(done, total, ranges)
-
                 if copy_from is not None:
                     source_facts, source_store = copy_from
                     source = source_facts.get(package.name)
@@ -295,22 +327,9 @@ def _install(
                     if tree_digest(staged) != source["digest"]:
                         raise InstallError(package.name, "copied bytes do not match the bundled source")
                 else:
-                    archives = store.fetch_many(artifacts, scratch, progress=tick, pause_event=pause_event)
-                    for index, archive in enumerate(archives):
-                        if pause_event is not None and pause_event.is_set():
-                            raise DownloadPaused("install paused")
-                        label = f"{index + 1}/{len(artifacts)}" if len(artifacts) > 1 else ""
-                        if progress is not None:
-                            progress("unpack", 0, 0, label)
-                        if index == 0:
-                            package.unpack(archive, staged, target)
-                            continue
-                        # unpack() empties its destination; merge additional
-                        # archives only after extracting them separately.
-                        extra = scratch / f"extra-{index}"
-                        package.unpack(archive, extra, target)
-                        merge_tree(extra, staged)
-                    package.stage(store, staged, version, target)
+                    staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
+                                                progress=progress, pause_event=pause_event,
+                                                download_progress=download_progress)
                 if pause_event is not None and pause_event.is_set():
                     raise DownloadPaused("install paused")
                 if progress is not None:
@@ -318,24 +337,12 @@ def _install(
                 reason = package.verify(staged, target)
                 if reason:
                     raise InstallError(package.name, f"staged entry failed verification: {reason}")
-                if entry.exists():
-                    entry.rename(previous_entry)
-                try:
-                    store.publish(staged, entry_name)
-                    reason = package.verify(entry, target)
-                    if reason:
-                        raise InstallError(package.name, f"published entry failed verification: {reason}")
+                with _publish_entry(package, store, staged, entry, previous_entry, target):
                     facts.record(
                         package.name, version, entry_name, package.env(entry, target), store.root,
                         target=target, artifacts=[a["sha256"] for a in artifacts],
                         digest=tree_digest(entry),
                     )
-                except BaseException:
-                    if previous_entry.exists():
-                        _restore_previous_entry(store, entry, previous_entry)
-                    raise
-                if previous_entry.exists():
-                    _remove_entry(store, previous_entry.name)
                 _remove_downloads(store, artifacts)
             except (InstallError, DownloadPaused):
                 raise
@@ -405,37 +412,14 @@ def stage_only(name: str, target: str, progress=None) -> "Path":
                 "run `hermes pm lock --bump` for this package",
             )
         with store.scratch() as scratch:
-            staged = scratch / "tree"
-            for index, artifact in enumerate(artifacts):
-                archive = store.fetch(
-                    artifact["url"], artifact["sha256"], scratch,
-                    progress=_artifact_progress(progress, index, len(artifacts)),
-                )
-                if index == 0:
-                    package.unpack(archive, staged, target)
-                else:
-                    extra = scratch / f"extra-{index}"
-                    package.unpack(archive, extra, target)
-                    merge_tree(extra, staged)
-            package.stage(store, staged, version, target)
+            staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
+                                        progress=progress)
             reason = package.verify(staged, target)
             if reason:
                 raise InstallError(package.name, f"staged entry failed verification: {reason}")
             (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
-            # Keep the old pin usable until the replacement has been verified.
-            if entry.exists() or entry.is_symlink():
-                entry.rename(previous_entry)
-            try:
-                store.publish(staged, entry_name)
-                reason = package.verify(entry, target)
-                if reason:
-                    raise InstallError(package.name, f"published entry failed verification: {reason}")
-            except BaseException:
-                if previous_entry.exists():
-                    _restore_previous_entry(store, entry, previous_entry)
-                raise
-            if previous_entry.exists():
-                _remove_entry(store, previous_entry.name)
+            with _publish_entry(package, store, staged, entry, previous_entry, target):
+                pass  # Foreign entries carry the pin marker, never host facts.
             _remove_downloads(store, artifacts)
     return store.entry(entry_name)
 
@@ -454,7 +438,7 @@ def ensure(
     policy names, so the policy does not apply to them.
 
     ``progress(stage, done, total, label)`` reports the slow parts of an
-    install to a UI; see _artifact_progress.
+    install to a UI; see _prepare_artifacts.
     """
     if isinstance(get_package(name), StatePackage):
         sync_venv(explicit=explicit)
@@ -575,7 +559,11 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
             if unsupported:
                 raise InstallError("venv", f"extras {unsupported} are not supported by this Python/platform",
                                    "choose a supported provider; no dependency environment was changed")
-        frozen = read_features() if repair or not lazy_installs_allowed() else None
+        frozen = read_features()
+        # Without a frozen declaration, explicit source setup needs no policy
+        # read: the config loader initializes/chmods unrelated user state.
+        if frozen is not None and not repair and lazy_installs_allowed():
+            frozen = None
         if frozen is not None and extras:
             outside = sorted(set(extras) - set(frozen))
             if outside:
@@ -781,11 +769,13 @@ def _store_path_dirs() -> list[str]:
     return dirs
 
 
-def activate() -> None:
+def activate() -> list[str]:
     """Make the installed store usable: prepend its tool dirs to
     os.environ['PATH'] so reactive `shutil.which('git'|'bash'|'ffmpeg'|...)`
     resolves the bundled binaries. The gate is `check()` — if the store is
     broken, refuse to inject (fail fast rather than serving a partial PATH).
+    Return the check's problems, or an empty list on success, so startup
+    callers can report the verdict without checking the store twice.
 
     This is the ONE sanctioned global PATH write: PATH is the discovery
     contract every `which` reads, not a tool-specific env leak. Store-first
@@ -793,14 +783,16 @@ def activate() -> None:
     """
     import os
 
-    if check():
-        return  # broken store → do not provision; callers surface `hermes pm install`
+    problems = check()
+    if problems:
+        return problems
     dirs = _store_path_dirs()
     if not dirs:
-        return
+        return []
     existing = os.environ.get("PATH", "")
     prefix = os.pathsep.join(dirs)
     existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
     missing = [d for d in dirs if d.lower() not in existing_lower]
     if missing:
         os.environ["PATH"] = os.pathsep.join([*missing, existing]) if existing else os.pathsep.join(missing)
+    return []

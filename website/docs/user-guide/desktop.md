@@ -531,15 +531,16 @@ Boot logs land in `HERMES_HOME/logs/desktop.log` (it includes backend output and
 hermes logs gui -f
 ```
 
-Common resets:
+For a canonical source installation, Desktop checks and runs the installation
+launcher. PM selects its interpreter and dependency generation. A missing
+bootstrap marker does not force installation when that launcher works.
+
+If Python dependencies are damaged, run the installation's `hermes pm repair`.
+Then restart Desktop. Do not delete guessed `venv` paths or PM facts. For
+damaged application files, repair through the
+[installation owner](/reference/package-management#source-installs-and-packaged-builds).
 
 ```bash
-# Force a clean first-launch setup (macOS/Linux)
-rm "$HOME/.hermes/hermes-agent/.hermes-bootstrap-complete"
-
-# Rebuild a broken Python venv (macOS/Linux)
-rm -rf "$HOME/.hermes/hermes-agent/venv"
-
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
 ```

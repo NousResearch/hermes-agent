@@ -4,23 +4,22 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 
 import pytest
 
 from pm.package import InstallError
-from tests.pm.test_environment_build import _run, _wheel
+from tests.pm._fixtures import (
+    _run,
+    _wheel,
+    build_worker as build_worker,
+    client as client,
+    isolated_python as isolated_python,
+)
 
 
 @pytest.fixture
-def build_tools(tmp_path, monkeypatch):
-    uv = shutil.which("uv")
-    assert uv, "PM build tests require real uv"
-    # Worker transport is covered separately. These public operation tests use
-    # real engine/tools without downloading a second toolchain.
-    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
-    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+def build_tools(tmp_path, monkeypatch, build_worker):
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("UV_", "PYTHON")) and key != "VIRTUAL_ENV"}
     home = tmp_path / "home"
@@ -33,7 +32,7 @@ def build_tools(tmp_path, monkeypatch):
 
 @pytest.fixture
 def locked_source(tmp_path, build_tools):
-    from pm.operations import lock_project
+    from pm import lock_project
 
     wheels = tmp_path / "wheelhouse"
     wheels.mkdir()
@@ -192,7 +191,7 @@ def test_failed_requirement_build_removes_only_its_candidate(tmp_path, build_too
         build_requirements_environment(["app-dep==1.0"], out=out, python=python, wheelhouse=wheels,
                                        env=build_tools, cache=tmp_path / "cold-cache", offline=True, explicit=True)
     assert not out.exists()
-    with pytest.raises(FileExistsError):
+    with pytest.raises(FileExistsError, match="already exists"):
         build_requirements_environment(["app-dep==1.0"], out=previous, wheelhouse=wheels,
                                        env=build_tools, cache=tmp_path / "cache", offline=True, explicit=True)
     assert (previous / "pyvenv.cfg").read_bytes() == previous_cfg

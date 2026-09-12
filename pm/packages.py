@@ -999,29 +999,14 @@ class LlamaCpp(BinaryPackage):
 
 
 def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
-    import json
-    import os
-    import urllib.request
+    from pm.update import _get_json
 
     cached = _release_digest_cache.get((repo, tag))
     if cached is not None:
         return cached
     url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-    headers = {"User-Agent": "hermes-pm"}
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    from pm.network import retry_network
-
-    def request():
-        with urllib.request.urlopen(
-            urllib.request.Request(url, headers=headers),
-            timeout=120,
-        ) as resp:
-            return json.load(resp)
-
     try:
-        release = retry_network(request)
+        release = _get_json(url)
     except Exception:
         return {}
     digests = {}

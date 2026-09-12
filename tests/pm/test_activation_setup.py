@@ -20,8 +20,7 @@ import pytest
 
 from pm.lock import Lockfile
 from pm.store import current_target
-from tests.pm.test_pm_core import make_tar, served  # noqa: F401 -- shared HTTP fixture
-from tests.pm.test_workspace_build_inputs import _wheel
+from tests.pm._fixtures import _wheel, make_tar, served  # noqa: F401 -- shared HTTP fixture
 
 
 pytestmark = pytest.mark.platforms("posix")
@@ -77,6 +76,7 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
                  home / ".bashrc", home / ".bash_profile", home / ".zshrc"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("user-owned fixture\n", encoding="utf-8")
+    (hermes_home / "skills").chmod(0o755)
     (core / ".env.example").write_text("FIXTURE_ONLY=example\n", encoding="utf-8")
     (core / "skills").mkdir()
     (core / "skills" / "bundled.md").write_text("must not be seeded\n", encoding="utf-8")
@@ -178,7 +178,7 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
             [bash, "--noprofile", "--norc", "-c", script, "activation-test", str(core)],
             cwd=tmp_path, env=env, capture_output=True, text=True, timeout=90,
         )
-        assert _snapshot(protected) == untouched
+        assert _snapshot(protected) == untouched, result.stdout + result.stderr
         assert (result.returncode == 0) is succeeds, result.stdout + result.stderr
         return result
 

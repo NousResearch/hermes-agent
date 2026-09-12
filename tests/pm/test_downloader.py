@@ -33,17 +33,53 @@ def _sha(data: bytes) -> str:
 # ── parallelism ───────────────────────────────────────────────
 
 
-def test_parallel_uses_8_connections(dl_server, tmp_path):
+@pytest.mark.parametrize("connections", [2, 8])
+def test_parallel_requests_overlap_without_exceeding_limit(tmp_path, connections):
+    from http.server import ThreadingHTTPServer
+
     total = 8 * (4 << 20)  # 32 MiB -> 8 x 4 MiB ranges
     payload = _payload(total)
-    _Handler.payloads["/big"] = payload
+    barrier = threading.Barrier(connections)
+    lock = threading.Lock()
+    active = peak = 0
+    broken = []
+
+    class ConcurrentHandler(_Handler):
+        payloads = {"/big": payload}
+        ranges_seen = []
+
+        def do_GET(self):
+            nonlocal active, peak
+            if self.headers.get("Range") == "bytes=0-0":
+                return super().do_GET()
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                try:
+                    barrier.wait(timeout=5)
+                except threading.BrokenBarrierError:
+                    broken.append(self.headers.get("Range"))
+                super().do_GET()
+            finally:
+                with lock:
+                    active -= 1
+
     dest = tmp_path / "big.bin"
-    dl = Download([Source(_url(dl_server, "/big"), dest, _sha(payload))],
-                  partials_dir=tmp_path / "partials")
-    dl.run()
+    with ThreadingHTTPServer(("127.0.0.1", 0), ConcurrentHandler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            Download([Source(_url(server, "/big"), dest, _sha(payload))],
+                     connections=connections, partials_dir=tmp_path / "partials").run()
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
     assert dest.read_bytes() == payload
-    expected = [(i * total // 8, (i + 1) * total // 8 - 1) for i in range(8)]
-    assert sorted((s, e) for _, s, e in _Handler.ranges_seen) == expected
+    assert not broken, "range requests were serialized instead of overlapping"
+    assert peak == connections and active == 0
+    expected = [(i * total // connections, (i + 1) * total // connections - 1) for i in range(connections)]
+    assert sorted((s, e) for _, s, e in ConcurrentHandler.ranges_seen) == expected
 
 
 def test_progress_carries_overall_and_ranges(dl_server, tmp_path):

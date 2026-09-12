@@ -1,11 +1,11 @@
 """Hermetic tests for the iron-proxy egress integration.
 
 Covers the pure-function surface (token mint, mapping discovery, config build,
-config + mappings I/O), the binary install path (HTTP downloads + tar
-extraction + checksum verification fully mocked), the subprocess lifecycle
+config + mappings I/O), the subprocess lifecycle
 (spawn / PID / pid_alive / stop, with subprocess.Popen mocked), and the
 docker backend's egress arg builder.
 
+PM acquisition has real loopback/worker coverage in test_security_consumers.
 Live network and the real ``iron-proxy`` binary are NEVER touched.  See
 ``tests/test_iron_proxy_e2e.py`` (gated behind a marker) for the real-binary
 smoke test.
@@ -13,10 +13,8 @@ smoke test.
 
 from __future__ import annotations
 
-import io
 import os
 import sys
-import tarfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -212,16 +210,6 @@ def test_load_mappings_handles_corrupt_json(hermes_home):
 
 
 
-def _make_fake_tar(binary_name: str, payload: bytes = b"#!/bin/sh\necho ok\n") -> bytes:
-    """Build a tar.gz with one file at the root, named ``binary_name``."""
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        info = tarfile.TarInfo(name=binary_name)
-        info.size = len(payload)
-        info.mode = 0o755
-        tf.addfile(info, io.BytesIO(payload))
-    return buf.getvalue()
 
 
 
@@ -248,19 +236,6 @@ def test_verify_checksums_signature_skips_without_gpg(hermes_home, monkeypatch, 
 
 
 
-def test_pick_tar_member_rejects_path_traversal():
-    """A malicious tar that escapes via '..' must be refused."""
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        info = tarfile.TarInfo(name="../iron-proxy")
-        info.size = 1
-        info.mode = 0o755
-        tf.addfile(info, io.BytesIO(b"x"))
-    buf.seek(0)
-    with tarfile.open(fileobj=buf, mode="r:gz") as tf:
-        with pytest.raises(RuntimeError, match="Could not find iron-proxy"):
-            ip._pick_tar_member(tf, "iron-proxy")
 
 
 # ---------------------------------------------------------------------------

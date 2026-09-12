@@ -3,7 +3,7 @@
 Sandboxes (Docker/Modal/SSH) hold only opaque proxy tokens; iron-proxy — a TLS-intercepting,
 default-deny egress firewall — swaps them for real credentials on the way out, so a leaked
 token is useless outside the trusted proxy boundary.  The pinned binary is auto-installed
-into ``<hermes_home>/bin``; CA, ``proxy.yaml``, ``mappings.json``, pidfile and logs live in
+into the PM tool store; CA, ``proxy.yaml``, ``mappings.json``, pidfile and logs live in
 ``<hermes_home>/proxy``.  Failures warn and never block agent startup.
 """
 
@@ -18,7 +18,6 @@ import platform
 import shutil
 import signal
 import subprocess
-import tarfile
 import tempfile
 import threading
 import time
@@ -31,15 +30,6 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Pinned: never auto-resolve "latest" — the YAML schema may change between releases.
-_IRON_PROXY_VERSION = "0.39.0"
-_IRON_PROXY_RELEASE_BASE = f"https://github.com/ironsh/iron-proxy/releases/download/v{_IRON_PROXY_VERSION}"
-_IRON_PROXY_CHECKSUM_NAME = "checksums.txt"
-# Optional GPG verification of checksums.txt (SHA-256 alone trusts the release channel).
-_IRON_PROXY_CHECKSUM_SIG_NAME = "checksums.txt.asc"
-_IRON_PROXY_PUBKEY_NAME = "public-key.asc"
-
-_DOWNLOAD_TIMEOUT = 120  # binary is ~16MB
 _RUN_TIMEOUT = 30
 _STARTUP_GRACE_SECONDS = 5
 
@@ -154,11 +144,6 @@ class TokenMapping:
     alias_env_names: Tuple[str, ...] = ()
 
 
-def _hermes_bin_dir() -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "bin"
-
-
 def _proxy_state_dir_ro() -> Path:  # without creating it (status probes, pidfile reads)
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "proxy"
@@ -172,83 +157,32 @@ def _proxy_state_dir() -> Path:
     return d
 
 
-def _platform_binary_name() -> str:
-    return "iron-proxy.exe" if platform.system() == "Windows" else "iron-proxy"
-
-
-def _platform_asset_name() -> str:
-    """Map (uname, arch) -> ``iron-proxy_<version>_<os>_<arch>.tar.gz``; no Windows builds upstream."""
-    system, machine = platform.system(), platform.machine().lower()
-    if os_name := {"Linux": "linux", "Darwin": "darwin"}.get(system):
-        arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
-        return f"iron-proxy_{_IRON_PROXY_VERSION}_{os_name}_{arch}.tar.gz"
-    if system == "Windows":
-        raise RuntimeError(f"iron-proxy does not ship native Windows binaries as of v{_IRON_PROXY_VERSION}. Run the proxy on a Linux/macOS host, or inside WSL.")
-    raise RuntimeError(f"Unsupported platform for iron-proxy auto-install: {system} {machine}")
-
-
 def find_iron_proxy(*, install_if_missing: bool = False) -> Optional[Path]:
-    """Managed ``<hermes_home>/bin`` copy first, then PATH; optionally auto-install."""
-    managed = _hermes_bin_dir() / _platform_binary_name()
-    if managed.exists() and os.access(managed, os.X_OK):
-        return managed
+    """External tools do not require PM platform support; acquire only on a miss."""
     if system := shutil.which("iron-proxy"):
         return Path(system)
-    if not install_if_missing:
-        return None
-    try:
-        return install_iron_proxy()
-    except Exception as exc:  # noqa: BLE001 — never block startup
-        logger.warning("iron-proxy auto-install failed: %s", exc)
-        return None
+    import pm
+
+    selected = pm.installed_package("iron-proxy")
+    if selected is not None:
+        return selected.binary
+    if install_if_missing:
+        try:
+            pm.ensure("iron-proxy")
+            return pm.installed_package("iron-proxy").binary
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            logger.warning("iron-proxy auto-install failed: %s", exc)
+    return None
 
 
 def install_iron_proxy(*, force: bool = False) -> Path:
-    """Download, verify, and install the pinned binary; raises on any failure."""
-    (bin_dir := _hermes_bin_dir()).mkdir(parents=True, exist_ok=True)
-    target = bin_dir / _platform_binary_name()
-    if target.exists() and not force:
-        return target
-    asset_name = _platform_asset_name()
-    with tempfile.TemporaryDirectory(prefix="hermes-iron-proxy-") as tmpdir:
-        archive_path, checksum_path = (tmp := Path(tmpdir)) / asset_name, tmp / _IRON_PROXY_CHECKSUM_NAME
-        logger.info("Downloading %s", f"{_IRON_PROXY_RELEASE_BASE}/{asset_name}")
-        _release_asset(asset_name, archive_path)
-        _release_asset(_IRON_PROXY_CHECKSUM_NAME, checksum_path)
-        # Best-effort GPG check of checksums.txt closes the release-channel tamper gap.
-        _verify_checksums_signature(tmp, checksum_path)
-        expected, actual = _expected_sha256(checksum_path, asset_name), _sha256_file(archive_path)
-        if expected.lower() != actual.lower():
-            raise RuntimeError(f"Checksum mismatch for {asset_name}: expected {expected}, got {actual}")
-        with tarfile.open(archive_path, "r:gz") as tf:
-            member = _pick_tar_member(tf, _platform_binary_name())
-            # PEP 706 data filter rejects escaping links; < 3.12 relies on _pick_tar_member's sanitization.
-            try:
-                tf.extract(member, tmp, filter="data")  # noqa: S202
-            except TypeError:
-                tf.extract(member, tmp)  # noqa: S202
-            extracted = tmp / member.name
-        # Stage then atomically rename so the binary is never visible half-written.
-        fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".iron-proxy_")
-        os.close(fd)
-        shutil.copy2(extracted, staged)
-        os.chmod(staged, 0o755)
-        os.replace(staged, target)
-    # A freshly-installed binary must re-probe --version on the next get_status().
+    """Explicit setup/repair; PM verifies and repairs existing entries too."""
+    import pm
+
+    pm.ensure("iron-proxy", explicit=True)
+    target = pm.installed_package("iron-proxy").binary
     _VERSION_CACHE.pop(str(target), None)
-    logger.info("Installed iron-proxy %s at %s", _IRON_PROXY_VERSION, target)
     return target
-
-
-def _release_asset(name: str, dest: Path) -> None:
-    """Download one pinned-release asset to ``dest``; RuntimeError on any URL error."""
-    url = f"{_IRON_PROXY_RELEASE_BASE}/{name}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent"})
-        with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as resp, open(dest, "wb") as f:  # noqa: S310
-            shutil.copyfileobj(resp, f)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to download {url}: {exc}") from exc
 
 
 def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
@@ -257,50 +191,21 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
     if not (gpg := shutil.which("gpg")):
         logger.warning("gpg not found on PATH — skipping iron-proxy release-signature verification (SHA-256 checksum check still enforced).")
         return False
-    sig_path, pubkey_path = tmp / _IRON_PROXY_CHECKSUM_SIG_NAME, tmp / _IRON_PROXY_PUBKEY_NAME
-    try:
-        _release_asset(_IRON_PROXY_CHECKSUM_SIG_NAME, sig_path)
-        _release_asset(_IRON_PROXY_PUBKEY_NAME, pubkey_path)
-    except RuntimeError as exc:
-        logger.warning("iron-proxy release signature assets unavailable (%s) — skipping GPG verification (SHA-256 checksum check still enforced).", exc)
+    sig_path, pubkey_path = tmp / "checksums.txt.asc", tmp / "public-key.asc"
+    if not sig_path.is_file() or not pubkey_path.is_file():
+        logger.warning("iron-proxy release signature assets unavailable — skipping GPG verification (SHA-256 checksum check still enforced).")
         return False
-    (gnupg_home := tmp / "gnupg").mkdir(mode=0o700, exist_ok=True)
-    gpg_base = [gpg, "--homedir", str(gnupg_home), "--batch", "--no-tty"]
-    if (imp := _run([*gpg_base, "--import", str(pubkey_path)], timeout=60)).returncode != 0:
-        logger.warning("Could not import iron-proxy signing key — skipping GPG verification (SHA-256 still enforced): %s", imp.stderr.decode("utf-8", "replace")[:200])
-        return False
-    if (verify := _run([*gpg_base, "--verify", str(sig_path), str(checksum_path)], timeout=60)).returncode != 0:
-        raise RuntimeError(
-            f"iron-proxy checksums.txt failed GPG signature verification — refusing to install (possible release-channel tampering). gpg: {verify.stderr.decode('utf-8', 'replace')[:300]}"
-        )
-    logger.info("Verified iron-proxy checksums.txt GPG signature.")
-    return True
-
-
-def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    """Parse the standard ``sha256sum`` output: ``<hex>  <filename>``."""
-
-    text = checksum_file.read_text(encoding="utf-8-sig", errors="replace")
-    for line in text.splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2 and parts[-1] == asset_name:
-            return parts[0]
-    raise RuntimeError(f"No checksum entry for {asset_name} in {checksum_file.name}")
-
-
-def _sha256_file(path: Path) -> str:
-    with open(path, "rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
-
-
-def _pick_tar_member(tf: tarfile.TarFile, binary_name: str) -> tarfile.TarInfo:
-    """Find the binary in the archive (flat or one dir deep); reject abs paths and ``..``."""
-    candidates = [
-        m for m in tf.getmembers() if m.isfile() and not m.name.startswith("/") and ".." not in Path(m.name).parts and Path(m.name).name == binary_name
-    ]
-    if not candidates:
-        raise RuntimeError(f"Could not find {binary_name} inside downloaded archive (members: {[m.name for m in tf.getmembers()[:5]]}...)")
-    return min(candidates, key=lambda m: len(m.name))
+    with tempfile.TemporaryDirectory(prefix="hermes-iron-signature-") as gnupg_home:
+        gpg_base = [gpg, "--homedir", gnupg_home, "--batch", "--no-tty"]
+        if (imp := _run([*gpg_base, "--import", str(pubkey_path)], timeout=60)).returncode != 0:
+            logger.warning("Could not import iron-proxy signing key — skipping GPG verification (SHA-256 still enforced): %s", imp.stderr.decode("utf-8", "replace")[:200])
+            return False
+        if (verify := _run([*gpg_base, "--verify", str(sig_path), str(checksum_path)], timeout=60)).returncode != 0:
+            raise RuntimeError(
+                f"iron-proxy checksums.txt failed GPG signature verification — refusing to install (possible release-channel tampering). gpg: {verify.stderr.decode('utf-8', 'replace')[:300]}"
+            )
+        logger.info("Verified iron-proxy checksums.txt GPG signature.")
+        return True
 
 
 def _allowlisted_env() -> Dict[str, str]:

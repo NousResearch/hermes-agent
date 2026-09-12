@@ -53,11 +53,18 @@ are recorded. Unresolved expressions remain visible for manual review:
 
 HISTORY COVERAGE AND STATIC LIMITS
 ---------------------------------
-History discovery inventories every reachable origin/main commit, including
+The old-updater contract stops BEFORE the PM migration. History discovery
+inventories every commit reachable from an explicit pre-PM cutoff, including
 merge parents, and scans every distinct Python blob for entrypoint ASTs.
 All historical versions of discovered paths, updater siblings, renamed seed
 helpers, and statically referenced imported functions are audited. Witness
 commits identify versions; unchanged descendants are not re-parsed.
+
+The checked-in freeze retains an existing history-plus-tree superset. That
+does not require continually adding new PM updater imports: regeneration
+audits history only and requires --ref so a later origin/main cannot silently
+advance the contract. Use the existing freeze's stats.history.history_ref
+as the cutoff, not the current branch or working tree.
 
 This is NOT a complete Python call-graph proof. Reflection, computed module
 names, arbitrary alias reassignment, class/instance dispatch, and module
@@ -70,10 +77,11 @@ of committed merge markers audits every arm combination and records recovery;
 this is conservative archaeology, not a claim that broken source could run.
 
 Usage:
-    python scripts/audit-old-updater-imports.py            # report
-    python scripts/audit-old-updater-imports.py --json
-    python scripts/audit-old-updater-imports.py --check    # CI gate
-    python scripts/audit-old-updater-imports.py --explain hermes_constants
+    python scripts/audit-old-updater-imports.py --ref PRE_PM_COMMIT  # report
+    python scripts/audit-old-updater-imports.py --ref PRE_PM_COMMIT --json
+    python scripts/audit-old-updater-imports.py --ref PRE_PM_COMMIT --check
+    python scripts/audit-old-updater-imports.py --ref PRE_PM_COMMIT --freeze PATH
+Shallow CI resolves the checked-in freeze via test_old_updater_compat_surface.py.
 """
 
 from __future__ import annotations
@@ -112,10 +120,8 @@ POST_SWAP_HELPER_MODULES = (
     "hermes_cli/backup_restore.py",
     "hermes_cli/managed_uv.py",
     "hermes_cli/psutil_android.py",
-    # pm era: `hermes update` drives the store through the pm package. A pm
-    # module imported BEFORE the swap keeps running as old code afterwards,
-    # so its lazy loads resolve against the NEW tree -- same failure shape
-    # as managed_uv. Files absent at a given revision are simply skipped.
+    # Diagnostic tree audits also inspect the PM updater. These seeds do
+    # not extend the historical cutoff: files absent there are skipped.
     "pm/__init__.py",
     "pm/cli.py",
     "pm/ensure.py",
@@ -711,14 +717,14 @@ def _git(*args: str, input: bytes | None = None) -> bytes:
         raise AuditError(exc.stderr.decode("utf-8", "replace").strip()) from exc
 
 
-def _full_history_ref() -> str:
+def _full_history_ref(ref: str = "origin/main") -> str:
     if _git("rev-parse", "--is-shallow-repository").strip() != b"false":
         raise AuditError(
             "Cannot audit shallow history. Run git fetch --unshallow origin "
-            "and fetch origin/main before regenerating; shallow CI must use "
+            "and fetch the cutoff commit before regenerating; shallow CI must use "
             "the checked-in frozen JSON."
         )
-    return _git("rev-parse", "--verify", "origin/main^{commit}").decode().strip()
+    return _git("rev-parse", "--verify", f"{ref}^{{commit}}").decode().strip()
 
 
 def shipped_commits() -> list[str]:
@@ -982,8 +988,9 @@ def _audit_versions(index: HistoryIndex, entrypaths: set[str], read_sources, *, 
     return surface
 
 
-def audit_history() -> Surface:
-    ref = _full_history_ref()  # pin once; a concurrent fetch cannot mix DAGs
+def audit_history(ref: str = "origin/main") -> Surface:
+    """Audit the full DAG at ref; freezes must pass the pre-PM cutoff."""
+    ref = _full_history_ref(ref)  # pin once; a concurrent fetch cannot mix DAGs
     index = _history_index(ref)
     print(f"[audit] indexed {len(index.versions)} historical Python paths", file=sys.stderr, flush=True)
     surface = _audit_versions(
@@ -991,7 +998,16 @@ def audit_history() -> Surface:
         progress=True,
     )
     if not surface.stats["entrypoint_paths"]:
-        raise AuditError("No updater entrypoint found in origin/main history")
+        raise AuditError(f"No updater entrypoint found in history at {ref}")
+    witnesses = {commit for commits in surface.required.values() for commit in commits}
+    for module, symbol, witness, site in REVIEWED_DYNAMIC_LOADS:
+        if witness not in witnesses:
+            continue
+        key = (module, symbol)
+        surface.required.setdefault(key, set()).add(witness)
+        surface.kinds.setdefault(key, set()).add("reviewed-module-call")
+        surface.sites.setdefault(key, set()).add(site)
+        surface.guarded_only.discard(key)
     surface.stats.update({
         "mode": "history",
         "discovery": index.discovery_stats,
@@ -1005,7 +1021,7 @@ def audit_history() -> Surface:
 
 
 def audit_tree() -> Surface:
-    """Audit the current tree without reading any Git history (shallow CI safe)."""
+    """Diagnostic only: current-tree loads do not extend the historical contract."""
     names = _git("ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.py")
     paths = {p.decode() for p in names.split(b"\0") if p}
     index = HistoryIndex()
@@ -1024,47 +1040,6 @@ def audit_tree() -> Surface:
 
     surface = _audit_versions(index, entrypaths, read_sources)
     surface.stats["mode"] = "tree"
-    return surface
-
-
-def audit_union() -> Surface:
-    """The frozen contract: every name any SHIPPED updater can lazy-load
-    after a checkout swap (full history walk over origin/main, following
-    the updater through every path it has lived at), UNION everything the
-    CURRENT updater loads (so a future rename turns the test red before it
-    bricks a live update).
-
-    A pair is guarded_only only when EVERY load site — historical or
-    current — sits under a swallowing ``try``.
-    """
-    history = audit_history()
-    tree = audit_tree()
-
-    surface = Surface()
-    for part in (history, tree):
-        for key, commits in part.required.items():
-            surface.required.setdefault(key, set()).update(commits)
-        for key, kinds in part.kinds.items():
-            surface.kinds.setdefault(key, set()).update(kinds)
-        for key, sites in part.sites.items():
-            surface.sites.setdefault(key, set()).update(sites)
-        surface.unresolved.update(part.unresolved)
-        surface.parse_recoveries.update(part.parse_recoveries)
-
-    bare: set[tuple[str, str]] = set()
-    for part in (history, tree):
-        bare |= set(part.required) - part.guarded_only
-    surface.guarded_only = set(surface.required) - bare
-    witnesses = {commit for commits in history.required.values() for commit in commits}
-    for module, symbol, witness, site in REVIEWED_DYNAMIC_LOADS:
-        if witness not in witnesses:
-            continue
-        key = (module, symbol)
-        surface.required.setdefault(key, set()).add(witness)
-        surface.kinds.setdefault(key, set()).add("reviewed-module-call")
-        surface.sites.setdefault(key, set()).add(site)
-        surface.guarded_only.discard(key)
-    surface.stats = {"mode": "union", "history": history.stats, "tree": tree.stats}
     return surface
 
 
@@ -1140,33 +1115,38 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--history",
         action="store_true",
-        help="Audit only the complete origin/main history. By default the "
-        "audit unions that history with the current working tree. Both "
-        "modes require a full clone; CI reads the checked-in frozen JSON.",
+        help="Audit only the complete history at --ref (already the default). "
+        "Requires a full clone; CI reads the checked-in frozen JSON.",
+    )
+    parser.add_argument(
+        "--ref",
+        required=True,
+        metavar="PRE_PM_COMMIT",
+        help="Explicit shipped-history cutoff before the PM migration. Use the "
+        "recorded history_ref from the frozen JSON, not a moving origin/main.",
     )
     parser.add_argument(
         "--freeze",
         metavar="PATH",
         help="Write the surface as JSON (the file the enforcing test reads). "
-        "The default audits the union of the current tree AND the full "
-        "shipped-history walk over origin/main (needs a full clone); "
-        "--history freezes the history half alone.",
+        "Audits the complete history at --ref, never the current working tree.",
     )
     ns = parser.parse_args(argv)
 
     try:
-        surface = audit_history() if ns.history else audit_union()
+        surface = audit_history(ns.ref)
     except AuditError as exc:
         parser.error(str(exc))
 
     if ns.freeze:
         payload = {
             "_comment": (
-                "Generated by scripts/audit-old-updater-imports.py --freeze. "
+                "Generated by scripts/audit-old-updater-imports.py --ref PRE_PM_COMMIT --freeze. "
                 "Names an already-running `hermes update` loads from the NEW "
                 "tree after the checkout swap. Deleting a bare name bricks "
                 "every release that loads it, mid-update, on a half-new "
-                "tree. Regenerate after changing the update flow; never "
+                "tree. The pre-PM cutoff is recorded in stats.history_ref; "
+                "new updater imports do not expand this contract. Never "
                 "hand-trim. History enumeration is complete; static call-graph "
                 "limits and unresolved_dynamic still require manual review."
             ),
@@ -1249,26 +1229,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if (missing and ns.check) else 0
 
     st = surface.stats
-    if st.get("mode") == "union":
-        hist, tree = st["history"], st["tree"]
-        print(
-            f"Union of {hist['commits']} reachable shipped commits in the update "
-            f"flow ({hist['revisions_read']} file revisions, "
-            f"{hist['distinct_file_versions']} distinct versions) and the "
-            f"current tree ({len(tree['files_analyzed'])} files)."
-        )
-    elif st.get("mode") == "tree":
-        print(
-            f"Audited the update flow in this working tree: "
-            f"{len(st['files_analyzed'])} files "
-            f"({', '.join(st['files_analyzed'])})."
-        )
-    else:
-        print(
-            f"Walked every reachable shipped commit, auditing distinct update versions: "
-            f"{st['commits']} commits, {st['revisions_read']} file revisions, "
-            f"{st['distinct_file_versions']} distinct versions."
-        )
+    print(
+        f"Walked every shipped commit reachable from {st['history_ref']}, "
+        f"auditing distinct update versions: {st['commits']} commits, "
+        f"{st['revisions_read']} file revisions, "
+        f"{st['distinct_file_versions']} distinct versions."
+    )
     print()
     by_kind: dict[str, int] = {}
     for kinds in surface.kinds.values():

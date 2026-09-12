@@ -1,34 +1,38 @@
-"""Regression tests for Windows desktop-update Unix timestamps.
+"""The Windows handoff writes numeric Unix seconds under comma-decimal locales."""
 
-PowerShell's ``Get-Date -UFormat %s`` is locale-sensitive. Under an ``es-ES``
-culture it can produce a comma decimal separator, and parsing that string with
-``InvariantCulture`` turns a ten-digit Unix timestamp plus fractional seconds
-into a value too large for ``System.Int32``. The detached Windows updater must
-use a locale-independent Unix timestamp API for both marker and result files.
-
-The updater script is not executable on the Linux CI lane, so these tests lock
-the source-level contract and reject the exact broken conversion.
-"""
-
-from __future__ import annotations
-
+import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import time
+
+import pytest
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-WINDOWS_UPDATE_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
-
-
-def test_windows_update_uses_locale_independent_unix_seconds() -> None:
-    source = WINDOWS_UPDATE_PS1.read_text(encoding="utf-8")
-    safe_expression = "[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()"
-    unsafe_expression = "[int][double]::Parse((Get-Date -UFormat %s)"
-
-    assert source.count(safe_expression) == 2, (
-        "windows.ps1 must use DateTimeOffset Unix seconds for both the "
-        "update marker and the finished result timestamp"
+@pytest.mark.platforms("windows")
+def test_windows_update_writes_locale_independent_marker_and_result(tmp_path, monkeypatch):
+    shell = shutil.which("powershell.exe")
+    assert shell, "native Windows acceptance requires PowerShell"
+    script = Path(__file__).resolve().parents[1] / "scripts/desktop-update/windows.ps1"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_UPDATE_STARTED_AT", raising=False)
+    # -SelfTestMarker runs the actual claim and finally/result publication,
+    # but never updates a checkout, waits on Desktop, or launches processes.
+    command = (
+        "[Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo('es-ES'); "
+        "& $env:HERMES_TIMESTAMP_TEST_SCRIPT -InstallRoot $env:HERMES_HOME -NoUi -NoMarkerCleanup -SelfTestMarker"
     )
-    assert unsafe_expression not in source, (
-        "windows.ps1 must not parse locale-sensitive Get-Date -UFormat %s "
-        "output through System.Int32"
-    )
+    started = int(time.time())
+    result = subprocess.run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                            env={**os.environ, "HERMES_TIMESTAMP_TEST_SCRIPT": str(script)},
+                            capture_output=True, text=True, timeout=60)
+    finished = int(time.time())
+    assert result.returncode == 0, result.stdout + result.stderr
+    marker = (tmp_path / ".hermes-update-in-progress").read_text(encoding="utf-8-sig").splitlines()
+    receipt = json.loads((tmp_path / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
+    assert len(marker) == 2 and int(marker[0]) > 0
+    assert started <= int(marker[1]) <= finished
+    assert type(receipt["finished_at"]) is int
+    assert started <= receipt["finished_at"] <= finished
+    assert receipt["exit_code"] == 0

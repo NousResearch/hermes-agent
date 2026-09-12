@@ -14,7 +14,7 @@ import pytest
 from pm.lock import Facts, Lockfile
 from pm.runtime import runtime_environment
 from pm.store import current_target, sha256_file, tree_digest
-from tests.pm.test_workspace_build_inputs import _wheel
+from tests.pm._fixtures import _wheel
 
 @pytest.fixture(autouse=True)
 def isolated_machine_home(tmp_path, monkeypatch):
@@ -39,7 +39,8 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     shutil.copytree(repo / "pm", core / "pm", ignore=shutil.ignore_patterns("__pycache__"))
     cli = core / "hermes_cli"
     cli.mkdir()
-    for name in ("__init__.py", "runtime_paths.py", "runtime_state.py", "_early_recovery.py", "_parser.py"):
+    for name in ("__init__.py", "runtime_paths.py", "runtime_state.py", "_early_recovery.py",
+                 "_parser.py", "venv_sync.py", "steward.py"):
         shutil.copy2(repo / "hermes_cli" / name, cli / name)
     wheels = tmp_path / "wheels"
     wheels.mkdir()

@@ -3414,14 +3414,12 @@ def main():
         import pm
 
         pm.adopt()
-        problems = pm.check()
+        problems = pm.activate()
         if problems:
             print(
                 f"⚠ install out of sync ({'; '.join(problems)}) — run `hermes pm install`",
                 file=sys.stderr,
             )
-        else:
-            pm.activate()
     except Exception:
         import logging
 

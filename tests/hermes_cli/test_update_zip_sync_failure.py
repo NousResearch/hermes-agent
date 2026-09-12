@@ -65,15 +65,23 @@ def test_pull_dependency_failure_keeps_recovery_marker(tmp_path, monkeypatch):
 @pytest.mark.parametrize("complete", [False, True])
 def test_zip_callers_propagate_completion(tmp_path, monkeypatch, route, gateway_mode, complete):
     monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(update_cmd, "_update_via_zip", lambda *args, **kwargs: complete)
     exit_markers = []
     monkeypatch.setattr(update_cmd, "_write_gateway_update_exit_code", exit_markers.append)
+
+    def zip_completion(received, **context):
+        assert received is args
+        assert context["gateway_mode"] is gateway_mode
+        # Completion owns the marker now; neither caller may emit it again.
+        if context["gateway_mode"]:
+            update_cmd._write_gateway_update_exit_code(complete)
+        return complete
+    monkeypatch.setattr(update_cmd, "_update_via_zip", zip_completion)
     resumed = []
     args = SimpleNamespace(branch="main")
 
     if route == "direct":
         monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda *args: SimpleNamespace(
-            gw_input_fn=None, assume_yes=True))
+            gw_input_fn=None, assume_yes=True, pre_update_version=None))
         monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda args: None)
         monkeypatch.setattr(main, "_run_pre_update_backup", lambda args: None)
         monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
@@ -99,4 +107,4 @@ def test_zip_callers_propagate_completion(tmp_path, monkeypatch, route, gateway_
             invoke()
         assert failure.value.code == 1
     assert exit_markers == ([complete] if gateway_mode else [])
-    assert resumed == ([None] if route == "direct" else [])
+    assert resumed == []  # no paused gateways: completion owns the success-path resume

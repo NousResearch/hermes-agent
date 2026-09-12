@@ -124,12 +124,15 @@ def test_pm_metadata_reads_retry_transient_http_failure(dl_server, monkeypatch, 
     }
     if reader_name == "digests":
         import urllib.request
-        original_urlopen = urllib.request.urlopen
 
-        def local_release(request, **kwargs):
-            return original_urlopen(urllib.request.Request(endpoint, headers=request.headers), **kwargs)
+        class LocalRelease(urllib.request.HTTPSHandler):
+            def https_open(self, request):
+                assert request.host == "api.github.com"
+                return urllib.request.urlopen(
+                    urllib.request.Request(endpoint, headers=request.headers), timeout=request.timeout,
+                )
 
-        monkeypatch.setattr(urllib.request, "urlopen", local_release)
+        monkeypatch.setattr(urllib.request, "_opener", urllib.request.build_opener(LocalRelease()))
         monkeypatch.setattr(packages, "_release_digest_cache", {})
         readers["digests"] = (lambda: packages._github_release_digests("test/repo", "test"), {"tool.zip": "abc123"})
     read, expected = readers[reader_name]

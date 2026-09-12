@@ -45,7 +45,7 @@ def test_enabled_plugins_ordered_reads_all_homes(homes):
     assert by_root.get(profile_home / "plugins") == ["c-plug"]
 
 
-@pytest.mark.parametrize("boundary", ["profile-listing", "profile-stat", "config-read", "plugin-stat", "manifest-read", "provider-stat"])
+@pytest.mark.parametrize("boundary", ["profile-listing", "profile-stat", "config-read", "plugin-stat", "manifest-read", "manifest-stat", "provider-stat"])
 def test_unreadable_profile_state_is_not_an_empty_selection(homes, monkeypatch, boundary):
     from pm.workspace import enabled_member_dirs
 
@@ -63,6 +63,7 @@ def test_unreadable_profile_state_is_not_an_empty_selection(homes, monkeypatch, 
         "config-read": ("read_text", profile_home / "config.yaml"),
         "plugin-stat": ("stat", plugin),
         "manifest-read": ("read_text", manifest),
+        "manifest-stat": ("stat", manifest),
         "provider-stat": ("stat", plugin),
     }[boundary]
     original = getattr(Path, method)

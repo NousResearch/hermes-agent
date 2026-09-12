@@ -5,6 +5,9 @@ to a profile. Uninstall removes the former (in either mode — they are not
 data); profile clone/export never copies them.
 """
 
+from pathlib import Path
+import tarfile
+
 import pytest
 
 from hermes_cli.uninstall import remove_legacy_runtime_trees
@@ -57,29 +60,47 @@ class TestRemoveLegacyRuntimeTrees:
 
 
 class TestProfileCopyExclusions:
-    @pytest.mark.parametrize(
-        "excluded", [".hermes-runtime", "node", "hermes-agent", "profiles"]
-    )
-    def test_clone_all_excludes_install_artifacts(self, excluded):
-        from hermes_cli.profiles import _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
+    @pytest.mark.parametrize("operation", ["clone", "export", "distribution"])
+    def test_copies_profile_payload_without_install_artifacts(self, tmp_path, monkeypatch, operation):
+        from hermes_cli import profiles, profile_distribution
 
-        assert excluded in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(profiles, "_maybe_register_gateway_service", lambda name: None)
+        kept = {"config.yaml": "model: {}\n", "SOUL.md": "profile identity\n",
+                "skills/demo/SKILL.md": "demo instructions\n"}
+        if operation != "distribution":
+            kept["memories/MEMORY.md"] = "profile memory\n"
+        excluded = (".hermes-runtime", "node", "hermes-agent", "profiles")
+        for rel, content in kept.items():
+            path = home / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        for name in excluded:
+            path = home / name / "must-not-copy"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("install state", encoding="utf-8")
 
-    @pytest.mark.parametrize("excluded", [".hermes-runtime", "node"])
-    def test_export_excludes_managed_runtimes(self, excluded):
-        from hermes_cli.profiles import _DEFAULT_EXPORT_EXCLUDE_ROOT
+        if operation == "clone":
+            target = profiles.create_profile("clone", clone_from="default", clone_all=True, no_alias=True)
+        elif operation == "distribution":
+            profile_distribution.write_manifest(home, profile_distribution.DistributionManifest(name="copy", version="1.0.0"))
+            profile_distribution.install_distribution(str(home), name="copy", create_alias=False)
+            target = profiles.get_profile_dir("copy")
+        else:
+            archive = profiles.export_profile("default", str(tmp_path / "profile.tar.gz"))
+            with tarfile.open(archive) as bundle:
+                for rel, content in kept.items():
+                    payload = bundle.extractfile(f"default/{rel}")
+                    assert payload is not None, rel
+                    assert payload.read().decode() == content
+                roots = {name.split("/")[1] for name in bundle.getnames() if "/" in name}
+                assert not roots.intersection(excluded)
+            return
 
-        assert excluded in _DEFAULT_EXPORT_EXCLUDE_ROOT
-
-    @pytest.mark.parametrize("excluded", [".hermes-runtime", "node"])
-    def test_distribution_excludes_managed_runtimes(self, excluded):
-        from hermes_cli.profile_distribution import USER_OWNED_EXCLUDE
-
-        assert excluded in USER_OWNED_EXCLUDE
-
-    def test_profile_state_is_still_copied(self):
-        """The exclusions must not swallow actual profile data."""
-        from hermes_cli.profiles import _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
-
-        for kept in ("config.yaml", "skills", "memories", "SOUL.md"):
-            assert kept not in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
+        for rel, content in kept.items():
+            assert (target / rel).read_text(encoding="utf-8") == content
+        for name in excluded:
+            assert not (target / name).exists(), name

@@ -34,16 +34,6 @@ def test_unreceipted_bundle_is_stale_even_when_newer(tmp_path: Path) -> None:
     assert main_tui_launch._tui_need_rebuild(tmp_path) is True
 
 
-def test_rebuild_when_tui_source_newer_than_bundle(tmp_path: Path) -> None:
-    _touch_tui_entry(tmp_path)
-    src = tmp_path / "src"
-    src.mkdir()
-    (src / "entry.tsx").write_text("console.log('src')")
-    os.utime(tmp_path / "dist" / "entry.js", (100, 100))
-    os.utime(src / "entry.tsx", (200, 200))
-
-    assert main_tui_launch._tui_need_rebuild(tmp_path) is True
-
 
 @pytest.fixture
 def tui_source(source_products, monkeypatch):
@@ -178,12 +168,19 @@ def test_tui_rebuild_preserves_the_prepared_desktop_and_web_union(tui_source):
     assert (root / "node_modules/apps-desktop").exists()
 
 
-@pytest.mark.parametrize("changed", ["package.json", "package-lock.json", "apps/shared/shared.ts"])
-def test_tui_rebuild_tracks_root_and_shared_inputs(tmp_path, changed):
-    tui = tmp_path / "ui-tui"
-    _touch_tui_entry(tui)
-    changed_file = tmp_path / changed
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("changed", ["ui-tui/src/entry.tsx", "package.json", "package-lock.json", "apps/shared/shared.ts"])
+def test_tui_rebuild_tracks_root_and_shared_inputs(tui_source, changed):
+    root, _ = tui_source
+    tui = root / "ui-tui"
+    changed_file = root / changed
     changed_file.parent.mkdir(parents=True, exist_ok=True)
-    changed_file.write_text("changed")
-    os.utime(tui / "dist/entry.js", (1, 1))
+    if not changed_file.exists():
+        changed_file.write_text("original input\n", encoding="utf-8")
+    main_tui_launch._make_tui_argv(tui, tui_dev=False)
+    assert not main_tui_launch._tui_need_rebuild(tui), "must have a current receipt before invalidation"
+    before = changed_file.stat()
+    changed_file.write_text(changed_file.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    # A content change must invalidate even when mtimes are restored.
+    os.utime(changed_file, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert main_tui_launch._tui_need_rebuild(tui)

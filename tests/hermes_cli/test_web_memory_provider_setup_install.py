@@ -17,7 +17,7 @@ def test_setup_admits_real_provider_union_and_keeps_selection_on_failure(tmp_pat
     import pm
     from hermes_constants import venv_python_path
     from hermes_cli.runtime_paths import selected_venv
-    from tests.pm.test_workspace_build_inputs import _wheel
+    from tests.pm._fixtures import _wheel
     from hermes_cli import memory_setup
     from hermes_cli.web_server_memory import _memory_provider_setup_info
 

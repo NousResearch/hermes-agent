@@ -1,242 +1,90 @@
-"""Tests for nested/alias-normalized enable & disable flows.
-
-Companion to test_plugins_cmd_category_discovery.py. That file covers the
-*listing* side of nested category plugins (issue #41066). These tests cover
-the *mutation* side: `hermes plugins enable/disable` must resolve a bare name
-OR a full path-derived key (e.g. `observability/trace_sink`) to the canonical
-registry key and write THAT — the same string PluginManager gates on — so a
-nested bundled plugin can actually be toggled.
-"""
-
-import sys  # noqa: F401
-from pathlib import Path
-from unittest.mock import patch
+"""Canonical keys and privilege consent through real admission."""
+import shutil
 
 import pytest
+import hermes_yaml as yaml
+
+from tests.hermes_cli.plugin_worker_support import (
+    plugin_world as plugin_world,
+    isolated_python as isolated_python,
+)
 
 
-@pytest.fixture(autouse=True)
-def _capture_selection(monkeypatch):
-    import hermes_cli.plugins_cmd as pc
-    from hermes_cli import plugins_admission
-    def save(enabled, disabled, **kwargs):
-        pc._save_enabled_set(enabled)
-        pc._save_disabled_set(disabled)
-    monkeypatch.setattr(plugins_admission, "admit_plugin_set_change", save)
+@pytest.mark.parametrize("query", ["trace-leaf", "trace-manifest", "observability/trace-leaf"])
+def test_nested_enable_disable_and_composite_use_canonical_key(plugin_world, monkeypatch, query):
+    from hermes_cli import plugins_cmd
+    from rich.console import Console
+
+    world = plugin_world
+    origin, _ = world.origin(name="trace-manifest")
+    key = "observability/trace-leaf"
+    target = world.home / "plugins" / key
+    shutil.copytree(origin, target)
+    (world.home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": [], "disabled": [key, "trace-leaf", "trace-manifest"]}}), encoding="utf-8")
+    world.command("enable", name=query, no_allow_tool_override=True)
+    assert world.enabled() == [key]
+    config = yaml.safe_load((world.home / "config.yaml").read_text())
+    assert config["plugins"]["disabled"] == []
+    world.imports(key)
+    world.command("disable", name=query)
+    assert world.enabled() == []
+    assert yaml.safe_load((world.home / "config.yaml").read_text())["plugins"]["disabled"] == [key]
+    # The fallback menu must persist canonical keys too, not labels.
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    plugins_cmd._run_composite_fallback([key], ["trace-manifest"], {0}, {key}, [], Console())
+    assert world.enabled() == [key]
+    world.imports(key)
 
 
-def _make_plugin_dir(parent: Path, name: str, manifest: dict) -> Path:
-    d = parent / name
-    d.mkdir(parents=True, exist_ok=True)
-    import hermes_yaml as yaml
-    (d / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
-    (d / "__init__.py").write_text("def register(ctx): pass\n", encoding="utf-8")
-    return d
+def test_ambiguous_and_unknown_names_cannot_change_config(plugin_world):
+    from hermes_cli import plugins_cmd
+
+    world = plugin_world
+    for category in ("image_gen", "model-providers"):
+        directory = world.home / "plugins" / category / "same-leaf"
+        directory.mkdir(parents=True)
+        (directory / "plugin.yaml").write_text(f"name: {category}-fixture\n", encoding="utf-8")
+    before = (world.home / "config.yaml").read_bytes()
+    for query in ("same-leaf", "not-installed"):
+        with pytest.raises(SystemExit) as exc:
+            world.command("enable", name=query)
+        assert exc.value.code == 1
+    assert plugins_cmd._resolve_plugin_key("image_gen/same-leaf") == "image_gen/same-leaf"
+    assert (world.home / "config.yaml").read_bytes() == before
 
 
-def _make_category_plugin(parent: Path, category: str, name: str, manifest: dict) -> Path:
-    return _make_plugin_dir(parent / category, name, manifest)
+def test_dependency_free_enable_no_churn_and_tool_override_fails_closed(plugin_world, monkeypatch):
+    from hermes_cli import plugins_cmd
+    from pm import client, receipt
 
+    world = plugin_world
+    client.sync_venv(explicit=True)
+    selected = world.selected()
+    origin, sha = world.origin(surface=None)
+    facts = (world.home / "config.yaml").read_bytes()
+    world.command("install", identifier=origin.as_uri(), ref=sha, no_enable=True, allow_removed=True)
+    assert world.selected() == selected
+    assert (world.home / "config.yaml").read_bytes() == facts
+    monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, "isatty", lambda: True)
+    def eof(*args, **kwargs):
+        raise EOFError
+    monkeypatch.setattr("rich.console.Console.input", eof)
+    world.command("enable", name="plugin-worker-proof")
+    config = yaml.safe_load((world.home / "config.yaml").read_text())
+    assert config["plugins"]["entries"]["plugin-worker-proof"]["allow_tool_override"] is False
+    assert world.selected() == selected
+    assert receipt.latest()["venv_rebuild"]["ok"] is False
 
-@pytest.fixture
-def nested_plugin_env(tmp_path):
-    """A user-plugins dir containing one nested and one flat plugin, with the
-    bundled dir pointed at an empty path. Returns the tmp_path."""
-    _make_category_plugin(tmp_path, "observability", "trace_sink", {
-        "name": "trace_sink", "version": "1.0.0", "description": "trace sink"
-    })
-    _make_plugin_dir(tmp_path, "disk-cleanup", {
-        "name": "disk-cleanup", "version": "1.0.0"
-    })
-    return tmp_path
-
-
-# ---------------------------------------------------------------------------
-# _resolve_plugin_key
-# ---------------------------------------------------------------------------
-
-
-class TestResolvePluginKey:
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_full_key_resolves_to_itself(self, mock_user, mock_bundled, nested_plugin_env):
-        from hermes_cli.plugins_cmd import _resolve_plugin_key
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-        assert _resolve_plugin_key("observability/trace_sink") == "observability/trace_sink"
-
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_unknown_returns_none(self, mock_user, mock_bundled, nested_plugin_env):
-        from hermes_cli.plugins_cmd import _resolve_plugin_key
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-        assert _resolve_plugin_key("does-not-exist") is None
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_ambiguous_leaf_name_returns_none(self, mock_user, mock_bundled, tmp_path):
-        """Same leaf name under two categories must NOT silently pick one."""
-        from hermes_cli.plugins_cmd import _resolve_plugin_key
-        _make_category_plugin(tmp_path, "image_gen", "openai", {"name": "image-gen-openai"})
-        _make_category_plugin(tmp_path, "model-providers", "openai", {"name": "mp-openai"})
-        mock_user.return_value = tmp_path
-        mock_bundled.return_value = tmp_path / "nonexistent"
-        # Bare "openai" is ambiguous -> None; the full key still resolves.
-        assert _resolve_plugin_key("openai") is None
-        assert _resolve_plugin_key("image_gen/openai") == "image_gen/openai"
-
-
-# ---------------------------------------------------------------------------
-# cmd_enable / cmd_disable — write the canonical key
-# ---------------------------------------------------------------------------
-
-
-class TestEnableDisableNested:
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_enable_bare_name_writes_key(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
-        mock_user, mock_bundled, nested_plugin_env,
-    ):
-        from hermes_cli.plugins_cmd import cmd_enable
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-
-        cmd_enable("trace_sink", allow_tool_override=False)  # bare name
-
-        saved = mock_save_en.call_args[0][0]
-        # The canonical key — NOT the bare name — must be persisted, because
-        # that is what PluginManager matches when deciding to load.
-        assert "observability/trace_sink" in saved
-        assert "trace_sink" not in saved or "observability/trace_sink" in saved
-
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_enable_unknown_plugin_exits(self, mock_user, mock_bundled, nested_plugin_env):
-        from hermes_cli.plugins_cmd import cmd_enable
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-        with pytest.raises(SystemExit):
-            cmd_enable("does-not-exist")
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_enable_flat_plugin_unchanged(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis,
-        mock_user, mock_bundled, nested_plugin_env,
-    ):
-        """Flat plugins keep writing their bare name (key == name) — no regression."""
-        from hermes_cli.plugins_cmd import cmd_enable
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-
-        cmd_enable("disk-cleanup", allow_tool_override=False)
-        saved = mock_save_en.call_args[0][0]
-        assert "disk-cleanup" in saved
-
-
-# ---------------------------------------------------------------------------
-# cmd_enable — built-in tool override consent (issue #29249)
-# ---------------------------------------------------------------------------
-
-
-class TestEnableToolOverrideConsent:
-    """Enabling a non-bundled plugin must surface a consent decision about the
-    privileged ``allow_tool_override`` capability, and persist the operator's
-    choice under ``plugins.entries.<key>.allow_tool_override``."""
-
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_interactive_eof_defaults_to_deny(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
-        mock_user, mock_bundled, nested_plugin_env,
-    ):
-        """Non-interactive stdin (EOFError) must fail closed to deny."""
-        from hermes_cli.plugins_cmd import cmd_enable
-        mock_user.return_value = nested_plugin_env
-        mock_bundled.return_value = nested_plugin_env / "nonexistent"
-
-        with patch("rich.console.Console.input", side_effect=EOFError):
-            cmd_enable("disk-cleanup")
-
-        mock_set_flag.assert_called_once_with(
-            "disk-cleanup", "allow_tool_override", False
-        )
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_bundled_plugin_never_prompts_or_writes_entry(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
-        mock_user, mock_bundled, tmp_path,
-    ):
-        """Bundled plugins are trusted — no consent prompt, no entry write."""
-        from hermes_cli.plugins_cmd import cmd_enable
-        # Bundled dir holds the plugin; user dir is empty.
-        _make_plugin_dir(tmp_path / "bundled", "trusted_bundled", {
-            "name": "trusted_bundled", "version": "1.0.0",
-        })
-        mock_user.return_value = tmp_path / "empty"
-        mock_bundled.return_value = tmp_path / "bundled"
-
-        # Console.input would raise if called — proving no prompt fired.
-        with patch("rich.console.Console.input", side_effect=AssertionError("prompted")):
-            cmd_enable("trusted_bundled")
-
-        mock_set_flag.assert_not_called()
-
-
-class TestCompositeMenuWritesCanonicalKey:
-    """#40190 follow-up: the interactive `hermes plugins` menu must persist
-    the CANONICAL KEY (``web/firecrawl``), never the bare manifest name
-    (``web-firecrawl``), so its disabled-list entries stay aligned with what
-    ``cmd_enable`` clears and what PluginManager gates on. Writing the bare
-    name is what silently vetoed a bundled backend forever (pi314).
-    """
-
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
-    @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
-    def test_fallback_unchecked_plugin_disables_by_key_not_name(
-        self, mock_en, mock_save_en, mock_save_dis,
-    ):
-        from hermes_cli.plugins_cmd import _run_composite_fallback
-        from rich.console import Console
-
-        # key differs from the manifest name, mirroring web/firecrawl.
-        plugin_keys = ["web/firecrawl"]
-        plugin_labels = ["web-firecrawl — firecrawl [bundled]"]
-        plugin_selected = set()  # unchecked → should be disabled
-
-        # First input() toggles nothing (blank Enter confirms immediately),
-        # second (category prompt) is skipped with blank Enter.
-        with patch("builtins.input", return_value=""):
-            _run_composite_fallback(
-                plugin_keys, plugin_labels, plugin_selected,
-                set(), [], Console(),
-            )
-
-        saved_dis = mock_save_dis.call_args[0][0]
-        assert "web/firecrawl" in saved_dis      # canonical key persisted
-        assert "web-firecrawl" not in saved_dis   # never the bare name
+    bundled = world.core / "plugins/trusted-fixture"
+    bundled.mkdir(parents=True)
+    (bundled / "plugin.yaml").write_text("name: trusted-fixture\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
+    def unexpected(*args, **kwargs):
+        pytest.fail("bundled plugin requested privilege consent")
+    monkeypatch.setattr("rich.console.Console.input", unexpected)
+    world.command("enable", name="trusted-fixture")
+    config = yaml.safe_load((world.home / "config.yaml").read_text())
+    assert "trusted-fixture" not in config["plugins"]["entries"]
+    assert world.selected() == selected

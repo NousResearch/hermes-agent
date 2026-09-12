@@ -527,7 +527,7 @@ Pull API keys from an external secret manager at process startup instead of stor
 | `status` | Show current config, binary path/version, and token validation status. |
 | `token` | Rotate the access token: validates the new token against Bitwarden before storing it in `.env` (a rejected token changes nothing). Accepts `--access-token` for non-interactive use and `--no-verify` to skip the probe. |
 | `sync` | Fetch secrets now and report what changed. Add `--apply` to actually export the secrets into the current shell's environment (default is dry-run). |
-| `install` | Download and verify the pinned `bws` binary. `--force` re-downloads even if a managed copy already exists. |
+| `install` | Install or repair the PM-pinned `bws` binary. `--force` requests the same integrity check and repair, not an unconditional download. |
 | `disable` | Turn off the Bitwarden integration. |
 
 
@@ -735,7 +735,7 @@ Outbound credential-injection firewall for remote terminal sandboxes. Wraps the 
 
 ```bash
 hermes egress install                  # download the pinned iron-proxy binary
-hermes egress install --force          # re-download even if already installed
+hermes egress install --force          # check and repair the managed copy
 
 hermes egress setup                    # interactive wizard: CA, mappings, config
 hermes egress setup --tunnel-port N    # override the tunnel listener port (default 9090)

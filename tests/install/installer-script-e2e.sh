@@ -101,6 +101,8 @@ fail() { printf 'E2E ASSERTION FAILED: %s\n' "$*" >&2; exit 1; }
 source "$(dirname "$0")/e2e-assets/ts-prefix.sh" 2>/dev/null || ts_prefix() { cat; }
 # shellcheck source=../e2e-assets/preserve-plugins.sh
 source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
+# shellcheck source=e2e-assets/source-driver.sh
+source "$(dirname "$0")/e2e-assets/source-driver.sh"
 # Full transcript in the job log, collapsed (GitHub renders ::group:: as a
 # fold; plain text anywhere else). Win or lose -- a green install's log is
 # how you diagnose the leg that fails next.
@@ -295,55 +297,22 @@ assert_checkout() {
   got="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
   [ "$got" = "$1" ] || fail "installed checkout is $got, expected $2 ($1)"
   ok "checkout is $2 ($1)"
-  local hermes="$INSTALL_DIR/.hermes/bin/hermes"
-  case "$1" in "$OLD_SHA"|old) hermes="$INSTALL_DIR/venv/bin/hermes" ;; esac
-  [ -x "$hermes" ] || fail "no hermes console script at $hermes"
-  "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-$2.log" \
+  local hermes
+  hermes="$(source_hermes "$INSTALL_DIR")" || fail "no usable installed command at $2"
+  python3 -B "$REPO_ROOT/tests/install/e2e-assets/source_driver.py" \
+    --root "$INSTALL_DIR" --launcher "$hermes" --desktop "$EXPECT_DESKTOP" \
+    || fail "read-only verification failed at $2; no repair was attempted"
+  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-$2.log" \
     || fail "hermes --version failed after $2; log in $LOG_DIR/version-$2.log"
   ok "hermes --version works: $(head -c 120 "$LOG_DIR/version-$2.log" | tr -d '\n')"
-}
-
-smoke_desktop() {
-  # $1: label (old|head). Prove the installed CLI can produce the desktop
-  # app: `hermes desktop --build-only` runs the full desktop pipeline
-  # (workspace install, renderer build, stamp write) and stops before the
-  # launch -- the same call `hermes update` itself makes. Probe the
-  # INSTALLED hermes for the flag rather than assuming this checkout's
-  # surface: sampled OLD releases may predate `hermes desktop` or
-  # --build-only entirely, and for them the phase skips, loudly.
-  local hermes="$INSTALL_DIR/.hermes/bin/hermes"
-  case "$1" in "$OLD_SHA"|old) hermes="$INSTALL_DIR/venv/bin/hermes" ;; esac
-  local help
-  if ! help="$("$hermes" desktop --help 2>&1)"; then
-    if [ "$1" = old ] && printf '%s' "$help" | grep -q 'invalid choice.*desktop'; then
-      ok "old release predates desktop; skipping desktop smoke"
-      return 0
-    fi
-    fail "desktop help failed at $1: $help"
-  fi
-  if ! printf '%s' "$help" | grep -qF -- --build-only; then
-    [ "$1" = old ] || fail "TARGET is missing desktop --build-only"
-    ok "old release predates --build-only; skipping desktop smoke"
-    return 0
-  fi
-  local rc=0
-  (cd "$INSTALL_DIR" && "$hermes" desktop --build-only < /dev/null 2>&1 \
-    | ts_prefix > "$LOG_DIR/desktop-smoke-$1.log") || rc=$?
-  log_group "hermes desktop --build-only ($1) transcript" "$LOG_DIR/desktop-smoke-$1.log"
-  [ "$rc" -eq 0 ] || fail "hermes desktop --build-only ($1) exited $rc; transcript above"
-  ok "hermes desktop --build-only works at $1"
-  # TODO(launch): LAUNCH the built app and auto-close it. Mechanism when
-  # the pieces land: driver-side spawn interception (a sitecustomize.py on
-  # PYTHONPATH wraps subprocess.run under an env-var opt-in and captures
-  # the real argv/cwd/env at the spawn site) + Playwright _electron.launch
-  # on the captured spec; electronApp.close() is the auto-close. Blocked
-  # on that asset and, for linux runners, on a virtual display (Xvfb).
 }
 
 # --- install OLD ---------------------------------------------------------------
 
 step "installing OLD ($INSTALL_REF) via its own scripts/install.sh ($INSTALL_METHOD)"
+EXPECT_DESKTOP=absent
 if [ "$INSTALL_METHOD" = "installer-script+desktop" ]; then
+  EXPECT_DESKTOP=present
   run_installer "$OLD_SHA" old desktop
   assert_checkout "$OLD_SHA" OLD
   assert_desktop_artifact OLD
@@ -351,7 +320,6 @@ else
   run_installer "$OLD_SHA" old
   assert_checkout "$OLD_SHA" OLD
 fi
-smoke_desktop old
 preserve_before_upgrade
 
 # --- update OLD -> HEAD ----------------------------------------------------------
@@ -366,8 +334,9 @@ case "$UPDATE_METHOD" in
     # `--yes` reaches the update subcommand only in later releases, and
     # argparse rejects the whole invocation when it does not exist. Ask the
     # installed hermes; older ones read the prompt from stdin, so close it.
-    HERMES="$INSTALL_DIR/venv/bin/hermes"
-    if "$HERMES" update --help 2>&1 | grep -qF -- --yes; then
+    HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed update command"
+    help="$("$HERMES" update --help 2>&1)" || fail "installed update --help failed: $help"
+    if grep -qF -- --yes <<< "$help"; then
       update_cmd=("$HERMES" update --yes)
     else
       update_cmd=("$HERMES" update)
@@ -382,6 +351,7 @@ case "$UPDATE_METHOD" in
     run_installer "$TARGET_SHA" "$TARGET_LABEL"
     ;;
   installer-script+desktop)
+    EXPECT_DESKTOP=present
     run_installer "$TARGET_SHA" "$TARGET_LABEL" desktop
     assert_desktop_artifact "$TARGET_LABEL"
     ;;
@@ -393,7 +363,8 @@ case "$UPDATE_METHOD" in
     # e2e-assets/launch-capture/sitecustomize.py - and re-executes it under
     # _electron.launch. Everything before the spawn (build, stamps, sandbox
     # fixup) runs for real in the installed code.
-    HERMES="$INSTALL_DIR/venv/bin/hermes"
+    EXPECT_DESKTOP=present
+    HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed desktop command"
     ASSETS="$REPO_ROOT/tests/install/e2e-assets"
     SPEC="$WORK_ROOT/launch-spec.json"
 
@@ -428,7 +399,7 @@ case "$UPDATE_METHOD" in
     (cd "$PW_DIR" && npm install --no-save --no-audit --no-fund \
       "@playwright/test@1.58.2" 2>&1 | ts_prefix > "$LOG_DIR/playwright-install.log") \
       || { log_group "playwright install transcript" "$LOG_DIR/playwright-install.log"; fail "playwright install failed"; }
-    cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/window-input.cjs" "$PW_DIR/"
+    cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$PW_DIR/"
     rc=0
     (cd "$PW_DIR" && node launch-from-spec.mjs \
       --spec "$SPEC" \
@@ -438,61 +409,6 @@ case "$UPDATE_METHOD" in
       | ts_prefix > "$LOG_DIR/app-update.log") || rc=$?
     log_group "app update (Playwright) transcript" "$LOG_DIR/app-update.log"
     [ "$rc" -eq 0 ] || fail "app-driven update exited $rc; transcript above"
-    # The in-app update spawns a DETACHED npm/updater whose parent chain does
-    # not pass through the Electron root, so the driver's descendant sweep
-    # cannot see it and a pre-clean can race a still-writing npm.
-    # Deterministic quiesce instead: find processes whose cwd is inside
-    # $INSTALL_DIR, wait for them to finish (they are the updater's tail),
-    # then escalate TERM -> KILL. cwd matching is precise to this sandbox;
-    # no name patterns.
-    step "quiescing $INSTALL_DIR before the head desktop smoke"
-    procs_in_install_dir() {
-      # Linux: /proc cwd links (fast, no tools needed). Darwin has no /proc:
-      # one lsof pass over ALL cwd descriptors, filtered by prefix in the
-      # reader. Deliberately NOT `+D "$INSTALL_DIR"`: lsof exits 1 when a +D
-      # match comes up empty, and under `set -euo pipefail` that non-zero
-      # kills the leg at the assignment. The unanchored form always matches
-      # other processes, so empty-for-OUR-dir is exit 0.
-      if [ -d /proc ]; then
-        local pid cwd
-        for pid in /proc/[0-9]*; do
-          cwd="$(readlink "$pid/cwd" 2>/dev/null)" || continue
-          case "$cwd" in "$INSTALL_DIR"*) echo "${pid#/proc/}";; esac
-        done
-      else
-        lsof -d cwd -F pn 2>/dev/null | awk -v dir="$INSTALL_DIR" '
-          /^p/ { pid = substr($0, 2) }
-          /^n/ { if (index(substr($0, 2), dir) == 1) print pid }'
-      fi
-    }
-    # If the probe mechanism itself is broken (no lsof on the runner, output
-    # shape surprise), say so and skip the wait... a blind quiesce must be
-    # VISIBLE, not a vacuous "install dir quiet".
-    if [ ! -d /proc ] && ! command -v lsof >/dev/null 2>&1; then
-      echo "WARNING: no /proc and no lsof; quiesce is blind, proceeding on the pre-clean alone"
-    else
-    quiesce_deadline=$((SECONDS + 60))
-    while :; do
-      lingering="$(procs_in_install_dir || true)"
-      [ -z "$lingering" ] && { ok "install dir quiet"; break; }
-      if [ "$SECONDS" -ge "$quiesce_deadline" ]; then
-        echo "install-dir processes still alive after 60s; terminating: $lingering"
-        kill $lingering 2>/dev/null || true
-        sleep 5
-        lingering="$(procs_in_install_dir || true)"
-        [ -n "$lingering" ] && kill -9 $lingering 2>/dev/null || true
-        ok "install dir force-quieted"
-        break
-      fi
-      sleep 2
-    done
-    fi
-    # The smoke check rebuilds from scratch anyway; give it a pristine tree
-    # rather than whatever the interrupted in-app update left behind.
-    step "clearing node_modules after driver-killed in-app update"
-    find "$INSTALL_DIR" -maxdepth 3 -name node_modules -type d -prune -print0 2>/dev/null \
-      | xargs -0 rm -rf 2>/dev/null || true
-    ok "node_modules cleared for the head desktop smoke"
     ;;
 esac
 
@@ -514,7 +430,6 @@ ls -la "$INSTALL_DIR/venv/bin" > "$ildest/venv-bin-ls.txt" 2>/dev/null || true
 ok "collected install-side logs to $ildest"
 
 assert_checkout "$TARGET_SHA" "$TARGET_LABEL"
-smoke_desktop "$TARGET_LABEL"
 
 preserve_after_upgrade
 

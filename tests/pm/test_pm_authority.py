@@ -8,14 +8,9 @@ matches lock, digest matches bytes), not snapshots."""
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import logging
 import shutil
-import tarfile
-import threading
-from functools import partial
-from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
 import pytest
@@ -26,6 +21,7 @@ from pm.lock import Facts, Lockfile
 from pm.package import Package
 from pm.packages import BinaryPackage
 from pm.store import Store, current_target, tree_digest
+from tests.pm._fixtures import make_tar, served as served
 
 
 class FakeTool(BinaryPackage):
@@ -35,32 +31,6 @@ class FakeTool(BinaryPackage):
 
     def fetch_url(self, version, target):
         return f"{FakeTool.base_url}/{self.name}-{version}.tar.gz"
-
-
-def make_tar(docroot: Path, name: str, files: dict[str, str]) -> tuple[str, str]:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for rel, content in files.items():
-            data = content.encode()
-            info = tarfile.TarInfo(rel)
-            info.size = len(data)
-            info.mode = 0o755
-            tf.addfile(info, io.BytesIO(data))
-    payload = buf.getvalue()
-    (docroot / name).write_bytes(payload)
-    return name, hashlib.sha256(payload).hexdigest()
-
-
-@pytest.fixture
-def served(tmp_path):
-    docroot = tmp_path / "www"
-    docroot.mkdir()
-    handler = partial(SimpleHTTPRequestHandler, directory=str(docroot))
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield docroot, f"http://127.0.0.1:{server.server_port}"
-    server.shutdown()
 
 
 @pytest.fixture

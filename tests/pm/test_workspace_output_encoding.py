@@ -91,7 +91,15 @@ def test_node_sidecar_retains_output_and_exit_status(
         completed.append(result)
         return result
 
-    error = ws.install_node_sidecar(tmp_path, npm_bin=sys.executable, runner=run_npm)
+    from pm.package import Runner
+
+    npm = tmp_path / ("npm.cmd" if os.name == "nt" else "npm")
+    npm.write_text("process-boundary fixture", encoding="utf-8")
+    npm.chmod(0o755)
+    runner = Runner("npm", {**os.environ, "PATH": str(tmp_path)})
+    monkeypatch.setattr("pm.ensure", lambda *args, **kwargs: runner)
+    monkeypatch.setattr("pm.package.subprocess.run", run_npm)
+    error = ws.install_node_sidecar(tmp_path, explicit=True)
 
     expected = diagnostic + "�"
     if returncode:

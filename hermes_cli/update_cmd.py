@@ -1259,7 +1259,9 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 def _handle_update_called_process_error(
     e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
-    *, target_sha: str | None = None, target_repository: str | None = None) -> None:
+    *, target_sha: str | None = None, target_repository: str | None = None,
+    pre_update_snapshot_id=None, pre_update_version=None,
+    _pre_update_plan=None, _windows_gateway_resume=None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
     stage = _format_update_failure_stage(e)
     if _should_zip_fallback_on_update_error(e):
@@ -1268,10 +1270,11 @@ def _handle_update_called_process_error(
         print()
         update_complete = _update_via_zip(
             args, had_desktop_app_before_update=had_desktop_app_before_update,
+            gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
+            pre_update_version=pre_update_version,
+            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
             target_sha=target_sha,
             **({"target_repository": target_repository} if target_repository else {}))
-        if gateway_mode:
-            _write_gateway_update_exit_code(update_complete)
         if not update_complete:
             sys.exit(1)
     else:
@@ -1369,23 +1372,14 @@ def _apply_pulled_update(
     print()
     print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
 
-    update_complete = _run_post_update_maintenance(
+    from hermes_cli.update_finish import finish_update
+
+    finish_update(
         assume_yes=opts.assume_yes, gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
         had_desktop_app_before_update=had_desktop_app_before_update,
-        pre_update_version=opts.pre_update_version)
-
-    # Exit code *before* the restart: under --gateway this process lives in the gateway's
-    # systemd cgroup and the systemctl-restart fallback SIGKILLs it (KillMode=mixed), so
-    # the marker would never land and the new gateway's watcher would time out spuriously.
-    if gateway_mode:
-        _write_gateway_update_exit_code(update_complete)
-
-    _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
-    _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
-    _verify_fleet_after_update(
-        _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
-        update_complete=update_complete)
+        pre_update_version=opts.pre_update_version,
+        plan=_pre_update_plan, windows_resume=_windows_gateway_resume)
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
@@ -1450,12 +1444,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         try:
             update_complete = _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update,
+                gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
+                pre_update_version=opts.pre_update_version,
+                _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
                 target_sha=release_sha,
                 **({"target_repository": target_repository} if target_repository else {}))
         finally:
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-        if gateway_mode:
-            _write_gateway_update_exit_code(update_complete)
+            if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
+                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if not update_complete:
             sys.exit(1)
         return
@@ -1543,9 +1539,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         try:
             _handle_update_called_process_error(
                 e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
-                target_repository=target_repository)
+                target_repository=target_repository,
+                pre_update_snapshot_id=pre_update_snapshot_id, pre_update_version=opts.pre_update_version,
+                _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume)
         finally:
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
+                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

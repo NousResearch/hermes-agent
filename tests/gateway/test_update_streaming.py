@@ -88,38 +88,6 @@ class TestGatewayPrompt:
         assert not (hermes_home / ".update_response").exists()
 
 
-# ---------------------------------------------------------------------------
-# _restore_stashed_changes with input_fn
-# ---------------------------------------------------------------------------
-
-
-class TestRestoreStashWithInputFn:
-    """Tests for _restore_stashed_changes with the input_fn parameter."""
-
-    def test_uses_input_fn_when_provided(self, tmp_path):
-        """When input_fn is provided, it's called instead of input()."""
-        from hermes_cli.update_cmd import _restore_stashed_changes
-
-        captured_args = []
-
-        def fake_input_fn(prompt, default=""):
-            captured_args.append((prompt, default))
-            return "n"
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0, stdout="", stderr=""
-            )
-            result = _restore_stashed_changes(
-                ["git"], tmp_path, "abc123",
-                prompt_user=True,
-                input_fn=fake_input_fn,
-            )
-
-        assert len(captured_args) == 1
-        assert "Restore" in captured_args[0][0]
-        assert result is False  # user declined
-
 
 # ---------------------------------------------------------------------------
 # Update command spawns --gateway flag
@@ -186,27 +154,37 @@ class TestWatchUpdateProgress:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        # Write exit code after a brief delay
-        async def write_exit_code():
-            await asyncio.sleep(0.2)
-            (hermes_home / ".update_output.txt").write_text(
-                "→ Fetching updates...\n✓ Code updated!\n"
-            , encoding="utf-8")
-            (hermes_home / ".update_exit_code").write_text("0")
+        streamed = asyncio.Event()
+        sent = []
+
+        async def receive(chat_id, text, **kwargs):
+            sent.append(text)
+            if "Fetching updates" in text:
+                assert not (hermes_home / ".update_exit_code").exists()
+                streamed.set()
+
+        mock_adapter.send.side_effect = receive
 
         with patch("gateway.run._hermes_home", hermes_home):
-            task = asyncio.create_task(write_exit_code())
-            await runner._watch_update_progress(
-                poll_interval=0.1,
-                stream_interval=0.2,
-                timeout=5.0,
-            )
-            await task
+            watcher = asyncio.create_task(runner._watch_update_progress(
+                poll_interval=0.01, stream_interval=0.02, timeout=15.0,
+            ))
+            try:
+                # Completion cannot supply this assertion: the child is still running.
+                await asyncio.wait_for(streamed.wait(), timeout=5.0)
+                assert not watcher.done()
+                assert not any("update finished" in text.lower() for text in sent)
+                with (hermes_home / ".update_output.txt").open("a", encoding="utf-8") as output:
+                    output.write("✓ Code updated!\n")
+                (hermes_home / ".update_exit_code").write_text("0")
+                await asyncio.wait_for(watcher, timeout=5.0)
+            finally:
+                if not watcher.done():
+                    watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
 
-        # Should have sent at least the output and a success message
-        assert mock_adapter.send.call_count >= 1
-        all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
-        assert "update finished" in all_sent.lower()
+        assert "Code updated!" in sent[-2]
+        assert "update finished" in sent[-1].lower()
 
     @pytest.mark.asyncio
     async def test_detects_and_forwards_prompt(self, tmp_path):
@@ -377,25 +355,45 @@ class TestUpdatePromptInterception:
 class TestCmdUpdateGatewayMode:
     """Tests for cmd_update with --gateway flag."""
 
-    def test_gateway_flag_enables_gateway_prompt_for_stash(self, tmp_path):
+    def test_gateway_flag_enables_gateway_prompt_for_stash(self, tmp_path, monkeypatch):
         """With --gateway, stash restore uses _gateway_prompt instead of input()."""
-        from hermes_cli.update_cmd import _restore_stashed_changes
+        import subprocess
+        from types import SimpleNamespace
+        from hermes_cli import main, update_cmd
 
-        # Use input_fn to verify the gateway path is taken
-        calls = []
+        root = tmp_path / "checkout"
+        root.mkdir()
 
-        def fake_input(prompt, default=""):
-            calls.append(prompt)
-            return "n"
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            _restore_stashed_changes(
-                ["git"], tmp_path, "abc123",
-                prompt_user=True,
-                input_fn=fake_input,
-            )
+        git("init", "-b", "main")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "user.name", "Test")
+        (root / "notes.txt").write_text("committed\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "baseline")
+        git("remote", "add", "origin", str(root))
+        (root / "notes.txt").write_text("user edit\n", encoding="utf-8")
+        monkeypatch.setattr(main, "PROJECT_ROOT", root)
+        # Isolate host/service phases; options, Git, stash and prompt dispatch stay real.
+        monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
+        monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
+        monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+        monkeypatch.setattr(main, "_run_pre_update_backup", lambda args: None)
+        monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
+        monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: None)
+        monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
+        monkeypatch.setattr(update_cmd, "_repair_current_checkout", lambda **kw: True)
+        monkeypatch.setattr(update_cmd, "_apply_pending_fleet_restart_catchup", lambda: None)
+        gateway_prompt = MagicMock(return_value="n")
+        monkeypatch.setattr(update_cmd, "_gateway_prompt", gateway_prompt)
+        monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("gateway update read terminal input"))
 
-        assert len(calls) == 1
-        assert "Restore" in calls[0]
+        main.cmd_update(SimpleNamespace(gateway=True, branch="main", channel="main", yes=False))
+
+        gateway_prompt.assert_called_once()
+        assert "Restore" in gateway_prompt.call_args.args[0]
+        assert (root / "notes.txt").read_text(encoding="utf-8") == "committed\n"
+        assert git("stash", "show", "-p").endswith("+user edit")
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -31,6 +31,25 @@ function fixture() {
   execFileSync(node, [npm, 'install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--offline'], { cwd: root, env: { ...process.env, npm_config_cache: join(root, '.npm-cache') }, stdio: 'pipe' })
   return root
 }
+
+test.each(['npm', 'npm-fixture'])('prepared npm discovers lib/%s without npm_execpath', (directory) => {
+  const [node, installedCli] = npmCommand()
+  const root = mkdtempSync(join(tmpdir(), 'npm layout with spaces-'))
+  roots.push(root)
+  mkdirSync(join(root, 'bin'))
+  mkdirSync(join(root, 'lib'))
+  // Real npm code in a version-suffixed package directory. The launcher name
+  // has no .js suffix, as with native npm.cmd and Nix's shell wrappers.
+  cpSync(installedCli, join(root, 'bin', process.platform === 'win32' ? 'npm.cmd' : 'npm'))
+  symlinkSync(dirname(dirname(installedCli)), join(root, 'lib', directory), 'junction')
+  const env = { ...process.env, PATH: join(root, 'bin') }
+  delete env.npm_execpath
+  const [selectedNode, cli] = npmCommand({ env })
+  expect(selectedNode).toBe(node)
+  expect(cli).toBe(join(root, 'lib', directory, 'bin/npm-cli.js'))
+  const version = execFileSync(selectedNode, [cli, '--version'], { cwd: tmpdir(), env, encoding: 'utf8' }).trim()
+  expect(version).toMatch(/^\d+\.\d+\.\d+/)
+})
 
 test('read-only dependency preparation reuses complete receipts but refuses missing inputs', async () => {
   const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')

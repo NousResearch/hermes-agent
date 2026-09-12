@@ -65,10 +65,6 @@ def minor_of(version: str) -> Optional[tuple[int, int]]:
     return (nums[0], nums[1])
 
 
-def version_in_minor(version: str, minor: tuple[int, int]) -> bool:
-    return minor_of(version) == minor
-
-
 def best_in_minor(versions: list[str], minor: tuple[int, int]) -> Optional[str]:
     """The highest version in `versions` whose major.minor == `minor`."""
     best = None

@@ -1515,13 +1515,11 @@ def _run_pm_startup() -> None:
         import pm
 
         pm.adopt()
-        problems = pm.check()
+        problems = pm.activate()
         if problems:
             logging.getLogger("gateway.run").warning(
                 f"install out of sync ({'; '.join(problems)}) — run `hermes pm install`"
             )
-        else:
-            pm.activate()
     except Exception:
         logging.getLogger("gateway.run").debug("pm startup check failed", exc_info=True)
 

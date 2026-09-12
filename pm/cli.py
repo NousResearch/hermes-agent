@@ -8,7 +8,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 from pm.ensure import _facts, _lockfile, _store, ensure, stage_only
@@ -245,37 +244,14 @@ def cmd_gc(args) -> int:
 
 
 def _run_live(cmd: list[str], *, cwd, env, timeout: int = 3600) -> tuple[int, str]:
-    """Run cmd with its output streamed through our stdout — a long uv
-    venv build must prove liveness in a piped (CI) log, not vanish until
-    exit — while still capturing the tail for the failure message. A
-    reader thread drains output so proc.wait(timeout) keeps the wall-clock
-    kill the old subprocess.run(timeout=) had. Returns (returncode, last
-    ~2k chars of combined output)."""
-    proc = subprocess.Popen(
-        cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace",
-    )
-    tail = ""
-    lock = threading.Lock()
+    """Stream CI progress with the Python engine's bounded drain and diagnostic tail."""
+    from pm.environment import _run_streaming
 
-    def drain() -> None:
-        nonlocal tail
-        for line in proc.stdout:
-            print(line, end="", flush=True)
-            with lock:
-                tail = (tail + line)[-2000:]
-
-    thread = threading.Thread(target=drain, daemon=True)
-    thread.start()
     try:
-        code = proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        raise RuntimeError(f"{cmd[0]} timed out after {timeout}s")
-    thread.join()
-    with lock:
-        return code, tail
+        result = _run_streaming(cmd, cwd=cwd, env=env, timeout=timeout, output=sys.stdout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{cmd[0]} timed out after {timeout}s") from exc
+    return result.returncode, result.stderr
 
 
 def cmd_update(args) -> int:

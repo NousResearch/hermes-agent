@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from pm import workspace
+from tests.pm import _fixtures
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +74,7 @@ def test_legacy_member_is_generated_only_inside_workspace(tmp_path, monkeypatch)
     core.mkdir(); plugin.mkdir()
     wheels = tmp_path / "wheels"
     wheels.mkdir()
-    _wheel(wheels, "example", "1.0")
+    _fixtures._wheel(wheels, "example", "1.0")
     (core / "pyproject.toml").write_text(
         '[project]\nname="core"\nversion="1"\nrequires-python=">=3.14"\n'
         '[tool.uv]\npackage=false\nno-index=true\n'
@@ -96,22 +97,6 @@ def test_legacy_member_is_generated_only_inside_workspace(tmp_path, monkeypatch)
     assert workspace.members_stamp([plugin]) != stamp
 
 
-def _wheel(directory, name, version, requirements=()):
-    import zipfile
-
-    metadata = f"{name}-{version}.dist-info"
-    entries = {
-        f"{name}/__init__.py": f"__version__ = {version!r}\n",
-        f"{metadata}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
-            + "".join(f"Requires-Dist: {requirement}\n" for requirement in requirements),
-        f"{metadata}/WHEEL": "Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-    }
-    entries[f"{metadata}/RECORD"] = "".join(f"{path},,\n" for path in entries)
-    with zipfile.ZipFile(directory / f"{name}-{version}-py3-none-any.whl", "w") as archive:
-        for path, body in entries.items():
-            archive.writestr(path, body)
-
-
 @pytest.mark.parametrize("exact", [False, True])
 def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_path, monkeypatch, exact):
     import os
@@ -121,8 +106,8 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
     core.mkdir()
     wheels = tmp_path / "wheels"
     wheels.mkdir()
-    _wheel(wheels, "pkga", "1.0", ["pkgb>=1.2,<2"])
-    _wheel(wheels, "pkgb", "1.2")
+    _fixtures._wheel(wheels, "pkga", "1.0", ["pkgb>=1.2,<2"])
+    _fixtures._wheel(wheels, "pkgb", "1.2")
     core_requirement = '["pkga==1.0", "pkgb==1.2"]' if exact else '["pkga==1.0"]'
     (core / "pyproject.toml").write_text(
         '[project]\nname="core-proof"\nversion="1"\nrequires-python=">=3.11"\n'
@@ -137,7 +122,7 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
     workspace.lock_and_sync([], [], root=baseline, venv_dir=first_env)
     first_lock = (baseline / "uv.lock").read_bytes()
     assert next(p["version"] for p in tomllib.loads(first_lock.decode())["package"] if p["name"] == "pkgb") == "1.2"
-    _wheel(wheels, "pkgb", "1.3")
+    _fixtures._wheel(wheels, "pkgb", "1.3")
     plugin = tmp_path / "plugin"
     plugin.mkdir()
     (plugin / "pyproject.toml").write_text(

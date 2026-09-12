@@ -4,12 +4,9 @@ name: Bootstrap installer
 # POSIX shell installer (scripts/install.sh), its generated pin fragments,
 # and the version stamp the `complete` stage ships. The PowerShell installer
 # keeps its own Windows-only lane (installer-tests.yml); this lane runs the
-# cheap cross-checks plus a real sandboxed install against the PR checkout.
-#
-# Deliberately minimal: the heavy `python-deps` stage (uv sync of every
-# extra) is skipped — the pm/uv machinery under it is covered by the Python
-# lanes, and pulling the whole dependency graph per installer PR would make
-# this lane slower than everything it protects.
+# protocol/stamp cross-checks plus a whole current installer against a tiny
+# application graph. The latter runs real PM/uv and generated launchers, not
+# every production extra. Tool download/hash tests remain separate.
 
 on:
   workflow_call:
@@ -23,7 +20,7 @@ concurrency:
 
 jobs:
   posix:
-    name: install.sh sandbox install + stamp verification
+    name: install.sh protocol + small fresh-install E2E
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # NOTE: `runner.temp` is only available in step-level env, not job-level
@@ -68,7 +65,7 @@ jobs:
           echo "mirror=$mirror" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Run the installer stages against the PR checkout
+      - name: Check repository/config/completion protocol (not a working install)
         shell: bash
         env:
           # install.sh reads HERMES_INSTALL_DIR, not INSTALL_DIR (its default
@@ -89,11 +86,6 @@ jobs:
           }
           run_stage prerequisites
           run_stage repository
-          run_stage venv
-          # python-deps (uv sync --extra all) is deliberately skipped — the
-          # comment at the top of this file explains why.
-          run_stage node-deps
-          run_stage path
           run_stage config
           run_stage complete
           test -f "$HERMES_INSTALL_DIR/.hermes-bootstrap-complete"
@@ -119,6 +111,19 @@ jobs:
           head="$(git -C "$HERMES_INSTALL_DIR" rev-parse HEAD)"
           test "$head" = "${{ steps.source.outputs.sha }}" \
             || { echo "::error::installed HEAD $head != pinned ${{ steps.source.outputs.sha }}"; exit 1; }
+
+      - name: Prepare tools for the real small-graph installer test
+        uses: ./.github/actions/setup-pm
+
+      - name: Prepare isolated acceptance-test dependencies
+        shell: bash
+        run: python -m scripts.ci.python_packages pytest==9.1.1 pytest-asyncio==1.3.0 ruamel.yaml==0.18.17 packaging==26.0
+
+      - name: Current installer to PM worker to published command
+        shell: bash
+        env:
+          HERMES_TEST_FILE_RETRIES: '0'
+        run: bash scripts/run_tests.sh tests/test_fresh_source_install.py -q -j 1
 
   windows:
     name: install.ps1 protocol surface

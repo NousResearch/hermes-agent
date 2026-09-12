@@ -21,7 +21,7 @@
 #              hermes-desktop-app-update  capture `hermes desktop`'s spawn,
 #                                         launch the spec under Playwright,
 #                                         click Update now
-#              hermes-update              CLI update from the installed venv
+#              hermes-update              CLI update from the installed command
 #              installer-script[+desktop] re-run the current install one-liner
 #
 # Usage:
@@ -93,6 +93,8 @@ fail() { printf 'E2E ASSERTION FAILED: %s\n' "$*" >&2; exit 1; }
 source "$(dirname "$0")/e2e-assets/ts-prefix.sh" 2>/dev/null || ts_prefix() { cat; }
 # shellcheck source=../install/e2e-assets/preserve-plugins.sh
 source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
+# shellcheck source=e2e-assets/source-driver.sh
+source "$(dirname "$0")/e2e-assets/source-driver.sh"
 log_group() {
   printf '::group::%s\n' "$1"
   cat "$2"
@@ -212,13 +214,11 @@ phase_stage() {
 }
 
 find_installed_app() {
-  # The bootstrap installs the packaged app; look where the product puts it
-  # (the checkout's release dir), plus /Applications for a copied bundle.
+  # Require this installation's app, never an unrelated /Applications copy.
   local cand
   for cand in \
     "$INSTALL_DIR/apps/desktop/release/mac-arm64/Hermes.app" \
-    "$INSTALL_DIR/apps/desktop/release/mac/Hermes.app" \
-    "/Applications/Hermes.app"; do
+    "$INSTALL_DIR/apps/desktop/release/mac/Hermes.app"; do
     [ -d "$cand" ] && { printf '%s' "$cand"; return 0; }
   done
   return 1
@@ -268,9 +268,11 @@ phase_install() {
   got="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
   [ "$got" = "$OLD_SHA" ] || fail "installed checkout is $got, expected OLD ($OLD_SHA)"
   ok "checkout is OLD ($OLD_SHA)"
-  local hermes="$INSTALL_DIR/venv/bin/hermes"
-  [ -x "$hermes" ] || fail "no hermes console script at $hermes"
-  "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-old.log" || fail "hermes --version failed after install"
+  local hermes
+  hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed command after install"
+  python3 -B "$ASSETS/source_driver.py" --root "$INSTALL_DIR" --launcher "$hermes" --desktop present \
+    || fail "read-only verification failed after install"
+  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-old.log" || fail "hermes --version failed after install"
   ok "hermes --version works: $(head -c 120 "$LOG_DIR/version-old.log" | tr -d '\n')"
   find_installed_app >/dev/null || fail "no installed Hermes.app after the dmg bootstrap"
   ok "installed app: $(find_installed_app)"
@@ -326,7 +328,7 @@ run_playwright_update() {
   local spec="$1"
   local pw_dir
   pw_dir="$(ensure_playwright)"
-  cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/window-input.cjs" "$pw_dir/"
+  cp "$ASSETS/launch-from-spec.mjs" "$ASSETS/source-update-observer.mjs" "$ASSETS/window-input.cjs" "$pw_dir/"
   local rc=0
   (cd "$pw_dir" && node launch-from-spec.mjs \
     --spec "$spec" \
@@ -361,9 +363,11 @@ phase_update() {
     hermes-update)
       # The CLI route a dmg user takes from a terminal. `--yes` reaches the
       # update subcommand only in later releases; ask the installed hermes.
-      local hermes="$INSTALL_DIR/venv/bin/hermes"
+      local hermes help
+      hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed update command"
       local update_cmd=("$hermes" update)
-      if "$hermes" update --help 2>&1 | grep -qF -- --yes; then
+      help="$("$hermes" update --help 2>&1)" || fail "installed update --help failed: $help"
+      if grep -qF -- --yes <<< "$help"; then
         update_cmd=("$hermes" update --yes)
       fi
       local rc=0
@@ -409,7 +413,8 @@ PYEOF
       ;;
     hermes-desktop-app-update)
       # The product's own launch, captured at its spawn site.
-      local hermes="$INSTALL_DIR/venv/bin/hermes"
+      local hermes
+      hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed desktop command"
       local spec="$WORK_ROOT/launch-spec.json"
       local rc=0
       (cd "$INSTALL_DIR" && \
@@ -446,7 +451,11 @@ PYEOF
   ls -la "$INSTALL_DIR/venv" > "$ildest/venv-ls.txt" 2>/dev/null || true
   ok "collected install-side logs to $ildest"
 
-  "$INSTALL_DIR/venv/bin/hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-head.log" \
+  local command
+  command="$(source_hermes "$INSTALL_DIR")" || fail "no installed command after update"
+  python3 -B "$ASSETS/source_driver.py" --root "$INSTALL_DIR" --launcher "$command" --desktop present \
+    || fail "read-only verification failed after update; no repair was attempted"
+  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 "$command" --version 2>&1 | ts_prefix > "$LOG_DIR/version-head.log" \
     || fail "hermes --version failed after update"
   ok "hermes --version works post-update"
   preserve_after_upgrade

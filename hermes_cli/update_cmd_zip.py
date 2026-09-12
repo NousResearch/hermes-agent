@@ -14,8 +14,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.update_cmd_common import _best_effort
-
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
 
@@ -319,24 +317,23 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
 
 
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
-                   target_sha: str | None = None, target_repository: str | None = None) -> bool:
+                   target_sha: str | None = None, target_repository: str | None = None,
+                   gateway_mode: bool | None = None, pre_update_snapshot_id=None,
+                   pre_update_version=None,
+                   _pre_update_plan=None, _windows_gateway_resume=None) -> bool:
     """Update via ZIP when Windows git file I/O fails; dependency/build failures propagate.
 
     A supplied commit keeps the archive on the target selected before Git failed.
     """
-    from hermes_cli.update_cmd import (
-        _m,
-        _print_curator_first_run_notice,
-        _print_curator_recent_run_notice,
-        _read_project_version,
-        _verify_and_restore_state_dbs_post_update,
-    )
+    from hermes_cli.update_cmd import _m, _read_project_version
     from hermes_cli.update_cmd_maint import (
-        _prepare_updated_checkout, _refresh_dashboard_after_update,
-        _print_verified_update_completion, _update_complete_message)
-    from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
-    from hermes_cli.update_cmd_maint import _sweep_bytecode_after_update
-    pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
+        _prepare_updated_checkout, _sweep_bytecode_after_update)
+    from hermes_cli.update_finish import finish_update
+
+    if pre_update_version is None:
+        pre_update_version = _read_project_version()
+    if gateway_mode is None:
+        gateway_mode = bool(getattr(args, "gateway", False))
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -360,25 +357,17 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
     _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
     _sweep_bytecode_after_update(branch)
     _prepare_updated_checkout(_m().PROJECT_ROOT, desktop=had_desktop_app_before_update)
-    with suppress(Exception):
-        print("→ Syncing bundled skills...")
-        _print_bundled_skills_sync_report()
-    # Seed the model-catalog disk cache from the fresh checkout (same rationale as _cmd_update_impl). Non-fatal.
-    with _best_effort('Model catalog seed during zip update failed: %s'):
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-        if seed_cache_from_checkout(_m().PROJECT_ROOT):
-            print("  ✓ Model catalog cache refreshed from checkout")
-    # state.db integrity guard: root home AND every sibling profile, each auto-restored from its own snapshot.
-    with _best_effort('Post-update state.db integrity check (zip path) failed: %s'):
-        # See #97994.
-        _verify_and_restore_state_dbs_post_update()
-    update_complete = _print_verified_update_completion(_update_complete_message(pre_update_version))
-    with _best_effort('Curator first-run notice failed: %s'):
-        _print_curator_first_run_notice()
-    with _best_effort('Curator recent-run notice failed: %s'):
-        _print_curator_recent_run_notice()
-    _refresh_dashboard_after_update()
-    with _best_effort('Update receipt finalize (zip path) failed: %s'):
-        from hermes_cli.update_receipt import finalize_update_receipt
-        finalize_update_receipt("success" if update_complete else "partial")
-    return update_complete
+    try:
+        finish_update(
+            assume_yes=bool(getattr(args, "yes", False)), gateway_mode=gateway_mode,
+            pre_update_snapshot_id=pre_update_snapshot_id,
+            had_desktop_app_before_update=had_desktop_app_before_update,
+            pre_update_version=pre_update_version,
+            plan=_pre_update_plan, windows_resume=_windows_gateway_resume)
+    except SystemExit as exc:
+        # Shared completion reports an unsafe runtime/incomplete fleet with exit 1.
+        # Keep ZIP's legacy bool contract; swap and preparation failures still raise.
+        if exc.code != 1:
+            raise
+        return False
+    return True

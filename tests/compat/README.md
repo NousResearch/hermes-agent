@@ -4,19 +4,27 @@ An updater can retain old Python modules after replacing its checkout. Its next
 lazy import reads the new files. Current-tree tests alone cannot protect that
 boundary.
 
-`old_updater_surface.json` records historical imports union current imports.
-Regenerate it from a full clone:
+The compatibility contract covers only updaters shipped before the PM migration,
+not imports introduced on the unshipped migration branch or in the working tree.
+`old_updater_surface.json` retains an existing history-plus-tree superset; keep
+every frozen name, without continually adding new PM updater imports.
+
+Regeneration audits history only and requires a full clone and an explicit
+pre-PM cutoff. Use the existing JSON's `stats.history.history_ref` (or
+`stats.history_ref` in history-only output), not a later `origin/main`:
 
 ```sh
-python3 scripts/audit-old-updater-imports.py --freeze tests/compat/old_updater_surface.json
+python3 scripts/audit-old-updater-imports.py --ref PRE_PM_COMMIT --freeze tests/compat/old_updater_surface.json
 ```
 
-The walker pins `origin/main` once. The JSON records that exact commit, the
+The walker resolves `--ref` once. The JSON records that exact commit, the
 history roots, discovered entrypoints, selected paths, and parse recoveries.
 It inventories all reachable commits, including merge parents. It follows
 historical filenames, deleted helpers, extraction imports, and rename edges.
-A shallow clone cannot regenerate the file. Shallow CI checks the frozen names
-and that the current imports remain a subset of the freeze.
+A shallow clone cannot regenerate the file. Shallow CI resolves every frozen
+bare name against the current tree and checks historical completeness; it does
+not require fresh-tree imports to be a subset of the freeze. An update-flow
+change alone is not grounds for regeneration or for advancing the cutoff.
 
 The surface deliberately over-approximates reachability. Matching update
 entrypoints and same-named functions can include unrelated callers. Do not trim
@@ -26,11 +34,20 @@ classes. It does not execute module bodies or prove every conditional export.
 
 ## Runtime behavior
 
-Retired dependency entrypoints stop with a relaunch message. Returning `None`
-can activate old pip fallback code. Other shims retain conservative return
-shapes without installs, downloads, marker writes, or PM delegation. Each shim
-explains why it exists. Current application code must use the live implementation,
-not these historical exports.
+Retired dependency entrypoints hand off to the fresh absolute-path updater
+child, wait, then exit with its status. Returning `None` can activate old pip
+fallback code. The old parent must not import PM, reload live modules, install,
+or download. Other shims retain conservative return shapes. Current application
+code must use the live implementation, not these historical exports.
+
+`old_updater_support.py` supplies the broad export tests' shared child-process
+seam: only the isolated takeover command is accepted, and the real temporary
+request/result bridge still runs. Each test resets the parent result cache so
+one export cannot pass just because another already handed off. The tests retain
+historical arguments and return shapes, and forbid old-parent fallbacks.
+`tests/hermes_cli/test_old_updater_takeover.py` separately executes a real child
+to prove waiting, status propagation and no reentry; these export probes do not
+replace that integration coverage.
 
 A fresh source launch checks PM's existing successful dependency facts. It
 synchronizes stale state and switches to the managed interpreter before
@@ -54,10 +71,12 @@ The reviewed categories are:
   not a statically proven contract.
 - `managed_uv` and `_subprocess_compat`: the historical Windows installer calls
   `_subprocess_compat.run`. `REVIEWED_DYNAMIC_LOADS` retains that named call with
-  its witness commit. Its shim stops before invoking an installer.
-- PM operations and build operations: fixed dispatch modules, seeded explicitly
-  with the other post-swap helpers. PM registry import names can also come from
-  package definitions outside the checkout.
+  its witness commit, including in history-only output at that cutoff.
+  Its shim stops before invoking an installer.
+- PM operations and build operations: fixed dispatch modules recorded by the
+  retained union's tree half. New PM imports do not extend the historical
+  contract. Diagnostic tree audits still inspect these modules; PM registry
+  import names can also come from package definitions outside the checkout.
 - Plugin configuration hooks and deferred tool registration: import targets
   depend on enabled plugins and runtime manifests. A core-tree freeze cannot
   enumerate names supplied by independently installed plugins.

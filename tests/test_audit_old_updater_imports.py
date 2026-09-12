@@ -155,13 +155,13 @@ def test_shallow_clone_refuses_freeze_without_overwriting_and_tree_still_works(a
     output = clone / "frozen.json"
     output.write_text("do not truncate this", encoding="utf-8")
     with pytest.raises(SystemExit) as failure:
-        audit.main(["--freeze", str(output)])
+        audit.main(["--ref", "origin/main", "--freeze", str(output)])
     assert failure.value.code != 0
     assert "--unshallow" in capsys.readouterr().err
     assert output.read_text() == "do not truncate this"
 
 
-def test_union_keeps_old_and_uncommitted_loads_and_bare_wins(audit, tmp_path):
+def test_freeze_requires_cutoff_and_keeps_only_shipped_loads(audit, tmp_path, capsys):
     root = audit.REPO_ROOT
     put(root, "hermes_cli/update_cmd.py", """def cmd_update():
     from hermes_constants import old_only, bare_then_guarded
@@ -172,22 +172,34 @@ def test_union_keeps_old_and_uncommitted_loads_and_bare_wins(audit, tmp_path):
 """)
     commit(root, "not a tag, still a shipped updater")
     put(root, "hermes_cli/update_cmd.py", """def cmd_update():
-    from hermes_constants import new_only, guarded_then_bare
+    from hermes_constants import guarded_then_bare
     try:
         from hermes_constants import bare_then_guarded, always_guarded
     except ImportError:
         pass
 """)
-    output = tmp_path / "union.json"
-    assert audit.main(["--freeze", str(output)]) == 0
+    cutoff = commit(root, "last updater before the PM migration")
+    put(root, "hermes_cli/update_cmd.py", "def cmd_update():\n    from hermes_constants import after_cutoff\n")
+    commit(root, "origin/main has advanced beyond the contract cutoff")
+    put(root, "hermes_cli/update_cmd.py", "def cmd_update():\n    from hermes_constants import uncommitted\n")
+    output = tmp_path / "history.json"
+    output.write_text("do not overwrite without a cutoff", encoding="utf-8")
+    with pytest.raises(SystemExit) as failure:
+        audit.main(["--freeze", str(output)])
+    assert failure.value.code != 0
+    assert "--ref" in capsys.readouterr().err
+    assert output.read_text() == "do not overwrite without a cutoff"
+
+    assert audit.main(["--ref", cutoff, "--freeze", str(output)]) == 0
     frozen = json.loads(output.read_text())
     assert set(frozen["bare"]) == {
-        "hermes_constants::old_only", "hermes_constants::new_only",
+        "hermes_constants::old_only",
         "hermes_constants::bare_then_guarded", "hermes_constants::guarded_then_bare",
     }
     assert frozen["guarded_only"] == ["hermes_constants::always_guarded"]
-    assert frozen["stats"]["mode"] == "union"
-    assert frozen["stats"]["history"]["complete_history"] is True
+    assert frozen["stats"]["mode"] == "history"
+    assert frozen["stats"]["history_ref"] == cutoff
+    assert frozen["stats"]["complete_history"] is True
 
 
 @pytest.mark.parametrize("malformed", [b"def cmd_update(:\n", b"def cmd_update():\n    # \xff\n    pass\n"])
@@ -329,15 +341,23 @@ def cmd_update():
     }
 
 
-def test_reviewed_dynamic_loads_survive_union_regeneration(audit, monkeypatch):
+def test_reviewed_dynamic_loads_survive_history_freeze_within_cutoff(audit, monkeypatch):
     root = audit.REPO_ROOT
     put(root, "hermes_cli/update_cmd.py", "def cmd_update():\n    from hermes_constants import anchor\n")
     witness = commit(root, "module-object call manually reviewed")
+    put(root, "hermes_cli/update_cmd.py", "def cmd_update():\n    from hermes_constants import later\n")
+    later = commit(root, "module-object call after the contract cutoff")
     monkeypatch.setattr(audit, "REVIEWED_DYNAMIC_LOADS", (
         ("hermes_constants", "dynamic", witness[:12], "hermes_cli/update_cmd.py:cmd_update"),
-        ("hermes_constants", "unshipped", "not-a-witness", "other.py:cmd_update"),
+        ("hermes_constants", "after_cutoff", later[:12], "hermes_cli/update_cmd.py:cmd_update"),
     ))
-    surface = audit.audit_union()
-    assert ("hermes_constants", "dynamic") in surface.required
+    surface = audit.audit_history(witness)
+    assert surface.required[("hermes_constants", "dynamic")] == {witness[:12]}
+    assert surface.kinds[("hermes_constants", "dynamic")] == {"reviewed-module-call"}
+    assert surface.sites[("hermes_constants", "dynamic")] == {"hermes_cli/update_cmd.py:cmd_update"}
     assert ("hermes_constants", "dynamic") not in surface.guarded_only
-    assert ("hermes_constants", "unshipped") not in surface.required
+    assert ("hermes_constants", "after_cutoff") not in surface.required
+    output = root / "history.json"
+    assert audit.main(["--ref", witness, "--history", "--freeze", str(output)]) == 0
+    frozen = json.loads(output.read_text())
+    assert set(frozen["bare"]) == {"hermes_constants::anchor", "hermes_constants::dynamic"}

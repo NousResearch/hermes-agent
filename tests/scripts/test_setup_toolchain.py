@@ -21,7 +21,7 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
 
     from scripts.ci import setup_toolchain
     from pm import lock_project
-    from tests.pm.test_workspace_build_inputs import _wheel
+    from tests.pm._fixtures import _wheel
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     core = tmp_path / "core"

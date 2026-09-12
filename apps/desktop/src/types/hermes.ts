@@ -1374,6 +1374,13 @@ export interface LocalModelsStatus {
   models_dir: string
 }
 
+export interface LocalGpu {
+  name: string
+  vram_total_bytes: number
+  vram_used_bytes: number
+  gpu_util_percent: number
+}
+
 export interface LocalHardware {
   uma: boolean
   vram_total_bytes: number
@@ -1384,6 +1391,7 @@ export interface LocalHardware {
   gpu_name: string | null
   gpu_util_percent: number | null
   vram_used_bytes: number | null
+  gpus?: LocalGpu[]
 }
 
 export interface LocalCatalogModel {

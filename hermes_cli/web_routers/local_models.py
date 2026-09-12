@@ -496,8 +496,33 @@ def _nvidia_smi_facts() -> dict:
                          capture_output=True, text=True, timeout=5)
     if smi.returncode != 0 or not smi.stdout.strip():
         return {}
-    name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
-    return dict(gpu_name=name, gpu_util_percent=int(util), vram_used_bytes=int(used_mib) << 20)
+    totals = [t for t, _ in (hardware._nvidia_gpus() or [])]
+    gpus: list[dict] = []
+    for i, line in enumerate(smi.stdout.strip().splitlines()):
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 3:
+            continue
+        name, util, used_mib = parts[0], parts[1], parts[2]
+        try:
+            util_i = int(util)
+            used_i = int(used_mib)
+        except ValueError:
+            continue
+        gpus.append({
+            "name": name,
+            "vram_total_bytes": totals[i] if i < len(totals) else 0,
+            "vram_used_bytes": used_i << 20,
+            "gpu_util_percent": util_i,
+        })
+    if not gpus:
+        return {}
+    first = gpus[0]
+    return dict(
+        gpu_name=first["name"],
+        gpu_util_percent=first["gpu_util_percent"],
+        vram_used_bytes=sum(g["vram_used_bytes"] for g in gpus),
+        gpus=gpus,
+    )
 
 
 @router.get("/api/local-models/hardware")

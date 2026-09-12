@@ -142,8 +142,27 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
-def _nvidia_vram() -> tuple[int, int] | None:
-    """(total, free) MiB->bytes from nvidia-smi, or None."""
+def _parse_smi_memory_line(line: str) -> tuple[int, int] | None:
+    """One `total,free` MiB csv line -> (total, free) bytes, or None if unusable."""
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) != 2:
+        return None
+    try:
+        total_mib, free_mib = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if total_mib <= 0:
+        return None
+    return total_mib << 20, free_mib << 20
+
+
+def _nvidia_gpus() -> list[tuple[int, int]] | None:
+    """Per-card (total, free) bytes from nvidia-smi, or None on fail-open.
+
+    Missing binary / timeout / empty parse / zero valid lines -> None so
+    callers keep the UMA-from-RAM / no-device path. Malformed extra lines
+    are skipped; remaining valid cards still count.
+    """
     exe = _nvidia_smi_path()
     if exe is None:
         return None
@@ -154,9 +173,35 @@ def _nvidia_vram() -> tuple[int, int] | None:
             capture_output=True, text=True, timeout=10)
         if out.returncode != 0 or not out.stdout.strip():
             return None
-        total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
-        return total_mib << 20, free_mib << 20
+        cards: list[tuple[int, int]] = []
+        for line in out.stdout.strip().splitlines():
+            parsed = _parse_smi_memory_line(line)
+            if parsed is not None:
+                cards.append(parsed)
+        return cards or None
     return None
+
+
+def _nvidia_vram() -> tuple[int, int] | None:
+    """(total, free) bytes summed across valid nvidia-smi cards, or None."""
+    gpus = _nvidia_gpus()
+    if not gpus:
+        return None
+    return sum(t for t, _ in gpus), sum(f for _, f in gpus)
+
+
+def tensor_split_ratios(usables: list[int]) -> tuple[float, ...] | None:
+    """llama.cpp --tensor-split weights, or None when a single card / zero usable."""
+    if len(usables) < 2:
+        return None
+    total = sum(usables)
+    if total <= 0:
+        return None
+    return tuple(u / total for u in usables)
+
+
+def _card_margin(total_bytes: int) -> int:
+    return max(_MARGIN_FLOOR, int(total_bytes * _MARGIN_FRACTION))
 
 
 def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
@@ -265,38 +310,48 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     large. The managed server unloads/relaunches itself, so capacity is real.
     """
     ram_total, ram_avail = _ram_bytes()
-    vram = _nvidia_vram()
+    gpus = _nvidia_gpus()
+    if gpus is None:
+        # Tests that mock `_nvidia_vram` keep the old single-tuple contract.
+        vram = _nvidia_vram()
+        gpus = [vram] if vram else None
+    first = gpus[0] if gpus else None
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
     # but nvcuda loads via the system loader). Crossing the carve-out costs nothing — it is an OS
     # accounting knob, not a GPU limit. Deliberately NOT clamped to OS RAM: carved-out memory is
     # invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that capacity.
-    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
+    # Extra discrete smi rows are ignored here — do not fold them into the UMA pool.
+    unified = _unified_pool_bytes(first[0] if first else 0, ram_total)
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "
             "(nvidia-smi carve-out: %s); budgeting from the pool",
             unified / _GIB,
-            f"{vram[0] / _GIB:.1f} GiB" if vram else "unavailable")
+            f"{first[0] / _GIB:.1f} GiB" if first else "unavailable")
         if planning:
             base = unified
         else:
             # Live: dedicated-free plus what the OS can still give. smi's free saturates at the
             # carve-out so this under-counts a bit — the safe direction (the pool edge is a
             # measured soft cliff: decode collapses ~3.5x when concurrent demand hits it).
-            live = (vram[1] + ram_avail) if vram else ram_avail
+            live = (first[1] + ram_avail) if first else ram_avail
             base = min(unified, live)
         return _uma_budget(base, unified)
 
-    if vram is None:
+    if not gpus:
         # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
         # Silicon) — conservative for discrete AMD until a vendor probe lands.
         return _uma_budget(ram_total if planning else ram_avail, ram_total)
 
-    total, free = vram
-    margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
-    return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
-                          total_device_bytes=total,
+    usables = []
+    for total_i, free_i in gpus:
+        margin_i = _card_margin(total_i)
+        base_i = total_i if planning else free_i
+        usables.append(max(0, base_i - margin_i))
+    return HardwareBudget(usable_vram_bytes=sum(usables),
+                          total_device_bytes=sum(t for t, _ in gpus),
                           ram_available_bytes=ram_total if planning else ram_avail,
-                          uma=False)
+                          uma=False,
+                          tensor_split=tensor_split_ratios(usables))

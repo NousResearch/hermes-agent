@@ -1,0 +1,24 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: hermes
+description: >-
+  Hermes Agent itself — expose conversations, memory, skills, and credentials
+  (masked) to any MCP client. Read/write conversations across Telegram, Discord,
+  Slack, and 20+ platforms; search memory stores; list installed skills; look
+  up credential labels (values masked). Connect via `hermes mcp serve`.
+
+transport:
+  type: stdio
+  command: hermes
+  args: ["mcp", "serve"]
+
+suggest:
+  keywords:
+    - hermes
+    - conversations
+    - memory
+    - skills
+    - credentials
+    - messaging

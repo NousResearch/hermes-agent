@@ -606,9 +606,17 @@ slack:
   # contain an explicit @mention. With this OFF (default), Slack can
   # "auto-engage" — remembering past mentions in a thread and following
   # up on bot-message replies, and resuming active sessions without a
-  # fresh mention. With strict_mention ON, every new channel message
-  # must @mention the bot before Hermes will respond.
+  # fresh mention. With strict_mention ON, every new channel message must
+  # @mention the bot or match a configured mention_pattern before Hermes responds
+  # (except in free_response_channels, which retain precedence).
   strict_mention: false
+
+  # Native-mention-only gate for selected channels. Every ordinary top-level
+  # or thread message there needs a fresh Slack @mention; wake words,
+  # free_response_channels, mentioned-thread/bot-thread follow-up, and active
+  # sessions cannot bypass it. Comma-separated IDs or a list.
+  # Env: SLACK_STRICT_MENTION_CHANNELS.
+  strict_mention_channels: ""
 
   # Ignore messages addressed to another user: when a channel or thread
   # message *opens* by @mentioning someone other than the bot (e.g.
@@ -670,10 +678,15 @@ The gating options compose — each answers a different question:
 | `free_response_channels` | Which channels are exempt from `require_mention`? | none | Listed channels |
 | `require_mention_channels` | Which channels ALWAYS need an @mention, even when `require_mention` is `false` or the channel is free-response? Wins over both. | none | Listed channels |
 | `thread_require_mention` | Do **thread replies** need an @mention, even when top-level messages don't? Mentioned threads are not remembered. | `false` | Threads only |
-| `strict_mention` | Does **every** channel message (top-level and thread) need a fresh @mention? Disables all auto-follow: mentioned-thread memory, bot-reply follow-ups, active-session resume. | `false` | All channels + threads |
+| `strict_mention` | Does each non-free-response channel message need a fresh native @mention or configured wake-word match? Disables mentioned-thread, bot-reply, and active-session auto-follow. | `false` | All channels + threads |
+| `strict_mention_channels` | Which channels need a fresh native Slack @mention on every ordinary top-level and thread message? Wins over `free_response_channels`; wake words do not count; disables auto-follow only there. | none | Listed channels + threads |
 | `ignore_other_user_mentions` | Should a message that **opens by @mentioning someone else** (`@rasha can you take this?`) be skipped? Overrides free-response and thread auto-follow; mid-sentence references still reach the bot. | `false` | Channels + group DMs |
 
-Rules of thumb: `strict_mention` is the broadest hammer; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+Rules of thumb: global `strict_mention` keeps its wake-word support and yields to `free_response_channels`; `strict_mention_channels` is the stronger native-mention-only rule for selected channels; `thread_require_mention` quiets busy threads without touching top-level gating; `require_mention_channels` re-tightens individual channels on an otherwise free-response bot; `ignore_other_user_mentions` only skips messages explicitly addressed to another person. 1:1 DMs always respond and are unaffected by all of these.
+
+:::caution Adapter gating happens before the agent runs
+Slack strips the bot's own routing mention before constructing the agent-visible message. Do not duplicate mention authorization in `channel_prompts` by requiring the rendered message to still contain `<@BOT_ID>`; configure the adapter gate instead.
+:::
 
 ### Accepting messages from other bots (`allow_bots`)
 

@@ -1411,6 +1411,8 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "require_mention_channels": "",  # channel IDs where @mention is ALWAYS required
+        # Selected channels require a fresh native Slack @mention on every message.
+        "strict_mention_channels": "",
         # Ignore messages whose first token @mentions another user unless the bot is also mentioned.
         # Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
         "ignore_other_user_mentions": False,

@@ -117,11 +117,12 @@ How generation works (a two-step, cost-bounded flow):
 
 ### Image backend
 
-Generation uses the active [image-generation provider](/user-guide/features/image-generation), but it requires **reference-image grounding** so each animation row stays the same character as the base. Reference-capable backends: **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. OpenRouter/Nous run a quality-first model chain by default.
+Generation resolves an available [image-generation provider](/user-guide/features/image-generation), but it requires **reference-image grounding** so each animation row stays the same character as the base. A registered provider is eligible when its `capabilities()["modalities"]` includes `"image"`, which denotes image-to-image/editing support. That means compatible image-generation plugins work too — they do not need to be hardcoded as pet providers.
 
-- Resolution order prefers Nous Portal → OpenAI → OpenRouter.
+Built-in examples include **Nous Portal**, **OpenRouter**, **OpenAI** (`gpt-image-2`), and **Krea**. Hermes keeps those built-ins as compatibility fallbacks and preference hints; OpenRouter/Nous run a quality-first model chain by default.
+
 - If no reference-capable backend is configured, generation surfaces an actionable error pointing you to `hermes tools` → Image Generation. (Installing/adopting existing gallery pets needs no image backend.)
-- Override the backend with the `HERMES_PET_IMAGE_PROVIDER` env var (e.g. `HERMES_PET_IMAGE_PROVIDER=openrouter`).
+- Override the backend with the `HERMES_PET_IMAGE_PROVIDER` env var (for example, `HERMES_PET_IMAGE_PROVIDER=openrouter`). Any registered provider that supports reference images can be selected this way.
 
 ## Desktop app
 

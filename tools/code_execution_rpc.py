@@ -57,7 +57,12 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     # Silence handler status prints so they don't leak into the CLI spinner.
     try:
         with thread_scoped_silence():
-            result = dispatch(tool_name, tool_args)
+            if tool_name == "read_file":
+                from tools.file_tools import programmatic_read_context
+                with programmatic_read_context():
+                    result = dispatch(tool_name, tool_args)
+            else:
+                result = dispatch(tool_name, tool_args)
     except Exception as exc:
         logger.error("Tool call failed in %s: %s", where, exc, exc_info=True)
         result = tool_error(str(exc))

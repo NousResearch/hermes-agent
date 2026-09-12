@@ -1950,19 +1950,41 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
     return None
 
 
-def _profile_suffix() -> str:
-    """Service-name suffix for HERMES_HOME: "" for the platform-native default home (``~/.hermes``), the
-    profile name for ``<root>/profiles/<name>``, else a short hash of the path.
+def _native_service_homes() -> set[Path]:
+    """Homes that own the bare native gateway service name in this process."""
+    from hermes_constants import _get_platform_default_hermes_home
+    from pathlib import Path as _Path
 
-    The bare name is reserved for the NATIVE default, not ``get_default_hermes_root()``: that helper
-    treats any HERMES_HOME outside ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself",
-    which let a temp-home harness resolve to the default profile's ``hermes-gateway`` unit and uninstall
-    the production gateway. Service names are host-wide identities; only the real default home owns the
-    bare one."""
+    homes = {_get_platform_default_hermes_home().resolve()}
+    if getattr(os, "geteuid", lambda: -1)() != 0:
+        return homes
+
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if not sudo_user or sudo_user == "root":
+        return homes
+    try:
+        import pwd
+
+        homes.add((_Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes").resolve())
+    except (ImportError, KeyError, AttributeError, TypeError):
+        pass
+    return homes
+
+
+def _profile_suffix() -> str:
+    """Service-name suffix for HERMES_HOME: "" for a native default home (``~/.hermes``), the profile
+    name for ``<root>/profiles/<name>``, else a short hash of the path.
+
+    The bare name is reserved for the process user's native default and, under sudo, the invoking user's
+    native default. It deliberately does not use ``get_default_hermes_root()``: that helper treats any
+    HERMES_HOME outside ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself", which let a
+    temp-home harness resolve to the default profile's ``hermes-gateway`` unit and uninstall the
+    production gateway. Service names are host-wide identities; only real default homes own the bare
+    one."""
     import hashlib
-    from hermes_constants import _get_platform_default_hermes_home, get_default_hermes_root
+    from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
-    if home == _get_platform_default_hermes_home().resolve():
+    if home in _native_service_homes():
         return ""
     name = _profile_name_from_home(home, get_default_hermes_root().resolve())
     return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]

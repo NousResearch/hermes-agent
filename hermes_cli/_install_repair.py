@@ -220,19 +220,35 @@ def ensure_windows_bin_launchers(
             continue
         for name, source in sources:
             if _launcher_present(target, name):
-                continue
-            final = target / (f"{name}.cmd" if relocatable else f"{name}.exe")
-            staging = target / f"{final.name}.heal.{os.getpid()}"
-            try:
-                if relocatable:
-                    staging.write_text("@echo off\r\n" f'"{source}" %*\r\n', encoding="ascii")
-                else:
-                    shutil.copy2(source, staging)
-                os.replace(staging, final)
-                restored.append(str(final))
-            except OSError:
-                with contextlib.suppress(OSError):
-                    staging.unlink()
+                # Still ensure POSIX shim for Git Bash exists even when
+                # Windows launcher is already present (relocatable venvs
+                # only stage hermes.cmd, so `which hermes` in Git Bash fails).
+                pass
+            else:
+                final = target / (f"{name}.cmd" if relocatable else f"{name}.exe")
+                staging = target / f"{final.name}.heal.{os.getpid()}"
+                try:
+                    if relocatable:
+                        staging.write_text("@echo off\r\n" f'"{source}" %*\r\n', encoding="ascii")
+                    else:
+                        shutil.copy2(source, staging)
+                    os.replace(staging, final)
+                    restored.append(str(final))
+                except OSError:
+                    with contextlib.suppress(OSError):
+                        staging.unlink()
+            # POSIX shim for Git Bash — MSYS `which hermes` does not resolve
+            # .cmd via PATHEXT reliably, so an extension-less wrapper is needed.
+            shim = target / name
+            if not shim.exists():
+                shim_staging = target / f"{name}.heal.sh.{os.getpid()}"
+                try:
+                    shim_staging.write_text(f"#!/bin/sh\nexec \"{source}\" \"$@\"\n", encoding="utf-8")
+                    os.replace(shim_staging, shim)
+                    restored.append(str(shim))
+                except OSError:
+                    with contextlib.suppress(OSError):
+                        shim_staging.unlink()
     if restored:
         # A closed/broken stderr must not turn a successful heal into a crash.
         with contextlib.suppress(OSError, ValueError):

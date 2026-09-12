@@ -88,6 +88,7 @@ vi.mock('@/store/profile', async () => {
     newSessionInAgent: vi.fn(),
     newSessionInProfile: vi.fn(),
     normalizeProfileKey: (value: null | string | undefined) => (value ?? '').trim() || 'default',
+    prewarmProfileBackend: vi.fn(),
     refreshProfiles: vi.fn(async () => profiles.get()),
     selectProfile: vi.fn(),
     setActiveProfile: vi.fn(),
@@ -142,6 +143,7 @@ const {
   $hydrationSyncProfile,
   $profiles,
   ensureGatewayProfile,
+  prewarmProfileBackend,
   refreshProfiles,
   setShowAllProfiles
 } = await import('@/store/profile')
@@ -201,6 +203,13 @@ afterEach(() => {
 })
 
 describe('connection-aware plugin host APIs', () => {
+  it('uses the pool-aware prewarm seam for bot roster hints', () => {
+    host.warmProfile('worker')
+
+    expect(prewarmProfileBackend).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
   it('retires a profile gateway before deleting it', async () => {
     const order: string[] = []
 

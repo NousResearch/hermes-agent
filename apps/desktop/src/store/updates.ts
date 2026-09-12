@@ -100,7 +100,7 @@ function isUpdateToastSnoozed(): boolean {
 // v4: requires explicit Fast-off session creation and session-scoped Fast edits.
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
 // v6: requires key-addressed plugins.manage rows (keyless rows render
-//     read-only in Settings → Plugins).
+//     read-only in Capabilities → Plugins).
 const REQUIRED_BACKEND_CONTRACT = 6
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so

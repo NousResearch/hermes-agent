@@ -22,7 +22,8 @@ from gateway.config import (
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.base import MessageEvent, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 

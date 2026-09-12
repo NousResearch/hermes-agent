@@ -3,7 +3,8 @@
 import unittest
 from unittest.mock import patch
 
-from tools.skills_hub import ClawHubSource, SkillMeta
+from tools.skills_hub_clawhub import ClawHubSource
+from tools.skills_hub_models import SkillMeta
 
 
 class _MockResponse:
@@ -378,6 +379,10 @@ class TestClawHubSource(unittest.TestCase):
             ("skillopt", "harrylabsj"),
         )
         self.assertEqual(
+            ClawHubSource._parse_identifier("clawhub/@harrylabsj/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+        self.assertEqual(
             ClawHubSource._parse_identifier("harrylabsj/skills/skillopt"),
             ("skillopt", "harrylabsj"),
         )
@@ -425,6 +430,7 @@ class TestClawHubSource(unittest.TestCase):
 
         self.assertIsNone(meta)
         mock_get.assert_called_once()
+
 
 
 class TestClawHubCatalogWalkBounded(unittest.TestCase):

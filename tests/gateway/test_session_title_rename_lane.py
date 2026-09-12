@@ -10,10 +10,12 @@ ten minutes, so the throwaway can be the one that survives.
 from __future__ import annotations
 
 import types
+import weakref
 
 import pytest
 
 from gateway.config import Platform
+from gateway.session import SessionSource
 from gateway.run import GatewayRunner
 from gateway.run_turn_runner import TurnRunner
 
@@ -56,7 +58,7 @@ def test_the_rename_waits_for_the_model_title(lane):
     assert renames == ["Fix flaky auth test"]
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_native_thread_rename_passes_only_the_initial_name_guard():
     """The shared rename lane must honor the strict native adapter contract."""
     calls: list[tuple[str, str, str | None]] = []
@@ -102,3 +104,53 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
     )
 
     assert calls == [("999", "Semantic Session Title", "Initial words")]
+
+
+def test_title_thread_copy_preserves_transport_adapter_ref(monkeypatch):
+    """Multiplex-routed sources must keep their transport owner for side effects."""
+    captured_sources = []
+
+    class Adapter:
+        pass
+
+    adapter = Adapter()
+
+    async def noop():
+        return None
+
+    def fake_schedule(coro, loop, logger=None, log_message=None):
+        # The test only inspects the source passed into make_coro; close the
+        # coroutine so pytest does not warn about an unawaited object.
+        coro.close()
+        return None
+
+    monkeypatch.setattr("gateway.run.safe_schedule_threadsafe", fake_schedule)
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        profile="runtime-profile",
+        auto_thread_created=True,
+        auto_thread_initial_name="Initial words",
+    )
+    source._transport_adapter_ref = weakref.ref(adapter)
+
+    runner = types.SimpleNamespace(
+        _gateway_loop=types.SimpleNamespace(is_closed=lambda: False),
+        _schedule_rename_from_title_thread=GatewayRunner._schedule_rename_from_title_thread,
+    )
+
+    runner._schedule_rename_from_title_thread(
+        runner,
+        source,
+        lambda copied: captured_sources.append(copied) or noop(),
+        "Discord semantic thread rename",
+    )
+
+    assert len(captured_sources) == 1
+    copied = captured_sources[0]
+    assert copied is not source
+    assert copied.profile == "runtime-profile"
+    assert copied._transport_adapter_ref() is adapter

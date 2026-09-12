@@ -2228,6 +2228,22 @@ DEFAULT_CONFIG = {
             # Overwrite existing env vars so rotation takes effect; False lets .env win.
             "override_existing": True,
         },
+        "keepass": {
+            "enabled": False,  # When false, keepassxc-cli is never invoked.
+            "db": "",  # absolute path (or ~/…) to the .kdbx database.
+            # Map env-var names to entry paths; each is resolved with one `keepassxc-cli show`.
+            # "Group/Entry" is relative to the database root; a bare Title matches the first entry.
+            "env": {},
+            # The database key comes from a key file, a password file, or an env var: a startup
+            # source never prompts (unlock-on-prompt is the browser vault's job).
+            "keyfile": "",
+            "password_file": "",  # file whose FIRST LINE is the password; outranks password_env.
+            "password_env": "KEEPASS_PASSWORD",
+            # Absolute path to keepassxc-cli, used verbatim (avoids trusting PATH). Empty = PATH.
+            "binary_path": "",
+            # Overwrite existing env vars so a rotation in the .kdbx takes effect; False lets .env win.
+            "override_existing": True,
+        },
     },
     # Paste collapse thresholds (TUI + CLI); 0 disables each. threshold: bracketed pastes with this
     # many newlines collapse to a file reference. fallback: same test for terminals without

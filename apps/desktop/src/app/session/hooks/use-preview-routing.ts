@@ -37,6 +37,48 @@ function sessionIsOnScreen(sessionId: string): boolean {
   )
 }
 
+export async function resolveAndOpenPreview(target: string, label: string, cwd: string | undefined): Promise<void> {
+  await normalizeOrLocalPreviewTarget(target, cwd).then(
+    async resolved => {
+      if (!resolved) {
+        return
+      }
+
+      const trimmedLabel = label.trim()
+      // The agent's loopback is the GATEWAY's loopback. Give the pane a
+      // URL this machine can load, keeping the original as the label so
+      // the user still sees the address the agent named.
+      const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
+      const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
+
+      openPreview(trimmedLabel ? { ...reached, label: trimmedLabel } : reached, 'tool-result')
+    }
+  ).catch(err => {
+    console.debug('[preview.open] normalizeOrLocalPreviewTarget rejected:', err)
+  })
+}
+
+export async function resolveAndClosePreview(target: string, cwd: string | undefined): Promise<void> {
+  await normalizeOrLocalPreviewTarget(target, cwd).then(
+    async resolved => {
+      const candidates = [target]
+
+      if (resolved) {
+        candidates.push(resolved.source, resolved.url)
+
+        if (resolved.kind === 'url') {
+          candidates.push(await reachablePreviewUrl(resolved.url))
+        }
+      }
+
+      closePreviewMatching(...candidates)
+    }
+  ).catch(() => {
+    // normalizeOrLocalPreviewTarget rejected — fall back to closing by the raw target string
+    closePreviewMatching(target)
+  })
+}
+
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
   const restartPreviewServer = useCallback(
     async (url: string, context?: string) => {
@@ -87,22 +129,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         const target = typeof url === 'string' ? url.trim() : ''
 
         if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
-          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
-            async resolved => {
-              if (!resolved) {
-                return
-              }
-
-              const trimmedLabel = typeof label === 'string' ? label.trim() : ''
-              // The agent's loopback is the GATEWAY's loopback. Give the pane a
-              // URL this machine can load, keeping the original as the label so
-              // the user still sees the address the agent named.
-              const url = resolved.kind === 'url' ? await reachablePreviewUrl(resolved.url) : resolved.url
-              const reached = url === resolved.url ? resolved : { ...resolved, label: resolved.label || target, url }
-
-              openPreview(trimmedLabel ? { ...reached, label: trimmedLabel } : reached, 'tool-result')
-            }
-          )
+          void resolveAndOpenPreview(target, typeof label === 'string' ? label : '', $currentCwd.get() || currentCwd || undefined)
         }
 
         return
@@ -129,21 +156,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
           return
         }
 
-        void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
-          async resolved => {
-            const candidates = [target]
-
-            if (resolved) {
-              candidates.push(resolved.source, resolved.url)
-
-              if (resolved.kind === 'url') {
-                candidates.push(await reachablePreviewUrl(resolved.url))
-              }
-            }
-
-            closePreviewMatching(...candidates)
-          }
-        )
+        void resolveAndClosePreview(target, $currentCwd.get() || currentCwd || undefined)
 
         return
       }

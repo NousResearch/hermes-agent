@@ -9,6 +9,7 @@ error, no warning. The gate compares the pre-pull and post-pull HEAD SHA
 and fails loudly when the update was a no-op.
 """
 
+import contextlib
 from types import SimpleNamespace
 
 import pytest
@@ -139,6 +140,60 @@ def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "✓ Code updated!" in out
     assert "Code did not move" not in out
+
+
+def _make_branch_ahead_of_origin_side_effect(sha="abc123"):
+    """Simulate a fork whose upstream sync already fast-forwarded the branch PAST origin/main.
+
+    HEAD therefore never moves on the subsequent ``origin/main`` pull (it is a legitimate
+    no-op), but the checkout is attached and strictly *ahead of* origin/main.
+    """
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+
+        if "rev-parse" in joined and "--abbrev-ref" in joined:
+            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
+
+        if "rev-list" in joined:
+            return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
+
+        # origin/main is contained in HEAD -> the benign no-op.
+        if "merge-base" in joined and "--is-ancestor" in joined:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        if joined.endswith("rev-parse HEAD"):
+            return SimpleNamespace(returncode=0, stdout=f"{sha}\n", stderr="")
+
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    return side_effect
+
+
+def test_update_continues_when_branch_already_ahead_of_origin(
+    monkeypatch, tmp_path, capsys
+):
+    """A no-op pull from a lagging fork mirror must not be fatal.
+
+    The fork's own upstream sync moves the branch past origin/<branch> earlier in the same
+    run, so the pull cannot move HEAD. Failing here aborted the dependency sync and the
+    fleet restart for a *successful* update, stranding the gateway on stale modules.
+    """
+    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
+    _patch_update_deps(
+        monkeypatch, tmp_path, _make_branch_ahead_of_origin_side_effect()
+    )
+
+    # The gate under test runs BEFORE the fleet-verification phase; that phase can still
+    # exit 1 for environment reasons (no real venv/uv/gateway in tmp_path), so tolerate it
+    # and assert on the gate's own output — reaching "✓ Code updated!" IS the pass-through.
+    with contextlib.suppress(SystemExit):
+        hermes_main.cmd_update(args)
+
+    out = capsys.readouterr().out
+    assert "Code did not move" not in out
+    assert "✓ Code updated!" in out
+    assert "already contained in HEAD" in out
 
 
 def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):

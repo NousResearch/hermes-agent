@@ -4,6 +4,7 @@ Jaccard similarity and HRR vector similarity, trust-weighted (ported from KIK me
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -26,6 +27,23 @@ _FTS_STOPWORDS = frozenset("""
     ours ourselves out over own same she should so some such than that the their theirs them themselves then there these
     they this those through to too under until up very was we were what when where which while who whom why will with
     would you your yours yourself yourselves""".split())
+# Chinese stopwords: particles, prepositions, and function words with no retrieval signal.
+_FTS_STOPWORDS_ZH = frozenset("""
+    的 了 在 是 我 有 和 就 不 人 都 一 一个 上 也 很 到 说 要 去 你 会 着 没有 看 好 自己 这
+    他 她 它 们 那 里 为 什么 吗 吧 呢 啊 呀 哦 嗯 把 被 让 给 对 从 向 比 用 以 因为 所以
+    而 但 但是 如果 虽然 可以 已经 还 还是 又 再 才 只 就是 并 以及 或者""".split())
+
+_CJK_RE = re.compile(r'[\u4e00-\u9fff]')
+
+def _segment(text: str) -> str:
+    """Segment CJK text with jieba for FTS5 tokenization. Non-CJK passes through."""
+    try:
+        import jieba
+    except ImportError:
+        return text
+    if not text or not _CJK_RE.search(text):
+        return text
+    return ' '.join(jieba.cut(text))
 
 
 def _shift(sim: float) -> float:
@@ -184,18 +202,20 @@ class FactRetriever:
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        """Lowercase whitespace tokens with surrounding punctuation stripped (no stemming)."""
-        return {c for c in (w.strip(_PUNCT) for w in text.lower().split()) if c} if text else set()
+        """Segment (jieba for CJK), lowercase, strip punctuation, return token set. No stemming."""
+        return {c for c in (w.strip(_PUNCT) for w in _segment(text).lower().split()) if c} if text else set()
 
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:
-        """Natural-language query -> FTS5-safe OR expression of quoted tokens. FTS5 AND-joins a multi-word
-        MATCH by default, which tanks recall on prose: drop stopwords and <2-char tokens, strip FTS5 operator
-        chars, phrase-quote each survivor. If nothing survives, return the raw query (zero results, not a SQL error)."""
+        """Natural-language query -> FTS5-safe OR expression of quoted tokens.
+        CJK text is segmented with jieba first. Stopwords (EN + ZH) and <2-char tokens are dropped.
+        FTS5 AND-joins a multi-word MATCH by default, which tanks recall on prose: use OR instead."""
         if not query:
             return ""
-        tokens = [f'"{c}"' for c in (raw.strip(_PUNCT).translate(_FTS_OPERATORS) for raw in query.lower().split())
-                  if len(c) >= 2 and c not in _FTS_STOPWORDS]
+        segmented = _segment(query)
+        stopwords = _FTS_STOPWORDS | _FTS_STOPWORDS_ZH
+        tokens = [f'"{c}"' for c in (raw.strip(_PUNCT).translate(_FTS_OPERATORS) for raw in segmented.lower().split())
+                  if len(c) >= 2 and c not in stopwords]
         return " OR ".join(tokens) if tokens else query
 
     @staticmethod

@@ -39,11 +39,11 @@ const beat = () => {
 }
 
 const handleSharedPauseChange = () => {
-  stopSharedTimer()
-
   if (sharedPauseController?.isPaused()) {
     // Minimized/hidden: cancel in-flight animations so the compositor can
     // sleep immediately instead of finishing a pulse nobody sees.
+    stopSharedTimer()
+
     for (const subscriber of pulseSubscribers) {
       subscriber.cancel()
     }
@@ -51,7 +51,11 @@ const handleSharedPauseChange = () => {
     return
   }
 
-  beat()
+  // Still running (including busy override while occluded): leave the period
+  // timer and in-flight play alone. Only restart after a real pause.
+  if (sharedTimer === 0) {
+    beat()
+  }
 }
 
 const subscribePulse = (subscriber: PulseSubscriber): (() => void) => {

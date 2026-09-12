@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
+import { setRendererBusyOverride } from '@/lib/renderer-loop-pause'
 
 import { $sessions } from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
@@ -23,6 +24,7 @@ beforeEach(() => {
   clearAllSessionStates()
   $sessions.set([])
   setActiveWork.mockClear()
+  setRendererBusyOverride(false)
 })
 
 describe('active work bridge', () => {

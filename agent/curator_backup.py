@@ -12,6 +12,7 @@ import contextlib
 import json
 import logging
 import os
+import posixpath
 import re
 import shutil
 import tarfile
@@ -107,11 +108,40 @@ def get_keep() -> int:
 
 
 # --- Snapshot ---
-def _is_absolute_link_target(linkname: str) -> bool:
-    """True when a symlink's recorded target is absolute: POSIX ``/``, a Windows drive
-    letter (``C:\\...``), or a UNC path (``\\\\server\\share``). Rollback's tarfile
-    ``"data"`` extraction filter refuses such links, so snapshots must not archive them."""
-    return linkname.startswith("/") or linkname.startswith("\\\\") or (len(linkname) >= 2 and linkname[1] == ":")
+_WIN_DRIVE_LETTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+def _link_target_kind(linkname: str) -> str:
+    """Classify a symlink's recorded target purely from its string, so snapshots and rollback agree
+    on every platform (the host filesystem is never consulted). Returns one of:
+    ``posix-abs`` (``/...``), ``win-abs`` (UNC ``\\\\server\\share``, device ``\\\\?\\``/``\\\\.\\``,
+    or rooted-with-drive ``C:\\...`` and rooted-without-drive ``\\foo``), ``drive-relative``
+    (``C:`` / ``C:foo`` — anchored to the drive's current directory, not portable), or ``relative``."""
+    if linkname.startswith("/"):
+        return "posix-abs"
+    if linkname.startswith("\\"):
+        return "win-abs"
+    if len(linkname) >= 2 and linkname[1] == ":" and linkname[0] in _WIN_DRIVE_LETTERS:
+        if len(linkname) == 2 or linkname[2] not in "\\/":
+            return "drive-relative"
+        return "win-abs"
+    return "relative"
+
+
+def _unrestorable_symlink(member_name: str, linkname: str) -> Optional[str]:
+    """Why the symlink at tar member *member_name* cannot be archived into a snapshot that
+    rollback's extraction must restore, or None when it is safe to archive. Mirrors the checks of
+    tarfile's ``"data"`` extraction filter (#109331): absolute and drive-relative targets are
+    refused outright, and a relative target that resolves above the extraction root raises
+    ``LinkOutsideDestinationError`` at extract time (e.g. ``alpha/escape -> ../../outside``).
+    Tar member paths are POSIX-style, so the escape check uses ``posixpath`` on every host."""
+    kind = _link_target_kind(linkname)
+    if kind != "relative":
+        return kind
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(member_name), linkname))
+    if resolved == ".." or resolved.startswith("../"):
+        return "relative-escape"
+    return None
 
 
 def _count_skill_files(base: Path) -> int:
@@ -122,7 +152,7 @@ def _count_skill_files(base: Path) -> int:
 
 
 def _write_manifest(dest: Path, reason: str, archive_path: Path, skills_counted: int, cron_info: Dict[str, Any],
-                    skipped_absolute_links: Optional[List[str]] = None) -> None:
+                    skipped_symlinks: Optional[List[Dict[str, str]]] = None) -> None:
     cron_jobs: Dict[str, Any] = {"backed_up": bool(cron_info.get("backed_up", False)), "jobs_count": int(cron_info.get("jobs_count", 0))}
     if not cron_info.get("backed_up"):
         cron_jobs["reason"] = cron_info.get("reason", "not captured")
@@ -130,8 +160,8 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path, skills_counted:
         cron_jobs["parse_warning"] = cron_info["parse_warning"]
     manifest = {"id": dest.name, "reason": reason, "created_at": datetime.now(timezone.utc).isoformat(), "archive": archive_path.name,
                 "archive_bytes": archive_path.stat().st_size, "skill_files": skills_counted, "cron_jobs": cron_jobs}
-    if skipped_absolute_links:
-        manifest["skipped_absolute_links"] = skipped_absolute_links
+    if skipped_symlinks:
+        manifest["skipped_symlinks"] = skipped_symlinks
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -165,18 +195,21 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         return None
 
     archive = dest / _ARCHIVE_NAME
-    skipped_absolute_links: List[str] = []
+    skipped_symlinks: List[Dict[str, str]] = []
 
     def _snapshot_member(ti: tarfile.TarInfo):
         # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested _EXCLUDE_TOP_LEVEL paths too.
         if any(p in _EXCLUDE_TOP_LEVEL for p in Path(ti.name).parts):
             return None
-        # An absolute symlink records an absolute linkname, which rollback's extraction filter
-        # (tarfile "data") refuses — a snapshot that cannot be restored must not be reported as
-        # success. Skip the link member and record it in the manifest instead (#109331).
-        if ti.issym() and _is_absolute_link_target(ti.linkname):
-            skipped_absolute_links.append(ti.name)
-            return None
+        # A symlink whose target the tar "data" extraction filter would refuse (absolute, drive-relative,
+        # or resolving above the skills root) must not be archived — a snapshot that cannot be restored
+        # must not be reported as success. Skip the member and record path+target in the manifest so
+        # rollback can rebuild the link (#109331).
+        if ti.issym():
+            why = _unrestorable_symlink(ti.name, ti.linkname)
+            if why is not None:
+                skipped_symlinks.append({"path": ti.name, "target": ti.linkname, "reason": why})
+                return None
         return ti
 
     try:
@@ -186,7 +219,7 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
                     tf.add(str(entry), arcname=entry.name, recursive=True, filter=_snapshot_member)
         # Cron capture is additive and never fails the snapshot; the manifest records whether it happened so rollback can say "no cron data".
         _write_manifest(dest, reason, archive, _count_skill_files(skills), _backup_cron_jobs_into(dest),
-                        skipped_absolute_links=skipped_absolute_links)
+                        skipped_symlinks=skipped_symlinks)
     except (OSError, tarfile.TarError) as e:
         logger.debug("Curator snapshot failed: %s", e, exc_info=True)
         shutil.rmtree(dest, ignore_errors=True)  # clean up partial snapshot
@@ -350,6 +383,41 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_TOP_LEVEL]
 
 
+def _restore_skipped_symlinks(snapshot_dir: Path, skills: Path) -> int:
+    """Rebuild the symlinks the snapshot skipped at backup time (targets the tarfile ``"data"``
+    extraction filter refuses — absolute, drive-relative, or escaping). Their ``path``+``target`` live in the
+    manifest so the snapshot stays a complete, undoable image of the live tree: rollback is a
+    same-machine operation, so the recorded target is still valid here (#109331). Never raises;
+    returns how many links were rebuilt."""
+    links = _read_manifest(snapshot_dir).get("skipped_symlinks")
+    if not isinstance(links, list):
+        return 0
+    restored = 0
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        path, target = link.get("path"), link.get("target")
+        if not isinstance(path, str) or not path or not isinstance(target, str) or not target:
+            continue
+        # The manifest is machine-written but treated as untrusted input: a hand-edited entry
+        # must never place a link outside skills/ or resurrect an excluded top-level name.
+        parts = Path(path).parts
+        if path.startswith(("/", "\\")) or ".." in parts or any(p in _EXCLUDE_TOP_LEVEL for p in parts):
+            logger.debug("Refusing to restore skipped symlink with unsafe path %r", path)
+            continue
+        dest = skills / path
+        if dest.exists() or dest.is_symlink():  # extraction already placed something there — it wins
+            continue
+        if not dest.parent.is_dir():  # parent wasn't part of the snapshot; nothing to hang the link on
+            continue
+        try:
+            os.symlink(target, dest)
+            restored += 1
+        except OSError as e:
+            logger.debug("Could not restore skipped symlink %s -> %s: %s", path, target, e)
+    return restored
+
+
 def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
     """Move staged entries back to their original paths; returns names that could not be restored. ``shutil.move``
     moves *into* an existing destination dir, so partial-extract debris would bury the real skill
@@ -447,10 +515,17 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     _restore_excluded_subtrees(staged, skills)
     shutil.rmtree(staged, ignore_errors=True)
 
+    # Skipped symlinks (unrestorable through the data filter) are rebuilt from the manifest so the
+    # restored tree — and any later rollback to this snapshot's own safety snapshot — keeps them.
+    restored_links = _restore_skipped_symlinks(target, skills)
+
     # Cron reconciliation failures don't fail the rollback — the skills tree (the main guarantee) is already restored.
     cron_report = _restore_cron_skill_links(target)
     logger.info("Curator rollback: restored from %s (cron_report=%s)", target.name, cron_report)
-    return (True, "; ".join(filter(None, [f"restored from snapshot {target.name}", _cron_summary(cron_report)])), target)
+    summary = f"restored from snapshot {target.name}"
+    if restored_links:
+        summary += f"; rebuilt {restored_links} skipped symlink(s)"
+    return (True, "; ".join(filter(None, [summary, _cron_summary(cron_report)])), target)
 
 
 # --- Human-readable summary for CLI ---

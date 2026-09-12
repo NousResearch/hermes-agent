@@ -204,6 +204,10 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 ## Panel titlebars
 
+Splits scroll when their panels' minimum sizes exceed the available space,
+including after a sidebar is restored. Scrolling preserves panel sizes and
+keeps headers and composers reachable; titlebar reservations follow the panels.
+
 Top-edge panels extend into the native titlebar band. Their tab strips remain
 inside their own zones so tab drops, focus, and split boundaries use the same
 geometry. Panels without room beside the measured window controls place their

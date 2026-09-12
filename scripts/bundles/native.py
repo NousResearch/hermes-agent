@@ -80,11 +80,14 @@ def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = Fa
 
 def stage_native(args) -> int:
     """Isolate HOME and PM state, but retain the provider's reusable build cache."""
+    from pm.packages import uv_cache_dir
+
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     (out / "manifest.json").unlink(missing_ok=True)
     root = Path(__file__).resolve().parents[2]
-    cache = Path(getattr(args, "cache", None) or os.environ.get("UV_CACHE_DIR") or out.parent / ".uv-cache").resolve()
+    # Resolve before HOME isolation so the build warms the cache CI saves.
+    cache = Path(getattr(args, "cache", None) or os.environ.get("UV_CACHE_DIR") or uv_cache_dir()).resolve()
     base_env = dict(os.environ)
     if current_target() == "win32-arm64":
         from scripts.build.windows_deps import prepare_windows_environment

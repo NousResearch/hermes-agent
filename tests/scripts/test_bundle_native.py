@@ -191,6 +191,65 @@ def test_staged_cache_installs_built_wheel_without_unsigned_zip(tmp_path):
     assert probe.stdout.strip() == "installed from cached wheel"
 
 
+def test_native_dispatch_reuses_pm_cache_offline(tmp_path, monkeypatch):
+    import pm
+    from pm.packages import uv_cache_dir
+    from tests.pm.test_workspace_build_inputs import _wheel
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "setup-pm"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "setup-pm/tools"))
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
+    uv = shutil.which("uv")
+    assert uv, "native bundle test requires uv"
+    monkeypatch.setattr("pm.client.is_runtime", lambda: True)
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    cache = uv_cache_dir()
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _wheel(wheels, "cache_probe", "1.0")
+    wheel, = wheels.glob("*.whl")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(wheels)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    requirement = f"cache-probe @ http://127.0.0.1:{server.server_port}/{wheel.name}"
+    try:
+        pm.build_requirements_environment(
+            [requirement], out=tmp_path / "first", explicit=True,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    shutil.rmtree(wheels)
+    pm.prune_cache(cache)
+    original = dict(os.environ)
+    run = subprocess.run
+    homes = []
+
+    def child(command, *, cwd, env):
+        assert Path(env["UV_CACHE_DIR"]) == cache
+        homes.append(Path(env["HOME"]))
+        # The server and source wheel are gone. Only the cache restored for
+        # PM can satisfy this install inside the payload's isolated HOME.
+        return run([sys.executable, "-c",
+                    "import os, subprocess, sys; from pathlib import Path; import pm, pm._uv; "
+                    "pm.client.is_runtime = lambda: True; "
+                    f"pm._uv._toolchain = lambda **kw: (Path({uv!r}), Path(sys.executable)); "
+                    "python = pm.build_requirements_environment([sys.argv[1]], "
+                    "out=Path(os.environ['HOME'])/'venv', "
+                    "cache=Path(os.environ['UV_CACHE_DIR']), offline=True, explicit=True); "
+                    "subprocess.run([str(python), '-I', '-c', 'import cache_probe'], check=True)",
+                    requirement], cwd=cwd, env=env, check=True)
+
+    monkeypatch.setattr(native.subprocess, "run", child)
+    for name in ("first-payload", "second-payload"):
+        assert native.stage_native(SimpleNamespace(out=tmp_path / name, ref="HEAD")) == 0
+    assert all(not home.exists() for home in homes)
+    assert dict(os.environ) == original
+
+
 def test_native_dispatch_isolates_process_state_on_real_child_failure(tmp_path, monkeypatch):
     # Compiler provisioning has its own native test; this probe must stop
     # at the invalid revision without installing tools on a developer host.
@@ -199,7 +258,7 @@ def test_native_dispatch_isolates_process_state_on_real_child_failure(tmp_path, 
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "user-tools"))
     before = dict(os.environ)
     out = tmp_path / "output"
-    assert native.stage_native(SimpleNamespace(out=str(out), ref="missing-build-test-ref")) != 0
+    assert native.stage_native(SimpleNamespace(out=str(out), ref="missing-build-test-ref", cache=tmp_path / "cache")) != 0
     assert dict(os.environ) == before
     assert not (tmp_path / "user-home").exists()
     assert not (tmp_path / "user-tools").exists()

@@ -485,7 +485,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("bundle", help="stage a payload (repo+store+facts+relocatable venv) into --out")
     p.add_argument("--out", required=True)
     p.add_argument("--ref", help="git ref for the repo snapshot (default HEAD)")
-    p.add_argument("--cache", type=Path, help="persistent uv build cache (default: output sibling .uv-cache)")
+    p.add_argument("--cache", type=Path, help="persistent build cache (default: UV_CACHE_DIR or PM's shared cache)")
     p.set_defaults(func=cmd_bundle)
 
     p = sub.add_parser("status", help="print the latest pm sync receipt (machine-readable)")

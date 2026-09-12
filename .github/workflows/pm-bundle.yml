@@ -125,7 +125,6 @@ jobs:
           # force-push invalidates mid-run ("not a tree object").
           python -m pm.cli bundle \
             --out build/agent-payload \
-            --cache "$UV_CACHE_DIR" \
             --ref HEAD
 
       - name: Save warmed Python dependencies even after a staging failure

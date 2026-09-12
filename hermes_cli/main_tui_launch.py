@@ -473,9 +473,15 @@ def _exit_on_npm_failure(result: subprocess.CompletedProcess, message: str, *, s
 
 def _run_tui_npm_build(npm: str, cwd: Path, failure_message: str) -> None:
     """``npm run build`` in *cwd*; exit with *failure_message* + output tail on failure."""
+    from hermes_constants import with_hermes_node_path
+    # npm is invoked by absolute path, but its lifecycle script spawns `node`
+    # (e.g. `node scripts/build.mjs`) through cmd/sh, which resolves from PATH.
+    # A process whose PATH lacks the managed tree (e.g. the dashboard running
+    # as a Windows service) fails every build - and thus every chat attach -
+    # with "'node' is not recognized". Same treatment as the install path above.
     result = subprocess.run(
         [npm, "run", "build"], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", env=_npm_lifecycle_env())
+        errors="replace", env=_npm_lifecycle_env(with_hermes_node_path()))
     _exit_on_npm_failure(result, failure_message, sep="")
 
 

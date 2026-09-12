@@ -1,0 +1,13 @@
+name: hermes-nous-prices
+repo: https://github.com/Adolanium/hermes-nous-prices
+sha: 5455e90bad1f0656b649d9767fcac3bf874f559e
+description: Browse Nous Portal model prices and account balances in Hermes Desktop.
+maintainer: Adolanium
+tier: community
+docs_url: https://github.com/Adolanium/hermes-nous-prices#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+subdir: catalog

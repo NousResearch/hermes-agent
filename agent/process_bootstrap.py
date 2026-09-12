@@ -15,10 +15,9 @@ import socket
 import sys
 import threading
 import time
-import urllib.request
 from typing import Any, Optional
 
-from utils import base_url_hostname, normalize_proxy_url
+from utils import base_url_hostname, base_url_origin, normalize_proxy_url, should_bypass_proxy
 
 
 _OPENAI_CLS_CACHE = None
@@ -293,13 +292,20 @@ def _get_proxy_from_env() -> Optional[str]:
 
 
 def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
-    """Env-configured proxy unless NO_PROXY excludes this base URL."""
+    """Env-configured proxy unless NO_PROXY excludes this base URL.
+
+    Uses the same curl-compatible NO_PROXY matcher as the gateway (exact host, ``.domain`` /
+    ``*.domain`` suffix, IP literal, **CIDR**, ``host:port``, ``*``). urllib's
+    ``proxy_bypass_environment`` — used here before #101803 — understands neither CIDR nor
+    ``*.domain``, so ``NO_PROXY=127.0.0.0/8,192.168.0.0/16`` sent every local/LAN Ollama
+    request to the proxy while curl went direct (instant connect error, reported as
+    ``[Errno 65] No route to host``).
+    """
     proxy = _get_proxy_from_env()
-    host = base_url_hostname(base_url) if proxy and base_url else ""
-    try:
-        return None if host and urllib.request.proxy_bypass_environment(host) else proxy
-    except Exception:
+    if not proxy or not base_url:
         return proxy
+    _, host, port = base_url_origin(base_url)
+    return None if host and should_bypass_proxy(f"{host}:{port}" if port else host) else proxy
 
 
 def _shared_transport_cls():

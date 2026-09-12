@@ -116,6 +116,82 @@ class TestFileContentHash:
 
 class TestStaleBridgeHandshake:
 
+    @pytest.mark.asyncio
+    async def test_reuse_requires_two_stable_health_checks(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        health = {
+            "status": "connected",
+            "scriptHash": disk_hash,
+            "sendReadReceipts": False,
+        }
+        adapter._probe_bridge_health = AsyncMock(
+            side_effect=[(True, health), ConnectionError("bridge exited")]
+        )
+        adapter._attach_to_bridge = MagicMock()
+        adapter._wire_plugin_handlers = MagicMock()
+
+        assert await adapter._reuse_running_bridge(bridge_dir / "bridge.js") is False
+        assert adapter._probe_bridge_health.await_count == 2
+        adapter._attach_to_bridge.assert_not_called()
+        adapter._wire_plugin_handlers.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connect_refuses_spawn_while_port_remains_busy(self, tmp_path):
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        adapter._probe_bridge_health = AsyncMock(
+            return_value=(True, {"status": "disconnected"})
+        )
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("plugins.platforms.whatsapp.adapter._wait_port_free", new_callable=AsyncMock, return_value=False), \
+             patch("subprocess.Popen") as popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            result = await adapter.connect()
+
+        assert result is False
+        popen.assert_not_called()
+        assert adapter.fatal_error_code == "whatsapp_bridge_port_busy"
+        assert adapter.fatal_error_retryable is True
+
+
+class TestBridgePortRelease:
+    @pytest.mark.asyncio
+    async def test_waits_until_live_listener_releases_the_port(self):
+        import socket
+
+        from plugins.platforms.whatsapp.adapter import _port_is_bindable, _wait_port_free
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.listen(1)
+        try:
+            assert _port_is_bindable(port) is False
+
+            async def release_listener():
+                await asyncio.sleep(0.05)
+                listener.close()
+
+            release_task = asyncio.create_task(release_listener())
+            assert await _wait_port_free(port, timeout=1.0, interval=0.01) is True
+            await release_task
+        finally:
+            listener.close()
+
 
     @pytest.mark.asyncio
     async def test_restarts_bridge_when_read_receipt_config_changed(self, tmp_path):

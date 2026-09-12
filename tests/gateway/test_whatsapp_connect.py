@@ -536,3 +536,26 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+class TestBridgeRestartLifecycle:
+    @pytest.mark.asyncio
+    async def test_reconnect_clears_shutdown_and_shutdown_poller_does_no_io(self):
+        adapter = _make_adapter()
+        adapter._shutting_down = True
+
+        with patch.object(adapter, "_preflight", return_value=False):
+            assert await adapter.connect(is_reconnect=True) is False
+
+        assert adapter._shutting_down is False
+
+        adapter._running = True
+        adapter._shutting_down = True
+        adapter._http_session = MagicMock()
+        adapter._bridge_req = MagicMock(
+            side_effect=AssertionError("shutdown poller must not contact the bridge")
+        )
+
+        await adapter._poll_messages()
+
+        adapter._bridge_req.assert_not_called()

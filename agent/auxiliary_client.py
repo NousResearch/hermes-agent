@@ -1340,7 +1340,7 @@ class _CodexCompletionsAdapter:
         # includes assistant tool_calls + role="tool" results). The shared converter encodes assistant tool
         # calls as `function_call` items and tool results as `function_call_output` items with a valid
         # call_id, so every Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input, _responses_tools
         model = kwargs.get("model", self._model)
         host = str(getattr(self._client, "base_url", "") or "")
         is_xai = base_url_host_matches(host, "x.ai") or base_url_host_matches(host, "api.x.ai")
@@ -1418,15 +1418,7 @@ class _CodexCompletionsAdapter:
                     "Auxiliary client: failed to sanitize tool schemas for "
                     "Codex/xAI Responses path: %s", exc,
                 )
-            converted = []
-            for t in tools:
-                fn = t.get("function", {}) if isinstance(t, dict) else {}
-                name = fn.get("name")
-                if name:
-                    converted.append({
-                        "type": "function", "name": name, "description": fn.get("description", ""),
-                        "parameters": fn.get("parameters", {}),
-                    })
+            converted = _responses_tools(tools)
             if converted:
                 resp_kwargs["tools"] = converted
         # Stable prompt-cache routing: key is content-addressed from the static prefix

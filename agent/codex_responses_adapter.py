@@ -291,7 +291,8 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
     fns = [item.get("function", {}) if isinstance(item, dict) else {} for item in tools or []]
     converted = [
         {
-            "type": "function", "name": fn["name"], "description": fn.get("description", ""), "strict": False,
+            "type": "function", "name": fn["name"], "description": fn.get("description", ""),
+            "strict": fn.get("strict") if isinstance(fn.get("strict"), bool) else False,
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
         }
         for fn in fns if _nonblank(fn.get("name"))

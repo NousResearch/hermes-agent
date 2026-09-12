@@ -484,9 +484,19 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         current = models_map.get(model_id)
         models_map[model_id] = dict(current) if isinstance(current, dict) else {}
     entry["models"] = models_map
-    if body.context_length and body.context_length > 0:
-        entry["context_length"] = int(body.context_length)
-        entry["models"][model]["context_length"] = int(body.context_length)
+    # ``context_length`` <= 0 is the panel's "Auto" and must CLEAR a stored override:
+    # the old guard (``if body.context_length and body.context_length > 0``) silently
+    # ignored an explicit 0, so clearing the field left the previous pin on disk and the
+    # panel reloaded it — the value appeared to revert the instant it was saved. An
+    # omitted field (None) is a partial update and leaves the override untouched, the same
+    # contract the Settings write-back documents in web_server_config.py.
+    if body.context_length is not None:
+        if body.context_length > 0:
+            entry["context_length"] = int(body.context_length)
+            entry["models"][model]["context_length"] = int(body.context_length)
+        else:
+            entry.pop("context_length", None)
+            entry["models"][model].pop("context_length", None)
 
     # API keys never belong in config.yaml: write to .env and reference it via
     # ``key_env`` — the indirection built-in providers use and that

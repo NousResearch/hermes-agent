@@ -1,5 +1,5 @@
 /**
- * The English bundle is the message shape. ja / zh / zh-hant must cover the
+ * The English bundle is the message shape. sv / ja / zh / zh-hant must cover the
  * same leaves so a locale switch never falls through to a raw key — and the
  * interpolators must still splice their arguments, not drop them.
  */
@@ -21,28 +21,50 @@ function leafEntries(node: unknown, prefix = ''): Array<[string, Leaf]> {
 }
 
 const en = BOTS_LOCALES.en
+const sv = BOTS_LOCALES.sv
 const ja = BOTS_LOCALES.ja
 const zh = BOTS_LOCALES.zh
 const zhHant = BOTS_LOCALES['zh-hant']
 
 describe('BOTS_LOCALES', () => {
   it('covers the English key tree in every shipped locale', () => {
+    expect(sv).toBeDefined()
     expect(ja).toBeDefined()
     expect(zh).toBeDefined()
     expect(zhHant).toBeDefined()
 
-    const enPaths = leafEntries(en).map(([path]) => path)
+    const enPaths = leafEntries(en)
+      .map(([path]) => path)
+      .sort()
 
-    expect(leafEntries(ja).map(([path]) => path)).toEqual(enPaths)
-    expect(leafEntries(zh).map(([path]) => path)).toEqual(enPaths)
-    expect(leafEntries(zhHant).map(([path]) => path)).toEqual(enPaths)
+    expect(
+      leafEntries(sv)
+        .map(([path]) => path)
+        .sort()
+    ).toEqual(enPaths)
+
+    expect(
+      leafEntries(ja)
+        .map(([path]) => path)
+        .sort()
+    ).toEqual(enPaths)
+    expect(
+      leafEntries(zh)
+        .map(([path]) => path)
+        .sort()
+    ).toEqual(enPaths)
+    expect(
+      leafEntries(zhHant)
+        .map(([path]) => path)
+        .sort()
+    ).toEqual(enPaths)
   })
 
   it('translates user-visible chrome instead of echoing English', () => {
     const samples = ['roster.emptyTitle', 'bot.newTitle', 'group.manageTitle', 'tools.skillsHub'] as const
     const enByPath = Object.fromEntries(leafEntries(en))
 
-    for (const locale of [ja, zh, zhHant]) {
+    for (const locale of [sv, ja, zh, zhHant]) {
       const byPath = Object.fromEntries(leafEntries(locale))
 
       for (const path of samples) {
@@ -55,7 +77,7 @@ describe('BOTS_LOCALES', () => {
     const sentinel = 'QUERY_SENTINEL'
     const gateway = 'GATEWAY_SENTINEL'
 
-    for (const locale of [en, ja, zh, zhHant]) {
+    for (const locale of [en, sv, ja, zh, zhHant]) {
       const byPath = Object.fromEntries(leafEntries(locale))
       const queryFn = byPath['roster.noMatchQuery'] as (query: string) => string
       const bothFn = byPath['roster.noMatchQueryOn'] as (query: string, gateway: string) => string

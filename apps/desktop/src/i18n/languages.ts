@@ -104,6 +104,8 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   sv: 'sv',
   'sv-se': 'sv',
   sv_se: 'sv',
+  'sv-fi': 'sv',
+  sv_fi: 'sv',
   swedish: 'sv',
   svenska: 'sv'
 }

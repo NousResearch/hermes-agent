@@ -27,6 +27,14 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale(' svenska ')).toBe('sv')
   })
 
+  it.each(['sv-SE', 'sv_FI', 'SV-FI', 'sv', 'svenska', 'Swedish'])(
+    'accepts Swedish locale and regional aliases: %s',
+    value => {
+      expect(normalizeLocale(value)).toBe('sv')
+      expect(isSupportedLocaleValue(value)).toBe(true)
+    }
+  )
+
   it('falls back to English for empty or unsupported values', () => {
     expect(normalizeLocale(null)).toBe(DEFAULT_LOCALE)
     expect(normalizeLocale('')).toBe(DEFAULT_LOCALE)

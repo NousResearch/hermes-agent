@@ -110,6 +110,22 @@ CONTINUATION_PROMPT_GATE_FAILED_TEMPLATE = (
     "gate itself is wrong or cannot pass, say so clearly and stop."
 )
 
+# Appended (never wrapped) when the judge's last verdict was `continue`: the
+# agent would otherwise see a byte-identical prompt every turn and cannot adapt
+# to the specific deficiency the judge named. Appending — not rewrapping —
+# keeps the "[Continuing toward your standing goal]" header and goal text a
+# byte-stable prefix (prompt-cache invariant; resume surfaces key on it).
+JUDGE_FEEDBACK_BLOCK = (
+    "\n\n---\n"
+    "The judge reviewed your most recent response and returned `continue`:\n"
+    "> {reason}\n\n"
+    "Address the judge's reason specifically in your next response — quote "
+    "the evidence that answers it (command output, file contents, test "
+    "result). If the reason names something structurally impossible (e.g. a "
+    "criterion count the data cannot reach), say so clearly and stop instead "
+    "of repeating completed work."
+)
+
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text, the agent's "
@@ -126,7 +142,15 @@ JUDGE_SYSTEM_PROMPT = (
     "out of scope, no valid path to the deliverable), or refuses to "
     "fabricate a deliverable that cannot exist, OR\n"
     "- The response explains progress is blocked and the next step needs "
-    "user input to proceed.\n"
+    "user input to proceed, OR\n"
+    "- The evidence shows a stated criterion (e.g. a required count, "
+    "coverage number, or resource) is structurally unreachable — the "
+    "resource does not exist, an upstream dependency forbids it, or the "
+    "honest maximum falls short of the stated number — while the "
+    "fabrication needed to hit it would violate the goal's own integrity "
+    "constraints. Padding to satisfy a stale number is worse than stopping; "
+    "return BLOCKED and name the unreachable criterion and the honest "
+    "maximum.\n"
     "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
     "a refusal, not a completion — never return BLOCKED for a goal that "
     "was achieved.\n\n"
@@ -1533,10 +1557,19 @@ class GoalManager:
             contract_block = s.contract.render_block()
             if s.subgoals:
                 contract_block = f"{contract_block}\n{_render_extra_criteria(s.subgoals)}"
-            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
-        if s.subgoals:
-            return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(goal=s.goal, subgoals_block=s.render_subgoals_block())
-        return CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal)
+            body = CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(goal=s.goal, contract_block=contract_block)
+        elif s.subgoals:
+            body = CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(goal=s.goal, subgoals_block=s.render_subgoals_block())
+        else:
+            body = CONTINUATION_PROMPT_TEMPLATE.format(goal=s.goal)
+        # Judge feedback loop: when the last verdict was `continue`, the judge's
+        # reason must reach the agent — otherwise the prompt is byte-identical
+        # every turn and the loop cannot converge (it guess-and-repeats).
+        reason = (s.last_reason or "").strip()
+        if reason and s.last_verdict in (None, "continue"):
+            body += JUDGE_FEEDBACK_BLOCK.format(
+                reason=reason.splitlines()[0][:400])
+        return body
 
     def render_contract(self) -> str:
         """Public helper for the /goal show + /goal draft slash commands."""

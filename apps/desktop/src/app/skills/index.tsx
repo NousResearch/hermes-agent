@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router'
 
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
+import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { PageLoader } from '@/components/page-loader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -1250,12 +1251,11 @@ function SkillDetail({
       {contentQuery.isLoading ? (
         <CountSkeleton />
       ) : parsed ? (
-        <pre
-          className="overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.68rem] leading-relaxed"
-          data-selectable-text="true"
-        >
-          {parsed.body.trim() || t.skills.noDescription}
-        </pre>
+        <MarkdownTextContent
+          isRunning={false}
+          containerClassName="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3"
+          text={parsed.body.trim() || t.skills.noDescription}
+        />
       ) : null}
     </>
   )
@@ -1320,12 +1320,11 @@ function OfficialSkillDetail({
       {previewQuery.isLoading ? (
         <CountSkeleton />
       ) : parsed ? (
-        <pre
-          className="overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.68rem] leading-relaxed"
-          data-selectable-text="true"
-        >
-          {parsed.body.trim() || t.skills.noDescription}
-        </pre>
+        <MarkdownTextContent
+          isRunning={false}
+          containerClassName="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3"
+          text={parsed.body.trim() || t.skills.noDescription}
+        />
       ) : null}
     </>
   )

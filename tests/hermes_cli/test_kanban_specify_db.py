@@ -61,13 +61,19 @@ def test_specify_rejects_blank_title(kanban_home):
 
 
 def test_specify_records_audit_comment_only_when_author_given(kanban_home):
+    # create_task mints every card with the charter §4 auto-points placeholder
+    # (est-mintpath-20260911); the audit comment is what this test is about, so
+    # it looks at the non-system comments.
+    def audit(conn, tid):
+        return [c for c in kb.list_comments(conn, tid) if c.author != "(system)"]
+
     # With author → comment added.
     with kbc.connect() as conn:
         tid1 = _create_triage(conn, title="a")
         kb.specify_triage_task(
             conn, tid1, title="A-spec", body="b", author="ace"
         )
-        comments1 = kb.list_comments(conn, tid1)
+        comments1 = audit(conn, tid1)
     assert len(comments1) == 1
     assert "Specified" in comments1[0].body
     assert comments1[0].author == "ace"
@@ -76,7 +82,7 @@ def test_specify_records_audit_comment_only_when_author_given(kanban_home):
     with kbc.connect() as conn:
         tid2 = _create_triage(conn, title="b")
         kb.specify_triage_task(conn, tid2, title="B-spec", body="b")
-        comments2 = kb.list_comments(conn, tid2)
+        comments2 = audit(conn, tid2)
     assert comments2 == []
 
 

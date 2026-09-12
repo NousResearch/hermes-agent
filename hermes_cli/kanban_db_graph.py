@@ -133,7 +133,7 @@ def decompose_triage_task(
         _canonical_assignee, _link, _append_event, _insert_comment,
         _inherit_notify_subs, _new_task_id, write_txn, recompute_ready,
         _assignee_is_known, _worktree_holds_unmerged, _tenant_project,
-        effective_max_cost,
+        effective_max_cost, auto_points_comment,
     )
 
     if not children:
@@ -309,6 +309,13 @@ def decompose_triage_task(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            # Charter §4 (est-mintpath-20260911): a decomposed child is a real
+            # work item and gets the same mint-path estimate as any other card.
+            # This is the ~70% of cards that never read a SOUL — the reason the
+            # 2026-09-04 prose-only attempt moved the metric not at all.
+            _insert_comment(
+                conn, new_id, "(system)", auto_points_comment(), now,
+            )
             if child_block_kind:
                 # Typed hold at creation (mirrors create_task): the kind is what
                 # escalation-watch, fleet-preflight, stalled-card-watch and
@@ -403,7 +410,8 @@ def _insert_decomposed_child(
     ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
     """
     from hermes_cli.kanban_db import (
-        _new_task_id, _canonical_assignee, _append_event,
+        _new_task_id, _canonical_assignee, _append_event, _insert_comment,
+        auto_points_comment,
     )
 
     root_ws_kind = root_row["workspace_kind"] or "scratch"
@@ -432,5 +440,8 @@ def _insert_decomposed_child(
     _append_event(
         conn, new_id, "created", {"by": author or "decomposer", "from_decompose_of": root_id},
     )
+    # Charter §4 (est-mintpath-20260911): same mint-path estimate as every
+    # other card; see auto_points_comment in kanban_db.
+    _insert_comment(conn, new_id, "(system)", auto_points_comment(), now)
     inherit_creator_origin(conn, new_id, root_id, created_at=now)
     return new_id

@@ -116,13 +116,20 @@ def _tasks_by_title(slug: str) -> dict[str, dict]:
 
 def test_round_trip_preserves_content(kanban_root, tmp_path):
     _seed_board()
+    with kbc.connect_closing(board="alpha") as conn:
+        source_comments = conn.execute(
+            "SELECT COUNT(*) FROM task_comments"
+        ).fetchone()[0]
     archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
 
     kanban_root("target")
     result = kt.import_board(archive)
 
     assert result["counts"]["tasks"] == 2
-    assert result["counts"]["task_comments"] == 1
+    # Compared against the SOURCE board, not a hardcoded number: every card is
+    # minted with the charter §4 auto-points placeholder (est-mintpath-20260911),
+    # and this test is about the round trip preserving what is actually there.
+    assert result["counts"]["task_comments"] == source_comments
     assert result["counts"]["task_links"] == 1
 
     tasks = _tasks_by_title(result["board"])

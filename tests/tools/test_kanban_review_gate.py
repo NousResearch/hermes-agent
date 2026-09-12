@@ -29,6 +29,15 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
 
+def _gate_comments(conn, tid):
+    """The card's comments minus the charter §4 auto-points placeholder.
+
+    Every minted card carries that placeholder (est-mintpath-20260911), so
+    these tests count gate comments rather than all comments.
+    """
+    return [c for c in kb.list_comments(conn, tid) if c.author != "(system)"]
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A real git repo (the 'primary repo') with a ``venv/bin/python`` shim.
@@ -144,7 +153,7 @@ def test_gate_failing_build_bounces_card(
         assert kb.get_task(conn, tid).status == "running"
         # No failure counted against the card.
         assert kb.get_task(conn, tid).consecutive_failures == 0
-        comments = kb.list_comments(conn, tid)
+        comments = _gate_comments(conn, tid)
         assert len(comments) == 1
         assert "Pre-review gate FAILED" in comments[0].body
         # The bounce names WHICH rung failed.
@@ -219,7 +228,7 @@ def test_gate_comment_carries_output_tail(
     resp = json.loads(tools._handle_request_review({"summary": "flaky"}))
     assert "error" in resp
     with kbc.connect() as conn:
-        comments = kb.list_comments(conn, tid)
+        comments = _gate_comments(conn, tid)
         assert len(comments) == 1
         body = comments[0].body
         assert "```" in body
@@ -285,7 +294,7 @@ def test_gate_missing_import_bounces_card(
     with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
         assert kb.get_task(conn, tid).consecutive_failures == 0
-        comments = kb.list_comments(conn, tid)
+        comments = _gate_comments(conn, tid)
         assert len(comments) == 1
         assert "import sanity FAIL broken.py" in comments[0].body
 
@@ -598,7 +607,7 @@ def test_ladder_lint_fail_bounces_before_typecheck(
     with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
         assert kb.get_task(conn, tid).consecutive_failures == 0
-        comments = kb.list_comments(conn, tid)
+        comments = _gate_comments(conn, tid)
         assert len(comments) == 1
         body = comments[0].body
         assert "FAILED on the 'lint' rung" in body
@@ -638,7 +647,7 @@ def test_ladder_missing_linter_skipped_not_failed(
     assert "TYPECHECK PROBLEM" in resp["error"]
 
     with kbc.connect() as conn:
-        comments = kb.list_comments(conn, tid)
+        comments = _gate_comments(conn, tid)
         assert len(comments) == 1
         assert "FAILED on the 'typecheck' rung" in comments[0].body
         bounced = [e for e in kb.list_events(conn, tid) if e.kind == "gate_bounced"]
@@ -819,7 +828,7 @@ def test_gate_new_failure_still_bounces_baseline_aware(
     assert "Pre-review gate failed" in resp["error"]
     with kbc.connect() as conn:
         assert kb.get_task(conn, tid).status == "running"
-        comments = kb.list_comments(conn, tid)
+        comments = _gate_comments(conn, tid)
         assert len(comments) == 1
         assert "focused tests" in comments[0].body
 

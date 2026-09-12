@@ -442,6 +442,14 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "and every deploy card is created held. Defaults to false."
             ),
         },
+        "points": _prop("integer", (
+                "FLEET / charter §4: the card's estimate in points, >= 1. "
+                "Omit it and the card is minted with a conservative "
+                "auto-points placeholder comment instead, which the specifier "
+                "replaces on first touch — so no card leaves the mint path "
+                "unestimated. Supply it only when the estimate is actually "
+                "known at creation."
+        )),
         "initial_status": {
             "type": "string",
             "enum": ["running", "blocked"],

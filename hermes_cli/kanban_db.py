@@ -1262,6 +1262,7 @@ def create_task(
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     block_kind: Optional[str] = None,
+    points: Optional[int] = None,
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
@@ -1288,6 +1289,9 @@ def create_task(
     lane). ``None`` means uncapped; the configured default and the new-card
     ceiling are applied here via ``effective_max_cost`` so every caller is
     covered. ``block_kind`` types a hold created directly in ``blocked``.
+    ``points`` is the charter §4 estimate: None -> the conservative
+    ``auto-points`` placeholder comment is written so no card leaves the mint
+    path unestimated; an explicit >=1 value writes that estimate instead.
     ``_assignee_parked`` is an out-parameter the CLI reads to report a card
     parked in triage because its assignee is not a real profile.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
@@ -1336,6 +1340,16 @@ def create_task(
             raise ValueError(f"max_cost must be a number, got {max_cost!r}")
         if max_cost < 0:
             raise ValueError("max_cost must be >= 0")
+    if points is not None:
+        try:
+            points = int(points)
+        except (TypeError, ValueError):
+            raise ValueError(f"points must be an integer, got {points!r}")
+        if points < 1:
+            # 0 is falsy, and the ledger's coverage metric is
+            # ``[r for r in rows if r.get("points")]`` — a 0 would read as
+            # "no estimate" and silently defeat the point of writing it.
+            raise ValueError("points must be >= 1 (0 reads as 'no estimate')")
 
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
@@ -1448,6 +1462,16 @@ def create_task(
                 )
                 for pid in parents:
                     _link(conn, pid, task_id)
+                # Charter §4 estimation at the mint path (est-mintpath-20260911):
+                # EVERY card leaves create_task carrying a points estimate, so
+                # the CLI, the kanban_create tool, the dashboard API, the
+                # Deploy: follow-ups and the swarm are all covered by
+                # construction — and the machine path is covered without asking
+                # the machine to remember. Written first so any later estimate
+                # comment wins (the cost ledger takes the last match).
+                _insert_comment(
+                    conn, task_id, "(system)", auto_points_comment(points), now,
+                )
                 if assignee_parked_in_triage:
                     conn.execute(
                         "INSERT INTO task_comments "
@@ -4487,6 +4511,44 @@ def effective_max_cost(max_cost: Optional[float]) -> Optional[float]:
         return None
     ceiling = resolve_max_cost_ceiling()
     return min(val, ceiling) if val > 0 else None
+
+
+# --- Charter §4 estimation at the mint path (est-mintpath-20260911) ----------
+#
+# §4 mandates every card carry points + a cost estimate. Measured 2026-09-11:
+# 21/241 cards (8.7%) carried one. The 2026-09-04 attempt
+# (self-improvement-si-20260904-estimation) edited SOUL prose and moved
+# nothing — workers and the auto-decomposer never read a SOUL, and ~70% of
+# cards are minted by the machine path. This is the same shape as the cost-cap
+# fix that did work: apply the default at the ONE choke point every caller
+# goes through, so the machine path is covered by construction.
+#
+# Points travel as a ``points-estimate: N`` COMMENT, not a column. The cost
+# ledger (``scripts/cost-ledger.py``, ``PTS_RE``) and the charter §2 estimation
+# metric both read them from comments, so a column would be a second source of
+# truth that moves no number. The comment IS the mechanism — the same
+# convention as ``scheduled-until:`` for date waits.
+AUTO_POINTS_PLACEHOLDER = 1
+AUTO_POINTS_NOTE = (
+    "auto-points: §4 placeholder — written at creation because this card "
+    "carried no estimate. The specifier replaces it on first touch by posting "
+    "the real estimate; a later estimate comment wins over this one."
+)
+
+
+def auto_points_comment(points: Optional[int] = None) -> str:
+    """The §4 estimate marker for a card minted without one.
+
+    ``points`` None -> the conservative placeholder plus the note explaining
+    it is not anybody's estimate. An explicit value -> just the marker, so a
+    creator who knows the estimate writes a real one and no placeholder text
+    is ever written. ``points-estimate:`` is the line the cost ledger parses.
+    """
+    value = AUTO_POINTS_PLACEHOLDER if points is None else int(points)
+    body = f"points-estimate: {value}"
+    if points is None:
+        body += f"\n{AUTO_POINTS_NOTE}"
+    return body
 
 
 def _fleet_home() -> Path:

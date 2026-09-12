@@ -571,7 +571,10 @@ def test_comment_happy_path(worker_env):
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
-        comments = kb.list_comments(conn, worker_env)
+        # create_task mints the charter §4 auto-points placeholder comment on
+        # every card (est-mintpath-20260911); this test is about the worker's.
+        comments = [c for c in kb.list_comments(conn, worker_env)
+                    if c.author != "(system)"]
         assert len(comments) == 1
         # Author defaults to HERMES_PROFILE env we set in the fixture
         assert comments[0].author == "test-worker"
@@ -597,7 +600,8 @@ def test_comment_ignores_caller_supplied_author(worker_env):
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
-        comments = kb.list_comments(conn, worker_env)
+        comments = [c for c in kb.list_comments(conn, worker_env)
+                    if c.author != "(system)"]
         # Author comes from HERMES_PROFILE in the fixture, not the
         # caller-supplied "hermes-system" override.
         assert comments[0].author == "test-worker"
@@ -625,6 +629,51 @@ def test_create_happy_path(worker_env):
         assert child.assignee == "peer"
     finally:
         conn.close()
+
+
+def _points_of(conn, tid):
+    """What scripts/cost-ledger.py's PTS_RE parses off the card's comments."""
+    import re
+    pts = None
+    for (body,) in conn.execute(
+        "SELECT body FROM task_comments WHERE task_id=? ORDER BY id", (tid,)
+    ).fetchall():
+        m = re.search(r"points-estimate[^0-9]*([0-9]+)", body or "", re.I)
+        if m:
+            pts = int(m.group(1))
+    return pts
+
+
+def test_create_writes_the_charter_points_placeholder_by_default(worker_env):
+    """Charter §4 at the mint path (est-mintpath-20260911): a creator that
+    supplies no estimate still mints a card the coverage metric can see."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_create({"title": "no estimate", "assignee": "peer"}))
+    assert d["ok"] is True
+    with kbc.connect() as conn:
+        assert _points_of(conn, d["task_id"]) == kb.AUTO_POINTS_PLACEHOLDER
+
+
+def test_create_records_an_explicit_points_estimate(worker_env):
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_create(
+        {"title": "estimated", "assignee": "peer", "points": 5}
+    ))
+    assert d["ok"] is True
+    with kbc.connect() as conn:
+        assert _points_of(conn, d["task_id"]) == 5
+
+
+def test_create_rejects_points_below_one(worker_env):
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_create(
+        {"title": "bad", "assignee": "peer", "points": 0}
+    ))
+    assert d.get("ok") is not True
+    assert "points" in json.dumps(d)
 
 
 @pytest.mark.parametrize("explicit", [{"workspace_kind": "scratch"}, {"project": ""}])
@@ -897,8 +946,10 @@ def test_worker_lifecycle_through_tools(worker_env):
         assert child.status == "ready", (
             f"child should be ready after parent done, got {child.status}"
         )
-        # Comment is visible
-        assert len(kb.list_comments(conn, worker_env)) == 1
+        # Comment is visible (ignoring the charter §4 auto-points placeholder
+        # create_task mints on every card, est-mintpath-20260911)
+        assert len([c for c in kb.list_comments(conn, worker_env)
+                    if c.author != "(system)"]) == 1
         # Heartbeat event recorded
         hb = [e for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"]
         assert len(hb) == 1
@@ -1011,7 +1062,8 @@ def test_worker_can_comment_on_foreign_task(worker_env):
     # HERMES_PROFILE — never to a caller-controlled string.
     conn = kbc.connect()
     try:
-        comments = kb.list_comments(conn, other)
+        comments = [c for c in kb.list_comments(conn, other)
+                    if c.author != "(system)"]
         assert len(comments) == 1
         assert comments[0].author == "test-worker"
         assert comments[0].body.startswith("handoff:")

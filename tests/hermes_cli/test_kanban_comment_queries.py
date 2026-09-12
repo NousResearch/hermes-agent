@@ -44,7 +44,11 @@ def test_list_comments_after_cursor(fresh_home):
         c1 = kb.add_comment(conn, tid, author="alice", body="first")
         c2 = kb.add_comment(conn, tid, author="bob", body="second")
 
-        assert [c.id for c in kb.list_comments_after(conn, tid, after_id=0)] == [c1, c2]
+        # create_task also mints the charter §4 auto-points placeholder comment
+        # (est-mintpath-20260911), so anchor on the comments this test authored
+        # rather than on the total.
+        assert [c.id for c in kb.list_comments_after(conn, tid, after_id=0)
+                if c.author in ("alice", "bob")] == [c1, c2]
 
         newer = kb.list_comments_after(conn, tid, after_id=c1)
         assert [c.id for c in newer] == [c2]

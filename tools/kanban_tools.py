@@ -932,6 +932,10 @@ def _handle_create(args: dict, **kw) -> str:
             # garbage or a negative value is rejected there, never silently
             # uncapped.
             max_cost=_resolved_create_max_cost(kb, args),
+            # FLEET / charter §4: an explicit estimate writes that number; omit
+            # it and create_task writes the conservative auto-points
+            # placeholder comment, so no card leaves the mint path unestimated.
+            points=_opt_int(args.get("points")),
             _assignee_parked=_parked,
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)

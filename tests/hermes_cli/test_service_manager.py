@@ -7,6 +7,8 @@ implementation in this same file once that phase ships.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from hermes_cli.service_manager import (
@@ -20,6 +22,11 @@ from hermes_cli.service_manager import (
     get_service_manager,
     validate_profile_name,
 )
+
+
+# Captured at module import time so the regression test proves isolation is
+# active during pytest collection, before autouse fixtures begin setup.
+_COLLECTION_SCANDIR = S6ServiceManager().scandir
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +186,41 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("subprocess.run", _fake)
     return calls
 
+
+def test_s6_manager_kind_and_supports_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HERMES_TEST_S6_SCANDIR", raising=False)
+    mgr = S6ServiceManager()
+    assert mgr.kind == "s6"
+    assert mgr.supports_runtime_registration() is True
+    assert mgr.scandir == Path("/run/service")
+
+
+def test_s6_default_scandir_isolated_during_pytest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A test process must never inherit the live s6 ``/run/service`` tree.
+
+    Regression: running the full suite inside the production container let
+    container-aware gateway tests register and restart live services, which
+    interrupted the active operator session and leaked test profile slots.
+
+    The invariant: ``pytest_configure`` installs ``HERMES_TEST_S6_SCANDIR``
+    before collection begins, so ``S6ServiceManager()`` is already isolated
+    at module-import time (see ``_COLLECTION_SCANDIR`` above). Within a test,
+    ``HERMES_TEST_S6_SCANDIR`` is what controls which scandir is used; setting
+    it here exercises the explicit-override path.
+    """
+    pytest_scandir = tmp_path / "pytest-s6-scandir"
+    monkeypatch.setenv("HERMES_TEST_S6_SCANDIR", str(pytest_scandir))
+
+    mgr = S6ServiceManager()
+
+    assert _COLLECTION_SCANDIR != Path("/run/service")
+    assert mgr.scandir == pytest_scandir
+    assert mgr.scandir != Path("/run/service")
 
 # ---------------------------------------------------------------------------
 # _seed_supervise_skeleton — unit tests

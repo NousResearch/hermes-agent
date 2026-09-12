@@ -223,6 +223,25 @@ def get_service_manager() -> ServiceManager:
 # s6-overlay's dynamic scandir (tmpfs) that s6-svscan watches; writes here trigger supervision
 # on the next rescan.
 S6_DYNAMIC_SCANDIR = Path("/run/service")
+
+
+def _default_s6_scandir() -> Path:
+    """Return the production scandir, or an explicitly isolated test one.
+
+    The hermetic pytest fixture sets ``HERMES_TEST_S6_SCANDIR`` to prevent
+    container-aware tests from registering, stopping, or restarting live s6
+    services when the suite itself runs inside a production container. Normal
+    runtime processes do not set this internal test-only variable and continue
+    to use ``/run/service``.
+    """
+    import os
+
+    isolated = os.environ.get("HERMES_TEST_S6_SCANDIR")
+    if isolated:
+        return Path(isolated)
+    return S6_DYNAMIC_SCANDIR
+
+
 S6_SERVICE_PREFIX = "gateway-"
 
 
@@ -391,8 +410,8 @@ class S6ServiceManager:
 
     kind: ServiceManagerKind = "s6"
 
-    def __init__(self, scandir: Path = S6_DYNAMIC_SCANDIR) -> None:
-        self.scandir = scandir
+    def __init__(self, scandir: Path | None = None) -> None:
+        self.scandir = Path(scandir) if scandir is not None else _default_s6_scandir()
 
     def _service_dir(self, profile: str) -> Path:
         validate_profile_name(profile)

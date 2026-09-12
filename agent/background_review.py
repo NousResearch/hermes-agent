@@ -20,6 +20,8 @@ from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
 
+_CALLBACK_UNSET = object()
+
 _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS = 2.0
 
 
@@ -1077,18 +1079,19 @@ def _run_review_fork(
     st.review_agent = None
 
 
-def _publish_review_summary(agent: Any, actions: List[str]) -> None:
+def _publish_review_summary(agent: Any, actions: List[str], callback: Any) -> None:
     summary = " · ".join(dict.fromkeys(actions))
     agent._safe_print(f"  💾 Self-improvement review: {summary}")
-    if agent.background_review_callback:
+    if callback:
         with suppress(Exception):
-            agent.background_review_callback(f"💾 Self-improvement review: {summary}")
+            callback(f"💾 Self-improvement review: {summary}")
 
 
 def _run_review_in_thread(
     agent: Any, messages_snapshot: List[Dict], prompt: str,
     task_cfg: Optional[Dict[str, Any]] = None, review_run: Optional[_BackgroundReviewRun] = None,
     review_memory: bool = False, explicit: bool = False,
+    background_review_callback: Any = _CALLBACK_UNSET,
 ) -> None:
     """Daemon-thread worker: build the fork, run the prompt, surface the action summary via
     ``agent._safe_print`` / ``background_review_callback``. ``review_run`` (from
@@ -1097,6 +1100,8 @@ def _run_review_in_thread(
 
     See #84423.
     """
+    if background_review_callback is _CALLBACK_UNSET:
+        background_review_callback = getattr(agent, "background_review_callback", None)
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
@@ -1150,7 +1155,7 @@ def _run_review_in_thread(
             actions = []
         _log_review_completion(st.review_usage, _classify_review_result(actions))
         if actions:
-            _publish_review_summary(agent, actions)
+            _publish_review_summary(agent, actions, background_review_callback)
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:
@@ -1199,10 +1204,14 @@ def spawn_background_review_thread(
             f"focus — prioritize it over the general instructions above:\n{focus}"
         )
 
+    # The parent can start a new turn or restore its callbacks before this worker
+    # publishes. Bind the initiating destination now; None also must stay None.
+    callback = getattr(agent, "background_review_callback", None)
+
     def _target() -> None:  # resolves _run_review_in_thread at call time (tests patch it)
         _run_review_in_thread(
             agent, messages_snapshot, prompt, task_cfg=task_cfg, review_run=review_run,
-            review_memory=review_memory, explicit=explicit)
+            review_memory=review_memory, explicit=explicit, background_review_callback=callback)
 
     return _target, prompt
 

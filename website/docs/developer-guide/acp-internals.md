@@ -76,14 +76,55 @@ The manager is thread-safe and supports:
 Bridged callbacks:
 
 - `tool_progress_callback`
-- `thinking_callback` (currently set to `None` in the ACP bridge — reasoning is forwarded through `step_callback` instead)
+- `reasoning_callback` (provider reasoning; `thinking_callback` stays `None`)
 - `step_callback`
+- `stream_delta_callback`
+- `interim_assistant_callback` and `background_review_callback` (negotiated extension below)
 
 Because `AIAgent` runs in a worker thread while ACP I/O lives on the main event loop, the bridge uses:
 
 ```python
 asyncio.run_coroutine_threadsafe(...)
 ```
+
+### Optional commentary extension
+
+Clients opt in with `clientCapabilities._meta.hermes.messagePhases: 1` in
+`initialize`. Hermes acknowledges the exact integer version in
+`agentCapabilities._meta.hermes.messagePhases: 1`. Other versions retain ordinary
+ACP behavior. For each `session/prompt`, the client supplies a UUID at
+`_meta.hermes.turnId`; it is an opaque correlation token, never owner identity or
+prompt content. Missing or invalid tokens disable additional notifications for
+that prompt.
+
+Hermes emits an additional `agent_message_chunk` for each interim callback and
+background review summary, with a unique `messageId` and:
+
+```json
+{"hermes":{"messagePhases":1,"phase":"commentary","source":"assistant","turnId":"<client prompt UUID>"}}
+```
+
+Background summaries use `source: "background_review"` and retain their
+Self-improvement review label. These copies leave raw response chunks and the
+ordinary final response unchanged, including when `already_streamed` is true.
+They contain no provider reasoning or raw tool output. For Codex-backed Hermes,
+installing the commentary consumer replaces the existing fallback that displayed
+commentary in thought events; real analysis/reasoning and final text are preserved.
+
+Callbacks capture the connection, session, and turn token. The background worker
+snapshots its callback before it starts, including a disabled `None`, so later
+turns cannot change its destination. Prompt callbacks restore their previous
+values before draining queued prompts. Queued prompts without a client token
+produce only ordinary ACP output.
+
+A background summary can arrive after its initiating prompt finishes or during
+another prompt. Clients must correlate using the captured token, exclude these
+additional copies from ordinary output, and avoid attributing them to the active
+turn. A relay should use bounded, connection-scoped token mappings, reject
+unknown/replayed tokens, honor its notification toggle at delivery time, and
+reauthorize the original recipient. Hermes does not persist or replay these
+notifications or supply recipient identities. Reconnect requires negotiation
+again; a late worker retains its old connection.
 
 ### Permission bridge
 

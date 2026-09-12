@@ -95,12 +95,19 @@ class TestIsSafePath:
         dg = _load_lib()
         assert dg.is_safe_path(Path("/etc/passwd")) is False
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation requires privileges")
+    def test_rejects_symlink_escape(self, _isolate_env):
+        dg = _load_lib()
+        link = _isolate_env / "escape"
+        link.symlink_to(Path(__file__).resolve())
+        assert dg.is_safe_path(link) is False
+
 
 class TestGuessCategory:
     def test_filename_does_not_imply_ownership(self, _isolate_env):
         dg = _load_lib()
         sentinels = []
-        for dirname in ("scripts", "node", "lsp", "browser-profile", "cache"):
+        for dirname in ("scripts", "projects", "node", "lsp", "browser-profile", "cache"):
             parent = _isolate_env / dirname
             parent.mkdir()
             p = parent / "test_durable.py"

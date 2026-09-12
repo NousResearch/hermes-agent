@@ -594,7 +594,10 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
-    return write_json(_event_frame(event, sid, payload))
+    written = write_json(_event_frame(event, sid, payload))
+    if event == "session.info" and (session := _sessions.get(sid)) is not None:
+        _sync_free_tier_notice(sid, session)
+    return written
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background

@@ -692,6 +692,7 @@ def _resume_response(
     status: str = "idle", hydrating: bool | None = None, started_at=None, auto_continue=None,
 ) -> dict:
     """Common resume payload; omit_messages counts ``count_source`` (client still learns the stored size)."""
+    _sync_free_tier_notice(sid, record)
     if messages is None:
         messages = ctx.messages(display)
     if message_count is None:

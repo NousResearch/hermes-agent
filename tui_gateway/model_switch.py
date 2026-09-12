@@ -289,7 +289,14 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start (like gateways do per message). Sessions
     pinned with /model keep their choice; a failed switch keeps the current model."""
     agent = session.get("agent")
-    if agent is None or session.get("model_override"):
+    if agent is None:
+        return
+    from agent.free_tier import rehome_after_sign_in
+    if rehome_after_sign_in(agent):
+        session.pop("model_override", None)
+        _persist_live_session_runtime(session)
+        _emit("notification.clear", sid, {"key": "free_tier.limit"})
+    if session.get("model_override"):
         return
     target = _config_model_target()
     if not target[0]:

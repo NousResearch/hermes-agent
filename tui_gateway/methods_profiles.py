@@ -334,6 +334,33 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
     return mirrored
 
 
+@method("profiles.ensure_onboarding")
+def _(rid, params: dict) -> dict:
+    """Provision and mark only the canonical welcome guide; repeated calls are safe.
+
+    Generic profile creation cannot grant the onboarding exemption. Existing guides
+    from older clients are adopted here, at the explicit onboarding entry point.
+    """
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli.onboarding_profile import ONBOARDING_PROFILE, mark_onboarding_profile
+    try:
+        path = Path(profiles_mod.get_profile_dir(ONBOARDING_PROFILE))
+        if not path.exists():
+            path = profiles_mod.create_profile(
+                name=ONBOARDING_PROFILE, clone_from="default", clone_config=True,
+                description="Where Hermes met you — your welcome guide.")
+            soul = params.get("soul")
+            if isinstance(soul, str) and soul.strip():
+                (path / "SOUL.md").write_text(soul, encoding="utf-8")
+            _mirror_launch_credentials(path, {"share_auth": True})
+            _inherit_launch_model(path)
+        mark_onboarding_profile(path)
+        return _ok(rid, {"ok": True, "name": ONBOARDING_PROFILE, "path": str(path)})
+    except Exception:
+        logger.exception("Could not provision the welcome guide")
+        return _err(rid, 5068, "Could not prepare the welcome guide. Please retry.")
+
+
 @method("profiles.create")
 def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,

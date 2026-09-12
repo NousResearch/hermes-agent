@@ -574,6 +574,32 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
+    with _hermes_home_scope(_session_home(session)):
+        if not session.get("running") and session.get("agent") is not None:
+            _apply_pending_model_switch(sid, session)
+            _sync_agent_model_with_config(sid, session)
+        free_tier_block = _free_tier_session_refusal(session)
+    if free_tier_block is not None:
+        if session.get("running") and not internal_hosted_submit:
+            # The admitted turn still owns its terminal frame. Accept the later
+            # message only as FIFO input, never as a redirect/steer or interrupt.
+            with _session_resume_lock:
+                if (refused := _reattach_refusal(rid, sid, session)) is not None:
+                    return refused
+                transport = current_transport() or session.get("transport")
+                if transport is not None:
+                    _attach_session_transport(session, transport)
+                    _cancel_ws_orphan_reap(sid)
+            queued_response = _handle_busy_submit(
+                rid, sid, session, text, transport, queued=True, turn_author=turn_author)
+            if queued_response is not None:
+                return queued_response
+        if not session.get("running"):
+            _emit("error", sid, {"code": "free_tier_limit", "error": "free_tier_limit",
+                              "message": free_tier_block["final_response"], "recoverable": True})
+        return _err(rid, 4092, free_tier_block["final_response"], {
+            "reason": free_tier_block["refusal_reason"], "retryable": True,
+            "free_tier": free_tier_block["free_tier"]})
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.

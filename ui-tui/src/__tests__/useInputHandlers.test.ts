@@ -10,6 +10,7 @@ import {
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
+import { RpcMethodUnavailableError } from '../lib/rpc.js'
 
 const baseKey = {
   downArrow: false,
@@ -156,18 +157,42 @@ describe('applyVoiceRecordResponse', () => {
 })
 
 describe('dismissSensitivePrompt', () => {
-  it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
+  it('clears a sudo overlay when a stale cancel RPC resolves', async () => {
     resetOverlayState()
     patchOverlayState({ sudo: { requestId: 'sudo-1' } })
-    const rpc = vi.fn().mockResolvedValue(null)
+    const rpc = vi.fn().mockResolvedValue({ status: 'expired' })
     const sys = vi.fn()
 
     const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
 
+    await pending
     expect(getOverlayState().sudo).toBeNull()
     expect(sys).toHaveBeenCalledWith('sudo cancelled')
-    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    expect(rpc).toHaveBeenCalledWith('sudo.cancel', { request_id: 'sudo-1' }, { rethrowMethodUnavailable: true })
+  })
+
+  it.each(['current', 'legacy', 'transient'])('retains cancellation intent across %s RPC results', async mode => {
+    resetOverlayState()
+    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+    const rpc = vi.fn().mockResolvedValue({ status: 'ok' })
+
+    if (mode === 'legacy') {rpc.mockRejectedValueOnce(new RpcMethodUnavailableError('method not found'))}
+
+    if (mode === 'transient') {rpc.mockResolvedValueOnce(null)}
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, vi.fn(), 'owner')
+    expect(getOverlayState().sudo?.requestId).toBe('sudo-1')
     await pending
+    expect(rpc).toHaveBeenNthCalledWith(1, 'sudo.cancel', { request_id: 'sudo-1' }, { rethrowMethodUnavailable: true })
+
+    if (mode === 'legacy') {expect(rpc).toHaveBeenNthCalledWith(2, 'session.interrupt', { session_id: 'owner' })}
+    else {expect(rpc).toHaveBeenCalledTimes(1)}
+
+    if (mode === 'transient') {
+      expect(getOverlayState().sudo?.requestId).toBe('sudo-1')
+      await dismissSensitivePrompt(getOverlayState(), rpc, vi.fn(), 'owner')
+    }
+
+    expect(getOverlayState().sudo).toBeNull()
   })
 
   it('clears a secret overlay before a stale cancel RPC resolves', async () => {

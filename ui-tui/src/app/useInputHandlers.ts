@@ -14,6 +14,7 @@ import type {
 } from '../gatewayTypes.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
+import { RpcMethodUnavailableError } from '../lib/rpc.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
@@ -26,7 +27,7 @@ import {
   type InputHandlerResult,
   type OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import { $isBlocked, $overlayState, getOverlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
@@ -142,18 +143,38 @@ export function applyVoiceRecordResponse(
   }
 }
 
+export function sudoSubmissionParams(password: string, requestId: string) {
+  return { intent: 'submit', password, request_id: requestId }
+}
+
 export function dismissSensitivePrompt(
   overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
   rpc: GatewayRpc,
-  sys: (text: string) => void
+  sys: (text: string) => void,
+  sessionId: null | string = null
 ) {
   if (overlay.sudo) {
     const requestId = overlay.sudo.requestId
 
-    patchOverlayState({ sudo: null })
-    sys('sudo cancelled')
+    return rpc<SudoRespondResponse>('sudo.cancel', { request_id: requestId }, { rethrowMethodUnavailable: true })
+      .catch(error => {
+        if (!(error instanceof RpcMethodUnavailableError)) {
+          throw error
+        }
 
-    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+        // Older backends have no sudo.cancel method. Interrupt the owning turn
+        // instead of sending a null/empty password that legacy code can treat as
+        // submission. Other RPC failures must not escalate cancellation intent.
+        return sessionId ? rpc<SudoRespondResponse>('session.interrupt', { session_id: sessionId }) : null
+      })
+      .then(result => {
+        if (result) {
+          if (getOverlayState().sudo?.requestId === requestId) {patchOverlayState({ sudo: null })}
+          sys('sudo cancelled')
+        }
+
+        return result
+      })
   }
 
   if (overlay.secret) {
@@ -234,7 +255,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
-      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
+      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys, getUiState().sid)
     }
 
     if (overlay.modelPicker) {

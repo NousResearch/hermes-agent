@@ -25,6 +25,9 @@ def _make_cli_stub():
     cli._approval_lock = threading.Lock()
     cli._sudo_state = None
     cli._sudo_deadline = 0
+    cli._sudo_lock = threading.Lock()
+    cli._sudo_state_lock = threading.Lock()
+    cli._sudo_interrupt_generation = 0
     cli._modal_input_snapshot = None
     cli._invalidate = MagicMock()
     cli._app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
@@ -277,6 +280,9 @@ def _make_real_paint_cli_stub():
     cli._approval_lock = threading.Lock()
     cli._sudo_state = None
     cli._sudo_deadline = 0
+    cli._sudo_lock = threading.Lock()
+    cli._sudo_state_lock = threading.Lock()
+    cli._sudo_interrupt_generation = 0
     cli._clarify_state = None
     cli._clarify_freetext = False
     cli._clarify_deadline = 0
@@ -551,7 +557,7 @@ class TestClearOverlaysForInterrupt:
         # Each blocked thread would have received a terminal value.
         assert approval_q.get_nowait() == "deny"
         assert clarify_q.get_nowait()  # cancellation sentinel string
-        assert sudo_q.get_nowait() == ""
+        assert sudo_q.get_nowait() is None
         assert secret_q.get_nowait() == ""
 
 

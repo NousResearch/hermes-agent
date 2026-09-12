@@ -152,6 +152,7 @@ def _check_all_guards(command: str, env_type: str,
 
 
 from tools.environments.base import EnvironmentConnectionError
+from tools.terminal_tool_sudo import SudoPasswordPromptCancelled
 
 
 # Tool description for LLM
@@ -1069,20 +1070,11 @@ def _yield_kwargs(command: str, **ctx) -> dict:
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
-    workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
+    workdir: Optional[str], approval_note: Optional[str],
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize."""
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
-
-    # Clean interrupt slate for an approved command, ONCE before the retry
-    # loop: drop a stale bit that landed during the approval-wait so it
-    # can't SIGINT the just-approved run. Do NOT re-clear inside the loop —
-    # a genuine interrupt during the backoff sleep must survive and abort
-    # the next attempt (rc 130).
-    if clear_interrupt:
-        from tools.interrupt import clear_current_thread_interrupt
-        clear_current_thread_interrupt()
 
     for retry_count in range(max_retries + 1):
         try:
@@ -1098,6 +1090,8 @@ def _run_foreground(
                                 task_id=task_id, session_key=session_key),
             )
             break
+        except SudoPasswordPromptCancelled:
+            raise
         except Exception as e:
             if "timeout" in str(e).lower():
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
@@ -1112,6 +1106,9 @@ def _run_foreground(
                          max_retries, _safe_command_preview(command), type(e).__name__, e, eff, env_type)
             return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
 
+    if result.get("_process_start_cancelled"):
+        return _error_json("Command cancelled before process start.", output="[Command interrupted]",
+                           exit_code=130, status="cancelled")
     if result.get("yielded_session_id"):
         return json.dumps({
             "output": result.get("output", ""), "exit_code": None, "error": None,
@@ -1225,6 +1222,11 @@ def terminal_tool(
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
+        # Clear stale approval-wait interruption once for either dispatch mode;
+        # later cancellation remains visible through password prompts and backend starts.
+        if verdict.approved_run:
+            from tools.interrupt import clear_current_thread_interrupt
+            clear_current_thread_interrupt()
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:
             # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
@@ -1244,12 +1246,15 @@ def terminal_tool(
         return _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
-            workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
+            workdir=workdir, approval_note=verdict.note,
         )
     except _Rejected as r:
         return r.result_json
     except EnvironmentConnectionError as e:
         return _degraded_result(e, task_id)
+    except SudoPasswordPromptCancelled:
+        return _error_json("Command cancelled: sudo password prompt was dismissed.",
+                           exit_code=130, status="cancelled")
     except Exception as e:
         return _fatal_error_json(e)
 

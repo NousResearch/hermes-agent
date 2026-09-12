@@ -733,31 +733,54 @@ class CLIModalMixin:
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — locked answers returned){_RST}")
         return {"answers": partial, "timed_out": True}
 
-    def _sudo_password_callback(self) -> str:
-        """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style
-        state + queue answered by the Enter binding."""
+    def _resolve_sudo_prompt(self, state: dict, response: str | None) -> bool:
+        """Resolve the visible prompt once; a stale UI event cannot answer its successor."""
+        with self._sudo_state_lock:
+            if self._sudo_state is not state:
+                return False
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            state["response_queue"].put_nowait(response)
+            return True
+
+    def _sudo_password_callback(self) -> str | None:
+        """Serialize password prompts. None cancels; empty Enter and timeout remain skips."""
         from cli import _DIM, _RST, _cprint
 
-        response_queue = queue.Queue()
-        self._capture_modal_input_snapshot()
-        self._sudo_state = {"response_queue": response_queue}
-        self._sudo_deadline = _time.monotonic() + 45
-        self._ring_bell(prompt=True, context="sudo password")
-        self._paint_now()
-
-        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
-        self._sudo_state = None
-        self._sudo_deadline = 0
-        self._restore_modal_input_snapshot()
-        self._paint_now()
-        if result is _TIMED_OUT:
-            _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
-            return ""
-        if result:
-            _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
-        else:
-            _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
-        return result
+        with self._sudo_state_lock:
+            generation = self._sudo_interrupt_generation
+        with self._sudo_lock:
+            state = {"response_queue": queue.Queue(), "deadline": _time.monotonic() + 45}
+            with self._sudo_state_lock:
+                if generation != self._sudo_interrupt_generation:
+                    return None
+                self._capture_modal_input_snapshot()
+                self._sudo_state = state
+                self._sudo_deadline = state["deadline"]
+            self._ring_bell(prompt=True, context="sudo password")
+            self._paint_now()
+            timed_out = False
+            while True:
+                try:
+                    result = state["response_queue"].get(timeout=1)
+                    break
+                except queue.Empty:
+                    if _time.monotonic() >= state["deadline"]:
+                        timed_out = self._resolve_sudo_prompt(state, "")
+            # Keep ownership until the draft is restored, before a queued callback opens.
+            self._resolve_sudo_prompt(state, result)
+            self._restore_modal_input_snapshot()
+            self._paint_now()
+            if result is None:
+                message = "⏭ Cancelled"
+            elif result:
+                message = "✓ Password received (cached for session)"
+            elif timed_out:
+                message = "⏱ Timeout — continuing without sudo"
+            else:
+                message = "⏭ Skipped"
+            _cprint(f"\n{_DIM}  {message}{_RST}")
+            return result
 
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
@@ -975,11 +998,16 @@ class CLIModalMixin:
             self._clarify_state = None
             self._clarify_freetext = False
             self._clarify_multi_base = None
-        if self._sudo_state:
-            _put(self._sudo_state, "")
+        with self._sudo_state_lock:
+            self._sudo_interrupt_generation += 1
+            sudo_state = self._sudo_state
             self._sudo_state = None
             self._sudo_deadline = 0
-            self._restore_modal_input_snapshot()
+            if sudo_state:
+                # Finish this modal's draft before waking its worker or admitting
+                # a new generation; later cleanup must not consume a successor's snapshot.
+                self._restore_modal_input_snapshot()
+                _put(sudo_state, None)
         if self._secret_state:
             try:
                 self._cancel_secret_capture()

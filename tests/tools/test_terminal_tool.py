@@ -1,3 +1,8 @@
+import json
+from types import SimpleNamespace
+
+import pytest
+
 """Regression tests for sudo detection and sudo password handling."""
 
 import tools.terminal_tool as terminal_tool
@@ -146,3 +151,59 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+@pytest.mark.parametrize("kind", ["foreground", "background"])
+@pytest.mark.parametrize("response", [None, "", "secret", "cached", "configured", "nopasswd"])
+def test_sudo_callback_outcome_and_credential_precedence(monkeypatch, tmp_path, kind, response):
+    """Both dispatch wrappers preserve dismissal; existing credential sources bypass prompting."""
+    import tools.process_registry as registry_module
+    from tools.interrupt import is_interrupted, set_interrupt
+    sudo = terminal_tool_sudo
+    calls = []
+    callback_calls = []
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    if response == "configured":
+        monkeypatch.setenv("SUDO_PASSWORD", "configured-secret")
+    terminal_tool.set_sudo_password_callback(lambda: callback_calls.append(True) or response)
+    if response == "cached":
+        sudo._set_cached_sudo_password("cached-secret")
+
+    def execute(*_args, **_kwargs):
+        assert not is_interrupted()  # stale approval-wait interrupt cleared in either dispatch mode
+        # NOPASSWD is now a backend-scoped probe supplied by BaseEnvironment;
+        # exercise that callback seam without probing the host in this fake env.
+        transformed = sudo._transform_sudo_command(
+            "sudo true", sudo_nopasswd_check=lambda: response == "nopasswd")
+        calls.append(transformed)
+        return {"output": "done", "returncode": 0}
+
+    class Registry:
+        def spawn_via_env(self, **_kwargs):
+            execute()
+            return SimpleNamespace(id="test", pid=42)
+
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda _: "sudo-dispatch")
+    monkeypatch.setattr(terminal_tool, "resolve_task_overrides", lambda _: {})
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {
+        "env_type": "docker", "docker_image": "inert", "cwd": str(tmp_path), "timeout": 5})
+    monkeypatch.setitem(terminal_tool._active_environments, "sudo-dispatch", SimpleNamespace(execute=execute))
+    monkeypatch.setitem(terminal_tool._last_activity, "sudo-dispatch", 0)
+    monkeypatch.setattr(registry_module, "process_registry", Registry())
+    try:
+        set_interrupt(True)
+        result = json.loads(terminal_tool.terminal_tool("sudo true", background=kind == "background", force=True))
+        if response is None:
+            assert result["status"] == "cancelled"
+            assert result["exit_code"] == 130
+            assert calls == []
+        else:
+            assert result["exit_code"] == 0
+            assert len(calls) == 1
+            expected = {"secret": "secret\n", "cached": "cached-secret\n", "configured": "configured-secret\n"}
+            assert calls[0][1] == expected.get(response)
+        assert len(callback_calls) == (0 if response in ("cached", "configured", "nopasswd") else 1)
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+        set_interrupt(False)

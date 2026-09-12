@@ -1080,9 +1080,8 @@ class CLITuiMixin:
             self._cancel_secret_capture()
             event.app.current_buffer.reset()
             event.app.invalidate()
-        elif self._sudo_state:
-            self._sudo_state["response_queue"].put("")
-            self._sudo_state = None
+        elif state := self._sudo_state:
+            self._resolve_sudo_prompt(state, None)
             event.app.invalidate()
         elif self._slash_confirm_state:
             self._submit_slash_confirm_response("cancel")
@@ -1481,9 +1480,8 @@ class CLITuiMixin:
         """Enter while a modal overlay is up: submit it. True when handled."""
         from cli import _cprint
         buf = event.app.current_buffer
-        if self._sudo_state:
-            self._sudo_state["response_queue"].put(buf.text)
-            self._sudo_state = None
+        if state := self._sudo_state:
+            self._resolve_sudo_prompt(state, buf.text)
             event.app.invalidate()
             return True
         if self._secret_state:
@@ -1802,6 +1800,9 @@ class CLITuiMixin:
         self._modal_input_snapshot = None
         self._approval_state = None
         self._approval_deadline = 0
+        self._sudo_lock = threading.Lock()
+        self._sudo_state_lock = threading.Lock()
+        self._sudo_interrupt_generation = 0
         self._approval_lock = threading.Lock()  # serialize concurrent approval prompts (delegation race)
         # Destructive slash-command confirmations (/new, /clear, /undo) are answered through the
         # composer, not raw input(), so the labels stay visible and Enter can't EOF the app.

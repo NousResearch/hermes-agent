@@ -17,7 +17,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from tools.interrupt import is_interrupted, start_if_not_interrupted
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,10 @@ class ManagedModalEnvironment(BaseEnvironment):
         if stdin_data is not None:
             payload["stdinData"] = stdin_data
         try:
-            response = self._request("POST", f"/v1/sandboxes/{self._sandbox_id}/execs", json=payload, timeout=10)
+            started, response = start_if_not_interrupted(
+                lambda: self._request("POST", f"/v1/sandboxes/{self._sandbox_id}/execs", json=payload, timeout=10))
+            if not started:
+                return {"output": "", "returncode": 130, "_process_start_cancelled": True}
             body = response.json() if response.status_code < 400 else None
         except Exception as exc:
             return _result(f"Managed Modal exec failed: {exc}")
@@ -109,7 +112,8 @@ class ManagedModalEnvironment(BaseEnvironment):
         while True:
             if is_interrupted():
                 self._cancel_exec(exec_id)
-                return _result("[Command interrupted - Modal sandbox exec cancelled]", 130)
+                return {**_result("[Command interrupted - Modal sandbox exec cancelled]", 130),
+                        "_process_interrupted": True}
             try:
                 if (result := self._poll_exec(exec_id)) is not None:
                     return result

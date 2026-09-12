@@ -34,6 +34,12 @@ from hermes_cli.config import get_hermes_home
 from tools.process_registry_notifications import format_process_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
+from tools.interrupt import start_if_not_interrupted
+
+
+class ProcessStartCancelled(RuntimeError):
+    """A published interrupt prevented detached process creation."""
+
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +407,7 @@ class ProcessSession:
     termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
+    start_interrupted: bool = False             # The detached start outcome is uncertain
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
@@ -900,7 +907,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # hang waiting for `q` — default them to cat, honoring any pager the user set.
         pty_env.setdefault("GIT_PAGER", "cat")
         pty_env.setdefault("PAGER", "cat")
-        pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
+        started, pty_proc = start_if_not_interrupted(
+            lambda: _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120)))
+        if not started:
+            raise ProcessStartCancelled
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session._pty = pty_proc
@@ -925,6 +935,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if use_pty:
             try:
                 return self._spawn_local_pty(session, safe_command, env_vars)
+            except ProcessStartCancelled:
+                raise
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
@@ -949,10 +961,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
-        proc = subprocess.Popen(
+        started, proc = start_if_not_interrupted(lambda: subprocess.Popen(
             spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
             errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            start_new_session=True, **_popen_kwargs)
+            start_new_session=True, **_popen_kwargs))
+        if not started:
+            raise ProcessStartCancelled
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -1025,12 +1039,24 @@ class ProcessRegistry(ProcessCheckpointMixin):
             result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
             output = result.get("output", "").strip()
             session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
-            # No PID from the wrapper (syntax error, broken redirect): a failed launch,
-            # not a fake running session.
-            if session.pid is None:
+            if session.pid is None and result.get("_process_start_cancelled"):
+                raise ProcessStartCancelled
+            # Executor-owned metadata distinguishes interruption from arbitrary
+            # child output or a natural exit 130. An uncertain start stays tracked
+            # even before PID capture; the poller can recover its persisted PID.
+            session.start_interrupted = bool(result.get("_process_interrupted") or result.get("_process_start_cancelled"))
+            if session.start_interrupted:
+                session.output_buffer = output[-session.max_output_chars:]
+            # A definite failed launch without a PID is not a running session.
+            if session.pid is None and not session.start_interrupted:
                 session.mark_exited(int(result.get("returncode", -1)) or -1, "failed_start", "failed_start")
                 session.output_buffer = output
+        except ProcessStartCancelled:
+            raise
         except Exception as e:
+            from tools.terminal_tool_sudo import SudoPasswordPromptCancelled
+            if isinstance(e, SudoPasswordPromptCancelled):
+                raise
             session.mark_exited(-1, "failed_start", "failed_start")
             session.output_buffer = f"Failed to start: {e}"
         if session.exited:
@@ -1179,6 +1205,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         while not session.exited:
             time.sleep(2)
             try:
+                if session.start_interrupted and session.pid is None:
+                    pid_text = env.execute(f"cat {q(pid_path)} 2>/dev/null", timeout=5).get("output", "")
+                    session.pid = next((int(line) for line in map(str.strip, pid_text.splitlines())
+                                        if line.isdigit() and int(line) > 0), None)
+                    if session.pid is None:
+                        continue  # absence of a PID does not disprove an uncertain remote start
                 # Read only the bytes written since the last poll.
                 raw = env.execute(self._log_delta_command(q(log_path), prev_output_bytes),
                                   timeout=10).get("output", "")

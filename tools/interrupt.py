@@ -6,6 +6,8 @@ is_interrupted(), which checks the CURRENT thread."""
 import logging
 import os
 import threading
+import weakref
+from typing import TypeVar
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
@@ -24,21 +26,48 @@ _interrupt_reasons: dict[int, str] = {}
 # instead of killing it, so a mid-turn user message is not parked behind it.
 _yield_threads: set[int] = set()
 _lock = threading.Lock()
+_process_start_locks: weakref.WeakValueDictionary[int, threading.RLock] = weakref.WeakValueDictionary()
+_T = TypeVar("_T")
+
+
+def _process_start_lock(thread_id: int) -> threading.RLock:
+    with _lock:
+        lock = _process_start_locks.get(thread_id)
+        if lock is None:
+            lock = threading.RLock()
+            _process_start_locks[thread_id] = lock
+        return lock
+
+
+def start_if_not_interrupted(start: Callable[[], _T], *, thread_id: int | None = None) -> tuple[bool, _T | None]:
+    """Order a process/transport start with its owner's interrupt publication.
+
+    Deadline workers pass the originating tool thread ID. If creation wins,
+    interruption becomes visible to the normal wait loop immediately afterward.
+    The per-owner lock leaves other sessions free to start and interrupt.
+    """
+    tid = threading.get_ident() if thread_id is None else thread_id
+    with _process_start_lock(tid):
+        if is_thread_interrupted(tid):
+            return False, None
+        return True, start()
+
 
 
 def set_interrupt(active: bool, thread_id: int | None = None, *, reason: str | None = None) -> None:
     """Set or clear the interrupt for *thread_id* (default: current thread); ``reason`` is
     an optional user-safe cause. Clearing also drops a pending yield request."""
     tid = thread_id if thread_id is not None else threading.current_thread().ident
-    with _lock:
-        (_interrupted_threads.add if active else _interrupted_threads.discard)(tid)
-        if active and reason:
-            _interrupt_reasons[tid] = reason
-        else:
-            _interrupt_reasons.pop(tid, None)
-        if not active:
-            _yield_threads.discard(tid)
-        _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
+    with _process_start_lock(tid):
+        with _lock:
+            (_interrupted_threads.add if active else _interrupted_threads.discard)(tid)
+            if active and reason:
+                _interrupt_reasons[tid] = reason
+            else:
+                _interrupt_reasons.pop(tid, None)
+            if not active:
+                _yield_threads.discard(tid)
+            _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
             "[interrupt-debug] set_interrupt(active=%s, target_tid=%s) "

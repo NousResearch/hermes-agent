@@ -34,7 +34,13 @@ import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import {
+  asRpcResult,
+  type RpcCallOptions,
+  rpcErrorMessage,
+  RpcMethodUnavailableError,
+  shouldRethrowRpcError
+} from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import {
   buildToolTrailLine,
@@ -62,7 +68,7 @@ import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
-import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
+import { shouldDetachEditedHistoryInput, sudoSubmissionParams, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
@@ -504,7 +510,8 @@ export function useMainApp(gw: GatewayClient) {
   const rpc: GatewayRpc = useCallback(
     async <T extends Record<string, any> = Record<string, any>>(
       method: string,
-      params: Record<string, unknown> = {}
+      params: Record<string, unknown> = {},
+      options: RpcCallOptions = {}
     ) => {
       try {
         const result = asRpcResult<T>(await gw.request<T>(method, params))
@@ -515,7 +522,12 @@ export function useMainApp(gw: GatewayClient) {
 
         sys(`error: invalid response: ${method}`)
       } catch (e) {
-        sys(`error: ${rpcErrorMessage(e)}`)
+        const message = rpcErrorMessage(e)
+        sys(`error: ${message}`)
+
+        if (shouldRethrowRpcError(e, options)) {
+          throw new RpcMethodUnavailableError(message)
+        }
       }
 
       return null
@@ -1042,7 +1054,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ sudo: null })
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
+      return respondWith('sudo.respond', sudoSubmissionParams(pw, requestId), () => {
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })

@@ -57,6 +57,7 @@ metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
+    triggers: ["my workflow"]           # Optional: classic CLI phrase activation
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
@@ -96,6 +97,57 @@ Known failure modes and how to handle them.
 
 ## Verification
 How the agent confirms it worked.
+```
+
+### Deterministic trigger metadata
+
+`metadata.hermes.triggers` opts a skill into phrase-based activation in the
+**classic CLI only**. It does not wire automatic routing into the Ink TUI,
+Desktop, messaging gateway, or ACP.
+
+```yaml
+metadata:
+  hermes:
+    triggers:
+      - market outlook
+      - "EUR/USD"
+```
+
+Prefer a list of strings. A scalar is treated as a one-item list. For
+compatibility, top-level `triggers` is used when the nested value is absent
+or null; an explicit nested `[]` disables that fallback. Values are converted
+to text, stripped, whitespace-normalized, and deduplicated case-insensitively;
+empty values are dropped.
+
+Matching uses escaped literal phrases with case-insensitive regexes and
+flexible inter-word whitespace. Word-like phrases use word boundaries;
+phrases containing punctuation use negative word-character lookarounds.
+Thus `market` does not match `supermarket`, and `EUR/USD` does not match
+`xEUR/USDy`. No semantic inference or user-supplied regex execution occurs.
+
+Selection compares, in descending order: normalized trigger length, skill
+name length, slash command key, then the trigger string. The last two
+comparisons are lexicographic and case-sensitive. Exactly one registered
+skill wins; there is no multi-skill expansion or second-choice fallback if
+loading that winner fails. Avoid broad or competing phrases.
+
+`agent/skill_commands.py` extracts triggers during the existing filtered
+command scan and exposes `find_triggered_skill_command()`. The classic CLI's
+`hermes_cli/cli_chat_turn_mixin.py` resolves a string turn before adding voice
+and runtime notes, then calls `build_skill_invocation_message()` with the
+original instruction and session ID. The existing `persist_user_message`
+path keeps the original input in storage. System-prompt state and prior
+conversation messages are unchanged. Explicit slash input, empty input, and
+multimodal content-part lists bypass matching. Trigger edits take effect
+after `/reload-skills` or a fresh session. Operators can switch all matching
+off with `skills.auto_triggers: false` (default `true`); explicit slash
+loads are unaffected.
+
+The [user guide](../user-guide/features/skills.md#automatic-triggers-classic-cli)
+includes setup and matching examples. To validate changes:
+
+```bash
+scripts/run_tests.sh tests/agent/test_skill_commands.py tests/cli/test_cli_auto_skill_triggers.py
 ```
 
 ### Platform-Specific Skills

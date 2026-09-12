@@ -1371,6 +1371,10 @@ DEFAULT_CONFIG = {
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
         # See #79686.
         "ledger": True,
+        # Deterministic phrase triggers (`metadata.hermes.triggers`): matched plain
+        # turns auto-load the skill through the existing invocation path. false =
+        # never trigger-match; explicit `/skill` loads still work.
+        "auto_triggers": True,
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks

@@ -27,7 +27,7 @@ from add_contributor import add_contributor, read_mapping_file  # noqa: E402
 def test_loader_reads_login_from_first_noncomment_line(tmp_path):
     d = tmp_path / "emails"
     d.mkdir()
-    (d / "jane@example.com").write_text("# salvage PR #1\njanedoe\n# trailing note\n")
+    (d / "jane@example.com").write_text("# salvage PR #1\njanedoe\n# trailing note\n", encoding="utf-8")
     mapping = release._load_contributor_dir(d)
     assert mapping == {"jane@example.com": "janedoe"}
 
@@ -66,7 +66,7 @@ def test_add_creates_mapping_file(emails_dir):
     path = emails_dir / "new@example.com"
     assert path.is_file()
     assert read_mapping_file(path) == "newperson"
-    assert "# PR #999 salvage" in path.read_text()
+    assert "# PR #999 salvage" in path.read_text(encoding="utf-8")
 
 
 
@@ -107,7 +107,7 @@ def test_cli_entrypoint_end_to_end(tmp_path):
             (SCRIPTS_DIR / name).read_text(encoding="utf-8"), encoding="utf-8"
         )
     # Minimal stub release.py so the legacy lookup import works
-    (scripts / "release.py").write_text("LEGACY_AUTHOR_MAP = {}\n")
+    (scripts / "release.py").write_text("LEGACY_AUTHOR_MAP = {}\n", encoding="utf-8")
     proc = subprocess.run(
         [sys.executable, str(scripts / "add_contributor.py"),
          "cli@example.com", "cliperson", "via subprocess"],
@@ -150,21 +150,22 @@ def test_no_case_insensitive_mapping_collisions():
 def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
     d = tmp_path / "emails"
     d.mkdir()
-    (d / "agent@Example-Host.local").write_text("someone\n")
+    (d / "agent@Example-Host.local").write_text("someone\n", encoding="utf-8")
 
     import add_contributor as mod
 
     monkeypatch.setattr(mod, "EMAILS_DIR", d)
 
     assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
-    assert not (d / "agent@example-host.local").exists()
+    assert [entry.name for entry in d.iterdir()] == ["agent@Example-Host.local"]
+    assert (d / "agent@Example-Host.local").read_text(encoding="utf-8") == "someone\n"
 
 
 def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, capsys):
     # Same login, different spelling: still refused — the problem is the
     # filename pair, not the login. The exact spelling is what's "present".
     emails_dir.mkdir(parents=True)
-    (emails_dir / "Foo@Example.com").write_text("foouser\n")
+    (emails_dir / "Foo@Example.com").write_text("foouser\n", encoding="utf-8")
 
     assert add_contributor("foo@example.com", "foouser") == 1
     assert "Foo@Example.com" in capsys.readouterr().err
@@ -176,6 +177,6 @@ def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, 
 def test_case_collision_uses_casefold(emails_dir):
     # casefold, not lower: matches how macOS/Windows fold non-ASCII (ß ~ ss).
     emails_dir.mkdir(parents=True)
-    (emails_dir / "strasse@example.com").write_text("someone\n")
+    (emails_dir / "strasse@example.com").write_text("someone\n", encoding="utf-8")
     assert add_contributor("STRASSE@example.com", "someone") == 1
     assert add_contributor("straße@example.com", "someone") == 1

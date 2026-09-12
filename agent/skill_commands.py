@@ -22,6 +22,7 @@ _skill_commands_home: Optional[str] = None
 _publish_lock = threading.Lock()
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_SKILL_TRIGGER_WORD = re.compile(r"^\w[\w\s-]*\w$|^\w$")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
 # model-facing message embedding the full skill body; memory providers storing
@@ -147,6 +148,87 @@ def _resolve_skill_commands_home() -> str:
     """
     from hermes_constants import get_hermes_home
     return str(get_hermes_home())
+
+
+def _extract_skill_triggers(frontmatter: Dict[str, Any]) -> list[str]:
+    """Return normalized auto-trigger phrases declared in skill frontmatter."""
+    metadata = frontmatter.get("metadata")
+    hermes_meta = metadata.get("hermes") if isinstance(metadata, dict) else None
+    raw_triggers = None
+    if isinstance(hermes_meta, dict):
+        raw_triggers = hermes_meta.get("triggers")
+    if raw_triggers is None:
+        raw_triggers = frontmatter.get("triggers")
+
+    if raw_triggers is None:
+        return []
+    if not isinstance(raw_triggers, list):
+        raw_triggers = [raw_triggers]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in raw_triggers:
+        trigger = re.sub(r"\s+", " ", str(value or "").strip())
+        if not trigger:
+            continue
+        dedupe_key = trigger.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(trigger)
+    return normalized
+
+
+def _compile_skill_trigger_pattern(trigger: str) -> re.Pattern[str]:
+    """Build a boundary-aware regex for a skill trigger phrase."""
+    normalized = re.sub(r"\s+", " ", trigger.strip())
+    body = r"\s+".join(re.escape(part) for part in normalized.split(" "))
+    if _SKILL_TRIGGER_WORD.fullmatch(normalized):
+        pattern = rf"\b{body}\b"
+    else:
+        pattern = rf"(?<!\w){body}(?!\w)"
+    return re.compile(pattern, re.IGNORECASE)
+
+
+def find_triggered_skill_command(
+    user_message: str,
+) -> tuple[str, Dict[str, Any], str] | None:
+    """Return the best matching skill command for a plain user message."""
+    if not isinstance(user_message, str):
+        return None
+
+    text = user_message.strip()
+    if not text or text.startswith("/"):
+        return None
+
+    # Operator opt-out (`skills.auto_triggers: false`); explicit `/skill`
+    # loads bypass this function entirely and keep working.
+    try:
+        if not _load_skills_config().get("auto_triggers", True):
+            return None
+    except Exception:
+        pass
+
+    best_match: tuple[int, int, str, str, Dict[str, Any]] | None = None
+    for cmd_key, skill_info in get_skill_commands().items():
+        for trigger in skill_info.get("triggers") or []:
+            if not _compile_skill_trigger_pattern(trigger).search(text):
+                continue
+            candidate = (
+                len(trigger),
+                len(skill_info.get("name") or ""),
+                cmd_key,
+                trigger,
+                skill_info,
+            )
+            if best_match is None or candidate > best_match:
+                best_match = candidate
+
+    if best_match is None:
+        return None
+
+    _, _, cmd_key, trigger, skill_info = best_match
+    return cmd_key, skill_info, trigger
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
@@ -357,7 +439,8 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
                        name, cmd_key, commands[cmd_key]["name"])
         return
     commands[cmd_key] = {"name": name, "description": description or f"Invoke the {name} skill",
-                         "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
+                         "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent),
+                         "triggers": _extract_skill_triggers(frontmatter)}
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:

@@ -298,12 +298,36 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
 | `/commands [page]` | Browse all commands and skills (paginated). |
 | `/approve [session\|always]` | Approve and execute a pending dangerous command. `session` approves for this session only; `always` adds to permanent allowlist. |
-| `/deny` | Reject a pending dangerous command. |
+| `/deny [all\|exact-request-id] [--reason text]` | Reject the oldest eligible foreground command, all eligible foreground commands, or exactly the identified request. Background requests require their exact ID. Reasons require `--reason`. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. |
 | `/help` | Show messaging help. |
 | `/<skill-name>` | Invoke any installed skill by name. |
+
+### Denial grammar and migration
+
+Use `/deny` for the oldest eligible foreground request or `/deny all` for all
+eligible foreground requests. Neither form resolves a bound background request.
+To deny a background request, copy its full, case-sensitive, lowercase 32-hex ID:
+`/deny <exact-request-id>`. This resolves only that request and requires its
+original actor, conversation, and profile ownership; an expired or unknown ID
+never falls back to a foreground request. IDs are not repaired or normalized.
+
+Reasons require the explicit, case-sensitive `--reason` marker:
+
+- `/deny --reason that path is still in use`
+- `/deny all --reason wrong directory`
+- `/deny <exact-request-id> --reason do not run this operation`
+
+This intentionally replaces `/deny <free-text reason>`, `/deny all <reason>`,
+and `/deny <exact-request-id> <reason>`. Update saved responses and instructions
+by inserting `--reason`; unmarked text is rejected without resolving a request.
+`all` remains case-insensitive. Unknown options, extra arguments before the
+marker, malformed selectors, and `--reason` without non-whitespace text are
+rejected. After the marker, the entire remainder is literal reason text (even
+words that look like options or IDs), with whitespace collapsed to a single
+line and a 280-character cap. There is no shell quoting or escaping layer.
 
 ## Notes
 

@@ -358,21 +358,44 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
     from tools.async_delegation import dispatch_async_delegation_batch
     child_agents = [c for (_, _, c) in unit.children]
+    from tools.approval_delegation import acquire_child_approval, release_child_approval
+    from tools.approval_context import _is_gateway_approval_context
+    # Acquire before dispatch returns, not when a queued worker eventually starts.
+    if _is_gateway_approval_context():
+        for child in child_agents:
+            child._background_approval_lease = acquire_child_approval(getattr(child, "session_id", ""))
+
+    def _release():
+        for child in child_agents:
+            release_child_approval(getattr(child, "_background_approval_lease", None))
+
+    def _run():
+        try:
+            return _execute_and_aggregate(unit, honor_parent_interrupt=False)
+        finally:
+            _release()
 
     def _interrupt():
         for c in child_agents:
             _signal_child_stop(c, "Async delegation cancelled")
 
-    return dispatch_async_delegation_batch(
-        # Call-wide goals: completion formatting indexes them by task_index.
-        goals=[t["goal"] for t in unit.task_list], context=unit.context,
-        toolsets=None,  # metadata for the completion block only; subagents inherit the parent's toolsets
-        role=unit.top_role, model=unit.creds["model"],
-        runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
-        interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
-        task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
-        progress_fn=lambda: _batch_progress_token(child_agents), **routing,
-    )
+    try:
+        result = dispatch_async_delegation_batch(
+            goals=[t["goal"] for t in unit.task_list], context=unit.context,
+            toolsets=None, role=unit.top_role, model=unit.creds["model"],
+            runner=_run, interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
+            task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
+            progress_fn=lambda: _batch_progress_token(child_agents), **routing,
+        )
+    except BaseException:
+        _release()
+        raise
+    if result.get("status") != "dispatched":
+        _release()
+        for child in child_agents:
+            if hasattr(child, "_background_approval_lease"):
+                del child._background_approval_lease
+    return result
 
 def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit

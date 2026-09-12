@@ -64,7 +64,8 @@ _FOOTER_STATE_BY_ARG = {**dict.fromkeys(("on", "enable", "true", "1"), True),
                         **dict.fromkeys(("off", "disable", "false", "0"), False)}
 
 # /approve modifier tokens -> approval choice (default "once").
-_APPROVE_CHOICE_BY_ARG = {**dict.fromkeys(("always", "permanent", "permanently"), "always"),
+_APPROVE_CHOICE_BY_ARG = {"once": "once",
+                          **dict.fromkeys(("always", "permanent", "permanently"), "always"),
                           **dict.fromkeys(("session", "ses"), "session")}
 
 _PLATFORM_USAGE = ("Usage: /platform <list|pause|resume> [name]\n"
@@ -1139,8 +1140,24 @@ class GatewaySlashCommandsMixin(
                                                               "gateway.approve.no_pending")
         if stale:
             return stale
+        from tools.approval_delegation import owner_for_source
+        raw_args = event.get_command_args().strip()
+        import re
+        # A UUID selector never falls through to FIFO or a broader scope.
+        if raw_args and re.fullmatch(r"[0-9a-f]{32}", raw_args.split()[0]):
+            if len(raw_args.split()) != 1:
+                return "Use /approve <request-id> only; background approvals are one-shot."
+            count = resolve_gateway_approval(session_key, "once", request_id=raw_args,
+                                             owner=owner_for_source(event.source, session_key))
+            if not count:
+                return t("gateway.approve.no_pending")
+            return await self._deliver_approval_confirmation(event, t("gateway.approve.once_singular", count=1), "approve")
         # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
         args = event.get_command_args().strip().lower().split()
+        # Only explicit legacy scope words may enter FIFO. Unknown tokens are
+        # never discarded: a mistyped child selector is not consent to another job.
+        if any(a not in _APPROVE_CHOICE_BY_ARG and a != "all" for a in args):
+            return "Use /approve [all] [session|always] or /approve <request-id>."
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
         count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
@@ -1151,24 +1168,51 @@ class GatewaySlashCommandsMixin(
         return await self._deliver_approval_confirmation(event, confirmation_text, "approve")
 
     async def _handle_deny_command(self, event: MessageEvent) -> str:
-        """Handle /deny — reject pending dangerous command(s) with a definitive BLOCKED result, as in
-        the CLI. ``/deny`` denies the oldest; ``/deny all`` denies everything.
+        """Deny [all|exact-request-id] [--reason text].
 
-        ``/deny <reason>`` (or ``/deny all <reason>``) attaches a one-line reason that is relayed back to
-        the agent so it can adapt instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
+        Bare/all target only eligible foreground entries. Background requests
+        require an exact ID and matching owner. Reasons must be explicitly
+        delimited so a mistyped selector can never become a foreground denial.
         """
         from tools.approval import resolve_gateway_approval
+        import re
+
+        tokens = event.get_command_args().split()
+        request_id = None
+        resolve_all = False
+        reason = None
+        usage = "Usage: /deny [all|exact-request-id] [--reason text]"
+        if tokens and tokens[0] != "--reason":
+            selector = tokens.pop(0)
+            if selector.lower() == "all":
+                resolve_all = True
+            elif re.fullmatch(r"[0-9a-f]{32}", selector):
+                request_id = selector
+            else:
+                return usage
+        if tokens:
+            if tokens[0] != "--reason" or len(tokens) < 2:
+                return usage
+            # The marker terminates option parsing; all remaining words are
+            # literal reason text, normalized to one line and capped as before.
+            reason = " ".join(tokens[1:])[:280].strip()
+
+        if request_id is not None:
+            # Exact selectors must not perform unrelated stale UI housekeeping.
+            session_key = self._session_key_for_source(event.source)
+            from tools.approval_delegation import owner_for_source
+            count = resolve_gateway_approval(session_key, "deny", request_id=request_id,
+                                             reason=reason,
+                                             owner=owner_for_source(event.source, session_key))
+            if not count:
+                return t("gateway.deny.no_pending")
+            key = "gateway.deny.denied" + ("_reason" if reason else "") + "_singular"
+            return await self._deliver_approval_confirmation(event, t(key, count=1, reason=reason), "deny")
         session_key, stale = self._blocking_approval_or_stale(event, "gateway.deny.stale",
                                                               "gateway.deny.no_pending")
         if stale:
             return stale
-        # A leading "all" denies every pending command; the rest (or the whole arg string without
-        # "all") is the optional deny reason relayed to the agent, capped to a sane one-liner.
-        raw_args = event.get_command_args().strip()
-        tokens = raw_args.split()
-        resolve_all = bool(tokens) and tokens[0].lower() == "all"
-        reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason or None)
+        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason)
         if not count:
             return t("gateway.deny.no_pending")
         logger.info("User denied %d dangerous command(s) via /deny%s", count,

@@ -75,6 +75,8 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
 
 def _signal_child_stop(child: Any, *reason: str) -> None:
     """Cooperative interrupt so the child's worker thread can exit cleanly."""
+    from tools.approval_delegation import release_child_approval
+    release_child_approval(getattr(child, "_background_approval_lease", None))
     with _quiet(None):
         if child is not None and not request_hard_interrupt(child, *reason) and hasattr(child, "_interrupt_requested"):
             child._interrupt_requested = True
@@ -645,6 +647,11 @@ class _ChildRun:
         from tools.delegate_tool import (_get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb)
         from tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
+        from tools.approval_delegation import acquire_child_approval, current_child_approval
+        # Synchronous grandchildren of a detached orchestrator also need their
+        # own lease; resetting its inherited scope to None would orphan them.
+        if current_child_approval() is not None and not hasattr(child, "_background_approval_lease"):
+            child._background_approval_lease = acquire_child_approval(getattr(child, "session_id", ""))
         child_timeout = _get_child_timeout()
         executor = DaemonThreadPoolExecutor(
             max_workers=1, initializer=_set_subagent_approval_cb, initargs=(_get_subagent_approval_callback(),),
@@ -655,7 +662,9 @@ class _ChildRun:
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            from tools.approval_delegation import child_approval_scope
+            with delegated_child_context(str(getattr(child, "session_id", "") or "")), \
+                    child_approval_scope(getattr(child, "_background_approval_lease", None)):
                 return child.run_conversation(
                     user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )

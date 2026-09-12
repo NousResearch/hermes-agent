@@ -24,15 +24,16 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged")
+    __slots__ = ("event", "data", "result", "reason", "acknowledged", "lease")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
         self.acknowledged = False
+        self.lease = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
-        # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
+        # Free-text reason from ``/deny --reason <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
 
 
@@ -116,6 +117,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
     the leader, so the follower falls through to a fresh prompt."""
     from tools import approval as _approval
+    from tools.approval_delegation import current_child_approval, lease_matches
+    lease = current_child_approval()
 
     primary_key = approval_data.get("pattern_key", "")
     payload = {
@@ -128,7 +131,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     keys = list(approval_data.get("pattern_keys") or [])
     with _approval._lock:
         leader = next((e for e in _approval._gateway_queues.get(session_key, [])
-                       if e.data.get("command") == approval_data.get("command")
+                       if lease is None and e.lease is None
+                       and e.data.get("command") == approval_data.get("command")
                        and list(e.data.get("pattern_keys") or []) == keys), None)
     if leader is not None:
         adopted = _await_coalesced_leader(session_key, leader, payload)
@@ -136,7 +140,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             return adopted
 
     entry = _ApprovalEntry(approval_data)
+    entry.lease = lease
     with _approval._lock:
+        if lease is not None:
+            if not lease_matches(lease, session_key):
+                return {"resolved": True, "choice": "deny", "reason": "approval route expired"}
+            entry.data.update(allow_session=False, allow_permanent=False, background_approval=True,
+                              child_id=lease.child_id)
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
     def _drop_entry() -> None:
@@ -164,4 +174,8 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         entry.result = "deny"
         entry.event.set()
     _drop_entry()
+    if lease is not None:
+        with _approval._lock:
+            if not lease_matches(lease, session_key):
+                entry.result = "deny"
     return _finish(payload, state != "timeout", entry.result, entry.reason)

@@ -1292,6 +1292,37 @@ class TurnRunner:
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
         return response
 
+    def _background_approval_notifier(self):
+        """Capture delivery independent of parent-turn status/streams.
+
+        Legacy adapter buttons resolve FIFO, not actor + request-id. Use the
+        authorized text lane with an exact token until buttons are equally bound.
+        A refusal never falls back to another destination or counts as delivery.
+        """
+        from copy import deepcopy
+        from gateway.run import _interim_metadata, _redact_approval_command
+        ctx = self._ctx
+        adapter, chat_id = ctx._status_adapter, ctx._status_chat_id
+        metadata = deepcopy(ctx._status_thread_metadata or {})
+        metadata["is_approval_prompt"] = True
+        loop = getattr(ctx, "_loop_for_step", None)
+        prefix = getattr(adapter, "typed_command_prefix", "/")
+
+        def notify(data):
+            rid = data["request_id"]
+            command = _redact_approval_command(data.get("command", ""))
+            text = (f"Background child approval — one execution only\n{data.get('description', '')}\n\n"
+                    f"{command}\n\nApprove: {prefix}approve {rid}\nDeny: {prefix}deny {rid}\n"
+                    "Only the requesting user can answer. This request expires with the child or approval timeout.")
+            future = self._schedule(adapter.send(chat_id, text, metadata=_interim_metadata(metadata)),
+                                    "Background approval scheduling error", loop=loop)
+            if future is None:
+                raise RuntimeError("background approval loop unavailable")
+            result = future.result(timeout=15)
+            if getattr(result, "success", None) is not True:
+                raise _ExecApprovalDeclined("background approval delivery refused or unconfirmed")
+        return notify
+
     def _approval_notify_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
@@ -1537,7 +1568,10 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
-            return agent.run_conversation(api_message, **kwargs)
+            from tools.approval_delegation import gateway_approval_origin, owner_for_source
+            owner = owner_for_source(ctx.source, session_key)
+            with gateway_approval_origin(owner, self._background_approval_notifier()):
+                return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the

@@ -111,7 +111,7 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # --- Gateway approval queue (the blocking wait loop lives in approval_gateway_wait) ---------------------------------
 
 
-# Optional free-text reason supplied with an explicit deny (``/deny <reason>``) so the agent can adapt
+# Optional free-text reason supplied with an explicit deny (``/deny --reason <reason>``) so the agent can adapt
 # instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
@@ -129,7 +129,12 @@ def unregister_gateway_notify(session_key: str) -> None:
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
+        queue = _gateway_queues.get(session_key, [])
+        # Detached children are revoked by their own lifecycle, not this turn.
+        entries = [entry for entry in queue if entry.lease is None]
+        queue[:] = [entry for entry in queue if entry.lease is not None]
+        if not queue:
+            _gateway_queues.pop(session_key, None)
     for entry in entries:
         entry.event.set()
 
@@ -137,48 +142,61 @@ def unregister_gateway_notify(session_key: str) -> None:
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None,
-                             request_id: Optional[str] = None) -> int:
+                             request_id: Optional[str] = None, *, owner=None) -> int:
     """Unblock waiting agent thread(s) from the gateway's /approve or /deny handler.
 
     *resolve_all* resolves every pending approval (``/approve all``); otherwise the oldest
-    (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
+    (FIFO) or the one matching *request_id*. *reason* is the ``/deny --reason <reason>`` free text,
     relayed to the agent in the BLOCKED message. Returns the number resolved.
     """
+    # None alone selects legacy FIFO. Explicit empty/malformed selectors must
+    # not become omitted selectors through truthiness (including False/0/[]).
+    if request_id is not None and (type(request_id) is not str or not request_id
+                                   or request_id != request_id.strip()):
+        return 0
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
+        from tools.approval_delegation import response_matches
+        eligible = [entry for entry in queue if entry.lease is None or
+                    response_matches(entry, owner, request_id, choice, resolve_all)]
         if request_id:
-            targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
-            if not targets:
-                return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
-        elif resolve_all:
-            targets = list(queue)
-            queue.clear()
+            targets = [entry for entry in eligible if entry.data.get("request_id") == request_id]
         else:
-            targets = [queue.pop(0)]
+            targets = eligible if resolve_all else eligible[:1]
+        if not targets:
+            return 0
+        queue[:] = [entry for entry in queue if entry not in targets]
         if not queue:
             _gateway_queues.pop(session_key, None)
-
-    for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
-        entry.event.set()
+        # Resolution and removal are atomic against cancellation.
+        for entry in targets:
+            entry.result = choice
+            if reason:
+                entry.reason = reason
+            entry.event.set()
     return len(targets)
+
+
+def _profile_gateway_entries(session_key: str):
+    """Caller holds _lock. Bound child requests never cross profile snapshots."""
+    from hermes_constants import get_hermes_home
+    profile = str(get_hermes_home().resolve())
+    return [entry for entry in _gateway_queues.get(session_key, [])
+            if entry.lease is None or entry.lease.owner.profile == profile]
 
 
 def list_gateway_approvals(session_key: str) -> list[dict]:
     """Return replay-safe snapshots of unresolved approvals for one session."""
     with _lock:
-        return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
+        return [dict(entry.data) for entry in _profile_gateway_entries(session_key)]
 
 
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:
-        for entry in _gateway_queues.get(session_key, []):
+        for entry in _profile_gateway_entries(session_key):
             if entry.data.get("request_id") == request_id:
                 entry.acknowledged = True
                 return True
@@ -188,7 +206,7 @@ def ack_gateway_approval(session_key: str, request_id: str) -> bool:
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
-        return bool(_gateway_queues.get(session_key))
+        return bool(_profile_gateway_entries(session_key))
 
 
 def get_pending_gateway_approval(session_key: str) -> dict | None:
@@ -197,7 +215,7 @@ def get_pending_gateway_approval(session_key: str) -> dict | None:
     if not session_key:
         return None
     with _lock:
-        queue = _gateway_queues.get(session_key)
+        queue = _profile_gateway_entries(session_key)
         if not queue:
             return None
         return dict(queue[0].data)
@@ -249,11 +267,19 @@ def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
         return
+    from tools.approval_delegation import clear_child_approvals
+    clear_child_approvals(session_key)
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
+        # Owned leases were revoked above. Leave another profile's child
+        # entries alone even when a legacy conversation key collides.
+        queue = _gateway_queues.get(session_key, [])
+        entries = [entry for entry in queue if entry.lease is None]
+        queue[:] = [entry for entry in queue if entry.lease is not None]
+        if not queue:
+            _gateway_queues.pop(session_key, None)
     for entry in entries:
         # Cancel blocked waits now so the old run unwinds instead of idling until timeout.
         entry.result = "deny"
@@ -405,6 +431,9 @@ def _user_approved(session_key: str, description: str) -> dict:
 
 
 def _gateway_notify_cb(session_key: str):
+    from tools.approval_delegation import current_child_approval, child_notify
+    if current_child_approval() is not None:
+        return child_notify(session_key)
     with _lock:
         return _gateway_notify_cbs.get(session_key)
 
@@ -738,7 +767,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
                                description=description, outcome="notify_failed")
             # Consent contract: silence is NOT consent, and an explicit deny is a hard
-            # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
+            # halt — both produce a BLOCKED outcome. ``/deny --reason <reason>`` free text is
             # relayed verbatim so the agent can adapt rather than only hearing "denied".
             choice, deny_reason = decision["choice"], decision.get("reason")
             if not decision["resolved"]:
@@ -757,6 +786,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if not _should_fall_through_to_cli_approval(
             is_cli=is_cli, approval_callback=approval_callback, notify_cb=notify_cb,
         ):
+            from tools.approval_delegation import current_child_approval
+            if current_child_approval() is not None:
+                return _denied(
+                    "BLOCKED: background approval route unavailable or expired. No approval request was delivered. "
+                    "Stop; do not retry or replay this operation.",
+                    pattern_key=pattern_key, description=description, outcome="route_unavailable",
+                )
             if not spec.pending_keys:
                 display_command, display_description = command, description
             return _pending_result(

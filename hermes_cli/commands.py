@@ -95,7 +95,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="[session|always]", busy_policy="dispatch",
                desktop="messaging"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
-               gateway_only=True, args_hint="[all] [reason]", busy_policy="dispatch",
+               gateway_only=True, args_hint="[all|exact-request-id] [--reason text]", busy_policy="dispatch",
                desktop="messaging"),
     CommandDef("bg", "Run a prompt in a separate background session", "Session",
                args_hint="<prompt>", busy_policy="dispatch"),

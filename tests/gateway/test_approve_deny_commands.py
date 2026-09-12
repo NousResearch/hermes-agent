@@ -215,7 +215,7 @@ class TestDenyCommand:
 
     @pytest.mark.asyncio
     async def test_deny_with_reason_attaches_reason(self):
-        """/deny <reason> attaches the reason to the resolved entry."""
+        """/deny --reason <reason> attaches the reason to the resolved entry."""
         from tools.approval import _gateway_queues
         from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -227,7 +227,7 @@ class TestDenyCommand:
         _gateway_queues[session_key] = [entry]
 
         result = await runner._handle_deny_command(
-            _make_event("/deny that path is still in use")
+            _make_event("/deny --reason that path is still in use")
         )
         assert entry.result == "deny"
         assert entry.reason == "that path is still in use"
@@ -235,7 +235,7 @@ class TestDenyCommand:
 
     @pytest.mark.asyncio
     async def test_deny_all_with_reason(self):
-        """/deny all <reason> denies everything and relays one reason."""
+        """/deny all --reason <reason> denies everything and relays one reason."""
         from tools.approval import _gateway_queues
         from tools.approval_gateway_wait import _ApprovalEntry
 
@@ -248,7 +248,7 @@ class TestDenyCommand:
         _gateway_queues[session_key] = [e1, e2]
 
         result = await runner._handle_deny_command(
-            _make_event("/deny all wrong directory")
+            _make_event("/deny all --reason wrong directory")
         )
         assert "2 commands" in result
         assert all(e.result == "deny" for e in [e1, e2])

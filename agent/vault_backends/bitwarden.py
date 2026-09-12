@@ -115,3 +115,11 @@ class BitwardenLoginBackend(LoginBackend):
 
     def resolve_password(self, handle: str) -> str:
         return self._run("get", "password", handle[len(self.prefix):]).rstrip("\r\n")
+
+    def resolve_otp(self, handle: str) -> Optional[str]:
+        # `bw get totp <id>` mints the current code from the item's TOTP seed; "No TOTP available" otherwise.
+        try:
+            code = self._run("get", "totp", handle[len(self.prefix):]).strip()
+        except Exception:
+            return None
+        return code if code.isdigit() else None

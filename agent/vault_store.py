@@ -67,6 +67,62 @@ class VaultError(Exception):
     """Vault failure that is safe to surface (never contains secret values)."""
 
 
+_OTP_ALGOS = {"SHA1": "sha1", "SHA256": "sha256", "SHA512": "sha512"}
+
+
+def normalize_otp_secret(value: str) -> str:
+    """Accept a raw base32 seed or an ``otpauth://totp/...`` URI. Returns the canonical stored form:
+    the bare uppercase base32 seed, followed by ``|digits|period|algo`` ONLY when the URI departs from
+    the RFC 6238 defaults (6 / 30 / SHA1), so a plain seed stays a plain seed. Non-default parameters
+    are honoured, not dropped: an 8-digit or 60-second authenticator would otherwise get wrong codes."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    digits, period, algo = 6, 30, "SHA1"
+    if value.lower().startswith("otpauth://"):
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(value)
+        if parsed.netloc.lower() != "totp":
+            raise VaultError("only otpauth://totp links are supported (counter-based HOTP is not)")
+        qs = {k.lower(): v[0] for k, v in parse_qs(parsed.query).items()}
+        value = qs.get("secret", "")
+        try:
+            digits = int(qs.get("digits", digits))
+            period = int(qs.get("period", period))
+        except ValueError:
+            raise VaultError("otpauth:// digits/period must be integers")
+        algo = qs.get("algorithm", algo).upper().replace("-", "")
+        if digits not in (6, 7, 8) or period <= 0 or algo not in _OTP_ALGOS:
+            raise VaultError("unsupported otpauth:// parameters (digits 6-8, period > 0, SHA1/SHA256/SHA512)")
+    seed = re.sub(r"[\s-]", "", value).upper().rstrip("=")
+    if not seed or re.search(r"[^A-Z2-7]", seed):
+        raise VaultError("authenticator key must be a base32 secret or an otpauth:// URI")
+    if (digits, period, algo) == (6, 30, "SHA1"):
+        return seed
+    return f"{seed}|{digits}|{period}|{algo}"
+
+
+def totp_now(seed: str, *, digits: int = 6, period: int = 30, at: Optional[float] = None) -> str:
+    """RFC 6238 TOTP for a stored seed (see normalize_otp_secret for the ``seed|digits|period|algo``
+    form). Stdlib only."""
+    import base64
+    import hashlib
+    import hmac
+    import struct
+    import time as _time
+
+    algo = "sha1"
+    if "|" in seed:
+        seed, d, p, a = seed.split("|", 3)
+        digits, period, algo = int(d), int(p), _OTP_ALGOS.get(a.upper(), "sha1")
+    key = base64.b32decode(seed + "=" * (-len(seed) % 8), casefold=True)
+    counter = int((at if at is not None else _time.time()) // period)
+    digest = hmac.new(key, struct.pack(">Q", counter), getattr(hashlib, algo)).digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return str(code).zfill(digits)
+
+
 def normalize_origin(url_or_origin: str) -> str:
     """Normalize a URL or origin to ``scheme://host[:port]``.
 
@@ -109,6 +165,7 @@ class VaultItemMeta:
     created_at: str
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
+    has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
 
     def to_dict(self) -> Dict[str, Any]:
         out = {
@@ -121,6 +178,8 @@ class VaultItemMeta:
         if self.identifier is not None:
             out["identifier"] = self.identifier
             out["identifier_type"] = self.identifier_type
+        if self.has_otp:
+            out["has_otp"] = True
         return out
 
 
@@ -282,9 +341,10 @@ class VaultStore:
             if not identifier or not secret.get("password"):
                 raise VaultError("login items require identifier and password")
             identifier_type = str(id_type)
-            # Login secret payload is password-only; identifier lives in
+            # Login secret payload is password (+ optional TOTP seed); identifier lives in
             # metadata and any stray origin echo is dropped.
-            secret = {"password": secret["password"]}
+            otp_secret = normalize_otp_secret(str(secret.get("otp_secret") or ""))
+            secret = {"password": secret["password"], **({"otp_secret": otp_secret} if otp_secret else {})}
         else:
             allowed = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
             secret = {k: str(v) for k, v in secret.items() if k in allowed and str(v or "").strip()}
@@ -362,6 +422,7 @@ class VaultStore:
             created_at=str(rec.get("created_at", "")),
             identifier_type=rec.get("identifier_type") if identifier else None,
             identifier=identifier or None,
+            has_otp=bool((rec.get("secret") or {}).get("otp_secret")),
         )
 
 

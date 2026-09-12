@@ -16,6 +16,7 @@ from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
+from hermes_constants import openrouter_variant_base
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
@@ -433,7 +434,7 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     # catalog entries — validate the BASE but keep the suffixed id. Must run BEFORE fuzzy
     # auto-correction, which would otherwise "correct" `model:nitro` → `model` and silently
     # strip the routing opt-in.
-    variant_base = _m._openrouter_variant_base(req.lookup) if req.normalized == "openrouter" else None
+    variant_base = openrouter_variant_base(req.lookup) if req.normalized == "openrouter" else None
     if variant_base is not None and variant_base in set(api_models):
         return _accept()
     # Listed but not found: the account may reach models absent from the public listing
@@ -502,7 +503,7 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
         return _accept()
     # Same OpenRouter routing-variant rule as the live-listing path.
     if req.normalized == "openrouter":
-        variant_base = _m._openrouter_variant_base(req.lookup)
+        variant_base = openrouter_variant_base(req.lookup)
         if variant_base is not None and variant_base.lower() in {m.lower() for m in catalog}:
             return _accept()
     return match.verdict(req, keep_suffix=True) or _soft_accept(

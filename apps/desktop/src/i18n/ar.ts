@@ -429,6 +429,10 @@ export const ar = defineLocale({
       optional: '(اختياري)',
       createdOn: date => `أُضيفت ${date}`,
       deleteAction: 'إزالة العنصر المحفوظ',
+      otpField: 'مفتاح المصادقة',
+      otpPlaceholder: 'سر Base32 أو رابط otpauth://',
+      otpHint: '«مفتاح الإعداد» الذي يعرضه الموقع عند تفعيل المصادقة الثنائية. بحفظه يولّد Hermes الرموز بنفسه.',
+      twoFactorBadge: '2FA تلقائي',
       deleteTitle: 'حذف هذا العنصر؟',
       deleteDescription: label => `سيُزال "${label}" من الخزنة المشفّرة. لا يمكن التراجع عن هذا.`,
       deleteConfirm: 'حذف',
@@ -577,10 +581,11 @@ export const ar = defineLocale({
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
       tipsTitle: 'نصائح داخل التطبيق',
       tipsDesc:
-        'فقاعة صغيرة تشير إلى جزء من التطبيق، تظهر أحيانًا أثناء الخمول ومن Hermes عند الحاجة. تظهر كل نصيحة مرة واحدة.',
+        'نصائح تظهر أحيانًا من التطبيق وHermes. تظهر كل نصيحة مرة واحدة. تُعطّل تلقائيًا بعد أول 30 يومًا من الاستخدام، ويمكنك تفعيلها مجددًا.',
       tipsReset: count => `إظهار ${count} نصيحة مرة أخرى`,
       toursTitle: 'جولات إرشادية',
-      toursDesc: 'دع Hermes يرشدك في التطبيق، مع تعتيم الشاشة وإبراز كل خطوة.',
+      toursDesc:
+        'دع Hermes يرشدك في التطبيق مع إبراز كل خطوة. تُعطّل الجولات تلقائيًا بعد أول 30 يومًا من الاستخدام، ويمكنك تفعيلها مجددًا.',
       composerPopoutTitle: 'محرر عائم',
       composerPopoutDesc: 'السماح بسحب محرر الرسائل خارج موضعه. عطّل هذا الخيار لإبقائه مثبتًا في الأسفل.',
       vibeHeartsTitle: 'قلوب المزاج',
@@ -2337,6 +2342,10 @@ export const ar = defineLocale({
       noReturn: 'لم تعد الواجهة الخلفية إلى الاتصال. قد لا يكون التحديث قد اكتمل — تحقق من مضيف الواجهة الخلفية.'
     }
   },
+  guidedGreeting: {
+    line: 'أهلا، تفضل بالدخول. أنا Hermes. امنحني دقيقتين لأرتب المكان حولك، ثم نبدأ بشيء تريد إنجازه فعلا.\n\nبداية، بماذا أناديك؟',
+    nameSuggestion: (name: string) => `(يمكنني أن أناديك ${name} إن كنت تفضل ذلك.)`
+  },
   install: {
     stageStates: {
       pending: 'قيد الانتظار',
@@ -3050,7 +3059,16 @@ export const ar = defineLocale({
     vaultSavePasswordPlaceholder: 'كلمة المرور',
     vaultSaveFootnote: 'أدِر بيانات الدخول المحفوظة من الإعدادات ← كلمات المرور وتسجيلات الدخول.',
     vaultSaveDecline: 'عدم الحفظ',
-    vaultSaveConfirm: 'حفظ وتسجيل الدخول'
+    vaultSaveConfirm: 'حفظ وتسجيل الدخول',
+    vaultCodeSendFailed: 'تعذر إرسال الرمز',
+    vaultCodeTitle: site => `رمز التحقق لـ ${site}`,
+    vaultCodeDesc: site =>
+      `يطلب ${site} رمزًا لمرة واحدة (رسالة نصية أو بريد إلكتروني أو تطبيق مصادقة). أدخله هنا وسيكتبه Hermes في الصفحة؛ لا يراه النموذج أبدًا.`,
+    vaultCodeLabel: 'الرمز',
+    vaultCodeFootnote:
+      'تلميح: احفظ مفتاح المصادقة مع بيانات الدخول هذه في الإعدادات ← كلمات المرور وتسجيلات الدخول وسيُدخل Hermes الرموز نيابةً عنك.',
+    vaultCodeSkip: 'تخطٍ',
+    vaultCodeConfirm: 'إدخال الرمز'
   },
   desktop: {
     audioReadFailed: 'فشلت قراءة الصوت',
@@ -3085,6 +3103,9 @@ export const ar = defineLocale({
     resumeStrandedTitle: 'تعذّر تحميل هذه الجلسة',
     resumeStrandedBody:
       'فشل الاتصال بهذه الجلسة وتوقفت إعادة المحاولة التلقائية. تأكد من تشغيل البوابة، ثم حاول مجددا.',
+    poolSlotTimeoutBody:
+      'جميع خانات الواجهات الخلفية المحلية للملفات الشخصية مشغولة. زد عدد Warm Bot Backends من الإعدادات ← متقدم، أو أعد المحاولة بعد إزالة واجهة خلفية خاملة.',
+    poolSlotTimeoutOpenSettings: 'فتح الإعدادات المتقدمة',
     resumeRetry: 'إعادة المحاولة',
     nothingToBranch: 'لا يوجد ما يمكن تفريعه',
     branchNeedsChat: 'يحتاج التفريع إلى محادثة',

@@ -3,6 +3,41 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  connectors: {
+    title: 'Connect your apps',
+    connect: 'Connect',
+    skip: 'Not now',
+    cancel: 'Stop waiting',
+    retry: 'Try again',
+    grant: 'Reconnect',
+    connected: 'Connected',
+    checking: 'Checking your apps…',
+    waitingSignIn: 'Waiting for you to finish signing in…',
+    notConnected: "Didn't connect",
+    notAvailable: 'Not available',
+    startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
+    startWithout: 'Start without connections',
+    skipped: 'Skipped',
+    disabled: 'Unavailable',
+    failed: 'Could not connect',
+    needsAuth: 'Access expired',
+    opening: 'Opening sign-in…',
+    waiting: 'Finish connecting in your browser…',
+    timeout: 'Still waiting for authorization.',
+    keepWaiting: 'Keep waiting',
+    refresh: 'Refresh status',
+    statusError: 'Could not check connections. Try refreshing.',
+    connectError: 'Could not start authorization. Try again.',
+    unavailable: 'Connectors are unavailable for this session.',
+    ownerMissing: 'Reopen this conversation to manage its connections.',
+    search: 'Find an app',
+    empty: 'No matching apps',
+    disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
+    connectTitle: app => `Connect ${app}?`,
+    describe: app => `Hermes signs in to ${app} in your browser and asks before reading anything there.`,
+    execution: 'Connector tools'
+  },
+
   sessionImport: {
     title: 'Continue from another app',
     subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
@@ -216,7 +251,11 @@ export const en: Translations = {
       transcriptionFailed: 'Voice transcription failed',
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
-      unavailable: 'Voice unavailable'
+      unavailable: 'Voice unavailable',
+      liveEnded: 'Live voice session ended',
+      liveError: 'Live voice',
+      liveDelegationFailed: 'Could not hand the request to Hermes',
+      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
     },
     native: {
       approvalTitle: 'Approval needed',
@@ -554,6 +593,10 @@ export const en: Translations = {
       optional: '(optional)',
       createdOn: date => `Added ${date}`,
       deleteAction: 'Remove saved item',
+      otpField: 'Authenticator key',
+      otpPlaceholder: 'Base32 secret or otpauth:// link',
+      otpHint: 'The "setup key" the site shows when you enable 2FA. With it saved, Hermes generates the codes itself.',
+      twoFactorBadge: '2FA auto',
       deleteTitle: 'Delete this item?',
       deleteDescription: label => `"${label}" will be removed. This cannot be undone.`,
       deleteConfirm: 'Delete',
@@ -671,6 +714,10 @@ export const en: Translations = {
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
+      appActionsTitle: 'App Actions',
+      appActionsDesc: 'Where Settings, Layout, and HUD sit in the titlebar. Right leaves room for tabs on the left.',
+      appActionsLeft: 'Left',
+      appActionsRight: 'Right',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',
@@ -707,10 +754,11 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Each tip appears once.',
+        'Occasional hints from the app and Hermes. Each tip appears once. Turns off automatically after your first 30 days; you can turn it back on.',
       tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
       toursTitle: 'Guided Tours',
-      toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
+      toursDesc:
+        'Let Hermes spotlight each step as it guides you through the app. Turns off automatically after your first 30 days; you can turn it back on.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
       vibeHeartsTitle: 'Vibe Hearts',
@@ -1275,9 +1323,12 @@ export const en: Translations = {
         'speed-gated-quality':
           'A higher-quality model fits this machine but would respond too slowly on its memory bandwidth — this is the best model that stays fast.',
         'fastest-resident':
-          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.',
-        'least-painful-spilled': 'No model fits entirely in GPU memory here — this one runs best from system RAM.'
+          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.'
       } as Record<string, string>,
+      noRecommendationTitle: 'No automatic recommendation for this machine',
+      noRecommendationDetail:
+        'Automatic setup requires a curated model that fits entirely in GPU or unified memory. You can still choose a model below or browse more models.',
+      noRecommendationAction: 'Browse models',
       downloaded: 'Downloaded',
       downloadAction: size => `Download · ${size}`,
       downloadProgress: (done, total) => `Downloading ${done} of ${total}`,
@@ -1289,7 +1340,7 @@ export const en: Translations = {
       quickstartDetailReady: model =>
         `One click makes ${model} your default for new chats. Everything runs on this machine.`,
       quickstartAction: 'Set up for me',
-      quickstartConfigure: 'Configure…',
+      quickstartConfigure: 'Let me choose',
       quickstartDoneToast: model => `${model} is set up — new chats run on this machine.`,
       quickstartFailed: 'Local model setup failed',
       quickstartStageEngine: 'Engine',
@@ -2751,6 +2802,13 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceControls: 'Voice',
+    voiceEngine: 'Voice chat engine',
+    voiceEngineChained: 'Speech-to-text + Hermes voice',
+    voiceEngineLive: 'GPT-Live (full-duplex, delegates to Hermes)',
+    voiceEngineLiveNeedsKey: 'Needs an OpenAI API key',
+    voiceEngineChangeFailed: 'Could not change the voice chat engine',
+    voiceEngineChainedShort: 'speech-to-text',
+    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
@@ -2791,6 +2849,7 @@ export const en: Translations = {
     queuedPaused: count => `${count} Queued — paused`,
     attachmentOnly: 'Attachment-only turn',
     emptyTurn: 'Empty turn',
+    hiddenQueued: 'Setup note',
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
@@ -3116,6 +3175,20 @@ export const en: Translations = {
     }
   },
 
+  handoffTour: {
+    profileTitle: 'Your first task runs on the default profile',
+    profileText:
+      'This rail switches profiles. The one lit up now is default, where the task session lives. The other one is the setup profile, where the welcome chat lives.',
+    sessionsTitle: 'Each profile keeps its own sessions',
+    sessionsText:
+      'This list belongs to the default profile. New session starts one on whichever profile is selected. Switch profiles on the rail and the list changes with it.',
+    stayTitle: 'Hermes is one click away',
+    stayText: 'Switch to the setup profile and open Welcome to Hermes whenever you want a hand. It stays there.'
+  },
+  guidedGreeting: {
+    line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
+    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
+  },
   install: {
     stageStates: {
       pending: 'Pending',
@@ -3270,6 +3343,49 @@ export const en: Translations = {
     docs: provider => `${provider} docs`
   },
 
+  freeTier: {
+    providerRowTitle: 'Nous · free tier',
+    providerRowPitch: 'Sign in with a Nous account to unlock more models and tools.',
+    readyTitle: 'Hermes is ready.',
+    readyCaption: 'Free · connectors included',
+    begin: 'Begin',
+    signInInstead: 'Sign in with a Nous account instead',
+    otherProviders: 'Other providers',
+    stripTitle: 'Free Nous inference and connectors are now available.',
+    stripBody: 'Open the model picker to try them, or sign in with a Nous account.',
+    openModelPicker: 'Open model picker',
+    dismiss: 'Dismiss',
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
+    signIn: 'Sign in',
+    signInHeading: 'Sign in with a Nous account to unlock more models and tools.',
+    settingUp: 'Setting up free inference…',
+    codeBody: 'Enter this code in your browser to finish signing in.',
+    copyLink: 'Copy link',
+    doNotShare: 'Do not share this code.',
+    waiting: 'Waiting for sign-in…',
+    finishingHeading: 'Finishing sign-in…',
+    finishingBody: 'Approved in the browser. Collecting your account tokens.',
+    signedInAs: email => `Signed in as ${email}`,
+    signedIn: 'Signed in.',
+    completedBody: 'Your account now carries inference and tools.',
+    defaultModel: 'Default model',
+    change: 'Change',
+    done: 'Done',
+    notNow: 'Not now',
+    tryAgain: 'Try again',
+    startAgain: 'Start again',
+    didNotComplete: 'Sign-in did not complete',
+    rejectedBody: 'Sign-in was rejected in the browser. You are still on the free tier.',
+    supersededBody: 'A newer sign-in code replaced this one.',
+    timedOutHeading: 'Sign-in timed out',
+    timedOutBody: 'The code was not used in time. You are still on the free tier.',
+    retiredBody: 'This free-tier identity was already used or expired; a new one is set up on the next start.',
+    errorBody: 'Sign-in did not complete; run it again.',
+    alreadySignedInHeading: 'Already signed in.',
+    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.'
+  },
+
   modelPicker: {
     title: 'Switch model',
     current: 'current:',
@@ -3394,6 +3510,7 @@ export const en: Translations = {
       toggleTerminal: 'Terminal',
       toggleTokensPerSecond: 'Tokens per second',
       toggleVersion: 'Version & updates',
+      toggleFreeTier: 'Free tier',
       toggleWorkspace: 'Workspace',
       cacheHitRateTitle: 'Prompt cache hit rate this session — cached tokens cost less, so higher is cheaper',
       tokensPerSecondTitle: 'Output tokens per second, averaged over the last 10 model calls',
@@ -3907,7 +4024,16 @@ export const en: Translations = {
     vaultSavePasswordPlaceholder: 'Password',
     vaultSaveFootnote: 'Manage saved logins in Settings → Passwords & Logins.',
     vaultSaveDecline: "Don't save",
-    vaultSaveConfirm: 'Save & sign in'
+    vaultSaveConfirm: 'Save & sign in',
+    vaultCodeSendFailed: 'Could not send the code',
+    vaultCodeTitle: site => `Verification code for ${site}`,
+    vaultCodeDesc: site =>
+      `${site} is asking for a one-time code (text message, email or authenticator app). Enter it here and Hermes types it into the page; the model never sees it.`,
+    vaultCodeLabel: 'Code',
+    vaultCodeFootnote:
+      'Tip: save the authenticator key with this login in Settings → Passwords & Logins and Hermes enters codes for you.',
+    vaultCodeSkip: 'Skip',
+    vaultCodeConfirm: 'Enter code'
   },
 
   desktop: {
@@ -3944,6 +4070,9 @@ export const en: Translations = {
     resumeStrandedTitle: "Couldn't load this session",
     resumeStrandedBody:
       'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    poolSlotTimeoutBody:
+      'All local profile backend slots are busy. Increase Warm Bot Backends in Settings → Advanced, or retry after an idle backend is evicted.',
+    poolSlotTimeoutOpenSettings: 'Open Advanced Settings',
     resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',

@@ -35,11 +35,13 @@ def _notif_live_session_matches(keys, exclude: dict | None = None) -> bool:
         False)
 
 
-def _notif_resolve_event_key(evt_key: str) -> str:
-    """Resolve a compression-rotated session key to its continuation tip (or itself)."""
+def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
+    """Resolve a compression-rotated session key to its continuation tip (or itself). Looked up in
+    ``session``'s own store: a named-profile session's lineage lives in ``profiles/<x>/state.db``,
+    where the launch handle cannot see it."""
     try:
-        db = _get_db()
-        return (db.resolve_resume_session_id(evt_key) if db is not None else evt_key) or evt_key
+        with _session_db(session or {}) as db:
+            return (db.resolve_resume_session_id(evt_key) if db is not None else evt_key) or evt_key
     except Exception:
         return evt_key
 
@@ -62,7 +64,7 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
     # Compression can rotate AIAgent.session_id while the detached child is still running: map the event's original
     # key to its continuation tip so it reaches the live session instead of becoming an orphan any poller may consume.
     # A live continuation wins over the compressed parent, else a stale parent tab could consume the event first.
-    resolved_key = _notif_resolve_event_key(evt_key)
+    resolved_key = _notif_resolve_event_key(evt_key, session)
     if resolved_key != evt_key:
         if resolved_key in current_keys:
             return False
@@ -82,7 +84,7 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
         return True
     evt_key = str(evt.get("session_key") or "")
     current_keys = _notif_current_keys(sid, session)
-    return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key) in current_keys)
+    return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key, session) in current_keys)
 
 
 def _notification_event_requires_owner(evt: dict) -> bool:
@@ -660,11 +662,16 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _hud_surface_note(session: dict) -> str:
-    """The HUD-mode note for this turn, or "" when it was not typed there."""
-    if session.get("client_surface") != "hud":
-        return ""
-    from agent.prompt_builder import hud_surface_note
-    return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+    """The per-surface note for this turn ("" for the plain app window): HUD → the read-the-window-below
+    prior; voice-live → the spoken-delegation contract (transcript in, speakable prose out)."""
+    surface = session.get("client_surface")
+    if surface == "hud":
+        from agent.prompt_builder import hud_surface_note
+        return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+    if surface == "voice-live":
+        from tools.voice_live import voice_live_turn_note
+        return voice_live_turn_note(session.get("voice_live_context") or "")
+    return ""
 
 
 def _prepend_note(run_message: Any, note: str) -> Any:

@@ -567,6 +567,12 @@ export default function ChannelsPage() {
                           {platform.error_message}
                         </span>
                       )}
+                      {platform.ingress_url && (
+                        <span className="text-xs text-muted-foreground break-all">
+                          Callback URL (shared listener):{" "}
+                          <code className="font-mono">{platform.ingress_url}</code>
+                        </span>
+                      )}
                     </div>
                   </div>
 

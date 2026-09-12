@@ -375,6 +375,10 @@ export const ja = defineLocale({
       optional: '（任意）',
       createdOn: date => `追加日 ${date}`,
       deleteAction: '保存済み項目を削除',
+      otpField: '認証キー',
+      otpPlaceholder: 'Base32 シークレットまたは otpauth:// リンク',
+      otpHint: '2FA を有効にするときにサイトが表示する「セットアップキー」。保存すると Hermes がコードを生成します。',
+      twoFactorBadge: '2FA 自動',
       deleteTitle: 'この項目を削除しますか？',
       deleteDescription: label => `「${label}」は暗号化ボールトから削除されます。元に戻せません。`,
       deleteConfirm: '削除',
@@ -495,6 +499,11 @@ export const ja = defineLocale({
       tabStripAuto: '自動',
       tabStripAlways: '常に表示',
       tabStripNever: '表示しない',
+      appActionsTitle: 'アプリ操作',
+      appActionsDesc:
+        '設定・レイアウト・HUD をタイトルバーの左右どちらに置くか。右にするとタブ用のスペースが左に残ります。',
+      appActionsLeft: '左',
+      appActionsRight: '右',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',
@@ -531,10 +540,11 @@ export const ja = defineLocale({
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
       tipsTitle: 'アプリ内ヒント',
       tipsDesc:
-        'アプリの一部を指す小さな吹き出し。待機中にときどき、また役に立つときは Hermes からも表示します。各ヒントは一度だけ表示されます。',
+        'アプリや Hermes からのヒントをときどき表示します。各ヒントは一度だけ表示されます。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
       tipsReset: (count: number) => `${count}件のヒントをもう一度表示`,
       toursTitle: 'ガイドツアー',
-      toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
+      toursDesc:
+        '各ステップを強調しながら、Hermes がアプリを案内します。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
       vibeHeartsTitle: 'バイブハート',
@@ -1173,10 +1183,13 @@ export const ja = defineLocale({
         'speed-gated-quality':
           'より高品質なモデルもこのマシンに載りますが、メモリ帯域の制約で応答が遅くなります — これは速度を保てる最良のモデルです。',
         'fastest-resident':
-          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。',
-        'least-painful-spilled':
-          'GPU メモリに完全に収まるモデルはありません — システム RAM からの実行で最も快適なモデルです。'
+          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。'
       } as Record<string, string>,
+      noRecommendationTitle: 'このマシン向けの自動推奨モデルはありません',
+      noRecommendationDetail:
+        '自動セットアップには、GPU メモリまたはユニファイドメモリに完全に収まる厳選モデルが必要です。下の一覧から選ぶか、ほかのモデルを探すこともできます。',
+      noRecommendationAction: 'モデルを探す',
+      quickstartConfigure: '自分で選ぶ',
       downloaded: 'ダウンロード済み',
       downloadAction: size => `ダウンロード · ${size}`,
       downloadProgress: (done, total) => `ダウンロード中 ${done} / ${total}`,
@@ -2695,6 +2708,10 @@ export const ja = defineLocale({
     }
   },
 
+  guidedGreeting: {
+    line: 'やあ、どうぞ。Hermes です。二分だけください、あなたに合わせて整えます。それから、本当にやりたいことに取りかかりましょう。\n\nまずは、何とお呼びすればいいですか。',
+    nameSuggestion: (name: string) => `（よければ、${name} さんとお呼びします。）`
+  },
   install: {
     stageStates: {
       pending: '待機中',
@@ -3452,7 +3469,16 @@ export const ja = defineLocale({
     vaultSavePasswordPlaceholder: 'パスワード',
     vaultSaveFootnote: '保存したログイン情報は「設定 → パスワードとログイン」で管理できます。',
     vaultSaveDecline: '保存しない',
-    vaultSaveConfirm: '保存してサインイン'
+    vaultSaveConfirm: '保存してサインイン',
+    vaultCodeSendFailed: 'コードを送信できませんでした',
+    vaultCodeTitle: site => `${site} の確認コード`,
+    vaultCodeDesc: site =>
+      `${site} がワンタイムコード（SMS、メール、または認証アプリ）を求めています。ここに入力すると Hermes がページに入力します。モデルはコードを一切見ません。`,
+    vaultCodeLabel: 'コード',
+    vaultCodeFootnote:
+      'ヒント：「設定 → パスワードとログイン」でこのログインに認証キーを保存すると、Hermes がコードを自動入力します。',
+    vaultCodeSkip: 'スキップ',
+    vaultCodeConfirm: 'コードを入力'
   },
 
   desktop: {
@@ -3489,6 +3515,9 @@ export const ja = defineLocale({
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
     resumeStrandedBody:
       'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
+    poolSlotTimeoutBody:
+      'すべてのローカルプロファイルバックエンドスロットが使用中です。「設定」→「詳細設定」で「Warm Bot Backends」を増やすか、アイドル状態のバックエンドが解放された後に再試行してください。',
+    poolSlotTimeoutOpenSettings: '詳細設定を開く',
     resumeRetry: '再試行',
     nothingToBranch: 'ブランチするものがありません',
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',

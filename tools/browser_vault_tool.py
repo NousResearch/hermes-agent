@@ -232,6 +232,8 @@ def browser_vault_list() -> str:
         for meta in metas:
             entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
                      "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
+            if meta.has_otp or backend.needs_unlock:
+                entry["two_factor"] = "automatic" if meta.has_otp else "automatic if the manager stores a TOTP seed, else the user is asked"
             if meta.identifier:
                 entry["identifier"] = meta.identifier
                 entry["identifier_type"] = meta.identifier_type
@@ -314,6 +316,75 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                        "identifier_type": id_type, "fill": filled,
                        "next": "Type the identifier into the username field if the form has one, then submit."},
                       ensure_ascii=False)
+
+
+_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
+                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
+
+
+def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:
+    """Second factor: fill the one-time code the CURRENT page asks for. If the saved login (``handle``) has an
+    authenticator seed, the code is minted server-side and nobody is asked; otherwise the user is prompted on
+    their surface for the code their phone/email/app shows. The code goes into the page over the supervisor
+    socket and never enters the conversation."""
+    from agent.redact import register_vault_redaction_value
+    from agent.vault_backends import backend_for_handle
+    from agent.vault_backends.unlock import can_prompt_here, get_code_prompt_callback
+    from agent.vault_login_classifier import LoginControl, build_fill_js, build_inspection_js, build_otp_fills, classify_otp_controls
+
+    effective_task_id = task_id or "default"
+    _focus_bound_origin(effective_task_id, "", "otp")
+    origin = _current_page_origin(effective_task_id)
+    if not origin:
+        return json.dumps({"success": False, "error": "No page with a code field is open."})
+    site = origin.split("://", 1)[-1]
+
+    nonce = secrets.token_hex(8)
+    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
+    if isinstance(raw_controls, str):
+        raw_controls = _parse_json_result(raw_controls)
+    otp_controls = classify_otp_controls([LoginControl.from_dict(r) for r in (raw_controls or []) if isinstance(r, dict)])
+    if not otp_controls:
+        return json.dumps({"success": False, "error_type": "no_code_field",
+                           "error": ("No one-time-code field on the current page. If the site wants a passkey, hardware key or "
+                                     "an approval tap in an app, tell the user to complete it on their device and wait for the page to move on.")})
+
+    code: Optional[str] = None
+    source = "user"
+    backend = backend_for_handle(handle) if handle else None
+    if backend is not None:
+        try:
+            code = backend.resolve_otp(handle)
+        except Exception:
+            code = None
+        if code:
+            source = backend.name
+    if not code:
+        prompt = get_code_prompt_callback()
+        if prompt is None or not can_prompt_here():
+            return json.dumps({"success": False, "error_type": "prompt_unavailable",
+                               "error": (f"{site} asks for a one-time code and this session cannot ask the user (headless/cron/API). "
+                                         "Save an authenticator key for this login so codes can be generated automatically.")})
+        code = (prompt(site, "") or "").strip().replace(" ", "").replace("-", "")
+        if not code:
+            return json.dumps({"success": False, "error_type": "code_declined",
+                               "error": "The user did not enter a code. Do not ask again this turn."})
+
+    register_vault_redaction_value(code)
+    fills = build_otp_fills(otp_controls, code)
+    result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
+    del code
+    if not result.get("success"):
+        return json.dumps({"success": False, "error": str(result.get("error") or "fill failed")[:200]})
+    parsed = _parse_json_result(result.get("result"))
+    if isinstance(parsed, str):
+        parsed = _parse_json_result(parsed)
+    if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
+        return json.dumps({"success": False, "error_type": "origin_changed", "error": "The page navigated before the code could be entered. Nothing was written."})
+    filled = int(parsed.get("filled", 0)) if isinstance(parsed, dict) else 0
+    return json.dumps({"success": bool(filled), "filled_fields": filled, "origin": origin, "source": source,
+                       "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
@@ -471,6 +542,9 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": meta.origin}
+    if meta.kind == "login":
+        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault_enter_code with this handle"
+                       + (" (a code will be generated automatically)." if meta.has_otp else "."))
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
     return json.dumps(out)
@@ -568,6 +642,28 @@ BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
 }
 
 
+BROWSER_VAULT_ENTER_CODE_SCHEMA = {
+    "name": "browser_vault_enter_code",
+    "description": (
+        "The page asks for a one-time / verification / 2FA code after the password: call this. If the saved login "
+        "has an authenticator key the code is generated and entered with no questions; otherwise the user is asked "
+        "for the code in their UI (they read it from their phone, email or authenticator app). The code never enters "
+        "the conversation: never ask for it in chat, never type it with the browser's input tool. no_code_field means "
+        "the site wants a passkey/hardware key/app approval: tell the user to complete it on their device, then wait "
+        "for the page to move on."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {"handle": {"type": "string", "description": "The login handle you just filled (lets Hermes generate the code when an authenticator key is saved)."}},
+        "required": [],
+    },
+}
+
+
+def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
+    return browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id"))
+
+
 def _handle_vault_save_login(args: Dict[str, Any], **kwargs) -> str:
     return browser_vault_save_login(label=str(args.get("label") or ""), task_id=kwargs.get("task_id"))
 
@@ -613,6 +709,15 @@ registry.register(
     toolset="browser",
     schema=BROWSER_VAULT_SAVE_LOGIN_SCHEMA,
     handler=_handle_vault_save_login,
+    check_fn=_check_vault_available,
+    emoji="🔐",
+)
+
+registry.register(
+    name="browser_vault_enter_code",
+    toolset="browser",
+    schema=BROWSER_VAULT_ENTER_CODE_SCHEMA,
+    handler=_handle_vault_enter_code,
     check_fn=_check_vault_available,
     emoji="🔐",
 )

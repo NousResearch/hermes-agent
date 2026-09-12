@@ -42,6 +42,8 @@ export const UNSCOPED_STREAM_EVENT_TYPES = new Set([
   'tool.generating',
   'tool.progress',
   'tool.start',
+  'vault.code.expire',
+  'vault.code.request',
   'vault.save_login.expire',
   'vault.save_login.request',
   'vault.unlock.expire',

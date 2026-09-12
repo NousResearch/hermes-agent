@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 import os
 import stat
 import sys
@@ -334,6 +335,7 @@ class TestBrowserVaultTools:
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
         # Password-only fill: exactly one field.
+        assert out.pop("next").startswith("Submit")  # workflow hint, not data
         assert out == {
             "success": True,
             "filled_fields": 1,
@@ -678,3 +680,107 @@ def test_every_vault_tool_is_in_the_browser_toolset():
 
     registered = {e.name for e in registry.get_all_entries() if e.name.startswith("browser_vault_")}
     assert registered <= set(toolsets.TOOLSETS["browser"]["tools"]), registered - set(toolsets.TOOLSETS["browser"]["tools"])
+
+
+class TestTwoFactor:
+    def test_totp_matches_rfc6238_vector_and_seed_normalisation(self):
+        from agent.vault_store import VaultError, normalize_otp_secret, totp_now
+
+        seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # "12345678901234567890"
+        assert totp_now(seed, digits=8, at=59) == "94287082"
+        assert totp_now(seed, at=1111111109) == "081804"
+        assert normalize_otp_secret("otpauth://totp/GitHub:tek?secret=jbsw y3dp ehpk3pxp&issuer=GitHub") == "JBSWY3DPEHPK3PXP"
+        with pytest.raises(VaultError):
+            normalize_otp_secret("not base32!")
+        # Non-default otpauth parameters are kept and honoured (RFC 6238 SHA-256 / 8-digit vector at T=59).
+        stored = normalize_otp_secret(f"otpauth://totp/x?secret={'GEZDGNBVGY3TQOJQ' * 2}&digits=8&period=30&algorithm=SHA256")
+        assert stored.endswith("|8|30|SHA256")
+        sha256_seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA"  # "1234567890" * 3.2 -> RFC 32-byte seed
+        assert totp_now(sha256_seed + "|8|30|SHA256", at=59) == "46119246"
+        assert totp_now("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ|6|60|SHA1", at=119) == totp_now("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", period=60, at=119)
+        with pytest.raises(VaultError):
+            normalize_otp_secret("otpauth://hotp/x?secret=JBSWY3DPEHPK3PXP&counter=1")
+
+    def test_saved_authenticator_key_mints_codes_without_asking(self, store, monkeypatch):
+        """The whole point: with a seed on the login, enter_code never prompts and the code never comes back."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        meta = store.add_item("login", "gh", {"identifier_type": "username", "identifier": "tek", "password": "pw",
+                                              "otp_secret": "JBSWY3DPEHPK3PXP"}, origin="https://github.com")
+        assert store.get_meta(meta.id).has_otp is True
+        asked = []
+        unlock_mod.set_code_prompt_callback(lambda site, hint: asked.append(site) or "000000")
+        controls = [{"index": 0, "type": "text", "name": "otp", "label": "Authentication code", "autocomplete": "one-time-code"}]
+        seen = {}
+
+        def fake_eval(task_id, expr):
+            return {"success": True, "result": json.dumps(controls) if "querySelectorAll" in expr else "https://github.com/sessions/two-factor"}
+
+        def fake_secret(task_id, expr):
+            seen["expr"] = expr
+            return {"success": True, "result": json.dumps({"filled": 1})}
+
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
+            raw = browser_vault_tool.browser_vault_enter_code(meta.id, task_id="t")
+        unlock_mod.set_code_prompt_callback(None)
+        out = json.loads(raw)
+        assert out["success"] and out["source"] == "local" and asked == []
+        code = re.search(r'"value": "(\d{6})"', seen["expr"]).group(1)
+        assert code not in raw  # the code went to the page, not to the model
+
+    def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        unlock_mod.set_code_prompt_callback(lambda site, hint: "246 810")
+        boxes = [{"index": i, "type": "tel", "name": f"digit{i}", "label": "", "autocomplete": "one-time-code",
+                  "formIndex": 0, "maxLength": 1} for i in range(6)]
+        seen = {}
+        fake_eval = lambda t, e: {"success": True, "result": json.dumps(boxes) if "querySelectorAll" in e else "https://acme.test/2fa"}
+
+        def fake_secret(t, e):
+            seen["expr"] = e
+            return {"success": True, "result": json.dumps({"filled": 6})}
+
+        with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+            unlock_mod.set_code_prompt_callback(lambda site, hint: "")
+            declined = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+        unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] and out["source"] == "user" and out["filled_fields"] == 6
+        assert re.findall(r'"value": "(\d)"', seen["expr"]) == list("246810")
+        assert declined["error_type"] == "code_declined"
+
+    def test_several_code_like_inputs_that_are_not_a_digit_widget_get_one_field(self):
+        """Reviewer case: a page with 4+ code-ish inputs (promo code, zip code, a real OTP box...) must never
+        get a digit sprayed across them. Only an unmistakable maxlength=1 same-form adjacent group splits."""
+        from agent.vault_login_classifier import ClassifiedLoginControl, LoginControl, build_otp_fills
+
+        def ctl(i, form=0, maxlen=None, score=70):
+            return ClassifiedLoginControl(LoginControl("", form, i, "", f"code{i}", "text", maxlen), score, "one-time-code")
+
+        scattered = [ctl(0), ctl(3), ctl(7), ctl(9, form=1), ctl(12, score=100)]
+        assert build_otp_fills(scattered, "246810") == [{"index": 12, "token": "one-time-code", "value": "246810"}]
+        # maxlength=1 but different forms / non-adjacent: still one field
+        assert len(build_otp_fills([ctl(i, form=i % 2, maxlen=1) for i in range(6)], "246810")) == 1
+        assert len(build_otp_fills([ctl(i * 2, maxlen=1) for i in range(6)], "246810")) == 1
+        # five boxes for a six-digit code: one field
+        assert len(build_otp_fills([ctl(i, maxlen=1) for i in range(5)], "246810")) == 1
+        # the real widget
+        assert [f["value"] for f in build_otp_fills([ctl(i + 4, maxlen=1) for i in range(6)], "246810")] == list("246810")
+
+    def test_no_code_field_points_at_passkey_or_device_approval(self):
+        from tools import browser_vault_tool
+
+        fake_eval = lambda t, e: {"success": True, "result": json.dumps([{"index": 0, "type": "text", "name": "q", "label": "Search", "autocomplete": ""}]) if "querySelectorAll" in e else "https://acme.test/approve"}
+        with patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+        assert out["error_type"] == "no_code_field" and "device" in out["error"]

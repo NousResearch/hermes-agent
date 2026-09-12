@@ -180,10 +180,41 @@ def _cli_supports_recover(binary: str) -> bool:
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
+SQLITE_HEADER_LENGTH = 100
+
+
 def run_cli_lost_and_found_recover(
     source: Path, lf_path: Path, sqlite3_bin: str, *, timeout: float = 3600.0,
 ) -> dict[str, Any]:
-    """Run ``sqlite3 <source> .recover`` streamed into a fresh scratch DB."""
+    """Run ``sqlite3 <source> .recover`` streamed into a fresh scratch DB.
+
+    A file whose page-1 header is garbage (SIGKILL mid-write) is refused outright by the shell
+    (``file is not a database``, rc 26) although the data pages after it survive. ``.recover``
+    walks pages via sqlite_dbpage and only trips on the magic check, so on that refusal the
+    100-byte header of the private snapshot is zeroed and the attempts rerun; a zeroed header
+    makes .recover infer page size and layout from the pages themselves (a spliced donor header
+    would instead report a database size/freelist that contradicts the file). ``source`` is
+    the caller's snapshot copy, never the user's file (#106667).
+    """
+    attempts = _cli_recover_attempts(source, lf_path, sqlite3_bin, timeout=timeout)
+    if attempts[-1]["usable"]:
+        return {"binary": sqlite3_bin, "attempts": attempts}
+    if any("not a database" in a["dump_stderr_tail"] for a in attempts):
+        with source.open("r+b") as handle:
+            handle.write(bytes(SQLITE_HEADER_LENGTH))
+        attempts += _cli_recover_attempts(source, lf_path, sqlite3_bin, timeout=timeout)
+        if attempts[-1]["usable"]:
+            return {"binary": sqlite3_bin, "attempts": attempts, "header_zeroed": True}
+    details = "; ".join(
+        f"[{a['command']}] dump rc={a['dump_returncode']} load rc={a['load_returncode']} "
+        f"{a['dump_stderr_tail'] or a['load_stderr_tail']}".strip()
+        for a in attempts
+    )
+    raise LostAndFoundError(f"sqlite3 .recover did not produce a usable lost_and_found database: {details}")
+
+
+def _cli_recover_attempts(source: Path, lf_path: Path, sqlite3_bin: str, *, timeout: float) -> list[dict[str, Any]]:
+    """``--ignore-freelist`` first (no resurrected deleted rows), plain ``.recover`` for older shells."""
     attempts: list[dict[str, Any]] = []
     for command in (".recover --ignore-freelist", ".recover"):
         if lf_path.exists():
@@ -211,13 +242,8 @@ def run_cli_lost_and_found_recover(
             "usable": _lost_and_found_db_usable(lf_path),
         })
         if attempts[-1]["usable"]:
-            return {"binary": sqlite3_bin, "attempts": attempts}
-    details = "; ".join(
-        f"[{a['command']}] dump rc={a['dump_returncode']} load rc={a['load_returncode']} "
-        f"{a['dump_stderr_tail'] or a['load_stderr_tail']}".strip()
-        for a in attempts
-    )
-    raise LostAndFoundError(f"sqlite3 .recover did not produce a usable lost_and_found database: {details}")
+            break
+    return attempts
 
 
 def _lost_and_found_db_usable(lf_path: Path) -> bool:

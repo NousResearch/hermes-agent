@@ -98,6 +98,7 @@ def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
     # (#47237). A bare MagicMock returns a truthy mock, which would wrongly
     # mark the user turn as a duplicate and skip persisting it.
     runner.session_store.has_platform_message_id = MagicMock(return_value=False)
+    runner.session_store.transcript_tail_role = MagicMock(return_value="user")
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
@@ -123,7 +124,7 @@ def _make_event() -> MessageEvent:
 
 
 @pytest.mark.asyncio
-async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, tmp_path):
+async def test_incomplete_codex_turn_closes_transcript_without_slack_delivery(monkeypatch, tmp_path):
     adapter = CaptureSlackAdapter()
     runner = _make_runner(adapter)
 
@@ -148,8 +149,10 @@ async def test_incomplete_codex_turn_stays_out_of_slack_transcript(monkeypatch, 
         call.args[1]["role"]
         for call in runner.session_store.append_to_transcript.call_args_list
     ]
-    assert transcript_roles == ["session_meta", "user"]
+    assert transcript_roles == ["session_meta", "user", "assistant"]
     assert runner.session_store.append_to_transcript.call_args_list[1].args[1]["content"] == "hello"
+    boundary = runner.session_store.append_to_transcript.call_args_list[2].args[1]["content"]
+    assert boundary == runner._FAILED_TURN_NOTICE
     assert adapter.processing_hooks == [
         ("start", "m-1"),
         ("complete", "m-1", ProcessingOutcome.SUCCESS),

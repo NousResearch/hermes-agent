@@ -627,8 +627,9 @@ DEFAULT_CONFIG = {
         # path.
         "in_place": True,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
-        # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. The <512K floor (0.75) still
-        # applies raise-only on top.
+        # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
+        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Nous at the
+        # global value). The <512K floor (0.75) still applies raise-only on top.
         "model_thresholds": {},
         # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
         # up front, before the first reply. Time-based complement to `threshold`; skipped when
@@ -1131,6 +1132,19 @@ DEFAULT_CONFIG = {
     },
 
     "voice": {
+        # How the Desktop voice conversation is wired:
+        #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
+        #   gpt-live — one full-duplex voice model (OpenAI GPT-Live) owns the mic and speaker and
+        #              DELEGATES every real request to Hermes (any model / provider you have
+        #              selected); needs an OpenAI API key. $0.05/min voice layer billing.
+        "voice_chat_mode": "chained",
+        "gpt_live": {
+            "model": "gpt-live-1",
+            "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
+            # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
+            "instructions": "",
+            # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
+        },
         "record_key": "ctrl+b",
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,
@@ -1374,6 +1388,7 @@ DEFAULT_CONFIG = {
         # See #79686.
         "ledger": True,
     },
+
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
     # long-unused skills stale, archives (never deletes) obsolete ones, optionally consolidates
     # overlaps via a forked aux-model agent. Inactivity-triggered from session start, no cron
@@ -1634,6 +1649,7 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
         # default: policy-denied in cron context to prevent unattended scheduling loops. Jobs
         # created this way are user-owned in the same flat jobs table. Interactive toolsets
@@ -1901,8 +1917,6 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
-        # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
-        "multiplex_profile_allowlist": None,
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,
@@ -2351,6 +2365,11 @@ DEFAULT_CONFIG = {
         # 14-20% of consecutive calls in concurrent tool loops (measured 2026-09-06;
         # NousResearch/api#227), so chat is the default until that is fixed.
         "anthropic_wire": "chat",
+        # Nous free tier: with no other provider configured, Hermes sets up a free Nous identity on
+        # first use (inference on nous/welcome + connectors) and offers `/login` (terminal:
+        # `hermes auth upgrade`) to sign in. false turns the free tier off entirely: nothing is set
+        # up and nothing is used.
+        "guest": True,
     },
     # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
     # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
@@ -2377,7 +2396,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 42,  # Config schema version - bump this when adding new required fields
+    "_config_version": 43,  # Config schema version - bump this when adding new required fields
 }
 
 
@@ -2427,6 +2446,11 @@ def _base_url(name, prompt_name=None):
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": _base_url("Nous Portal"),
+    "HERMES_ANON_API_SECRET": _env(
+        "Shared secret for the Nous free-tier sign-up endpoints while they are in their gated "
+        "integration phase (not needed once the gate is removed)",
+        "Nous free-tier shared secret (leave empty unless given one)", password=True,
+        category="provider", advanced=True),
     "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
         "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
         category="provider", advanced=True),
@@ -2472,9 +2496,6 @@ OPTIONAL_ENV_VARS = {
     "GMI_BASE_URL": _base_url("GMI Cloud"),
     "ACTUAL_API_KEY": _prov("Actual Computer inference key (ac_...)",
         "Actual Computer inference key", "https://actual.inc/user/keys"),
-    "ACTUAL_BASE_URL": _prov(
-        "Actual Computer base URL override (set to http://127.0.0.1:8080 for the local offline "
-        "daemon)", "Actual Computer base URL (leave empty for hosted relay)", None, password=False),
     "FIREWORKS_API_KEY": _prov("Fireworks AI API key", "Fireworks AI API key",
         "https://app.fireworks.ai/settings/users/api-keys"),
     "MINIMAX_API_KEY": _prov("MiniMax API key (international)", "MiniMax API key",

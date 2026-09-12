@@ -62,6 +62,7 @@ interface VaultItem {
   identifier?: null | string
   identifier_type?: null | string
   backend?: VaultSourceName
+  has_otp?: boolean
 }
 
 /** Add-dialog prefill from a deep link (`/settings?tab=vault&kind=…`). NEVER secrets. */
@@ -92,6 +93,7 @@ const EMPTY_FORM = {
   identifierType: 'email' as IdentifierType,
   identifier: '',
   password: '',
+  otpSecret: '',
   cardNumber: '',
   cardName: '',
   expMonth: '',
@@ -114,7 +116,8 @@ function buildSecret(form: VaultForm): Record<string, string> {
     return {
       identifier_type: form.identifierType,
       identifier: form.identifier.trim(),
-      password: form.password
+      password: form.password,
+      ...(form.otpSecret.trim() ? { otp_secret: form.otpSecret.trim() } : {})
     }
   }
 
@@ -434,6 +437,7 @@ export function VaultSettings() {
             <span className="flex items-center gap-2">
               <span className="truncate">{item.label}</span>
               <Pill tone={item.kind === 'login' ? 'primary' : 'muted'}>{kindLabel(item.kind)}</Pill>
+              {item.has_otp && <Pill tone="muted">{v.twoFactorBadge}</Pill>}
             </span>
           }
         />
@@ -644,6 +648,17 @@ export function VaultSettings() {
                     type="password"
                     value={form.password}
                   />
+                </Field>
+                <Field htmlFor="vault-otp" label={v.otpField} optional optionalLabel={v.optional}>
+                  <Input
+                    autoComplete="off"
+                    id="vault-otp"
+                    onChange={e => setForm(f => ({ ...f, otpSecret: e.target.value }))}
+                    placeholder={v.otpPlaceholder}
+                    type="password"
+                    value={form.otpSecret}
+                  />
+                  <p className="text-xs text-muted-foreground">{v.otpHint}</p>
                 </Field>
               </>
             )}

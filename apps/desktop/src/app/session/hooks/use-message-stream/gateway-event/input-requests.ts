@@ -13,13 +13,16 @@ import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
+  $vaultCodeRequests,
   $vaultSaveLoginRequests,
   $vaultUnlockRequests,
+  clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
   clearVaultUnlockRequest,
   receiveApprovalRequest,
   setSecretRequest,
   setSudoRequest,
+  setVaultCodeRequest,
   setVaultSaveLoginRequest,
   setVaultUnlockRequest
 } from '@/store/prompts'
@@ -162,6 +165,17 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         sessionId,
         title: translateNow('notifications.native.inputTitle')
       })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.code.expire') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const request = sessionId ? $vaultCodeRequests.get()[sessionId] : undefined
+
+    if (requestId && request && request.requestId === requestId) {
+      clearVaultCodeRequest(sessionId, requestId)
     }
 
     return true
@@ -344,6 +358,31 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
 
       dispatchNativeNotification({
         body: promptText || envVar || translateNow('notifications.native.inputBody'),
+        kind: 'input',
+        sessionId,
+        title: translateNow('notifications.native.inputTitle')
+      })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.code.request') {
+    // Second factor: the site asked for a one-time code and no authenticator key is saved for the login.
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (requestId) {
+      const site = typeof payload?.site === 'string' ? payload.site : ''
+      const hint = typeof payload?.hint === 'string' ? payload.hint : ''
+
+      setVaultCodeRequest({ hint, requestId, sessionId: sessionId ?? null, site })
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: translateNow('prompts.vaultCodeTitle', site),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')

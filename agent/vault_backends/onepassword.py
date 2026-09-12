@@ -122,6 +122,14 @@ class OnePasswordLoginBackend(LoginBackend):
         item_id = handle[len(self.prefix):]
         return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
 
+    def resolve_otp(self, handle: str) -> Optional[str]:
+        # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
+        try:
+            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+        except Exception:
+            return None
+        return code if code.isdigit() else None
+
 
 def _first_origin(urls: List[str]) -> Optional[str]:
     for u in urls:

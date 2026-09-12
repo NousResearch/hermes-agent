@@ -496,9 +496,12 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  // free_tier is only set for Nous. true → "Free tier", false → "Pro".
+  // Two different facts wear the same badge: `free_tier` is a signed-in Nous
+  // account on the free plan; `free_tier_row` is the no-account route's own
+  // row. Either way the user is on free inference, so say so. Never match the
+  // route by name — the label is copy.
   const tierBadge =
-    provider.free_tier === true ? (
+    provider.free_tier === true || provider.free_tier_row === true ? (
       <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
         {copy.freeTier}
       </span>

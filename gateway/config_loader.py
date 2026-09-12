@@ -72,7 +72,7 @@ _TOPLEVEL_BRIDGE: tuple = (
     ("stt", "stt", "presence", lambda v: isinstance(v, dict), None),
     *_presence("stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user"),
     ("multiplex_profiles", "multiplex_profiles", "gwdata", None, None),
-    *_presence("multiplex_profile_allowlist", "room_link_url"),
+    *_presence("room_link_url"),
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
     *_presence("max_concurrent_sessions"),
     ("systemd_watchdog_seconds", "systemd_watchdog_seconds", "nested", None, None),
@@ -313,7 +313,15 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     Top-level ``require_mention`` → Telegram when the ``telegram:`` section has none: users write it
     alongside ``group_sessions_per_user`` expecting it to work, and the telegram plugin's hook only
     runs when a telegram block exists. Signal ``require_mention`` → ``SIGNAL_REQUIRE_MENTION`` (env wins).
+
+    Both values are ALWAYS seeded into the owning platform's ``extra`` (the adapters read extra first);
+    the process-env write is skipped while a multiplexed secondary profile's scope is active — the
+    loader runs inside ``_profile_runtime_scope`` for every secondary, and a first-writer-wins write
+    there would make the secondary's mention policy the DEFAULT profile's (#80099 class).
     """
+    from gateway.platforms._shared import profile_scoped
+
+    skip_env_bridge = profile_scoped()
     tl_require_mention = yaml_cfg.get("require_mention")
     if tl_require_mention is not None and "require_mention" not in (yaml_cfg.get("telegram") or {}):
         tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
@@ -323,7 +331,7 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
         # require_mention (not a telegram: block), so the telegram plugin's apply_yaml_config_fn hook —
         # which only runs when a telegram config block exists — can't cover the no-telegram-block case
         # (#3979).
-        if not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+        if not skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
             os.environ["TELEGRAM_REQUIRE_MENTION"] = str(tl_require_mention).lower()
 
     # Telegram settings → env vars / extra: migrated to the telegram plugin's apply_yaml_config_fn hook
@@ -331,24 +339,41 @@ def bridge_core_env_settings(yaml_cfg: dict, platforms_data: dict) -> None:
     # WhatsApp settings → env vars: migrated to the whatsapp plugin's apply_yaml_config_fn hook
     # (plugins/platforms/whatsapp/adapter.py). #41112 / #3823.
     signal_cfg = yaml_cfg.get("signal", {})
-    if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-        os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+    if isinstance(signal_cfg, dict) and "require_mention" in signal_cfg:
+        sig_plat = platforms_data.setdefault(Platform.SIGNAL.value, {})
+        sig_plat.setdefault("extra", {}).setdefault("require_mention", signal_cfg["require_mention"])
+        if not skip_env_bridge and not os.getenv("SIGNAL_REQUIRE_MENTION"):
+            os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
 
 
-def load_yaml_layer(home: Path, gw_data: dict) -> None:
-    """Overlay ``config.yaml`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
+def read_yaml_layers(home: Path) -> dict:
+    """User ``config.yaml`` with the managed overlay applied — the YAML the gateway loader sees.
+
+    Raises on a malformed user file (the loader then falls back to env + gateway.json WITHOUT the
+    managed layer). An ABSENT user file is an empty layer, not a reason to skip the administrator's
+    values: a fleet host with no ``config.yaml`` must still honor them. Any pre-activation predicate
+    (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
+    ``load_gateway_config()`` on which files count.
+    """
     import yaml
 
     config_yaml_path = home / "config.yaml"
-    if not config_yaml_path.exists():
-        return
-    with open(config_yaml_path, encoding="utf-8") as f:
-        yaml_cfg = yaml.safe_load(f) or {}
+    yaml_cfg: dict = {}
+    if config_yaml_path.exists():
+        with open(config_yaml_path, encoding="utf-8") as f:
+            yaml_cfg = yaml.safe_load(f) or {}
 
     # Managed scope: overlay administrator-pinned values (this loader bypasses
     # hermes_cli.config.load_config, so managed quick_commands / stt would otherwise be ignored).
     from hermes_cli import managed_scope
-    yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
+    return managed_scope.apply_managed_overlay(yaml_cfg)
+
+
+def load_yaml_layer(home: Path, gw_data: dict) -> None:
+    """Overlay ``read_yaml_layers`` onto *gw_data* in place. Raises on any failure (caller warns + falls back)."""
+    yaml_cfg = read_yaml_layers(home)
+    if not yaml_cfg:
+        return
 
     gateway_section = yaml_cfg.get("gateway")
     bridge_toplevel_keys(yaml_cfg, gateway_section, gw_data)

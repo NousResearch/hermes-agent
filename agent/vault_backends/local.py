@@ -29,5 +29,10 @@ class LocalLoginBackend(LoginBackend):
     def resolve_password(self, handle: str) -> str:
         return str(_store().resolve_secret(handle).get("password") or "")
 
+    def resolve_otp(self, handle: str) -> Optional[str]:
+        from agent.vault_store import totp_now
+        seed = str(_store().resolve_secret(handle).get("otp_secret") or "")
+        return totp_now(seed) if seed else None
+
     def resolve_secret(self, handle: str) -> Dict[str, str]:
         return {k: str(v) for k, v in _store().resolve_secret(handle).items()}

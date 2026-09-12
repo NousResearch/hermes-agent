@@ -1,6 +1,7 @@
 import { skillInvocationText } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { mergeOlderTranscriptPage } from '@/app/chat/transcript-backfill'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
@@ -684,10 +685,18 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // toChatMessages handles it directly. updateSessionState only
             // publishes for the active runtime, guarding against a late result
             // clobbering the foreground after a session switch.
+            // The pre-compression segment stays reachable in the active
+            // session (#105256): the rewrite shares no anchor with the live
+            // transcript, so grafting would drop everything before the
+            // summary. Prepend it instead (deduped by row/message id), keeping
+            // the post-compress history authoritative for overlapping rows.
             if (Array.isArray(result?.messages)) {
               updateSessionState(
                 sessionId,
-                state => ({ ...state, messages: toChatMessages(result.messages!) }),
+                state => ({
+                  ...state,
+                  messages: mergeOlderTranscriptPage(toChatMessages(result.messages!), state.messages)
+                }),
                 storedSessionId
               )
             }

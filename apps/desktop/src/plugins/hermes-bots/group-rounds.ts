@@ -157,13 +157,17 @@ export function rotateGroupSpeakers(members: GroupMember[], round: number) {
 /** #93129: classify a USER room message's effect on member holds. Only user
  *  sends ever reach this (bot replies are appended by the round loop, never
  *  through sendToGroupChat), so a bot saying "stopped working on it" can
- *  never set a hold. Conservative on purpose: any standalone stop/halt/pause
- *  word next to a mention holds those members — "don't stop @x" therefore
- *  also holds, which errs toward the bot staying quiet until re-addressed
- *  (a wrongly-held bot is one mention away from release; a wrongly-running
- *  one keeps doing work it was told to stop). A non-stop direct mention
- *  releases the mentioned members — the user addressing a bot directly
- *  overrides its hold. */
+ *  never set a hold. A stop/halt/pause word holds the mentioned members only
+ *  when it reads as a directive — adjacent to a mention ("stop @x",
+ *  "@x please halt") — so a distant prose word never holds ("@x go, das ist
+ *  halt ein Test", "@x mach mal Pause", #103893). "don't stop @x" therefore
+ *  still holds: the stop word sits next to the mention, which errs toward
+ *  the bot staying quiet until re-addressed (a wrongly-held bot is one
+ *  mention away from release; a wrongly-running one keeps doing work it was
+ *  told to stop). An explicit release word (resume/continue/go/proceed) wins
+ *  over a stop word in the same message. A non-stop direct mention releases
+ *  the mentioned members — the user addressing a bot directly overrides its
+ *  hold. */
 export function classifyGroupHoldDirective(
   text: string,
   mentionedKeys: Iterable<string> | null | undefined,
@@ -171,19 +175,10 @@ export function classifyGroupHoldDirective(
 ) {
   const value = String(text || '')
   const mentioned = [...(mentionedKeys || [])]
-  const stop = /\b(stop|halt|pause)\b/i.test(value)
   const resume = /\b(resume|continue|go|proceed)\b/i.test(value)
 
-  if (stop) {
-    // "@all stop" holds every member — symmetric with "@all resume".
-    return {
-      hold: mentioned,
-      holdAll: Boolean(everyone),
-      release: [],
-      releaseAll: false
-    }
-  }
-
+  // #103893: an explicit release word wins — "@impl go, das ist halt ein
+  // Test" addresses the bot, so the distant filler "halt" must not hold it.
   if (resume) {
     return {
       hold: [],
@@ -193,12 +188,55 @@ export function classifyGroupHoldDirective(
     }
   }
 
+  const stop = /\b(stop|halt|pause)\b/i.test(value)
+
+  // "@all stop" holds every member — symmetric with "@all resume".
+  if (stop && (Boolean(everyone) || stopWordNearMention(value, mentioned))) {
+    return {
+      hold: mentioned,
+      holdAll: Boolean(everyone),
+      release: [],
+      releaseAll: false
+    }
+  }
+
   return {
     hold: [],
     holdAll: false,
     release: mentioned,
     releaseAll: false
   }
+}
+
+/** #103893: true when a stop/halt/pause token sits within two words of an
+ *  @mention of a held-candidate member. Directives keep members ("stop @x",
+ *  "@x please halt"); prose fillers don't ("@x go, das ist halt ein Test").
+ *  ponytail: fixed ≤2 window fitted to observed cases, not language-aware —
+ *  widen only with measured directive/filler pairs, never by guessing. */
+function stopWordNearMention(value: string, mentioned: string[]) {
+  const keys = new Set(mentioned.map(key => String(key).toLowerCase()))
+
+  if (!keys.size) {
+    return false
+  }
+
+  const tokens = String(value).toLowerCase().match(/@[\p{L}\p{N}_-]+|[\p{L}\p{N}_-]+/gu) || []
+  const mentionAt: number[] = []
+  const stopAt: number[] = []
+
+  tokens.forEach((token, index) => {
+    if (token.startsWith('@')) {
+      const name = token.slice(1)
+
+      if (name === 'all' || name === 'everyone' || keys.has(name)) {
+        mentionAt.push(index)
+      }
+    } else if (token === 'stop' || token === 'halt' || token === 'pause') {
+      stopAt.push(index)
+    }
+  })
+
+  return stopAt.some(stop => mentionAt.some(mention => Math.abs(stop - mention) <= 2))
 }
 
 /** What `parseGroupChatMentions` reports for one room message. */

@@ -709,6 +709,45 @@ describe('member holds (#93129)', () => {
     expect([...action.release]).toEqual(['impl'])
   })
 
+  it('ignores a distant German filler word when a release word is present (#103893)', async () => {
+    const { rounds } = await loadRoom()
+
+    // Explicit "go" wins over the distant filler "halt" — no sticky hold.
+    const action = rounds.classifyGroupHoldDirective('@impl go, das ist halt ein Test', ['impl'], false)
+
+    expect([...action.hold]).toEqual([])
+    expect([...action.release]).toEqual(['impl'])
+  })
+
+  it('ignores a distant German stop-word noun with no directive (#103893)', async () => {
+    const { rounds } = await loadRoom()
+
+    const action = rounds.classifyGroupHoldDirective('@impl mach mal Pause', ['impl'], false)
+
+    expect([...action.hold]).toEqual([])
+    expect([...action.release]).toEqual(['impl'])
+  })
+
+  it('still holds when the stop word sits next to the mention', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['@impl stop what you are doing', 'halt @impl, now']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['impl'], false)
+
+      expect([...action.hold]).toEqual(['impl'])
+      expect([...action.release]).toEqual([])
+    }
+  })
+
+  it('treats a distant English stop word as prose, not a directive', async () => {
+    const { rounds } = await loadRoom()
+
+    const action = rounds.classifyGroupHoldDirective('stop the presses, @impl what do you think?', ['impl'], false)
+
+    expect([...action.hold]).toEqual([])
+    expect([...action.release]).toEqual(['impl'])
+  })
+
   it('sets a hold on stop and clears it on resume for the same member', async () => {
     const { rounds } = await loadRoom()
     const stamp = { at: 1000, byMessageId: 'm1', thread: 't1' }

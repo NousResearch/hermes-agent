@@ -83,11 +83,14 @@ function Harness({ messages }: { messages: ThreadMessage[] }) {
 const DELIVERY = 'Message from 🤖 Hermes (@hermes): please check the build'
 
 describe('inter-agent collapse gate', () => {
-  it('collapses a settled reply to an inter-agent delivery', async () => {
+  it('shows a settled reply to an inter-agent delivery inline (not collapsed)', async () => {
     render(<Harness messages={[user('u1', DELIVERY), assistant('a1', 'build is green', false)]} />)
 
-    expect(await screen.findByText(/Replied to/)).toBeTruthy()
-    expect(screen.getByText('show reply')).toBeTruthy()
+    // The response is visible without expanding anything — a direct DM has no
+    // other place to surface it (regression: collapsing hid the reply).
+    expect(await screen.findByText('build is green')).toBeTruthy()
+    expect(screen.queryByText(/Replied to/)).toBeNull()
+    expect(screen.queryByText('show reply')).toBeNull()
   })
 
   it('does NOT collapse while that reply is still streaming', async () => {
@@ -104,6 +107,22 @@ describe('inter-agent collapse gate', () => {
 
     await screen.findByText('ordinary answer')
     expect(screen.queryByText(/Replied to/)).toBeNull()
+  })
+
+  // Regression: a DIRECT bot-to-bot DM (the sender is a bot, not the human,
+  // and the two are NOT in a shared group) must show the responding bot's
+  // reply inline — collapsing it behind a closed "show reply" <details>
+  // hides the answer entirely, which is the bug report. Only in-group or
+  // human-visible conversation collapses for Grok-bots parity.
+  it('shows a direct bot-to-bot reply inline (not collapsed/hidden)', async () => {
+    render(<Harness messages={[user('u1', DELIVERY), assistant('a1', 'the build is green', false)]} />)
+
+    // The reply text itself must be visible without expanding anything.
+    const reply = await screen.findByText('the build is green')
+    expect(reply).toBeTruthy()
+    // No collapse affordance => the response is not hidden behind a toggle.
+    expect(screen.queryByText(/Replied to/)).toBeNull()
+    expect(screen.queryByText('show reply')).toBeNull()
   })
 
   it('clears the streaming marker once the turn settles', async () => {

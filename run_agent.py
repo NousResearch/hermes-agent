@@ -1305,6 +1305,7 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
+            output_schema=function_args.get("output_schema"),
             background=not (getattr(self, "_delegate_depth", 0) > 0), action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )

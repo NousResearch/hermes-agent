@@ -493,7 +493,7 @@ def _is_windows_absolute_path(value: str) -> bool:
     return len(value) >= 3 and value[0].isalpha() and value[1] == ":" and value[2] in {"/", "\\"}
 
 
-def _validate_forget_memory_uri(raw_uri: Any) -> tuple[Optional[str], Optional[str]]:
+def _validate_forget_memory_uri(raw_uri: Any, *, user_space: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     uri = raw_uri.strip() if isinstance(raw_uri, str) else ""
     if not uri:
         return None, "uri is required"
@@ -505,11 +505,17 @@ def _validate_forget_memory_uri(raw_uri: Any) -> tuple[Optional[str], Optional[s
     if uri.endswith("/") or not uri.endswith(".md"):
         return None, "viking_forget only deletes concrete .md memory files"
     parts = [part for part in uri[len("viking://") :].split("/") if part]
-    # ``memories`` segment index for the user / user-uid / peer / uid-peer layouts.
-    memories_idx = next((idx for idx, peer_at in ((1, None), (2, None), (3, 1), (4, 2))
-                         if parts[:1] == ["user"] and len(parts) > idx and parts[idx] == "memories" and (peer_at is None or parts[peer_at] == "peers")), None)
+    # ``memories`` index for ``<scope>/[peers/<agent>/]memories/``; under ``user`` the uid is
+    # required, since the uid-less shorthands are deprecated upstream.
+    offsets = ((1, None), (3, 1)) if parts[:1] == ["~"] else ((2, None), (4, 2)) if parts[:1] == ["user"] else ()
+    memories_idx = next((idx for idx, peer_at in offsets
+                         if len(parts) > idx and parts[idx] == "memories" and (peer_at is None or parts[peer_at] == "peers")), None)
     if memories_idx is None or len(parts) < memories_idx + 2:
         return None, "viking_forget only deletes user memory file URIs"
+    # An explicit uid can name someone else's space; the server answers PERMISSION_DENIED either way.
+    if parts[0] == "user" and user_space and parts[1] != user_space:
+        return None, (f"viking_forget only deletes your own memories; use viking://user/{user_space}/... "
+                      "or viking://~/... instead")
     if uri.rsplit("/", 1)[-1] in _GENERATED_MEMORY_SUMMARY_FILENAMES:
         return None, "viking_forget cannot delete generated memory summary files"
     return uri, None
@@ -2639,7 +2645,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         })
 
     def _tool_forget(self, args: dict) -> str:
-        uri, error = _validate_forget_memory_uri(args.get("uri"))
+        # _resolve_user_space, not _user_space: its "default" fallback is a guess, not an identity.
+        uri, error = _validate_forget_memory_uri(args.get("uri"), user_space=_resolve_user_space(self._client))
         if error:
             return tool_error(error)
         result = self._unwrap_result(self._client.delete("/api/v1/fs", params={"uri": uri, "recursive": False}))

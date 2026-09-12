@@ -168,9 +168,10 @@ memory URI.
 
 `viking_forget` is intentionally narrow. It only accepts concrete user memory
 file URIs, such as
-`viking://user/default/peers/hermes/memories/preferences/mem_abc123.md` (any
-explicit user id works; `viking://~/...` input is passed through untouched for
-deployments where the server expands the home alias). Files
+`viking://user/default/peers/hermes/memories/preferences/mem_abc123.md`, or the
+`viking://~/...` self alias. Under `viking://user/...` the user id is required
+and must match the calling identity; the uid-less `viking://user/memories/...`
+and `viking://user/peers/...` shorthands are deprecated and rejected. Files
 directly under `memories/`, such as `viking://user/default/memories/profile.md`,
 are also allowed because OpenViking supports them. The tool rejects directories,
 resources, skills, sessions, generated summary files, and URIs with query

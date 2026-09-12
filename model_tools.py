@@ -711,7 +711,9 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return ts.dispatch_tool_search(args, current_tool_defs=current_defs), None
     if function_name == ts.TOOL_DESCRIBE_NAME:
         return ts.dispatch_tool_describe(args, current_tool_defs=current_defs), None
-    underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
+    underlying_name, underlying_args, err = ts.resolve_underlying_call(
+        args, current_tool_defs=current_defs,
+    )
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
     if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:

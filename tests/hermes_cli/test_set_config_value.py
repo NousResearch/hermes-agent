@@ -486,6 +486,70 @@ class TestSchemaValidation:
         assert "brand_new_future_key" in content
 
 
+class TestPlatformHintValidation:
+    @pytest.mark.parametrize("key", [
+        "platform_hints",
+        "platform_hints.plugin_platform",
+        "platform_hints.plugin_platform.append",
+        "platform_hints.plugin_platform.replace",
+        r"platform_hints.plugin\.platform.append",
+    ])
+    def test_supported_paths(self, key):
+        from hermes_cli.config import _validate_config_key
+
+        assert _validate_config_key(key) == (True, None)
+
+    @pytest.mark.parametrize("key,value,expected", [
+        ("platform_hints", '{"plugin_platform": "Use short paragraphs."}',
+         {"plugin_platform": "Use short paragraphs."}),
+        ("platform_hints.plugin_platform", "Use short paragraphs.",
+         {"plugin_platform": "Use short paragraphs."}),
+        ("platform_hints.plugin_platform", '{"replace": "Use short paragraphs."}',
+         {"plugin_platform": {"replace": "Use short paragraphs."}}),
+        ("platform_hints.plugin_platform.append", "Use short paragraphs.",
+         {"plugin_platform": {"append": "Use short paragraphs."}}),
+    ])
+    def test_supported_values_persist_without_warning(
+        self, _isolated_hermes_home, capsys, key, value, expected,
+    ):
+        import yaml
+
+        set_config_value(key, value)
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["platform_hints"] == expected
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("key", [
+        "platform_hints.telegram.append.extra",
+        "platform_hints.telegram.unknown",
+        "platform_hints..append",
+        "platform_hints.",
+        "platform_hints.telegram.",
+    ])
+    def test_unsupported_paths(self, key):
+        from hermes_cli.config import _validate_config_key
+
+        assert _validate_config_key(key)[0] is False
+
+    @pytest.mark.parametrize("platform", ["telegram", r"plugin\.platform"])
+    def test_typo_suggests_fully_qualified_path(self, platform):
+        from hermes_cli.config import _validate_config_key
+
+        assert _validate_config_key(f"platform_hints.{platform}.apend") == (
+            False, f"platform_hints.{platform}.append",
+        )
+
+    @pytest.mark.parametrize("key", [
+        "platform_hints.telegram.append.extra",
+        "platform_hints.telegram.apend",
+    ])
+    def test_unknown_paths_still_warn(self, _isolated_hermes_home, capsys, key):
+        set_config_value(key, "Use short paragraphs.")
+
+        assert "not a recognized config key" in capsys.readouterr().out
+
+
 class TestValidateConfigKey:
     """Unit tests for the validator itself."""
 

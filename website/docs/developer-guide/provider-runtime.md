@@ -220,3 +220,18 @@ Fallback behavior is exercised across several suites:
 - [Agent Loop Internals](./agent-loop.md)
 - [ACP Internals](./acp-internals.md)
 - [Context Compression & Prompt Caching](./context-compression-and-caching.md)
+
+### Auxiliary retry and fallback control
+
+The public `agent.auxiliary_client.call_llm()` and `async_call_llm()` APIs accept
+`allow_fallback: bool = True`. Existing callers retain configured recovery. Pass
+`allow_fallback=False` when a helper must use the selected provider and model.
+An unavailable route raises instead of trying task/main fallback chains or backend
+discovery; `auto` resolves only against the main route. Vision auto-selection keeps
+its normal main-provider vision model selection, without trying other providers.
+
+A retry repeats the selected route: transient transport retries, rejected-parameter
+repairs, token refresh, and credential-pool rotation remain available. Fallback
+changes the provider or model; strict calls also disable missing-model substitution.
+An explicit model stays selected across retries. The option is per call, leaves
+configuration untouched, and does not change compression callers that omit it.

@@ -3417,17 +3417,22 @@ def _prepare_same_provider_retry(
     max_tokens: Optional[int], tools: Optional[list], effective_timeout: float,
     effective_extra_body: dict, reasoning_config: Optional[dict], async_mode: bool,
     extra_headers: Optional[Dict[str, str]] = None,
+    allow_fallback: bool = True,
 ) -> Tuple[Any, Dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
+    if not allow_fallback:
+        resolved_model = final_model
     if task == "vision":
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
             api_key=resolved_api_key, async_mode=async_mode,
+            **({"allow_fallback": False} if not allow_fallback else {}),
         )
     else:
         retry_client, retry_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
             api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
+            **({"allow_fallback": False} if not allow_fallback else {}),
         )
         effective_provider = _effective_provider_for_client(retry_client, resolved_provider)
     if retry_client is None:
@@ -4276,7 +4281,8 @@ def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
 
 
 def _resolve_auto_route(
-    main_runtime: Optional[Dict[str, Any]] = None, task: Optional[str] = None
+    main_runtime: Optional[Dict[str, Any]] = None, task: Optional[str] = None,
+    allow_fallback: bool = True,
 ) -> Tuple[Optional[OpenAI], Optional[str], str]:
     """Full auto-detection chain, including the selected provider identity. Priority: (1) main provider +
     main model, regardless of provider type ("auto" means "my main model for side tasks too"; explicit
@@ -4291,6 +4297,8 @@ def _resolve_auto_route(
     routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
     if routed is not None:
         return routed
+    if not allow_fallback:
+        return None, None, main_provider
     if task:
         fb_client, fb_model, fb_label = _try_configured_fallback_chain(
             task, main_provider or "auto", reason="main provider unavailable")
@@ -4489,6 +4497,7 @@ class _ResolveRequest(NamedTuple):
     main_runtime: Optional[Dict[str, Any]]
     is_vision: bool
     task: Optional[str]
+    allow_fallback: bool = True
 
 
 _ResolveResult = Tuple[Optional[Any], Optional[str]]
@@ -4568,13 +4577,15 @@ def _route_or_warn(req: _ResolveRequest, client: Any, default: Optional[str], un
 
 def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
     """Auto: try all providers in priority order; tag the client with the effective provider (survives cache reuse)."""
-    client, resolved, effective_provider = _resolve_auto_route(main_runtime=req.main_runtime, task=req.task)
+    client, resolved, effective_provider = _resolve_auto_route(
+        main_runtime=req.main_runtime, task=req.task,
+        **({"allow_fallback": False} if not req.allow_fallback else {}))
     if client is None:
         return None, None
     model = req.model
     # An OpenRouter-format model override won't work on a non-OpenRouter provider (e.g. local
     # server); drop it for the provider's default.
-    if model and "/" in model and resolved and "/" not in resolved:
+    if req.allow_fallback and model and "/" in model and resolved and "/" not in resolved:
         logger.debug("Dropping OpenRouter-format model %r for non-OpenRouter "
                      "auxiliary provider (using %r instead)", model, resolved)
         model = None
@@ -4960,6 +4971,7 @@ def resolve_provider_client(
     explicit_base_url: str = None, explicit_api_key: str = None, api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None, is_vision: bool = False,
     task: Optional[str] = None,
+    allow_fallback: bool = True,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: return a configured client (auth, base URL, API format) for a provider + optional model.
     The client always exposes ``.chat.completions.create()``; Codex/Responses providers get an adapter.
@@ -5015,7 +5027,7 @@ def resolve_provider_client(
         model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
-        explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
+        explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task, allow_fallback,
     )
     branch = _EXPLICIT_PROVIDER_BRANCHES.get(provider)
     if branch is not None:
@@ -5177,6 +5189,7 @@ def _vision_main_provider_client(
 def _vision_auto_route(
     runtime: Dict[str, Any], resolved_model: Optional[str], resolved_api_mode: Optional[str],
     async_mode: bool,
+    allow_fallback: bool = True,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
     main_provider = str(runtime.get("provider") or _read_main_provider())
@@ -5192,6 +5205,8 @@ def _vision_auto_route(
         client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
         if client is not None:
             return _finalize_vision_client(main_provider, client, default_model, resolved_model, async_mode)
+    if not allow_fallback:
+        return None, None, None
     # Aggregators use their dedicated vision model, not the user's main model.
     for candidate in _VISION_AUTO_PROVIDER_ORDER:
         if candidate == main_provider:
@@ -5212,6 +5227,7 @@ def resolve_vision_provider_client(
     provider: Optional[str] = None, model: Optional[str] = None, *, base_url: Optional[str] = None,
     api_key: Optional[str] = None, async_mode: bool = False,
     main_runtime: Optional[Dict[str, Any]] = None,
+    allow_fallback: bool = True,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -5232,7 +5248,9 @@ def resolve_vision_provider_client(
         )
         return provider_for_base_override, client, (final_model if client is not None else None)
     if requested == "auto":
-        return _vision_auto_route(runtime, resolved_model, resolved_api_mode, async_mode)
+        return _vision_auto_route(
+            runtime, resolved_model, resolved_api_mode, async_mode,
+            **({"allow_fallback": False} if not allow_fallback else {}))
     if requested in _VISION_AUTO_PROVIDER_ORDER:
         sync_client, default_model = _resolve_strict_vision_backend(requested, resolved_model)
         return _finalize_vision_client(requested, sync_client, default_model, resolved_model, async_mode)
@@ -5354,6 +5372,7 @@ def _refresh_nous_auxiliary_client(
     api_key: Optional[str] = None, api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None, is_vision: bool = False,
     lookup_model: Optional[str] = None, lookup_task: Optional[str] = None,
+    allow_fallback: bool = True,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Refresh Nous runtime creds, rebuild the client, and replace the cache entry.
 
@@ -5384,6 +5403,8 @@ def _refresh_nous_auxiliary_client(
         api_mode=api_mode, main_runtime=main_runtime, is_vision=is_vision, task=lookup_task,
         model=lookup_model,
     )
+    if not allow_fallback and _normalize_aux_provider(cache_provider) == "auto":
+        cache_key += ("strict",)
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
 
@@ -5519,6 +5540,7 @@ def _get_cached_client(
     provider: str, model: str = None, async_mode: bool = False, base_url: str = None,
     api_key: str = None, api_mode: str = None, main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False, task: Optional[str] = None,
+    allow_fallback: bool = True,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -5535,6 +5557,8 @@ def _get_cached_client(
         provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
         main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
     )
+    if not allow_fallback and _normalize_aux_provider(provider) == "auto":
+        cache_key += ("strict",)
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
@@ -5542,6 +5566,8 @@ def _get_cached_client(
                 cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
             )
             if loop_ok:
+                if not allow_fallback:
+                    return cached_client, model or cached_default
                 return cached_client, _compat_model(cached_client, model, cached_default)
             # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
             # foreign loop stays force-neutered.
@@ -5558,6 +5584,7 @@ def _get_cached_client(
     client, default_model = resolve_provider_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
+        **({"allow_fallback": False} if not allow_fallback else {}),
     )
     if client is not None:
         with _client_cache_lock:
@@ -6687,6 +6714,7 @@ def _resolve_call_client(
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], main_runtime: Optional[Dict[str, Any]], async_mode: bool,
+    allow_fallback: bool = True,
 ) -> _ResolvedAuxRoute:
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
@@ -6695,9 +6723,9 @@ def _resolve_call_client(
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model, base_url=resolved_base_url or base_url,
-            api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
+            api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime, allow_fallback=allow_fallback,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
+        if allow_fallback and client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
                            resolved_provider)
             effective_provider, client, final_model = resolve_vision_provider_client(
@@ -6709,9 +6737,9 @@ def _resolve_call_client(
         client, final_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
             api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
-            task=task)
+            task=task, **({"allow_fallback": False} if not allow_fallback else {}))
         effective_provider = _effective_provider_for_client(client, resolved_provider)
-        if client is None:
+        if client is None and allow_fallback:
             # Explicit provider with no credentials: honor the task fallback_chain before
             # raising (fallback entries may use OAuth / credential-pool auth).
             _explicit = (resolved_provider or "").strip().lower()
@@ -6758,6 +6786,7 @@ def _prepare_aux_request(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
     route_info: Optional[Dict[str, str]], async_mode: bool,
+    allow_fallback: bool = True,
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
@@ -6769,7 +6798,7 @@ def _prepare_aux_request(
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
     client, final_model, resolved_provider, effective_provider = _resolve_call_client(
-        task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+        task, allow_fallback=allow_fallback, provider=provider, model=model, base_url=base_url, api_key=api_key,
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
@@ -6908,7 +6937,9 @@ def _ladder_parameter_rungs(
     return None, first_err, kwargs
 
 
-def _refreshed_nous_step(route: _LadderRoute, kwargs: Dict[str, Any], message: str) -> Optional[_LadderStep]:
+def _refreshed_nous_step(
+    route: _LadderRoute, kwargs: Dict[str, Any], message: str, *, allow_fallback: bool = True,
+) -> Optional[_LadderStep]:
     """Rebuild the Nous client after a credential event; None when nothing refreshed."""
     refreshed_client, refreshed_model = _refresh_nous_auxiliary_client(
         cache_provider=route.resolved_provider or "nous", model=route.final_model,
@@ -6916,24 +6947,33 @@ def _refreshed_nous_step(route: _LadderRoute, kwargs: Dict[str, Any], message: s
         base_url=route.resolved_base_url, api_key=route.resolved_api_key,
         api_mode=route.resolved_api_mode, main_runtime=route.main_runtime,
         is_vision=(route.task == "vision"),
+        **({"allow_fallback": False} if not allow_fallback else {}),
     )
     if refreshed_client is None:
         return None
     logger.info(message, route.task or "call", route.tag)
-    if refreshed_model and refreshed_model != kwargs.get("model"):
+    if allow_fallback and refreshed_model and refreshed_model != kwargs.get("model"):
         kwargs["model"] = refreshed_model
     return _LadderStep("call", (refreshed_client, kwargs))
 
 
 def _ladder_nous_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], client_is_nous: bool,
+    allow_fallback: bool = True,
 ):
     """Nous-only rungs: stale-model self-heal, paid-account refresh, 401 refresh.
     Returns ``(response, None)`` or ``(None, first_err)`` to fall through."""
     client, task, tag = route.client, route.task, route.tag
+    if not allow_fallback and client_is_nous and _is_model_not_found_error(first_err):
+        logger.warning(
+            "Auxiliary %s%s: selected model %r was not found; allow_fallback=False "
+            "prevents Nous catalog healing. Select an available model or set "
+            "allow_fallback=True to permit a replacement.",
+            task or "call", tag, kwargs.get("model"),
+        )
     # A long-lived process can pin a Portal model since dropped from the catalog (every call
     # 404s); force a fresh Portal fetch and retry once.
-    if _is_model_not_found_error(first_err) and client_is_nous:
+    if allow_fallback and _is_model_not_found_error(first_err) and client_is_nous:
         healed_model = _refresh_nous_recommended_model(
             vision=(task == "vision"), stale_model=kwargs.get("model"))
         if healed_model and healed_model != kwargs.get("model"):
@@ -6948,7 +6988,8 @@ def _ladder_nous_rungs(
     if _is_payment_error(first_err) and client_is_nous and _nous_portal_account_has_fresh_paid_access():
         step = _refreshed_nous_step(
             route, kwargs,
-            "Auxiliary %s%s: refreshed Nous runtime credentials after paid account check, retrying")
+            "Auxiliary %s%s: refreshed Nous runtime credentials after paid account check, retrying",
+            allow_fallback=allow_fallback)
         if step is not None:
             resp, first_err = yield from _rung(
                 step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
@@ -6956,7 +6997,8 @@ def _ladder_nous_rungs(
                 return resp, None
     if _is_auth_error(first_err) and client_is_nous:
         step = _refreshed_nous_step(
-            route, kwargs, "Auxiliary %s%s: refreshed Nous runtime credentials after 401, retrying")
+            route, kwargs, "Auxiliary %s%s: refreshed Nous runtime credentials after 401, retrying",
+            allow_fallback=allow_fallback)
         if step is not None:
             return (yield step), None
     return None, first_err
@@ -7117,6 +7159,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[Dict[str, Any]], route_info: Optional[Dict[str, str]],
+    allow_fallback: bool = True,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -7131,15 +7174,16 @@ def _aux_recovery_ladder(
         return resp
     client_is_nous = (resolved_provider == "nous"
                       or base_url_host_matches(base_info, "inference-api.nousresearch.com"))
-    resp, first_err = yield from _ladder_nous_rungs(first_err, route, kwargs, client_is_nous)
+    resp, first_err = yield from _ladder_nous_rungs(first_err, route, kwargs, client_is_nous, allow_fallback=allow_fallback)
     if first_err is None:
         return resp
     resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous)
     if first_err is None:
         return resp
-    resp = yield from _ladder_provider_fallback(first_err, route)
-    if resp is not None:
-        return resp
+    if allow_fallback:
+        resp = yield from _ladder_provider_fallback(first_err, route)
+        if resp is not None:
+            return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
     # stream); evict so the next aux call rebuilds a fresh one.
     # Drop it from the cache regardless of whether we found a fallback above so the next auxiliary call
@@ -7205,8 +7249,14 @@ def call_llm(
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
     latency_info: Optional[Dict[str, int]] = None,
+    allow_fallback: bool = True,
 ) -> Any:
-    """Run an auxiliary LLM request, applying the configured task limit."""
+    """Run an auxiliary LLM request, applying the configured task limit.
+
+    allow_fallback=False keeps the selected provider/model: unavailable routes raise,
+    including auto routes whose main backend is unavailable. Same-route transient
+    retries, parameter repairs, and credential refresh remain enabled.
+    """
     queue_started_at = time.monotonic()
     semaphore = _acquire_sync_aux_semaphore(task)
     if semaphore is not None:
@@ -7228,7 +7278,7 @@ def call_llm(
                 _stamp_latency_once, latency_info, "time_to_first_progress_ms", request_started_at)),
         ):
             response = _call_llm_impl(
-                task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+                task=task, allow_fallback=allow_fallback, provider=provider, model=model, base_url=base_url, api_key=api_key,
                 main_runtime=main_runtime, messages=messages, temperature=temperature,
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
@@ -7266,6 +7316,7 @@ def _plan_aux_call(
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
     route_info: Optional[Dict[str, str]],
+    allow_fallback: bool = True,
 ) -> Tuple[_PreparedAuxRequest, Dict[str, Any], Dict[str, Any]]:
     """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
     drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
@@ -7273,7 +7324,7 @@ def _plan_aux_call(
     can't mix key and client from different runtimes."""
     main_runtime = _normalize_main_runtime(main_runtime)
     req = _prepare_aux_request(
-        task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+        task, allow_fallback=allow_fallback, provider=provider, model=model, base_url=base_url, api_key=api_key,
         main_runtime=main_runtime, messages=messages, temperature=temperature,
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
@@ -7289,6 +7340,9 @@ def _plan_aux_call(
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         main_runtime=main_runtime, final_model=req.final_model, extra_headers=extra_headers,
     )
+    if not allow_fallback:
+        retry_kwargs["allow_fallback"] = False
+        retry_kwargs["resolved_base_url"] = req.base_info or req.resolved_base_url
     return req, retry_kwargs, candidate_kwargs
 
 
@@ -7313,6 +7367,8 @@ def _ladder_step_call(
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
         retry_provider, retry_model = step.args
+        if not retry_kwargs.get("allow_fallback", True):
+            retry_provider, retry_model = req.request_provider, req.final_model
         return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
     return "fallback", step.args, candidate_kwargs
 
@@ -7320,10 +7376,11 @@ def _ladder_step_call(
 def _start_recovery_ladder(
     first_err: Exception, req: _PreparedAuxRequest, retry_kwargs: Dict[str, Any], *,
     task: Optional[str], async_mode: bool, route_info: Optional[Dict[str, str]],
+    allow_fallback: bool = True,
 ):
     """Build the recovery-ladder generator for a failed primary request."""
     return _aux_recovery_ladder(
-        first_err, client=req.client, kwargs=req.kwargs, task=task, async_mode=async_mode,
+        first_err, allow_fallback=allow_fallback, client=req.client, kwargs=req.kwargs, task=task, async_mode=async_mode,
         base_info=req.base_info, resolved_provider=req.resolved_provider,
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
@@ -7338,6 +7395,7 @@ def _call_llm_impl(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    allow_fallback: bool = True,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7345,7 +7403,7 @@ def _call_llm_impl(
     client defaults. stream=True returns the raw SDK stream (caller consumes/falls back)
     instead of a validated response. RuntimeError if no provider is configured."""
     req, retry_kwargs, candidate_kwargs = _plan_aux_call(
-        task, async_mode=False, provider=provider, model=model, base_url=base_url,
+        task, allow_fallback=allow_fallback, async_mode=False, provider=provider, model=model, base_url=base_url,
         api_key=api_key, main_runtime=main_runtime, messages=messages,
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
@@ -7420,7 +7478,7 @@ def _call_llm_impl(
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
         result = _drive_ladder(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
+            _start_recovery_ladder(first_err, req, retry_kwargs, allow_fallback=allow_fallback, task=task, async_mode=False, route_info=route_info),
             _perform)
         if result is _RERAISE_ORIGINAL:
             raise
@@ -7503,14 +7561,18 @@ async def async_call_llm(
     temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[Dict[str, str]] = None,
+    allow_fallback: bool = True,
 ) -> Any:
-    """Run an asynchronous auxiliary LLM request under the configured limit."""
+    """Run an asynchronous auxiliary LLM request under the configured limit.
+
+    allow_fallback has the same retry-versus-fallback contract as call_llm().
+    """
     semaphore = _acquire_async_aux_semaphore(task)
     if semaphore is not None:
         await semaphore.acquire()
     try:
         return await _async_call_llm_impl(
-            task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+            task=task, allow_fallback=allow_fallback, provider=provider, model=model, base_url=base_url, api_key=api_key,
             main_runtime=main_runtime, messages=messages, temperature=temperature,
             max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
             reasoning_config=reasoning_config, route_info=route_info,
@@ -7526,11 +7588,12 @@ async def _async_call_llm_impl(
     temperature: Optional[float] = None, max_tokens: int = None, tools: list = None,
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     route_info: Optional[Dict[str, str]] = None,
+    allow_fallback: bool = True,
 ) -> Any:
     """Centralized asynchronous LLM call; see call_llm() for full documentation.
     No per-request header / api_mode override on the async entry point."""
     req, retry_kwargs, candidate_kwargs = _plan_aux_call(
-        task, async_mode=True, provider=provider, model=model, base_url=base_url,
+        task, allow_fallback=allow_fallback, async_mode=True, provider=provider, model=model, base_url=base_url,
         api_key=api_key, main_runtime=main_runtime, messages=messages,
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
@@ -7571,7 +7634,7 @@ async def _async_call_llm_impl(
             fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
         result = await _drive_ladder_async(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
+            _start_recovery_ladder(first_err, req, retry_kwargs, allow_fallback=allow_fallback, task=task, async_mode=True, route_info=route_info),
             _perform)
         if result is _RERAISE_ORIGINAL:
             raise

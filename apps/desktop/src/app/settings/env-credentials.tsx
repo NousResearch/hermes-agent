@@ -90,13 +90,13 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))
   }
 
-  function clearLocalState(key: string) {
-    setEdits(c => withoutKey(c, key))
+  function clearLocalState(key: string, editKey = key) {
+    setEdits(c => withoutKey(c, editKey))
     setRevealed(c => withoutKey(c, key))
   }
 
-  async function handleSave(key: string) {
-    const value = edits[key]
+  async function handleSave(key: string, editKey = key) {
+    const value = edits[editKey]
 
     if (!value) {
       return
@@ -107,7 +107,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     try {
       await setEnvVar(key, value, profile)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
-      clearLocalState(key)
+      clearLocalState(key, editKey)
       notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
     } catch (err) {
       notifyError(err, toolsets.failedSave(key))
@@ -144,7 +144,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     }
   }
 
-  async function handleClear(key: string) {
+  async function handleClear(key: string, editKey = key) {
     if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) }))) {
       return
     }
@@ -154,7 +154,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     try {
       await deleteEnvVar(key, profile)
       patchVar(key, { is_set: false, redacted_value: null })
-      clearLocalState(key)
+      clearLocalState(key, editKey)
       notify({ kind: 'success', title: toolsets.removedTitle, message: toolsets.removedMessage(key) })
     } catch (err) {
       notifyError(err, toolsets.failedRemove(key))

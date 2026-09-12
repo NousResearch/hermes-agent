@@ -148,6 +148,32 @@ export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, {
   return remaining >= 0 && remaining <= SCROLL_TARGET_EPSILON_PX ? currentScrollTop : targetScrollTop
 }
 
+const EDITABLE_TARGET = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
+
+export function handleThreadPageKeyDown(event: KeyboardEvent, scrollElement: HTMLElement): void {
+  const target = event.target
+
+  if (
+    event.defaultPrevented ||
+    (event.key !== 'PageUp' && event.key !== 'PageDown') ||
+    event.ctrlKey ||
+    event.altKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    (target instanceof Element && target.closest(EDITABLE_TARGET))
+  ) {
+    return
+  }
+
+  const direction = event.key === 'PageUp' ? -1 : 1
+  const maxScrollTop = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight)
+  scrollElement.scrollTop = Math.min(
+    maxScrollTop,
+    Math.max(0, scrollElement.scrollTop + direction * scrollElement.clientHeight)
+  )
+  event.preventDefault()
+}
+
 /** Near-bottom slack for a run-start snap. Wider than the subpixel epsilon
  *  use-stick-to-bottom uses for resize follow — a follow-up sent a line or two
  *  off the bottom should still track, but a reader in history must not yank. */
@@ -1032,6 +1058,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey })
   useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
+
+  useEffect(() => {
+    const el = scrollRef.current
+
+    if (!el) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => handleThreadPageKeyDown(event, el)
+    el.addEventListener('keydown', onKeyDown)
+
+    return () => el.removeEventListener('keydown', onKeyDown)
+  }, [scrollRef])
 
   return (
     <div

@@ -4,6 +4,7 @@ import {
   buildGroups,
   firstVisibleGroupIndex,
   HIDDEN_TRANSCRIPT_RENDER_BUDGET,
+  handleThreadPageKeyDown,
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
   liveTailStart,
@@ -205,6 +206,87 @@ describe('resolveThreadScrollTarget', () => {
 
     expect(resolveThreadScrollTarget(899, context(scrollElement))).toBe(898.875)
     expect(resolveThreadScrollTarget(999, context(scrollElement))).toBe(999)
+  })
+})
+
+describe('handleThreadPageKeyDown', () => {
+  const scrollElement = (scrollTop = 500, clientHeight = 300, scrollHeight = 1_200) => {
+    const element = document.createElement('div')
+
+    Object.defineProperties(element, {
+      clientHeight: { configurable: true, value: clientHeight },
+      scrollHeight: { configurable: true, value: scrollHeight },
+      scrollTop: { configurable: true, writable: true, value: scrollTop }
+    })
+
+    return element
+  }
+
+  const page = (key: 'PageUp' | 'PageDown', target: EventTarget, init: KeyboardEventInit = {}) => {
+    const event = new KeyboardEvent('keydown', { cancelable: true, key, ...init })
+    Object.defineProperty(event, 'target', { configurable: true, value: target })
+
+    return event
+  }
+
+  it.each([
+    ['PageUp', 200],
+    ['PageDown', 800]
+  ] as const)('moves bare %s exactly one clientHeight in the expected direction', (key, expected) => {
+    const element = scrollElement()
+    const event = page(key, element)
+
+    handleThreadPageKeyDown(event, element)
+
+    expect(element.scrollTop).toBe(expected)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it.each(['input', 'textarea', 'select', 'contenteditable'] as const)('ignores %s targets', kind => {
+    const element = scrollElement()
+    const target = kind === 'contenteditable' ? document.createElement('div') : document.createElement(kind)
+    if (kind === 'contenteditable') {
+      target.setAttribute('contenteditable', 'true')
+    }
+    const event = page('PageDown', target)
+
+    handleThreadPageKeyDown(event, element)
+
+    expect(element.scrollTop).toBe(500)
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it.each(['ctrlKey', 'altKey', 'metaKey', 'shiftKey'] as const)('ignores PageDown with %s', modifier => {
+    const element = scrollElement()
+    const event = page('PageDown', element, { [modifier]: true })
+
+    handleThreadPageKeyDown(event, element)
+
+    expect(element.scrollTop).toBe(500)
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('ignores events that were already prevented', () => {
+    const element = scrollElement()
+    const event = page('PageDown', element)
+    event.preventDefault()
+
+    handleThreadPageKeyDown(event, element)
+
+    expect(element.scrollTop).toBe(500)
+  })
+
+  it.each([
+    ['PageUp', 100, 0],
+    ['PageDown', 850, 900]
+  ] as const)('clamps %s at the scroll boundary', (key, initial, expected) => {
+    const element = scrollElement(initial)
+    const event = page(key, element)
+
+    handleThreadPageKeyDown(event, element)
+
+    expect(element.scrollTop).toBe(expected)
+    expect(event.defaultPrevented).toBe(true)
   })
 })
 

@@ -1191,6 +1191,15 @@ class GatewayInboundMixin:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import _dequeue_pending_event
+        while not self._refresh_process_completion_event(event):
+            adapter = self._adapter_for_source(event.source)
+            key = self._session_key_for_source(event.source)
+            event = self._promote_queued_event(
+                key, adapter, _dequeue_pending_event(adapter, key) if adapter else None,
+            )
+            if event is None:
+                return None
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
@@ -1645,6 +1654,8 @@ class GatewayInboundMixin:
     ) -> Optional[str]:
         """Run inbound preprocessing under the routed profile when multiplexed."""
         from gateway.run import _async_profile_runtime_scope
+        if not self._refresh_process_completion_event(event):
+            return None
         kwargs = dict(event=event, source=source, history=history, session_key=session_key)
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             async with _async_profile_runtime_scope(self._resolve_profile_home_for_source(source)):

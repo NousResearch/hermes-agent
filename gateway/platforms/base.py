@@ -1704,6 +1704,8 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
+            # A merge containing human input is never an internal-only turn.
+            existing.internal = existing.internal is True and event.internal is True
             if both_photo or incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
@@ -1722,6 +1724,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             return
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
+            existing.internal = existing.internal is True and event.internal is True
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             return

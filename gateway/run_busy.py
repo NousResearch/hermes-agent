@@ -291,7 +291,9 @@ class GatewayBusySessionMixin:
         # messages arrived in ``busy_input_mode: queue``.
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
         same_security_context = existing is not None and (
-            getattr(existing, "internal", False) == getattr(event, "internal", False)
+            not (getattr(existing, "metadata", None) or {}).get("process_completion_entries")
+            and not (getattr(event, "metadata", None) or {}).get("process_completion_entries")
+            and getattr(existing, "internal", False) == getattr(event, "internal", False)
             and getattr(existing, "allow_gateway_control", True)
             == getattr(event, "allow_gateway_control", True)
             and all(
@@ -657,6 +659,9 @@ class GatewayBusySessionMixin:
         # handling, without merging their text into an already queued human message.
         if event.internal and event.allow_gateway_control:
             adapter = self._adapter_for_source(event.source)
+            if adapter and (getattr(event, "metadata", None) or {}).get("process_completion_entries"):
+                # Materialize an older human burst before a suppressible wake occupies its slot.
+                await adapter._flush_text_debounce_now(session_key)
             if adapter and session_key in getattr(adapter, "_pending_messages", {}):
                 self._queue_or_replace_pending_event(session_key, event)
                 return True
@@ -699,6 +704,11 @@ class GatewayBusySessionMixin:
             and self._effective_busy_text_mode(event.source) == "queue"
             and effective_mode != "steer"
         ):
+            # Base text debounce/merge would fold human input into a suppressible wake.
+            pending = adapter._pending_messages.get(session_key)
+            if pending and (getattr(pending, "metadata", None) or {}).get("process_completion_entries"):
+                self._queue_or_replace_pending_event(session_key, event)
+                return True
             return False
 
         _busy_state = self._peek_session_state(session_key)

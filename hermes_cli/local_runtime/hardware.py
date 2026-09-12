@@ -30,9 +30,15 @@ _GIB = 1 << 30
 # reality). Small cards give up window to this; spill mode is their path to big models.
 _MARGIN_FLOOR = 2 << 30
 _MARGIN_FRACTION = 0.09
-# UMA headroom: on unified-memory machines the model shares physical memory with the OS and every
-# app, so budget from RAM minus this fraction.
-_UMA_HEADROOM_FRACTION = 0.20
+# UMA reserve: on unified-memory machines the model shares physical memory with the OS and every
+# app, so budget from the pool minus a reserve — clamp(pool * 10%, 1.5 GiB, 12 GiB). The OS
+# working set is roughly CONSTANT, not proportional to installed memory: a flat 20% held back
+# ~25.6 GiB on a 128 GiB Mac (and 51 GiB on a 256 GiB one) for an OS that needs a fraction of
+# that, refusing models that genuinely fit. The floor keeps small machines honest; the cap stops
+# the reserve growing without bound on big unified boxes.
+_UMA_RESERVE_FRACTION = 0.10
+_UMA_RESERVE_FLOOR = int(1.5 * (1 << 30))
+_UMA_RESERVE_CAP = 12 << 30
 
 # Engine-fallback gates for the unified-pool quirk — BOTH must hold, and no discrete card can
 # meet either: (1) the allocator's pool exceeds the smi report by well past rounding/ECC slack
@@ -250,8 +256,17 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     return None
 
 
+def _uma_reserve_bytes(total: int) -> int:
+    """Bytes of a shared pool held back for the OS: clamp(total * 10%, 1.5 GiB, 12 GiB)."""
+    return int(min(_UMA_RESERVE_CAP, max(_UMA_RESERVE_FLOOR, total * _UMA_RESERVE_FRACTION)))
+
+
 def _uma_budget(base: int, total: int) -> HardwareBudget:
-    usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
+    """``base`` is what may be claimed now (live-free, or ``total`` when planning); ``total`` is
+    the pool's physical extent. The reserve is sized from ``total`` and subtracted from ``base``,
+    so planning and live differ in available headroom, not in what the OS is owed — sizing the
+    reserve off live-free would shrink it exactly when memory is tightest."""
+    usable = max(0, base - _uma_reserve_bytes(total))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
                           ram_available_bytes=0, uma=True)
 

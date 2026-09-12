@@ -1,0 +1,13 @@
+{
+ "verify50_100": 3.41,
+ "supersede25_100": 6.88,
+ "revalidate50_100": 0.05,
+ "search_lifecycle_100": 1.14,
+ "db_bytes_100": 237568,
+ "verify50_1000": 3.75,
+ "supersede25_1000": 6.88,
+ "revalidate50_1000": 0.04,
+ "search_lifecycle_1000": 3.51,
+ "db_bytes_1000": 1589248,
+ "llm_calls": 0
+}

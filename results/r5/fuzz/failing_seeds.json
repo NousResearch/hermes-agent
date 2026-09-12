@@ -1,0 +1,40 @@
+[
+ {
+  "seed": 10001,
+  "structural": [
+   "dangling successor for 1"
+  ],
+  "invariants": []
+ },
+ {
+  "seed": 10034,
+  "structural": [
+   "lineage cycle at 1",
+   "lineage cycle at 2"
+  ],
+  "invariants": []
+ },
+ {
+  "seed": 10037,
+  "structural": [
+   "dangling successor for 2"
+  ],
+  "invariants": []
+ },
+ {
+  "seed": 10039,
+  "structural": [
+   "lineage cycle at 1",
+   "lineage cycle at 3",
+   "lineage cycle at 1"
+  ],
+  "invariants": []
+ },
+ {
+  "seed": 10044,
+  "structural": [
+   "dangling successor for 3"
+  ],
+  "invariants": []
+ }
+]

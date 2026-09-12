@@ -1,0 +1,16 @@
+{
+ "env": "py3.14+numpy",
+ "llm_calls": 0,
+ "add_ms_per_100": 4.54,
+ "search_ms_100": 1.28,
+ "health_ms_100": 1.2,
+ "maint_light_ms_100": 15.33,
+ "verify50_ms_100": 170.71,
+ "db_bytes_100": 258048,
+ "add_ms_per_1000": 5.17,
+ "search_ms_1000": 2.86,
+ "health_ms_1000": 6.15,
+ "maint_light_ms_1000": 25.78,
+ "verify50_ms_1000": 181.16,
+ "db_bytes_1000": 1609728
+}

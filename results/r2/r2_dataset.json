@@ -1,0 +1,1031 @@
+{
+  "summary": {
+    "n_queries": 106,
+    "p@1": 0.8868,
+    "mrr": 0.8962,
+    "by_section_p@1": {
+      "exact": 1.0,
+      "casefold": 1.0,
+      "hyphen": 0.4667,
+      "alias": 1.0,
+      "paraphrase": 0.875,
+      "thai": 1.0,
+      "mixed": 1.0,
+      "slot": 1.0,
+      "noise": 1.0,
+      "ident": 1.0,
+      "probe": 0.9032
+    }
+  },
+  "per_query": [
+    {
+      "qid": "x_db",
+      "section": "exact",
+      "ranked": [
+        "db",
+        "mode_b",
+        "mode_a",
+        "thai_db",
+        "editor"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_db",
+      "section": "casefold",
+      "ranked": [
+        "db",
+        "mode_b",
+        "mode_a",
+        "thai_db",
+        "editor"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_db",
+      "section": "hyphen",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "x_pipe",
+      "section": "exact",
+      "ranked": [
+        "pipe",
+        "auth",
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_pipe",
+      "section": "casefold",
+      "ranked": [
+        "pipe",
+        "auth",
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_pipe",
+      "section": "hyphen",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "x_runner",
+      "section": "exact",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_runner",
+      "section": "casefold",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_runner",
+      "section": "hyphen",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "x_cache",
+      "section": "exact",
+      "ranked": [
+        "cache",
+        "auth",
+        "pipe"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_cache",
+      "section": "casefold",
+      "ranked": [
+        "cache",
+        "auth",
+        "pipe"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_cache",
+      "section": "hyphen",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "x_queue",
+      "section": "exact",
+      "ranked": [
+        "queue"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_queue",
+      "section": "casefold",
+      "ranked": [
+        "queue"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_queue",
+      "section": "hyphen",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "x_auth",
+      "section": "exact",
+      "ranked": [
+        "auth",
+        "pipe",
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_auth",
+      "section": "casefold",
+      "ranked": [
+        "auth",
+        "pipe",
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_auth",
+      "section": "hyphen",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "x_editor",
+      "section": "exact",
+      "ranked": [
+        "editor",
+        "mode_b",
+        "mode_a",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_editor",
+      "section": "casefold",
+      "ranked": [
+        "editor",
+        "mode_b",
+        "mode_a",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_editor",
+      "section": "hyphen",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "x_thai_base",
+      "section": "exact",
+      "ranked": [
+        "thai_base"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_thai_base",
+      "section": "casefold",
+      "ranked": [
+        "thai_base"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_thai_base",
+      "section": "hyphen",
+      "ranked": [
+        "thai_base"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "x_thai_db",
+      "section": "exact",
+      "ranked": [
+        "thai_db",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_thai_db",
+      "section": "casefold",
+      "ranked": [
+        "thai_db",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_thai_db",
+      "section": "hyphen",
+      "ranked": [
+        "thai_db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "x_mode_a",
+      "section": "exact",
+      "ranked": [
+        "mode_a",
+        "mode_b",
+        "editor",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_mode_a",
+      "section": "casefold",
+      "ranked": [
+        "mode_a",
+        "mode_b",
+        "editor",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_mode_a",
+      "section": "hyphen",
+      "ranked": [
+        "mode_a"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "x_mode_b",
+      "section": "exact",
+      "ranked": [
+        "mode_b",
+        "mode_a",
+        "editor",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_mode_b",
+      "section": "casefold",
+      "ranked": [
+        "mode_b",
+        "mode_a",
+        "editor",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_mode_b",
+      "section": "hyphen",
+      "ranked": [
+        "mode_b"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "x_to_a",
+      "section": "exact",
+      "ranked": [
+        "to_a",
+        "to_b"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_to_a",
+      "section": "casefold",
+      "ranked": [
+        "to_a",
+        "to_b"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_to_a",
+      "section": "hyphen",
+      "ranked": [
+        "to_a",
+        "to_b"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "x_to_b",
+      "section": "exact",
+      "ranked": [
+        "to_b",
+        "to_a"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_to_b",
+      "section": "casefold",
+      "ranked": [
+        "to_b",
+        "to_a"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_to_b",
+      "section": "hyphen",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "x_prov_old",
+      "section": "exact",
+      "ranked": [
+        "prov_old",
+        "prov_new"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_prov_old",
+      "section": "casefold",
+      "ranked": [
+        "prov_old",
+        "prov_new"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_prov_old",
+      "section": "hyphen",
+      "ranked": [
+        "prov_old"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "x_prov_new",
+      "section": "exact",
+      "ranked": [
+        "prov_new",
+        "prov_old"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "c_prov_new",
+      "section": "casefold",
+      "ranked": [
+        "prov_new",
+        "prov_old"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "h_prov_new",
+      "section": "hyphen",
+      "ranked": [
+        "prov_new"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "al_db",
+      "section": "alias",
+      "ranked": [
+        "db",
+        "mode_b",
+        "mode_a",
+        "thai_db",
+        "editor"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "al_pipe",
+      "section": "alias",
+      "ranked": [
+        "pipe"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "al_run",
+      "section": "alias",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "al_cache",
+      "section": "alias",
+      "ranked": [
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "al_queue",
+      "section": "alias",
+      "ranked": [
+        "queue"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "al_auth",
+      "section": "alias",
+      "ranked": [
+        "auth"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "p_db",
+      "section": "paraphrase",
+      "ranked": [
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "p_pipe",
+      "section": "paraphrase",
+      "ranked": [
+        "auth",
+        "pipe",
+        "cache"
+      ],
+      "p@1": 0.0,
+      "rr": 0.5
+    },
+    {
+      "qid": "p_run",
+      "section": "paraphrase",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "p_cache",
+      "section": "paraphrase",
+      "ranked": [
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "p_ed",
+      "section": "paraphrase",
+      "ranked": [
+        "editor"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "t_base",
+      "section": "thai",
+      "ranked": [
+        "thai_base"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "t_based",
+      "section": "thai",
+      "ranked": [
+        "thai_base"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "t_db",
+      "section": "thai",
+      "ranked": [
+        "thai_db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "m_db",
+      "section": "mixed",
+      "ranked": [
+        "thai_db",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "m_base",
+      "section": "mixed",
+      "ranked": [
+        "thai_base"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "m_run",
+      "section": "mixed",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "k_mode",
+      "section": "slot",
+      "ranked": [
+        "mode_b",
+        "mode_a",
+        "editor",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "k_prov",
+      "section": "slot",
+      "ranked": [
+        "prov_new",
+        "prov_old"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "k_to",
+      "section": "slot",
+      "ranked": [
+        "to_a",
+        "to_b"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "n_dep",
+      "section": "noise",
+      "ranked": [
+        "pipe"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "n_ed",
+      "section": "noise",
+      "ranked": [
+        "editor"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "i_sql",
+      "section": "ident",
+      "ranked": [
+        "db",
+        "thai_db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "i_py",
+      "section": "ident",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "i_jwt",
+      "section": "ident",
+      "ranked": [
+        "auth"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_0_store",
+      "section": "probe",
+      "ranked": [
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_1_uses",
+      "section": "probe",
+      "ranked": [
+        "auth",
+        "pipe",
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_2_with",
+      "section": "probe",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "w_3_project",
+      "section": "probe",
+      "ranked": [],
+      "p@1": 0.0,
+      "rr": 0.0
+    },
+    {
+      "qid": "w_4_test",
+      "section": "probe",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_5_mode",
+      "section": "probe",
+      "ranked": [
+        "mode_b",
+        "mode_a",
+        "editor",
+        "db"
+      ],
+      "p@1": 0.0,
+      "rr": 0.5
+    },
+    {
+      "qid": "w_6_timeout",
+      "section": "probe",
+      "ranked": [
+        "to_a",
+        "to_b"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_7_provider",
+      "section": "probe",
+      "ranked": [
+        "prov_new",
+        "prov_old"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_8_baseline",
+      "section": "probe",
+      "ranked": [
+        "thai_base"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_9_strategy",
+      "section": "probe",
+      "ranked": [
+        "pipe"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_10_version",
+      "section": "probe",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_11_layer",
+      "section": "probe",
+      "ranked": [
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_12_queue",
+      "section": "probe",
+      "ranked": [
+        "queue"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_13_editor",
+      "section": "probe",
+      "ranked": [
+        "editor"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_14_dark",
+      "section": "probe",
+      "ranked": [
+        "editor"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_15_primary",
+      "section": "probe",
+      "ranked": [
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_16_pipeline",
+      "section": "probe",
+      "ranked": [
+        "pipe"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_17_runner",
+      "section": "probe",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_18_cache",
+      "section": "probe",
+      "ranked": [
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_19_auth",
+      "section": "probe",
+      "ranked": [
+        "auth"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_20_sqlite",
+      "section": "probe",
+      "ranked": [
+        "db",
+        "thai_db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_21_bluegreen",
+      "section": "probe",
+      "ranked": [
+        "pipe"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_22_pytest",
+      "section": "probe",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_23_redis",
+      "section": "probe",
+      "ranked": [
+        "cache"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_24_celery",
+      "section": "probe",
+      "ranked": [
+        "queue"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_25_jwt",
+      "section": "probe",
+      "ranked": [
+        "auth"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_26_aggressive",
+      "section": "probe",
+      "ranked": [
+        "mode_b"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_27_safe",
+      "section": "probe",
+      "ranked": [
+        "mode_a"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_28_honcho",
+      "section": "probe",
+      "ranked": [
+        "prov_old"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_29_holographic",
+      "section": "probe",
+      "ranked": [
+        "prov_new"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "w_30_seconds",
+      "section": "probe",
+      "ranked": [
+        "to_b"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "p_queue",
+      "section": "paraphrase",
+      "ranked": [
+        "queue"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "p_auth",
+      "section": "paraphrase",
+      "ranked": [
+        "auth"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "p_thai",
+      "section": "paraphrase",
+      "ranked": [
+        "thai_db",
+        "db"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "al_run2",
+      "section": "alias",
+      "ranked": [
+        "runner"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    },
+    {
+      "qid": "t_mix2",
+      "section": "mixed",
+      "ranked": [
+        "thai_base",
+        "pipe"
+      ],
+      "p@1": 1.0,
+      "rr": 1.0
+    }
+  ],
+  "llm_calls": 0,
+  "arm": "r2",
+  "ts": 1789126337.9430594
+}

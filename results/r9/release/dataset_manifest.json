@@ -1,0 +1,5 @@
+{
+ "r2_dataset_sha256": "5be2ef624df642a02ed63cb948fc22451a8e524fb9f719a622a1dd3655d92166",
+ "r1_gold_location": "tests/plugins/memory/test_r1_benchmark.py (in-test labels, frozen)",
+ "gold_edits": "forbidden without dataset version bump"
+}

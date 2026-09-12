@@ -1,0 +1,11 @@
+{
+  "n": 100,
+  "add_ms_total": 140.0,
+  "add_ms_per_fact": 1.4,
+  "search_ms": 0.0,
+  "db_bytes": 4096,
+  "hits": 5,
+  "llm_calls": 0,
+  "arm": "baseline",
+  "ts": 1789126337.9776645
+}

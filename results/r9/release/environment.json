@@ -1,0 +1,10 @@
+{
+ "commit": "45a6101f36576367359c171cd5820ee76a3d047b",
+ "tree_dirty_entries": 35,
+ "python": "3.14.3",
+ "sqlite": "3.50.4",
+ "os": "Windows 11",
+ "hermes": "0.21.1",
+ "numpy": "2.5.1",
+ "pytest": "9.1.1"
+}

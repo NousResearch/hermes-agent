@@ -8,6 +8,7 @@ import hashlib
 import logging
 import math
 import struct
+import threading
 
 try:
     import numpy as np
@@ -17,6 +18,33 @@ except ImportError:
     _HAS_NUMPY = False
 
 logger = logging.getLogger(__name__)
+
+# Bounded atom cache: vocabulary repeats across facts and queries, and each
+# atom costs ~dim/16 SHA-256 blocks. Same values as fresh computation
+# (verified by test_r3_atom_cache_correctness), LRU-evicted, thread-safe.
+ATOM_CACHE_MAX = 4096
+_atom_cache: dict = {}
+_atom_cache_order: list = []
+_atom_cache_lock = threading.Lock()
+_atom_cache_hits = 0
+
+
+def clear_atom_cache(max_entries: int | None = None) -> None:
+    """Empty the atom cache; optionally resize its bound."""
+    global ATOM_CACHE_MAX, _atom_cache_hits
+    with _atom_cache_lock:
+        _atom_cache.clear()
+        _atom_cache_order.clear()
+        _atom_cache_hits = 0
+        if max_entries is not None and max_entries >= 1:
+            ATOM_CACHE_MAX = max_entries
+
+
+def atom_cache_info() -> dict:
+    """Cache diagnostics (size/hits/bound). No secrets, no model state."""
+    with _atom_cache_lock:
+        return {"size": len(_atom_cache), "hits": _atom_cache_hits,
+                "max": ATOM_CACHE_MAX}
 
 _TWO_PI = 2.0 * math.pi
 _FLOAT32_BLOB_PREFIX = b"HRR1"
@@ -31,11 +59,38 @@ def _require_numpy() -> None:
 
 def encode_atom(word: str, dim: int = 1024) -> "np.ndarray":
     """Deterministic phase vector: SHA-256 counter blocks of f"{word}:{i}" -> uint16 -> [0, 2π).
-    hashlib rather than numpy RNG so atoms are reproducible across platforms."""
+    hashlib rather than numpy RNG so atoms are reproducible across platforms.
+    Results are cached in a bounded LRU (same values, verified by tests)."""
     _require_numpy()
+    key = (word, dim)
+    with _atom_cache_lock:
+        global _atom_cache_hits
+        hit = _atom_cache.get(key)
+        if hit is not None:
+            _atom_cache_hits += 1
+            try:
+                _atom_cache_order.remove(key)
+            except ValueError:
+                pass
+            _atom_cache_order.append(key)
+            return hit.copy()
     uint16_values = [v for i in range(math.ceil(dim / 16))  # 32-byte digest = 16 uint16 values
                      for v in struct.unpack("<16H", hashlib.sha256(f"{word}:{i}".encode()).digest())]
-    return np.array(uint16_values[:dim], dtype=np.float64) * (_TWO_PI / 65536.0)
+    vec = np.array(uint16_values[:dim], dtype=np.float64) * (_TWO_PI / 65536.0)
+    with _atom_cache_lock:
+        if key in _atom_cache:  # lost the race: reuse winner, keep order exact
+            _atom_cache_hits += 1
+            try:
+                _atom_cache_order.remove(key)
+            except ValueError:
+                pass
+            _atom_cache_order.append(key)
+            return _atom_cache[key].copy()
+        _atom_cache[key] = vec.copy()
+        _atom_cache_order.append(key)
+        while len(_atom_cache_order) > ATOM_CACHE_MAX:
+            _atom_cache.pop(_atom_cache_order.pop(0), None)
+    return vec
 
 
 def bind(a: "np.ndarray", b: "np.ndarray") -> "np.ndarray":
@@ -60,6 +115,33 @@ def similarity(a: "np.ndarray", b: "np.ndarray") -> float:
     """Phase cosine similarity in [-1, 1]; ~0 for unrelated vectors."""
     _require_numpy()
     return float(np.mean(np.cos(a - b)))
+
+
+def phases_to_complex(phases: "np.ndarray") -> "np.ndarray":
+    """Phase vector -> complex unit-magnitude sum component for exact banking."""
+    _require_numpy()
+    return np.exp(1j * np.asarray(phases, dtype=np.float64))
+
+
+def complex_to_phases(arr: "np.ndarray") -> "np.ndarray":
+    """Complex aggregate sum -> phase vector (same convention as bundle)."""
+    _require_numpy()
+    return np.angle(np.asarray(arr, dtype=np.complex128)) % _TWO_PI
+
+
+def complex_sum_to_bytes(arr: "np.ndarray") -> bytes:
+    """Serialize a complex aggregate sum (complex128, native endian)."""
+    _require_numpy()
+    return np.asarray(arr, dtype=np.complex128).tobytes()
+
+
+def bytes_to_complex_sum(data: bytes, dim: int) -> "np.ndarray":
+    """Deserialize a complex aggregate sum; raises ValueError on shape mismatch."""
+    _require_numpy()
+    arr = np.frombuffer(data, dtype=np.complex128).copy()
+    if arr.shape[0] != dim:
+        raise ValueError(f"HRR complex sum has {arr.shape[0]} items; expected {dim}")
+    return arr
 
 
 def encode_text(text: str, dim: int = 1024) -> "np.ndarray":

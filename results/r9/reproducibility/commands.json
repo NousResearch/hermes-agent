@@ -1,0 +1,33 @@
+{
+ "canonical": "bash scripts/run_tests.sh <files>",
+ "file_count": 25,
+ "files": [
+  "tests/plugins/memory/test_holographic_store.py",
+  "tests/plugins/memory/test_holographic_retrieval.py",
+  "tests/plugins/memory/test_holographic_auto_extract.py",
+  "tests/plugins/memory/test_holographic_shutdown_closes_db.py",
+  "tests/plugins/test_holographic_vector_storage.py",
+  "tests/plugins/memory/test_r1_benchmark.py",
+  "tests/plugins/memory/test_r1_semantic_brain.py",
+  "tests/plugins/memory/test_r2_hardening.py",
+  "tests/plugins/memory/test_r3_storage.py",
+  "tests/plugins/memory/test_r3_retrieval.py",
+  "tests/plugins/memory/test_r3_semantic.py",
+  "tests/plugins/memory/test_r3_quality.py",
+  "tests/plugins/memory/test_r4_temporal.py",
+  "tests/plugins/memory/test_r4_paraphrase.py",
+  "tests/plugins/memory/test_r4_thai.py",
+  "tests/plugins/memory/test_r4_security.py",
+  "tests/plugins/memory/test_r5_invariants.py",
+  "tests/plugins/memory/test_r5_fuzz.py",
+  "tests/plugins/memory/test_r5_security.py",
+  "tests/plugins/memory/test_r5_recovery.py",
+  "tests/plugins/memory/test_r5_perf.py",
+  "tests/plugins/memory/test_r5_longrun.py",
+  "tests/plugins/memory/test_r6_ops.py",
+  "tests/plugins/memory/test_r7_integration.py",
+  "tests/plugins/memory/test_r8_release.py"
+ ],
+ "closure_log": "results/r9/reports/test_closure.log",
+ "note": "runner enforces CI parity (TZ=UTC, temp HERMES_HOME, per-file isolation)"
+}

@@ -1,0 +1,15 @@
+{
+ "p50": 19.2,
+ "p95": 22.49,
+ "p99": 24.33,
+ "mean_ms": 19.36,
+ "n_queries": 100,
+ "update_ms": 335.32,
+ "feedback_ms": 4.38,
+ "prefetch_like_ms": 17.7,
+ "n": 10000,
+ "add_total_ms": 1763985.2,
+ "add_per_fact_ms": 176.4,
+ "db_bytes": 47747072,
+ "llm_calls": 0
+}

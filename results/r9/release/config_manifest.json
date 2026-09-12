@@ -1,0 +1,19 @@
+{
+ "provider": "holographic",
+ "declared_keys": [
+  "db_path",
+  "auto_extract",
+  "default_trust",
+  "hrr_dim"
+ ],
+ "code_read_keys": [
+  "min_trust_threshold",
+  "temporal_decay_half_life",
+  "hrr_weight"
+ ],
+ "llm_policy": "OFF",
+ "network_policy": "NOT REQUIRED",
+ "paid_api": "NONE",
+ "destructive_autonomy": "OFF",
+ "secret_values_recorded": false
+}

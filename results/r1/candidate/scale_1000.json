@@ -1,0 +1,11 @@
+{
+  "n": 1000,
+  "add_ms_total": 14526.1,
+  "add_ms_per_fact": 14.53,
+  "search_ms": 2.57,
+  "db_bytes": 471040,
+  "hits": 5,
+  "llm_calls": 0,
+  "arm": "candidate",
+  "ts": 1789008385.648612
+}

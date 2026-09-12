@@ -1,0 +1,7 @@
+{
+ "maint_normal_ms_100": 1.51,
+ "maint_light_ms_100": 14.8,
+ "maint_normal_ms_1000": 6.48,
+ "maint_light_ms_1000": 24.31,
+ "maint_deep_ms_1000": 31.22
+}

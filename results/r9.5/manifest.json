@@ -1,0 +1,821 @@
+{
+ "integrated_sha": "15672997bfbc219a28964fa9a7ff480351af4e18",
+ "parent_sha": "dee30d123defbb61ec53ec17bf7aae281563db49",
+ "upstream_base": "dee30d12",
+ "rc1_sha": "1a1bb48f44e853c16303909a49b08d054de1c02e",
+ "file_count": 116,
+ "files": [
+  {
+   "path": "plugins/memory/holographic/OPERATIONS.md",
+   "size": 3551,
+   "sha256": "6ae341881793bfcf857af70cde926001d70bbf46572367fa60bf9b7203594ac1",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/README.md",
+   "size": 1863,
+   "sha256": "0b8b388ef905080b69c9aa0e2369830e77214018b5501f0f561d64c936fdc99d",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/__init__.py",
+   "size": 16132,
+   "sha256": "7f414a377be744e9abb1e667610501e39e8d10b080a7ad6b9164bb8566ad0c9e",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/cognition.py",
+   "size": 14408,
+   "sha256": "98eaa3c449f71f68b7b86d300553397398026582a40e13b375483ef444a90f08",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/cognitive_retrieval.py",
+   "size": 8211,
+   "sha256": "530ebea9ed3db4cd227aa5fbb3fc1f9db8aecdca6b553810d73c6106eafe7fdc",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/holographic.py",
+   "size": 9251,
+   "sha256": "c3fecb6a04bda3bf3d89bdfb0ac671ad49de9b06441e75b6bca7b5a1705397c8",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/maintenance.py",
+   "size": 13522,
+   "sha256": "411b0f365d6dcb94660a7c7bc854e6c7622ccbcd0700e7229b9a0c0a2caf6678",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/migration.py",
+   "size": 2382,
+   "sha256": "9f71151361e9a35771c5b1fe49f8d19fc17f63e437652eeeb32e288aafdfee38",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/operations.py",
+   "size": 29036,
+   "sha256": "ac57755715a0017eaaff485b3db36a8b6b8c350b3783ac1ac17bd11df083c6e6",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/retrieval.py",
+   "size": 27135,
+   "sha256": "2989c79cff505820541363849ee0f396caffb1435d779f5baffef82c3a2f73a7",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/safety.py",
+   "size": 4635,
+   "sha256": "3f87156e380d4e378e25a8ed7cf5cc05ad2018f54f50a15edbae0cefff7613ea",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/semantic_brain.py",
+   "size": 11056,
+   "sha256": "654dfe0249e6bd4960da71dc162c8e0e475f29ee99af9c23b4c7c64a7aea445a",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/store.py",
+   "size": 45301,
+   "sha256": "648f942772a383026422111ffed52a7c40d790585ab0a1b1df46c30e4b20823f",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "plugins/memory/holographic/taxonomy.py",
+   "size": 4084,
+   "sha256": "2a4e178dc6b4b0021c6e21bc99dad8fcb1ec093aabe832c69f34a29b03af12c8",
+   "classification": "PRODUCTION",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/baseline/context.json",
+   "size": 169,
+   "sha256": "f3bf73401a51b0532cfcab08389a8858f6247a2406ba59f2f6ce6ddd5374883a",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/baseline/formation.json",
+   "size": 397,
+   "sha256": "18f1bc53b6bd774021486e8713ca47d13f403226852a4c889fc1da7452f80d57",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/baseline/retrieval.json",
+   "size": 4242,
+   "sha256": "399f8376b2e5d5313952bb80351ff47dc73fd1c88bcdb05373b507ea18b1d5a8",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/baseline/safety.json",
+   "size": 534,
+   "sha256": "4ca87b25c80edbb4708627706418df5336bbf2c4478b3030bfcf4375934e404c",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/baseline/scale_100.json",
+   "size": 185,
+   "sha256": "f88dd3ae4f1502a9a6224097cd57b0f3c9651aaa51a20f01d85f8ba5f0da9e09",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/baseline/scale_1000.json",
+   "size": 190,
+   "sha256": "a1abafa2a27ea478ebb7a335149c3dcac75997bfa7ab5064dac833d37cc0b3b2",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/baseline/selection.json",
+   "size": 432,
+   "sha256": "6d645f5c6fe0e21e85bb5216c0a9bad3072dacc10e1f222997ae96bd0da05988",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/candidate/context.json",
+   "size": 170,
+   "sha256": "37bd4b362b13ef0b8671dece825c4fdf3c1285ea596ae1a7b7871bf4d21398cf",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/candidate/formation.json",
+   "size": 399,
+   "sha256": "34e440ea89c76b686cc7a1d08d8ea1b2a075e3a56a6571c6414f4345c5d8934d",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/candidate/retrieval.json",
+   "size": 4209,
+   "sha256": "5cdeeadab281bae315654b1ab6d7c197d879901cd9211762877c04e701e90d77",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/candidate/safety.json",
+   "size": 535,
+   "sha256": "bcca88bb8ec6d5ea7e98888574c9c3ff5c8fda458578d24369467aac43c01870",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/candidate/scale_100.json",
+   "size": 192,
+   "sha256": "57a2669ee68d58521bc272a6384ed13435d40c79477f2eb360be03a5ae613398",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/candidate/scale_1000.json",
+   "size": 193,
+   "sha256": "e218fdef0f7528be3106a8b1de01bd94df443724335bf68e3c2526e07d1e2b48",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/candidate/selection.json",
+   "size": 433,
+   "sha256": "c6bf191d8de299c43f2d081a08a788232a15fc6971c368acf3657958c581db43",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r1/reports/summary.md",
+   "size": 3749,
+   "sha256": "2b49b2b62f7c1efd5cd02002cb8796db870870e0814bafb8ec923b5c5edfd7ee",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r2/r2_dataset.json",
+   "size": 16512,
+   "sha256": "0c8218c3b263bd764e14dc6c922a0209c34917f42e266fbfc110a2c9a909a300",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r2/r2_safety.json",
+   "size": 100,
+   "sha256": "ba5e797e0f5c067eed802b4c38072fed450c3b0993c6c90ca00203f2f46fad4c",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r2/reports/summary.md",
+   "size": 5153,
+   "sha256": "0a95679db3e6fd36f9819e9ecd0cfd3ef29448779dc6ffa491ed3af52d82aea6",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r2/scale_10k.json",
+   "size": 263,
+   "sha256": "c3a2dd5c43f6adcd5415b7040fc875a3d5a12ddf4e30c8d002ab3985171af783",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r2/scale_50k.json",
+   "size": 290,
+   "sha256": "b2f2298a641e9edc5a2c04db5adec84d4ffe6068de355a740da90bbe4ac20949",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r2/scale_50k_progress.json",
+   "size": 87,
+   "sha256": "94a134fa138d8bddb4214b8fddf4341e243e9b122b291706744af56c578b22bf",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r2/scale_progress.log",
+   "size": 2147,
+   "sha256": "7c249a4991e1d21442020dc957ce267dd1e6246b51f74e3e6bd0b1adf658bc99",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r2/wal_compare.json",
+   "size": 120,
+   "sha256": "943aac5ee42f56982c18f7028fef1c8a6f704966edc737d5b26e0787d2210033",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r3/baseline/env.json",
+   "size": 515,
+   "sha256": "6191396e38c79853667c3e70cba5e491f2e5926a5e2650b28f786b2d8ebad251",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r3/quality/adversarial.json",
+   "size": 124,
+   "sha256": "953388e88c98deff7149ec80f4a3a903477f03779611744ab404c577956c05d2",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r3/quality/contradiction.json",
+   "size": 170,
+   "sha256": "ba879a5bbd535ea82e774bd244cb1698e0b51e078f44be5ff074a7f72812de9f",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r3/quality/formation.json",
+   "size": 271,
+   "sha256": "1659d6b8ce01afc97ae652c3b7b7b465cc5a0437f4a974c462ec11e9301c01ea",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r3/quality/temporal.json",
+   "size": 67,
+   "sha256": "105765db11735f63afc8f7b111e1fd409e40daf137630dcc86484c1998cec2e1",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r3/reports/final.md",
+   "size": 3917,
+   "sha256": "45e8978df722aa238e4ad4a7520796cef26f542e1a3c885360751323c359cf21",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r3/semantic/gap_separation.json",
+   "size": 5586,
+   "sha256": "ea1192f71fba4e06abaab38cf654acfa9698ef2268634d79af855a1c5fdd70c7",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r3/storage/batch_wal.json",
+   "size": 205,
+   "sha256": "7e02ed4255ddf10b0e5efcc234d8779688ef07aea214fb0954f4dba516f21ad7",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r4/baseline/env.json",
+   "size": 245,
+   "sha256": "5a01807e9b8dfa57041ec87d00f8780f8a9bc88a9420d0904dbedd7831044bdc",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r4/paraphrase/paraphrase.json",
+   "size": 2527,
+   "sha256": "b90fa159eab4f6b4dedb59f6e5cb98386ccbf2eed9db64ad48efbfec058291c1",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r4/reports/final.md",
+   "size": 4445,
+   "sha256": "ad03cdb50f5626ade78c3141b46c1591a2e1cbcd5d6a0fd1a25d696734b590f3",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r4/scale/lifecycle_overhead.json",
+   "size": 289,
+   "sha256": "32a737983f07e27825f9a811f7ca9c78717e1e4852d8a791fc6631360568557e",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r4/thai/thai.json",
+   "size": 2941,
+   "sha256": "8c2063b48a6161ce59bd1b540958b55c76ba3b43030d58a9a3f241151cab214d",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/baseline/env.json",
+   "size": 235,
+   "sha256": "f0b77737c6c5e664221b00ba27c6605682302e691f3a3ec41873a3ae48214ab6",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/fuzz/failing_seeds.json",
+   "size": 545,
+   "sha256": "4defbaff4f841ab4622ef77eeccd1a4f3941c43851c1ec993117a9478eb3c63c",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/fuzz/fuzz.json",
+   "size": 53,
+   "sha256": "c7397b22c63f5cf35726305cbce4e499eb670e9d152484629c688f97adab9031",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/longrun/longrun.json",
+   "size": 887,
+   "sha256": "eab82e09da7b6923cdf7cbfbf08381c8d4a72d902af14b95d3650474ecde4d29",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/performance/op_latencies.json",
+   "size": 816,
+   "sha256": "46d3a71d79e044c178a2a52c68dfacc159734f0bd2b448ab377ca7c3059496e8",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/recovery/bank_rebuild.json",
+   "size": 39,
+   "sha256": "206ce08e85a5176cfbafb5da6bb395189e0a36c9c45c9f247f5a686b4a666391",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/recovery/batch_atomic.json",
+   "size": 46,
+   "sha256": "fa77a9bebb814210afdfc228bfab758f860dd5ef6a3b571f88980eee919b161b",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/recovery/crash_before_commit.json",
+   "size": 51,
+   "sha256": "2769f342f3009e6337bfa334d66579b49654785acfec499238fcaa0d12888e66",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/recovery/fts_heal.json",
+   "size": 43,
+   "sha256": "1b134b0c0a0103245671264356e65bf9becbf02633220bccf2d28b570b7f48ba",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/recovery/idempotency.json",
+   "size": 75,
+   "sha256": "a04ac988f7aecca52a3605146a7ec2629c27dd7e9711474760454e65314ec9bb",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/reports/final.md",
+   "size": 2817,
+   "sha256": "e5db234e731e8f15a42567ac77d97e2f07e085a514c960acad151d3bd055dad0",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r5/security/obfuscation.json",
+   "size": 206,
+   "sha256": "0f4acfdf3c047be6be4c7af06123f7e48e2d0fdaa804b2d6051df3e266deb457",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r6/backup/latency.json",
+   "size": 103,
+   "sha256": "73f25809883a30637d46c3930a6fb72dbadccc17bf4dab44f2fdd8aadd590e89",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r6/baseline/env.json",
+   "size": 314,
+   "sha256": "ac8b4a398b757a583fe164b012fcf191bf586b441a001423b6799743c3b7aa27",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r6/health/latency.json",
+   "size": 75,
+   "sha256": "0fb0bd2eec3c33d65361eb38feecc97353077ae9839330d6d8dc281621581fe9",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r6/maintenance/latency.json",
+   "size": 153,
+   "sha256": "a99d7b116fc7bac7a8d7ae6ea22aa470a75d7732722043f0bed9b1c4b8eab40f",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r6/migration/status.json",
+   "size": 60,
+   "sha256": "6b02654718b3afdaa84ca8d449f93b4f035406f21d42e6ba0ca51a91786e0d86",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r6/reports/final.md",
+   "size": 5270,
+   "sha256": "19f29ba4cff0307cd65e8ddd860b406848695332b07f640b85341963e1f2b2b9",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r6/restore/latency.json",
+   "size": 106,
+   "sha256": "ac39f6312a7c756a59dfc03706edfc0b68fd84f379f190478e846773ebb488be",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r7/performance/integrated.json",
+   "size": 361,
+   "sha256": "319f09c5d5bab77e22b9f1600989361f4aacecdf259874d22f840f8312136aa5",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r7/reports/final.md",
+   "size": 3020,
+   "sha256": "3541fd00a2dbbc554e8eb2e66e2a2a3ae740bfb84bdb473ea4bcf9af936aba85",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r7/reports/integration.md",
+   "size": 2253,
+   "sha256": "d1e94ae172161943c84483d1ffa3be9590a902a29230072ba17fd654446a84ea",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r7/reports/recovery_matrix.md",
+   "size": 3788,
+   "sha256": "d8696edf9196dda3592667f1f3b8e05a1f3acfe43f935149997f5d1d32b443e7",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r8/legacy/README.md",
+   "size": 803,
+   "sha256": "32bd144285150305d0b333774af8daf7b69624db582ec1177f3eb4fe551ecdd5",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r8/legacy/test_holographic_cognitive.HISTORICAL.py",
+   "size": 13937,
+   "sha256": "74b840a100200e1da4db5175263bdf3ff0c60ab46abd6288223744a27d357898",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r8/reports/api_contract.md",
+   "size": 3743,
+   "sha256": "bdb35385f4d272963c47eb813b5817d69d83a358f265f03854899d620667eaff",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r8/reports/final.md",
+   "size": 3178,
+   "sha256": "8d656d2f3c9517cb79005e80ca5278589217783e229097584beed43cd438a9c8",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r8/reports/release_baseline.json",
+   "size": 283,
+   "sha256": "2d689a20579a71d6fa4f7a5bc2c3f42ac370b047a29ade90b37444d68ae19922",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r8/reports/test_migration_matrix.md",
+   "size": 4968,
+   "sha256": "f3f7a530c37760927257e4cf1c96d1d028344a4d92187f88c489410dbe6a683d",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/backup/interruption.json",
+   "size": 82,
+   "sha256": "7e6cb3df2ec81418e4ba31fc1419f7c5b1e6a3fac6130296540cba14ca84f36a",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/baseline/environment.json",
+   "size": 207,
+   "sha256": "09e5efc3f9c7157ab4c762b34ca3a70c69e578db9e5579ce58b261e42fdbe041",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/clean_env/result.json",
+   "size": 99,
+   "sha256": "8b660f43457c309fb40a328a5202b6398d8582661eb7bc6ef0079bd1fce55e8f",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/fresh_db/lifecycle.json",
+   "size": 224,
+   "sha256": "8431c634cc40f3e728060d29a41c6f67ac542493df0b672b8d11ba7a44bee84e",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/legacy/upgrade.json",
+   "size": 241,
+   "sha256": "f47168f33c4f7514ba4a5804315fc8d941b1294ae421da5be1a9ff141afd2aa0",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/performance/percentiles.json",
+   "size": 206,
+   "sha256": "3d35d370f386a5a362f33a842d3778e6efda793fe521a64b81bdc1af2113fafa",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/release/checksums.sha256",
+   "size": 421,
+   "sha256": "a442374b69b1a41eec8a444f53d38c1964be5a3b03d7dfc21131ebc72e5210e7",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/release/config_manifest.json",
+   "size": 355,
+   "sha256": "4677c3a04767b1f73e654f6885c811c81b8ff87bda2f2c0883c085fa15bff3d6",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/release/dataset_manifest.json",
+   "size": 240,
+   "sha256": "6f873e4148bc514da21230d24575b2dedf7d278a2e358735e6586d8d91ac1275",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/release/environment.json",
+   "size": 207,
+   "sha256": "09e5efc3f9c7157ab4c762b34ca3a70c69e578db9e5579ce58b261e42fdbe041",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/release/manifest.json",
+   "size": 3203,
+   "sha256": "a095eae61d0c6c6bce164082d6b80f685168524186612950375bb37faf29a52d",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/release/release_notes.md",
+   "size": 964,
+   "sha256": "db4aa887f23360343671318530734e8b1be15ddc4ebb6cb78b175ac73177e839",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/reports/final.md",
+   "size": 3660,
+   "sha256": "da95bd34a10f51a4d6d420eda94119a18b6c4f5827eb69581d69b53d6bfbc95b",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/reports/test_closure.log",
+   "size": 4921,
+   "sha256": "471f9629bd1b0dc8f78758a7f18a120addc586421db520ac91b8692b0d63d638",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/reproducibility/commands.json",
+   "size": 1428,
+   "sha256": "95d03aa5ae0941af360208145b2e264ece1e9d09443ceac074fe3676cd9639ad",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/rollback/demo.json",
+   "size": 179,
+   "sha256": "9a6dd3e074b30d39f80937350972a84fdbb36cdcfeb24316f4d1952b68ff45c6",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "results/r9/security/audit.json",
+   "size": 188,
+   "sha256": "4b8a2d6ee76443d7668bf3c6ca8721c895daa401535990f6eeb5fd96f590a4f2",
+   "classification": "ARTIFACT",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r1_benchmark.py",
+   "size": 17212,
+   "sha256": "d9a03df89b66b3ab21bee0f6a3f97e6d47f5f6e45a6a52be43318f532c7cf965",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r1_semantic_brain.py",
+   "size": 6604,
+   "sha256": "4b3e73ddb44aab5546b761c0beb75a14b875d671e1610022f3ced5bff0dbb54f",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r2_hardening.py",
+   "size": 18450,
+   "sha256": "26152ee92b5ea10f98ed4abfe64ad02d7b61257889bce1f8f33f10f3d82caa8b",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r3_quality.py",
+   "size": 17418,
+   "sha256": "f738e8008b8969ab473c9e7e116b4d02c6cc90a6fd45b78d7ddbce5984e79e8a",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r3_retrieval.py",
+   "size": 4044,
+   "sha256": "813b7d970390ed53c9edc4370ccc7e42bd9c6b2c7c79a33b202460f5e171b88f",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r3_semantic.py",
+   "size": 10936,
+   "sha256": "061ed12c0f2e0b43288a6cf35d3d3b72ff51e4895dbedcb2d034f144179178c5",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r3_storage.py",
+   "size": 4497,
+   "sha256": "f118ab21e1229b3ed16a5d50692344605f3265c401e88cc4210c4d22994bbb5d",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r4_paraphrase.py",
+   "size": 8170,
+   "sha256": "a070090997ef7b3ad77705b4857b81151ff2c8323cc40f228a88b9a0645b6a13",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r4_security.py",
+   "size": 5550,
+   "sha256": "b4fc8084493284318e7b847108a2efe93eac4ea2ee296b5795cb70ad97bcc438",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r4_temporal.py",
+   "size": 16573,
+   "sha256": "be2f89bd50cbdb2efaaf2a1aaa06969915a2adf6fd15267a9e99dc22d06049b1",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r4_thai.py",
+   "size": 6341,
+   "sha256": "b5a86f8386946d18672a450dd0ad5e76748dd28cac8ea05d795c865aebe71360",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r5_fuzz.py",
+   "size": 5230,
+   "sha256": "90ad34f5287ede2905c04285010b9afd0ebbfc77aed8478fc17e3fdc63da6e1b",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r5_invariants.py",
+   "size": 9396,
+   "sha256": "c6e67a173c2cc6b16e85167312b6d0bb107f0a57d9c19d5af74264245304dd49",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r5_longrun.py",
+   "size": 5102,
+   "sha256": "d3a2ad83f8537f7d9cadae274e813a18c46d55d72cbb40e2ab871beed12db7a6",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r5_perf.py",
+   "size": 5366,
+   "sha256": "27894679559594f04c7c58e681a2ac6a45620968a9fdcf3c3e58c63a4262b85e",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r5_recovery.py",
+   "size": 4217,
+   "sha256": "cdcf6e3f70af29758927998cdac1ef9512a78a33385f997d2b9735cfbe6dba38",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r5_security.py",
+   "size": 6521,
+   "sha256": "8ec5c2f823d913a33a468e4616f6f76794ade7bb682a3c1c9919372245e95b39",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r6_ops.py",
+   "size": 12882,
+   "sha256": "6dd2ec8371bce57d17e89c5fcc6478272b92e47a804c6277aa0f96a551dd537b",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r7_integration.py",
+   "size": 5639,
+   "sha256": "41aa5f2d42b658977672b915fe86b2b5348a8849683b1b900c9825056caca4d6",
+   "classification": "TEST",
+   "source": "commit-blob"
+  },
+  {
+   "path": "tests/plugins/memory/test_r8_release.py",
+   "size": 4030,
+   "sha256": "1f7afea0e68d26a6e228034638fc92ef514110ab18d4dd0770c2b604257d1213",
+   "classification": "TEST",
+   "source": "commit-blob"
+  }
+ ]
+}

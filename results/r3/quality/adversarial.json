@@ -1,0 +1,9 @@
+{
+ "tp_total": 14,
+ "tp_missed": [],
+ "fp_total": 13,
+ "fp_hit": [],
+ "prefetch_leaked": [],
+ "arm": "r3",
+ "llm_calls": 0
+}

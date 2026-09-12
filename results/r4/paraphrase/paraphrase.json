@@ -1,0 +1,226 @@
+{
+ "n": 30,
+ "baseline_p@1": 0.8,
+ "stem_union_p@1": 0.8333,
+ "delta": 0.0333,
+ "llm_calls": 0,
+ "per_query": [
+  {
+   "qid": "pp01",
+   "hit": true,
+   "ranked": [
+    "db",
+    "f_db"
+   ]
+  },
+  {
+   "qid": "pp02",
+   "hit": true,
+   "ranked": [
+    "pipe",
+    "auth",
+    "cache"
+   ]
+  },
+  {
+   "qid": "pp03",
+   "hit": true,
+   "ranked": [
+    "runner"
+   ]
+  },
+  {
+   "qid": "pp04",
+   "hit": true,
+   "ranked": [
+    "cache"
+   ]
+  },
+  {
+   "qid": "pp05",
+   "hit": true,
+   "ranked": [
+    "editor"
+   ]
+  },
+  {
+   "qid": "pp06",
+   "hit": true,
+   "ranked": [
+    "queue"
+   ]
+  },
+  {
+   "qid": "pp07",
+   "hit": true,
+   "ranked": [
+    "auth"
+   ]
+  },
+  {
+   "qid": "pp08",
+   "hit": true,
+   "ranked": [
+    "db",
+    "f_db",
+    "mode_b",
+    "mode_a",
+    "thai_db"
+   ]
+  },
+  {
+   "qid": "pp09",
+   "hit": true,
+   "ranked": [
+    "runner"
+   ]
+  },
+  {
+   "qid": "pp10",
+   "hit": true,
+   "ranked": [
+    "pipe"
+   ]
+  },
+  {
+   "qid": "pp11",
+   "hit": false,
+   "ranked": []
+  },
+  {
+   "qid": "pp12",
+   "hit": true,
+   "ranked": [
+    "pipe"
+   ]
+  },
+  {
+   "qid": "pp13",
+   "hit": true,
+   "ranked": [
+    "runner"
+   ]
+  },
+  {
+   "qid": "pp14",
+   "hit": true,
+   "ranked": [
+    "cache"
+   ]
+  },
+  {
+   "qid": "pp15",
+   "hit": false,
+   "ranked": []
+  },
+  {
+   "qid": "pp16",
+   "hit": false,
+   "ranked": []
+  },
+  {
+   "qid": "pp17",
+   "hit": true,
+   "ranked": [
+    "auth"
+   ]
+  },
+  {
+   "qid": "pp18",
+   "hit": false,
+   "ranked": []
+  },
+  {
+   "qid": "pp19",
+   "hit": false,
+   "ranked": []
+  },
+  {
+   "qid": "pp20",
+   "hit": true,
+   "ranked": [
+    "runner"
+   ]
+  },
+  {
+   "qid": "pp21",
+   "hit": true,
+   "ranked": [
+    "thai_db",
+    "f_fact"
+   ]
+  },
+  {
+   "qid": "pp22",
+   "hit": true,
+   "ranked": [
+    "thai_base",
+    "f_fact"
+   ]
+  },
+  {
+   "qid": "pp23",
+   "hit": true,
+   "ranked": [
+    "thai_base",
+    "f_fact"
+   ]
+  },
+  {
+   "qid": "pp24",
+   "hit": true,
+   "ranked": [
+    "thai_db",
+    "f_db",
+    "db"
+   ]
+  },
+  {
+   "qid": "pp25",
+   "hit": true,
+   "ranked": [
+    "runner",
+    "f_fact"
+   ]
+  },
+  {
+   "qid": "pp26",
+   "hit": true,
+   "ranked": [
+    "thai_base",
+    "f_fact"
+   ]
+  },
+  {
+   "qid": "pp27",
+   "hit": true,
+   "ranked": [
+    "f_db"
+   ]
+  },
+  {
+   "qid": "pp28",
+   "hit": true,
+   "ranked": [
+    "f_fact"
+   ]
+  },
+  {
+   "qid": "pp29",
+   "hit": true,
+   "ranked": [
+    "prov_new"
+   ]
+  },
+  {
+   "qid": "pp30",
+   "hit": true,
+   "ranked": [
+    "mode_b",
+    "mode_a",
+    "editor",
+    "db"
+   ]
+  }
+ ]
+}

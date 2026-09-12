@@ -1,0 +1,6 @@
+{
+ "cases": 50,
+ "fresh_first": 50,
+ "arm": "r3",
+ "llm_calls": 0
+}

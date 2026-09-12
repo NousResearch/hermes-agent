@@ -1,0 +1,107 @@
+[
+ {
+  "path": "plugins/memory/holographic/__init__.py",
+  "size": 16132,
+  "sha256": "7f414a377be744e9abb1e667610501e39e8d10b080a7ad6b9164bb8566ad0c9e",
+  "classification": "CORE-STOCK",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/cognition.py",
+  "size": 14408,
+  "sha256": "98eaa3c449f71f68b7b86d300553397398026582a40e13b375483ef444a90f08",
+  "classification": "COGNITIVE",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/cognitive_retrieval.py",
+  "size": 8211,
+  "sha256": "530ebea9ed3db4cd227aa5fbb3fc1f9db8aecdca6b553810d73c6106eafe7fdc",
+  "classification": "RETRIEVAL",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/holographic.py",
+  "size": 9251,
+  "sha256": "c3fecb6a04bda3bf3d89bdfb0ac671ad49de9b06441e75b6bca7b5a1705397c8",
+  "classification": "CORE-STOCK",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/maintenance.py",
+  "size": 13522,
+  "sha256": "411b0f365d6dcb94660a7c7bc854e6c7622ccbcd0700e7229b9a0c0a2caf6678",
+  "classification": "MIGRATION",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/migration.py",
+  "size": 2382,
+  "sha256": "9f71151361e9a35771c5b1fe49f8d19fc17f63e437652eeeb32e288aafdfee38",
+  "classification": "MIGRATION",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/OPERATIONS.md",
+  "size": 3551,
+  "sha256": "6ae341881793bfcf857af70cde926001d70bbf46572367fa60bf9b7203594ac1",
+  "classification": "DOCUMENTATION",
+  "role": "meta/docs"
+ },
+ {
+  "path": "plugins/memory/holographic/operations.py",
+  "size": 29701,
+  "sha256": "1c1b467c81c2235f02198bec2767dda51e5ba8c9fd2f5fae3d193454d4685e8d",
+  "classification": "OPERATIONS",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/plugin.yaml",
+  "size": 193,
+  "sha256": "6a678c1af41756d85923750a786f5f21c0d5c2917433529212ee3a89afa11b8a",
+  "classification": "CORE-STOCK",
+  "role": "meta/docs"
+ },
+ {
+  "path": "plugins/memory/holographic/README.md",
+  "size": 1863,
+  "sha256": "0b8b388ef905080b69c9aa0e2369830e77214018b5501f0f561d64c936fdc99d",
+  "classification": "DOCUMENTATION",
+  "role": "meta/docs"
+ },
+ {
+  "path": "plugins/memory/holographic/retrieval.py",
+  "size": 27135,
+  "sha256": "2989c79cff505820541363849ee0f396caffb1435d779f5baffef82c3a2f73a7",
+  "classification": "RETRIEVAL",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/safety.py",
+  "size": 4635,
+  "sha256": "3f87156e380d4e378e25a8ed7cf5cc05ad2018f54f50a15edbae0cefff7613ea",
+  "classification": "SECURITY",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/semantic_brain.py",
+  "size": 11056,
+  "sha256": "654dfe0249e6bd4960da71dc162c8e0e475f29ee99af9c23b4c7c64a7aea445a",
+  "classification": "COGNITIVE",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/store.py",
+  "size": 45301,
+  "sha256": "648f942772a383026422111ffed52a7c40d790585ab0a1b1df46c30e4b20823f",
+  "classification": "TEMPORAL",
+  "role": "production"
+ },
+ {
+  "path": "plugins/memory/holographic/taxonomy.py",
+  "size": 4084,
+  "sha256": "2a4e178dc6b4b0021c6e21bc99dad8fcb1ec093aabe832c69f34a29b03af12c8",
+  "classification": "COGNITIVE",
+  "role": "production"
+ }
+]

@@ -1,0 +1,10 @@
+{
+ "integrated_sha": "15672997bfbc219a28964fa9a7ff480351af4e18",
+ "parent_sha": "dee30d123defbb61ec53ec17bf7aae281563db49",
+ "hermes": "0.21.1",
+ "python": "3.14.3",
+ "sqlite": "3.50.4",
+ "numpy": "2.5.1",
+ "pytest": "9.1.1",
+ "os": "Windows 11"
+}

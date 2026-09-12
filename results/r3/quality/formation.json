@@ -1,0 +1,23 @@
+{
+ "summary": {
+  "exact_dedupe": {
+   "n": 30,
+   "pass": 30
+  },
+  "paraphrase_ceiling": {
+   "n": 30,
+   "distinct": 30
+  },
+  "extract": {
+   "n": 20,
+   "pass": 20
+  },
+  "feedback": {
+   "n": 20,
+   "pass": 20
+  },
+  "total": 100
+ },
+ "arm": "r3",
+ "llm_calls": 0
+}

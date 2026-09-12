@@ -15,4 +15,6 @@ def build_insights_parser(subparsers, *, cmd_insights: Callable) -> None:
         "--days", type=int, default=30, help="Number of days to analyze (default: 30)")
     insights_parser.add_argument(
         "--source", help="Filter by platform (cli, telegram, discord, etc.)")
+    insights_parser.add_argument(
+        "--fleet", action="store_true", help="Aggregate all local profile stores (admin CLI only)")
     insights_parser.set_defaults(func=cmd_insights)

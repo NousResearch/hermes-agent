@@ -109,7 +109,7 @@ def cmd_insights(args):
         from agent.insights import InsightsEngine
         db = SessionDB()
         engine = InsightsEngine(db)
-        report = engine.generate(days=args.days, source=args.source)
+        report = (engine.generate_fleet if getattr(args, "fleet", False) else engine.generate)(days=args.days, source=args.source)
         print(engine.format_terminal(report))
     except Exception as e:
         print(f"Error generating insights: {e}")

@@ -1657,9 +1657,26 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
 
+    # 1b. Unroute the old name from a live multiplexer BEFORE the rename. A multiplexed
+    # secondary has no gateway.pid of its own, so the check above reports it stopped while
+    # the default gateway still holds its adapters, cron ticker, logging and SQLite handles.
+    # Tombstone + notify so the multiplexer stops those adapters and releases its handles
+    # into old_dir; without it the live components immediately re-``mkdir`` the old home
+    # (no tombstone → ``mkdir_under_hermes_home`` does not refuse it) and the periodic
+    # reconcile re-adopts the resurrected dir as a ghost served profile.
+    served_by_mux = _served_by_running_multiplexer(old_canon)
+    if served_by_mux:
+        mark_named_profile_deleted(old_dir)
+        _notify_multiplexer(old_canon)
+
     # 2. Rename directory
     old_dir.rename(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
+    # The tombstone lived at profiles/.deleted/<old_name>; old_dir is gone now so it can no
+    # longer resurrect, and new_dir carries no tombstone. Clear the stale marker so a future
+    # profile reusing the old name is not treated as deleted.
+    if served_by_mux:
+        clear_named_profile_deleted(old_dir)
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
     _migrate_honcho_profile_host(old_canon, new_canon, new_dir)
@@ -1675,6 +1692,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 
     # 5. Update active_profile if it pointed to old name
     _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
+
+    # 6. Ask a live multiplexer to hot-serve the renamed profile now (mirrors create); it
+    # also rescans periodically, so a missed signal only delays serving.
+    if served_by_mux:
+        _notify_multiplexer(new_canon)
     return new_dir
 
 

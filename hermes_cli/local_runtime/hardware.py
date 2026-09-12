@@ -8,11 +8,13 @@ stripped PATH — gateway and service sessions don't inherit the interactive env
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import suppress
 import logging
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -44,6 +46,15 @@ _POOL_RAM_FRACTION = 0.75
 
 # cuDeviceGetAttribute enum: device is integrated with host memory.
 _CU_DEVICE_ATTRIBUTE_INTEGRATED = 18
+
+# Linux amdgpu DRM ABI. AMDGPU_INFO_DEV_INFO's ids_flags bit 0 is
+# AMDGPU_IDS_FLAGS_FUSION, the kernel's APU classification.
+_DRM_AMDGPU_INFO = 0x05
+_AMDGPU_INFO_DEV_INFO = 0x16
+_AMDGPU_IDS_FLAGS_FUSION = 0x1
+_AMDGPU_DEVICE_ID_OFFSET = 0
+_AMDGPU_IDS_FLAGS_OFFSET = 136
+_AMDGPU_INFO_BUFFER_SIZE = 256
 
 # One probe per process once a device answers (silicon doesn't change); a miss retries after this
 # long so a runtime installed mid-session gets picked up by the engine fallback.
@@ -157,6 +168,88 @@ def _nvidia_vram() -> tuple[int, int] | None:
         total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
         return total_mib << 20, free_mib << 20
     return None
+
+
+def _amd_info_integrated(response: bytes, expected_device_id: int) -> bool | None:
+    device_id = struct.unpack_from("=I", response, _AMDGPU_DEVICE_ID_OFFSET)[0]
+    if device_id != expected_device_id:
+        return None
+    ids_flags = struct.unpack_from("=Q", response, _AMDGPU_IDS_FLAGS_OFFSET)[0]
+    return bool(ids_flags & _AMDGPU_IDS_FLAGS_FUSION)
+
+
+def _amd_device_integrated(device: Path) -> bool | None:
+    """Read amdgpu's FUSION flag for one sysfs device."""
+    if sys.platform != "linux":
+        return None
+
+    import ctypes
+
+    class AmdgpuInfoRequest(ctypes.Structure):
+        _fields_ = [
+            ("return_pointer", ctypes.c_uint64),
+            ("return_size", ctypes.c_uint32),
+            ("query", ctypes.c_uint32),
+            ("params", ctypes.c_uint32 * 4),
+        ]
+
+    try:
+        libdrm = ctypes.CDLL("libdrm.so.2")
+        command_write = libdrm.drmCommandWrite
+        command_write.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong]
+        command_write.restype = ctypes.c_int
+        expected_device_id = int((device / "device").read_text(encoding="utf-8").strip(), 16)
+        render = next((device / "drm").glob("renderD*"))
+        descriptor = os.open(f"/dev/dri/{render.name}", os.O_RDWR | os.O_CLOEXEC)
+    except (AttributeError, OSError, StopIteration, ValueError):
+        return None
+
+    try:
+        response = ctypes.create_string_buffer(_AMDGPU_INFO_BUFFER_SIZE)
+        request = AmdgpuInfoRequest(
+            ctypes.addressof(response),
+            _AMDGPU_INFO_BUFFER_SIZE,
+            _AMDGPU_INFO_DEV_INFO,
+            (ctypes.c_uint32 * 4)(),
+        )
+        # libdrm builds DRM_IOW with the host architecture's ioctl layout.
+        if command_write(
+            descriptor,
+            _DRM_AMDGPU_INFO,
+            ctypes.byref(request),
+            ctypes.sizeof(request),
+        ) != 0:
+            return None
+    except (OSError, ValueError):
+        return None
+    finally:
+        os.close(descriptor)
+
+    return _amd_info_integrated(response.raw, expected_device_id)
+
+
+def _amd_vram_from_devices(devices: Iterable[Path]) -> tuple[int, int] | None:
+    best: tuple[int, int] | None = None
+    for device in devices:
+        try:
+            if (device / "vendor").read_text(encoding="utf-8").strip().lower() != "0x1002":
+                continue
+            if _amd_device_integrated(device) is not False:
+                continue
+            total = int((device / "mem_info_vram_total").read_text(encoding="utf-8"))
+            used = int((device / "mem_info_vram_used").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if total > 0 and (best is None or total > best[0]):
+            best = total, max(0, total - used)
+    return best
+
+
+def _amd_vram() -> tuple[int, int] | None:
+    """Return the largest driver-confirmed discrete AMD VRAM pool on Linux."""
+    if sys.platform != "linux":
+        return None
+    return _amd_vram_from_devices(Path("/sys/class/drm").glob("card*/device"))
 
 
 def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
@@ -290,8 +383,11 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         return _uma_budget(base, unified)
 
     if vram is None:
-        # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
-        # Silicon) — conservative for discrete AMD until a vendor probe lands.
+        vram = _amd_vram()
+
+    if vram is None:
+        # No discrete GPU visible: Metal/Vulkan/CPU paths budget from RAM as UMA. AMD APUs
+        # and unreadable AMD driver state deliberately stay on this conservative fallback.
         return _uma_budget(ram_total if planning else ram_avail, ram_total)
 
     total, free = vram

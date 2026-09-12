@@ -1471,6 +1471,41 @@ class TestDockerProfileSandboxMediaTranslation:
             "/root/note.txt", session_key=self.SESSION_KEY
         ) == str(produced.resolve())
 
+    def test_named_profile_key_restores_sandbox_and_volume_policy(self, tmp_path, monkeypatch):
+        """Delivery happens after the routed turn reset, so the key must restore
+        both the named profile's sandbox root and its explicit Docker mounts."""
+        import json
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        default_home = tmp_path / "hermes"
+        public_home = default_home / "profiles" / "public"
+        output = public_home / "cache" / "output"
+        output.mkdir(parents=True)
+        output_file = output / "render.png"
+        output_file.write_bytes(b"png")
+        public_home.joinpath("config.yaml").write_text(json.dumps({
+            "terminal": {
+                "backend": "docker",
+                "docker_volumes": [f"{output}:/output"],
+            },
+        }))
+        home = (public_home / "sandboxes" / "docker"
+                / sanitize_task_id_for_path("profile:public") / "home")
+        home.mkdir(parents=True)
+        home_file = home / "photo.jpg"
+        home_file.write_bytes(b"jpg")
+
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        self._enable_docker(monkeypatch)
+        session_key = "agent:public:discord:thread:123:456"
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/root/photo.jpg", session_key=session_key
+        ) == str(home_file.resolve())
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/output/render.png", session_key=session_key
+        ) == str(output_file.resolve())
+
     def test_home_credential_surface_still_refused(self, monkeypatch):
         """The /root/.hermes exclusion survives profile scoping: translating
         the home mount must never expose the container's secret surface —

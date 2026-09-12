@@ -940,6 +940,47 @@ def _tenv(name: str, default: str = "") -> str:
     return terminal_env(name, default)
 
 
+@contextlib.contextmanager
+def _docker_media_profile_scope(session_key: str):
+    """Restore a named session key's profile scope while translating Docker paths.
+
+    Delivery runs after the routed turn scope has been reset.  ``agent:main`` and
+    legacy/keyless callers remain ambient because ``main`` is also the historical
+    namespace used by single-profile gateways.
+    """
+    parts = str(session_key or "").split(":")
+    if len(parts) < 2 or parts[0] != "agent" or parts[1] in {"", "main"}:
+        yield True
+        return
+    try:
+        from hermes_cli.profiles import (
+            get_profile_dir, normalize_profile_name, profile_exists, validate_profile_name,
+        )
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.terminal_scope import (
+            build_profile_terminal_scope, reset_terminal_scope, set_terminal_scope,
+        )
+
+        profile = normalize_profile_name(parts[1])
+        validate_profile_name(profile)
+        if not profile_exists(profile):
+            yield False
+            return
+        profile_home = get_profile_dir(profile)
+        terminal_policy = build_profile_terminal_scope(profile_home)
+    except Exception:
+        yield False
+        return
+
+    home_token = set_hermes_home_override(profile_home)
+    terminal_token = set_terminal_scope(terminal_policy)
+    try:
+        yield True
+    finally:
+        reset_terminal_scope(terminal_token)
+        reset_hermes_home_override(home_token)
+
+
 def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
     """Parse ``TERMINAL_DOCKER_VOLUMES`` (JSON list of ``host:container[:mode]``) into
     ``(host_path, container_path)``; named volumes / non-absolute hosts can't resolve here."""
@@ -1070,40 +1111,44 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
     if not candidate.is_absolute():
         return None
-    # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
-    # TERMINAL_* env yet; the bridge is idempotent.
-    with contextlib.suppress(Exception):
-        from tools.terminal_tool import _ensure_terminal_env_bridged
-        _ensure_terminal_env_bridged()
-    mounts = [*_parse_docker_volume_mounts(), *_cache_dir_container_mounts()]
-    mounted = {c.as_posix() for _, c in mounts}
-    # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
-    if "/workspace" not in mounted:
-        mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
-    # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
-    # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
-    # translating it via the home mount would dodge the host denylist.
-    if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
-        mounts.extend(
-            (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
-    if not mounts:
-        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
+    with _docker_media_profile_scope(session_key) as profile_available:
+        if not profile_available:
+            _warn_unresolved_docker_media(candidate, session_key, "profile namespace unavailable")
+            return None
+        # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
+        # TERMINAL_* env yet; the bridge is idempotent.
+        with contextlib.suppress(Exception):
+            from tools.terminal_tool import _ensure_terminal_env_bridged
+            _ensure_terminal_env_bridged()
+        mounts = [*_parse_docker_volume_mounts(), *_cache_dir_container_mounts()]
+        mounted = {c.as_posix() for _, c in mounts}
+        # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
+        if "/workspace" not in mounted:
+            mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
+        # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
+        # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
+        # translating it via the home mount would dodge the host denylist.
+        if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
+            mounts.extend(
+                (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
+        if not mounts:
+            _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
+            return None
+        # Longest container-prefix match; equal-length prefixes are tried in insertion order.
+        candidate_posix = candidate.as_posix()
+        matched = [(host_root, container_root, len(prefix)) for host_root, container_root in mounts
+                   for prefix in (container_root.as_posix().rstrip("/") or "/",)
+                   if candidate_posix == prefix or candidate_posix.startswith(prefix + "/")]
+        if not matched:
+            _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
+            return None
+        for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
+            translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
+            if translated is not None and (
+                    translated == host_root or _path_is_within(translated, host_root)):
+                return translated
+        _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
         return None
-    # Longest container-prefix match; equal-length prefixes are tried in insertion order.
-    candidate_posix = candidate.as_posix()
-    matched = [(host_root, container_root, len(prefix)) for host_root, container_root in mounts
-               for prefix in (container_root.as_posix().rstrip("/") or "/",)
-               if candidate_posix == prefix or candidate_posix.startswith(prefix + "/")]
-    if not matched:
-        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
-        return None
-    for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
-        translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
-        if translated is not None and (
-                translated == host_root or _path_is_within(translated, host_root)):
-            return translated
-    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
-    return None
 
 
 def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:

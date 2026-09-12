@@ -8,11 +8,13 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import json
 import logging
 import os
 import re
+import sys
 import threading
 import urllib.parse
 import urllib.request
@@ -542,17 +544,21 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 def fetch_openrouter_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
     """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
-    global _openrouter_catalog_cache
+    # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
+    # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
+    from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
+    _me = sys.modules[__name__]
+    cached = profile_slot_get(_me, "_openrouter_catalog_cache")
 
-    if _openrouter_catalog_cache is not None and not force_refresh:
-        return list(_openrouter_catalog_cache)
+    if cached is not None and not force_refresh:
+        return list(cached)
 
     # Cold process: serve from the persisted disk cache when fresh so the
     # picker doesn't re-download the full ~686KB catalog on every open.
     if not force_refresh:
         disk = _read_openrouter_catalog_disk()
         if disk:
-            _openrouter_catalog_cache = disk
+            profile_slot_set(_me, "_openrouter_catalog_cache", disk)
             return list(disk)
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
@@ -566,7 +572,7 @@ def fetch_openrouter_models(
 
     live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
     if live is None:
-        return list(_openrouter_catalog_cache or fallback)
+        return list(cached or fallback)
     live_items, live_by_id = live
 
     # Free warm-up for the reasoning-capability cache: same payload the caps fetch would pull.
@@ -592,10 +598,10 @@ def fetch_openrouter_models(
         curated.append((preferred_id, desc))
 
     if not curated:
-        return list(_openrouter_catalog_cache or fallback)
+        return list(cached or fallback)
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
-    _openrouter_catalog_cache = curated
+    profile_slot_set(_me, "_openrouter_catalog_cache", curated)
     _write_openrouter_catalog_disk(curated)
     return list(curated)
 
@@ -1479,10 +1485,15 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
     Failures are swallowed — the stale entry stays served until a later refresh succeeds.
     ``refresh_fn`` (no-args → fresh entry dict or None) lets ``custom:<base_url>`` keys from
     :func:`cached_fetch_api_models` reuse the same inflight-dedupe scaffolding."""
+    # Under a routed profile the inflight key includes the home: the same provider slug names a
+    # different disk cache and credential set per profile, so one profile's refresh must not
+    # suppress another's. Unscoped keeps the bare key (tests inspect the set by slug).
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    inflight_key = cache_key if get_hermes_home_override() is None else (hermes_home_key(), cache_key)
     with _swr_refresh_lock:
-        if cache_key in _swr_refresh_inflight:
+        if inflight_key in _swr_refresh_inflight:
             return
-        _swr_refresh_inflight.add(cache_key)
+        _swr_refresh_inflight.add(inflight_key)
 
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
@@ -1499,9 +1510,11 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
             logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
         finally:
             with _swr_refresh_lock:
-                _swr_refresh_inflight.discard(cache_key)
+                _swr_refresh_inflight.discard(inflight_key)
 
-    threading.Thread(target=_refresh, daemon=True, name=f"model-cache-swr-{cache_key}").start()
+    # copy_context: the refresh must read the calling profile's credentials and write ITS disk cache.
+    ctx = contextvars.copy_context()
+    threading.Thread(target=lambda: ctx.run(_refresh), daemon=True, name=f"model-cache-swr-{cache_key}").start()
 
 
 def _provider_models_cache_path() -> Path:
@@ -1893,15 +1906,21 @@ def fetch_github_model_catalog(
 # Module-level cache: {model_id: max_prompt_tokens}
 _copilot_context_cache: dict[str, int] = {}
 _copilot_context_cache_time: float = 0.0
+_copilot_context_cache_key: Optional[str] = None  # fingerprint of the api_key the entry was fetched with
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
 def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
     """``max_prompt_tokens`` for a Copilot model from the live /models API (cached in-process 1h; a
     miss on a fresh cache does not re-fetch), or None."""
-    global _copilot_context_cache, _copilot_context_cache_time
+    global _copilot_context_cache, _copilot_context_cache_time, _copilot_context_cache_key
 
-    if _copilot_context_cache and (time.time() - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL):
+    # Keyed on the credential like fetch_github_model_catalog: the catalog (and its limits) is
+    # per-account, so another profile's token must not be served this entry.
+    from agent.credential_persistence import fingerprint_secret_value
+    key_fp = fingerprint_secret_value(api_key)
+    if (_copilot_context_cache and _copilot_context_cache_key == key_fp
+            and (time.time() - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL)):
         return _copilot_context_cache.get(model_id)
 
     catalog = fetch_github_model_catalog(api_key=api_key)
@@ -1915,6 +1934,7 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
             cache[mid] = max_prompt
     _copilot_context_cache = cache
     _copilot_context_cache_time = time.time()
+    _copilot_context_cache_key = key_fp
     return cache.get(model_id)
 
 
@@ -2355,11 +2375,20 @@ _deepinfra_catalog_neg_cache: dict[str, float] = {}
 _DEEPINFRA_CATALOG_NEG_TTL = 60.0  # seconds
 
 
+def _deepinfra_env(key: str) -> str:
+    """Profile-scoped ``.env``/environ read: under a multiplexed turn the launch env is not this profile's."""
+    from hermes_cli.config import get_env_value_prefer_dotenv
+    return (get_env_value_prefer_dotenv(key) or "").strip()
+
+
 def _deepinfra_catalog_url() -> tuple[str, str]:
-    """Return ``(cache_key, full_url)`` for the DeepInfra catalog endpoint."""
-    base = os.getenv("DEEPINFRA_BASE_URL", "").strip() or _DEEPINFRA_DEFAULT_BASE_URL
-    cache_key = base.rstrip("/")
-    return cache_key, f"{cache_key}/models?{_DEEPINFRA_MODELS_QUERY}"
+    """Return ``(cache_key, full_url)`` for the DeepInfra catalog endpoint. The key carries the
+    api-key fingerprint: the catalog is user-scoped (private fine-tunes), so two profiles with
+    different keys must not share an entry."""
+    base = (_deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL).rstrip("/")
+    from agent.credential_persistence import fingerprint_secret_value
+    fp = fingerprint_secret_value(_deepinfra_env("DEEPINFRA_API_KEY")) or "anon"
+    return f"{base}#{fp}", f"{base}/models?{_DEEPINFRA_MODELS_QUERY}"
 
 
 def _fetch_deepinfra_catalog(
@@ -2375,7 +2404,7 @@ def _fetch_deepinfra_catalog(
             return None
 
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
-    api_key = os.getenv("DEEPINFRA_API_KEY", "").strip()
+    api_key = _deepinfra_env("DEEPINFRA_API_KEY")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
@@ -2435,7 +2464,7 @@ def deepinfra_model_ids(tag: str, *, force_refresh: bool = False) -> list[str]:
 def deepinfra_base_url(section: Optional[dict] = None) -> str:
     """DeepInfra base URL: config-section ``base_url`` → ``DEEPINFRA_BASE_URL`` env → default; stripped."""
     candidate = section.get("base_url") if isinstance(section, dict) else None
-    value = candidate or os.getenv("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL
+    value = candidate or _deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL
     return str(value).strip().rstrip("/")
 
 

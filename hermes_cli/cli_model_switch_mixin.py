@@ -251,8 +251,10 @@ class CLIModelSwitchMixin:
                 current_model = canonical
                 changed = True
 
-        def _adopt_with_mode(normalize, api_mode_of, notice) -> bool:
-            """Provider families that also own the wire protocol: adopt id, then sync api_mode."""
+        def _adopt_with_mode(normalize, api_mode_of, notice, normalize_base_url=None) -> bool:
+            """Provider families that also own the wire protocol: adopt id, sync api_mode, and —
+            for families whose endpoint shape follows the wire — heal base_url through
+            ``normalize_base_url(api_mode, base_url)`` so the pair can never disagree."""
             nonlocal changed
             try:
                 _adopt(normalize(current_model), notice)
@@ -260,6 +262,14 @@ class CLIModelSwitchMixin:
                 if resolved_mode != self.api_mode:
                     self.api_mode = resolved_mode
                     changed = True
+                # Unconditional, not gated on the mode having just changed: the URL may already be
+                # desynced from an earlier adopt that moved the wire and left it behind (#105947).
+                current_base = getattr(self, "base_url", "") or ""
+                if normalize_base_url is not None and current_base:
+                    healed = normalize_base_url(self.api_mode, current_base)
+                    if healed and healed != current_base:
+                        self.base_url = healed
+                        changed = True
             except Exception:
                 pass
             return changed
@@ -284,13 +294,21 @@ class CLIModelSwitchMixin:
 
         from hermes_cli.models import opencode_provider_family
         if opencode_provider_family(resolved_provider) is not None:
-            from hermes_cli.models import normalize_opencode_model_id, opencode_model_api_mode
+            from hermes_cli.models import (
+                normalize_opencode_base_url, normalize_opencode_model_id, opencode_model_api_mode)
             return _adopt_with_mode(
                 lambda m: normalize_opencode_model_id(resolved_provider, m),
                 lambda m: opencode_model_api_mode(resolved_provider, m),
                 lambda new: (
                     f"Stripped provider prefix from '{current_model}'; "
-                    f"using '{new}' for {resolved_provider}."))
+                    f"using '{new}' for {resolved_provider}."),
+                # OpenCode's endpoint shape follows the wire: /v1 is stripped for
+                # anthropic_messages (the Anthropic SDK prepends its own) and must be re-appended
+                # for chat/codex models. Without healing it here, a session that passed through a
+                # Claude/Qwen model keeps the stripped URL and every later chat_completions model
+                # POSTs to https://opencode.ai/zen/chat/completions — the marketing site, 404 with
+                # an HTML body (#105947).
+                lambda mode, url: normalize_opencode_base_url(resolved_provider, mode, url))
 
         if resolved_provider != "openai-codex":
             return changed

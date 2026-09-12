@@ -51,8 +51,11 @@ _POOL_NEGATIVE_TTL_S = 60.0
 _pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
 
 # '  CUDA0: NVIDIA Example Device (1234-core Example GPU) (46464 MiB, 46284 MiB free)'
-# — greedy .* pins the LAST parenthesized group, so device names with parentheses parse.
-_DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
+# '  Vulkan0: AMD Radeon RX 6800 XT (16368 MiB, 14692 MiB free)'
+# — greedy name pins the LAST parenthesized group, so names with parentheses parse.
+_DEVICE_LINE_RE = re.compile(
+    r"^\s*(?P<backend>[A-Za-z]+)\d+:\s*(?P<name>.*)\s+"
+    r"\((?P<total>\d+)\s*MiB,\s*(?P<free>\d+)\s*MiB free\)\s*$")
 
 
 def _stdout(*argv: str) -> str:
@@ -193,29 +196,38 @@ def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
     return None
 
 
-def _engine_device_pool() -> "tuple[int, bool | None] | None":
-    """(engine_total_bytes, None) from the installed runtime's own --list-devices, or None. The
-    fallback when the driver API is unreachable: asks the exact binary that will do the
-    allocating. Carries no integrated verdict — callers must gate it."""
+def _engine_device_info() -> "tuple[int, int, str, str] | None":
+    """Return total, free, backend and name from an accelerated runtime."""
     with suppress(Exception):  # a probe miss must never block budgeting
         from hermes_cli.local_runtime.binaries import installed_tags, runtimes_root, server_binary
 
-        tags = installed_tags()
-        if not tags:
-            return None
-        backend_dirs = [d for d in (runtimes_root() / tags[0]).iterdir() if d.is_dir()]
-        if not backend_dirs:
-            return None
-        exe = server_binary(backend_dirs[0])
-        out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
-                             text=True, timeout=30, cwd=str(exe.parent))
-        if out.returncode != 0:
-            return None
-        for line in (out.stdout + out.stderr).splitlines():
-            m = _DEVICE_LINE_RE.search(line)
-            if m:
-                return int(m.group(1)) << 20, None
+        priority = {"cuda": 0, "hip": 1, "vulkan": 2, "metal": 3}
+        for tag in installed_tags():
+            root = runtimes_root() / tag
+            backend_dirs = sorted(
+                (d for d in root.iterdir() if d.is_dir() and d.name.lower() in priority),
+                key=lambda d: priority[d.name.lower()])
+            for backend_dir in backend_dirs:
+                try:
+                    exe = server_binary(backend_dir)
+                    out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
+                                         text=True, timeout=30, cwd=str(exe.parent))
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                if out.returncode != 0:
+                    continue
+                for line in (out.stdout + out.stderr).splitlines():
+                    if (match := _DEVICE_LINE_RE.search(line)) is not None:
+                        return (int(match.group("total")) << 20,
+                                int(match.group("free")) << 20,
+                                match.group("backend"), match.group("name").strip())
     return None
+
+
+def _engine_device_pool() -> "tuple[int, bool | None] | None":
+    """Allocator total from an accelerated runtime, without an integrated verdict."""
+    info = _engine_device_info()
+    return (info[0], None) if info is not None else None
 
 
 def _device_pool_view() -> "tuple[int, bool | None] | None":
@@ -265,14 +277,23 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     large. The managed server unloads/relaunches itself, so capacity is real.
     """
     ram_total, ram_avail = _ram_bytes()
-    vram = _nvidia_vram()
+    nvidia_vram = _nvidia_vram()
+    vram = nvidia_vram
+    engine_info = _engine_device_info() if vram is None else None
+    if engine_info is not None and engine_info[2].lower() in ("vulkan", "hip"):
+        # llama.cpp is allocator truth for discrete AMD/Intel devices. WMI AdapterRAM is a
+        # legacy 32-bit field and cannot represent modern cards accurately.
+        vram = engine_info[0], engine_info[1]
+        unified = None
+    else:
+        # Preserve NVIDIA's no-smi path: the CUDA driver can still identify UMA.
+        unified = _unified_pool_bytes(nvidia_vram[0] if nvidia_vram else 0, ram_total)
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
     # but nvcuda loads via the system loader). Crossing the carve-out costs nothing — it is an OS
     # accounting knob, not a GPU limit. Deliberately NOT clamped to OS RAM: carved-out memory is
     # invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that capacity.
-    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "
@@ -290,8 +311,7 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         return _uma_budget(base, unified)
 
     if vram is None:
-        # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
-        # Silicon) — conservative for discrete AMD until a vendor probe lands.
+        # Metal and CPU paths budget from RAM as UMA; unknown accelerators stay conservative.
         return _uma_budget(ram_total if planning else ram_avail, ram_total)
 
     total, free = vram

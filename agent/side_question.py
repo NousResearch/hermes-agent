@@ -106,13 +106,16 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
     stays byte-identical for cache parity, but the side question can never mutate anything.
     """
     from agent.background_review import (
-        _digest_history, _record_review_usage_to_parent, _snapshot_review_usage, build_cache_parity_fork,
+        _digest_history, _record_review_usage_to_parent, _select_review_pool_credential,
+        _snapshot_review_usage, build_cache_parity_fork,
     )
     from hermes_cli.plugins import clear_thread_tool_whitelist, set_thread_tool_whitelist
 
-    fork, _rt, routed = build_cache_parity_fork(parent_agent, _side_question_task_config(),
-                                                max_iterations=_FORK_MAX_ITERATIONS, write_origin="side_question")
+    fork, runtime, routed = build_cache_parity_fork(parent_agent, _side_question_task_config(),
+                                                    max_iterations=_FORK_MAX_ITERATIONS, write_origin="side_question")
     try:
+        if runtime.get("select_pool_on_admission"):
+            _select_review_pool_credential(fork)
         set_thread_tool_whitelist(set(), deny_msg_fmt=(
             "Side question (/btw) denied tool call: {tool_name}. "
             "Tools are disabled here — answer directly from the conversation context."))

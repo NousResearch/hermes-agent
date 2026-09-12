@@ -154,6 +154,38 @@ class TestForkPath:
         assert out == "digest"
         fork.assert_not_called()
 
+    def test_pooled_fork_selects_credential_before_side_question_request(self):
+        from agent.side_question import _answer_via_fork
+
+        calls = []
+
+        class FakeFork:
+            def run_conversation(self, **kwargs):
+                calls.append("run")
+                return {"final_response": "answer"}
+
+            def shutdown_memory_provider(self):
+                pass
+
+            def close(self):
+                pass
+
+        fork = FakeFork()
+        with patch(
+            "agent.background_review.build_cache_parity_fork",
+            return_value=(fork, {"select_pool_on_admission": True}, True),
+        ), patch(
+            "agent.background_review._select_review_pool_credential",
+            side_effect=lambda selected_fork: calls.append(("select", selected_fork)),
+        ), patch("hermes_cli.plugins.set_thread_tool_whitelist"), patch(
+            "hermes_cli.plugins.clear_thread_tool_whitelist"
+        ), patch("agent.background_review._snapshot_review_usage", return_value={}), patch(
+            "agent.background_review._record_review_usage_to_parent"
+        ):
+            assert _answer_via_fork(object(), "question?", []) == "answer"
+
+        assert calls == [("select", fork), "run"]
+
     def test_fork_denies_tools_and_replays_snapshot(self):
         """_answer_via_fork wires the empty whitelist, replays the trimmed
         snapshot, runs the fork, attributes usage, and tears down."""

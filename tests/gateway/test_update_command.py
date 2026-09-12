@@ -137,9 +137,17 @@ class TestHandleUpdateCommand:
         assert not (hermes_home / ".update_exit_code").exists()
 
 
+    @pytest.mark.linux_only
     @pytest.mark.asyncio
     async def test_fallback_when_no_setsid(self, tmp_path):
-        """Falls back to start_new_session=True when setsid is not available."""
+        """Falls back to start_new_session=True when setsid is not available.
+
+        ``setsid``/``bash``/``start_new_session`` are the POSIX spawn branch of
+        ``_handle_update_command``; Windows takes a separate ``sys.executable -c``
+        helper branch.  Run this branch on native Linux rather than faking the
+        host OS; ``subprocess.Popen`` remains mocked, but the platform-specific
+        control flow is exercised by the real interpreter platform.
+        """
         runner = _make_runner()
         event = _make_event()
 

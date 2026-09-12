@@ -283,7 +283,7 @@ def _run_pending_fleet_restart() -> bool:
     try:
         from hermes_cli.gateway import (
             find_gateway_pids, is_macos, is_windows, kill_gateway_processes, supports_systemd_services,
-            _wait_for_gateway_exit,
+            _get_service_pids, _wait_for_gateway_exit,
         )
     except Exception as exc:
         _warn_gateway_restart_phase_aborted(exc, None)
@@ -296,18 +296,27 @@ def _run_pending_fleet_restart() -> bool:
         pids = None
 
     failed: list = []
+    restarted_services: list = []
     try:
         # Snapshot before stopping: Restart=no units can disappear from list-units on a clean exit.
         systemd_listings = list(_systemd_gateway_unit_listings()) if supports_systemd_services() else None
         # Stop old processes before supervisor recovery, never its freshly verified workers.
+        # Manual (unsupervised) gateways are excluded from this stop: they get the main
+        # update path's contract below (detached-watcher relaunch for profile-mapped PIDs,
+        # loud "Restart manually" notice for the rest). A blanket kill here stranded them
+        # dead until a manual restart (#103236).
         if pids != []:
             try:
                 leftover = list(find_gateway_pids(all_profiles=True))
             except Exception:
                 leftover = list(pids or [])
             if leftover:
+                try:
+                    manual_keep = set(leftover) - _get_service_pids(all_profiles=True)
+                except Exception:
+                    manual_keep = set()
                 with _best_effort('Pending fleet restart: PID stop failed: %s'):
-                    kill_gateway_processes(all_profiles=True)
+                    kill_gateway_processes(all_profiles=True, exclude_pids=manual_keep)
                     _wait_for_gateway_exit(timeout=5.0, force_after=None)
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
@@ -318,7 +327,7 @@ def _run_pending_fleet_restart() -> bool:
         # isolation happens inside.
         if is_macos():
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0, require_supervision=True)
+                _restart_macos_launchd_gateways(restarted_services, failed, 45.0, require_supervision=True)
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")
@@ -330,6 +339,17 @@ def _run_pending_fleet_restart() -> bool:
             except Exception as exc:
                 logger.debug("Pending fleet restart: Windows failed: %s", exc)
                 failed.append("windows-gateway")
+        # Manual (non-service) gateways get the main update path's contract:
+        # arm a detached-watcher relaunch for profile-mapped PIDs and print
+        # the "Restart manually" notice for the rest. They were excluded from
+        # the PID stop above so their profile mapping survives for the helper
+        # to discover them live (#103236).
+        out = _GatewayRestartOutcome(
+            incomplete=False, phase_errors=[], pre_restart_gateway_pids=pids,
+            restarted_services=restarted_services, failed_or_stale_units=failed,
+            relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+        )
+        _restart_manual_gateways(out, 45.0)
         if failed:
             _warn_incomplete_gateway_fleet_restart(failed)
             return False

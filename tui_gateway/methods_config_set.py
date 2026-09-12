@@ -114,7 +114,18 @@ def _set_model(rid, params, key, value, session):
         sid = params.get("session_id", "")
         parsed_flags = parse_model_switch_args(value)
         if session.get("running"):
-            return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
+            result = _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
+            # Reap-safe: persist the queued pending pick too
+            try:
+                _persist_session_row_override(
+                    sid,
+                    {"model": getattr(parsed_flags, "model_input", "") or str(value).strip(),
+                     "provider": getattr(parsed_flags, "explicit_provider", "") or ""},
+                    model=getattr(parsed_flags, "model_input", "") or str(value).strip(),
+                )
+            except Exception:
+                pass
+            return result
         explicit_provider = parsed_flags.explicit_provider
         failed_agent_init = session.get("agent") is None and session.get("agent_error") is not None
         failed_ready = session.get("agent_ready") if failed_agent_init else None
@@ -139,13 +150,38 @@ def _set_model(rid, params, key, value, session):
                 return init_err
             with _session_profile_runtime_scope(session):
                 _persist_live_session_runtime(session)
+        # Reap-safe: persist the applied session-scoped override
+        if not result.get("confirm_required"):
+            try:
+                _persist_session_row_override(
+                    sid,
+                    {"model": result.get("value") or "", "provider": explicit_provider or result.get("provider") or ""},
+                    model=result.get("value") or "",
+                )
+            except Exception:
+                pass
     else:
         # --once keeps its specific 5001; other sessionless model sets 4001 so
         # --global cannot persist profile defaults before session.create (#106397:
         # an older Desktop client sent a fresh-draft pick this way).
         from hermes_cli.model_switch import parse_model_switch_args
-        if parse_model_switch_args(str(value)).is_once:
+        _parsed = parse_model_switch_args(str(value))
+        if _parsed.is_once:
             result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
+        elif getattr(_parsed, "is_session", False) and not getattr(_parsed, "is_global", False) \
+                and params.get("session_id") and str(getattr(_parsed, "model_input", "") or "").strip():
+            # Reap-safe: a deliberate session-scoped pin for a session that is not
+            # live in this process persists as an explicit row override instead of
+            # a global config.yaml write or an error.
+            _model_input = str(getattr(_parsed, "model_input", "") or "").strip()
+            _persist_session_row_override(
+                params.get("session_id", ""),
+                {"model": _model_input,
+                 "provider": str(getattr(_parsed, "explicit_provider", "") or "").strip()},
+                model=_model_input,
+            )
+            return _kv(rid, key, _model_input, warning="", confirm_required=False,
+                       confirm_message="", scope="session", deferred=True)
         else:
             return _err(rid, 4001, "config.set model requires a live session; "
                         "use Settings -> Models to change the profile default")
@@ -308,6 +344,16 @@ def _set_reasoning(rid, params, key, value, session):
     if parsed is None:
         return _err(rid, 4002, f"unknown reasoning value: {value}")
     if scope == "global" or session is None:
+        if session is None and params.get("session_id") and scope != "global":
+            # Session-scoped reasoning for a non-live session: persist as row override
+            try:
+                _persist_session_row_override(
+                    params.get("session_id", ""),
+                    {"reasoning_config": parsed},
+                )
+            except Exception:
+                pass
+            return _kv(rid, key, arg)
         _write_config_key("agent.reasoning_effort", arg)
         if session is not None:
             # /new is a full conversation boundary: session-scoped runtime overrides (/model, /reasoning,
@@ -318,6 +364,13 @@ def _set_reasoning(rid, params, key, value, session):
             session.pop("create_reasoning_override", None)
     else:  # session-scoped like the gateway's `/reasoning <level>`; a menu pick must not rewrite the global
         session["create_reasoning_override"] = parsed
+        try:
+            _persist_session_row_override(
+                params.get("session_id", ""),
+                {"reasoning_config": parsed},
+            )
+        except Exception:
+            pass
     if session and session.get("agent") is not None:
         session["agent"].reasoning_config = parsed
         _persist_live_session_runtime(session)

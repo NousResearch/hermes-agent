@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import inspect as _inspect_mod
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -925,6 +926,94 @@ def _is_env_config_key(key: str) -> bool:
         key_upper in _ENV_CONFIG_KEYS
         or key_upper.endswith(('_API_KEY', '_TOKEN', '_SECRET'))
         or key_upper.startswith('TERMINAL_SSH'))
+
+
+# Security-sensitive config keys that `hermes config set`/`unset` refuses to
+# mutate without an explicit operator override. ``config.yaml`` IS the security
+# policy (approvals.mode, command_allowlist, security.*), the config cache is
+# mtime-keyed, and a write takes effect mid-session — so the sanctioned CLI
+# path must not let an agent silently weaken the approval gate or redaction
+# the way it could by writing to the file directly. Mirrors the file-tool deny
+# in tools/file_tools.py (_check_sensitive_path). See #81101.
+_SENSITIVE_CONFIG_KEYS = ("approvals.", "security.", "command_allowlist")
+
+
+def _is_sensitive_config_key(key: str) -> bool:
+    """Return whether *key* targets a security-sensitive config section.
+
+    A bare section name (``approvals``) is guarded too, since ``config set
+    approvals off --force`` would replace the whole mapping with a scalar.
+    """
+    normalized = key.strip().lower()
+    return any(
+        normalized == prefix.rstrip(".")
+        or normalized.startswith(prefix)
+        for prefix in _SENSITIVE_CONFIG_KEYS
+    )
+
+
+def _policy_write_authorized() -> bool:
+    """Whether THIS call may mutate a security-policy config key.
+
+    Two conditions, both checked here at write time:
+    1. operator grant: the caller runs inside the one-shot scope stamped ONLY by a
+       sanctioned human-actor handler — the gateway ``/approvals`` command (after its
+       enabled-admin check) or the interactive REPL ``/approvals``. No ambient context
+       (TTY, platform env) participates: an interactive CLI's TTY is shared by the
+       agent in that same process, so context alone cannot distinguish a human
+       keystroke from agent-executed Python (#104697 review round 3, Flash BLOCKER 2).
+    2. sanctioned caller chain: the live call stack must contain a sanctioned
+       operator handler frame — ``_handle_approvals_command()`` (gateway or REPL
+       mixin) — between the write and the process entry. The handler chain reaches
+       the writer either directly (policy keys beyond ``approvals.mode``, e.g. the
+       trust-list enrollment) or via ``run_approval_mode_command()``. A forged
+       grant without a handler frame — the #104059 attack shape, casual
+       import-and-call from agent Python — is refused. Frame inspection is not
+       cryptographically sound (a determined attacker can fake frames); it
+       forecloses the realistic forge, and the residual is disclosed in the PR.
+    """
+    try:
+        from tools.approval_context import is_operator_policy_write
+    except Exception:
+        return False
+    if not is_operator_policy_write():
+        return False
+    stack = _inspect_mod.stack()
+    funcs = [(f.function, (f.filename or "").replace(os.sep, "/")) for f in stack]
+    for fn, path in funcs:
+        if fn == "_handle_approvals_command" and (
+            path.endswith("gateway/slash_commands.py")
+            or path.endswith("hermes_cli/cli_commands_mixin.py")):
+            return True
+    return False
+
+
+def _refuse_sensitive_config_key(key: str, *, hint: str) -> None:
+    """Print a refusal for a security-sensitive key write and exit non-zero."""
+    print(
+        f"✗ Cannot {hint} '{key}': this key controls security policy "
+        f"(approvals / security / command_allowlist) and cannot be changed "
+        f"without explicit operator confirmation.",
+        file=sys.stderr,
+    )
+    if key == "approvals.mode":
+        print(
+            "  Use the /approvals slash command (manual|smart|off) to change "
+            "the approval mode.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "  Security-policy keys cannot be changed via `hermes config set` "
+            "(with or without --force).",
+            file=sys.stderr,
+        )
+        print(
+            "  Edit config.yaml directly, or use the dedicated command where "
+            "one exists (e.g. `hermes approvals` for approvals.mode).",
+            file=sys.stderr,
+        )
+    sys.exit(1)
 
 
 def _format_config_get_value(value, *, as_json: bool) -> str:
@@ -3415,7 +3504,14 @@ def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
     ``force`` skips the unknown-key warning AND authorizes replacing a mapping section with a
     scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
-    to ``model.default``."""
+    to ``model.default``.
+
+    Security-policy keys (``approvals.*``, ``security.*``, ``command_allowlist*``) are refused
+    unless the call is operator-qualified: inside the operator write scope (entered only by the
+    sanctioned human-actor paths — the gateway ``/approvals`` command behind its admin check and
+    the interactive operator CLI) AND a human is present in the current approval context. Both
+    conditions are checked here, not passed in: an importable authorization token would be
+    forgeable by the same process that can import this writer (#104059 class, #104697 review)."""
     if is_managed():
         managed_error("set configuration values")
         return
@@ -3427,6 +3523,16 @@ def set_config_value(key: str, value: str, force: bool = False):
             f"✗ Invalid config key: {key!r} — contains an empty path segment "
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
+    # Security-policy guard (#81101): approvals.*, security.* and
+    # command_allowlist change the effective security policy mid-session. The
+    # authorization is (operator scope AND human present), both evaluated HERE so
+    # no importable parameter can mint it. In any non-interactive context (cron,
+    # -q, unattended platforms, headless child processes) the write is refused
+    # outright — a shell-detector approval in a parent process cannot be carried
+    # into this one, and that is the point: the sanctioned operator paths run the
+    # writer in the process where the human is present.
+    if _is_sensitive_config_key(key) and not _policy_write_authorized():
+        _refuse_sensitive_config_key(key, hint="set")
     if _is_env_config_key(key):
         # Unified lifecycle: also rotates any config.yaml mirror of the old value.
         from hermes_cli.credential_lifecycle import save_provider_env_credential
@@ -3519,6 +3625,14 @@ def unset_config_value(key: str):
         managed_error("unset configuration values")
         return
     _exit_if_key_managed(key, "unset")
+
+    # Security-policy guard (#81101): mirror set_config_value. `config unset`
+    # has no --force escape hatch, so a security-sensitive key is refused
+    # outright — unsetting approvals.mode / security.* / command_allowlist is
+    # always an operator-level action, and editing config.yaml directly (or the
+    # canonical command) is the sanctioned route.
+    if _is_sensitive_config_key(key):
+        _refuse_sensitive_config_key(key, hint="unset")
 
     if _is_env_config_key(key):
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so

@@ -1557,6 +1557,12 @@ DEFAULT_CONFIG = {
         # After this many consecutive guardian DENYs in a session, the deny message escalates to a
         # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
         "denial_breaker_threshold": 3,
+        # Profile-scoped trust lane for whole-script execute_code auto-approval (#44993):
+        # a gateway/ask session whose ACTIVE profile name is in this list skips the
+        # per-script pending approval. Default empty = safe (still prompts). MUST NOT be
+        # used as a blanket bypass: per-call terminal() dangerous-command guards still run
+        # on any sub-command the script issues.
+        "trusted_execute_code_profiles": [],
         # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
         # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
         # --force*".

@@ -885,13 +885,26 @@ class GatewaySlashCommandsMixin(
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can allow selected
         # commands to non-admin users, so enforce admin again at this side-effect boundary.
-        # Unconfigured policies remain unrestricted.
+        # A *change* additionally requires an explicit admin policy: with gating disabled (no
+        # admin list configured), policy.is_admin() returns True for everyone, which would
+        # let a non-admin caller persist approvals.mode: off through the
+        # gateway and disable approval checks (#81108). Queries stay open.
         policy = policy_for_source(self.config, event.source)
-        if requested and not policy.is_admin(event.source.user_id):
+        if requested and (not policy.enabled or not policy.is_admin(event.source.user_id)):
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its
         # system prompt/tool schema (prompt-cache prefix is sacred).
-        return run_approval_mode_command(requested).message
+        # The admin's slash command IS the human decision: stamp the one-shot operator
+        # grant (stamped AFTER the enabled-admin check) so the writer accepts this write.
+        # The grant is process-local and consumed by the writer's context check; agent
+        # code cannot enter it meaningfully because the writer also requires a human-actor
+        # context, which a gateway backend process is not (#104697 round-2 review).
+        from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+        token = grant_operator_policy_write()
+        try:
+            return run_approval_mode_command(requested).message
+        finally:
+            reset_operator_policy_write(token)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""

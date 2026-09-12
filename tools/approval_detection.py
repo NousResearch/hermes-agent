@@ -307,6 +307,27 @@ DANGEROUS_PATTERNS = [
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
     (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # `hermes config set` on a security-policy key. config.yaml IS the security
+    # policy and the cache is mtime-keyed, so a write takes effect mid-session
+    # (#81101); config.py refuses these keys without an explicit operator
+    # override, and this pattern additionally gates the terminal path the same
+    # way sed/tee on config.yaml are gated, so even an explicit --force variant
+    # is surfaced to the operator for approval.
+    # ``["']?`` covers the quoted key form the shell strips before the CLI sees
+    # it (``--force "approvals.mode" off``), so quoting cannot slip past the gate.
+    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*config\s+set\s+(?:--force\s+)?["\']?(?:approvals|security|command_allowlist)\b',
+     "hermes config set on a security-policy key (approvals/security/command_allowlist)"),
+    # Alternate supported entrypoint: ``python -m hermes_cli.main`` reaches the
+    # same config CLI as ``hermes`` (main.py exposes ``if __name__ ==
+    # "__main__"``), so an agent typing the module form must hit the same gate.
+    (r'\bpython(?:3|3\.\d+)?\s+-m\s+hermes_cli\.main\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*config\s+set\s+(?:--force\s+)?["\']?(?:approvals|security|command_allowlist)\b',
+     "python -m hermes_cli.main config set on a security-policy key (approvals/security/command_allowlist)"),
+    # Mode-changing `hermes approvals` forms reach the same writer from a fresh
+    # subprocess with no operator present — the sanctioned path is the gateway
+    # /approvals (admin-checked) or the interactive operator CLI, so a headless
+    # mode change must surface to the operator like the config set forms (#104059).
+    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*approvals\s+(?:manual|smart|off)\b',
+     "hermes approvals mode change (manual/smart/off)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context

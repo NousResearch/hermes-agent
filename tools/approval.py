@@ -22,7 +22,7 @@ from typing import Optional
 from utils import env_var_enabled, is_truthy_value
 from tools import approval_context
 from tools.approval_context import (
-    _get_session_platform, _is_cron_approval_context,
+    _execute_code_profile_is_trusted, _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
     _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
     _tirith_fail_open, get_current_session_key,
@@ -45,7 +45,6 @@ logger = logging.getLogger(__name__)
 _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 
-# --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
@@ -1137,6 +1136,16 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # and messaging ask-mode drive whole-script approval); when that leaks into a CLI with no notify callback, the
     # engine falls through to the CLI Dangerous Command panel instead of a silent pending_approval.
     if not is_gateway and not is_ask:
+        return _approved()
+
+    # Trusted-profile lane (#44993): a gateway/ask profile explicitly allowlisted for
+    # whole-script execute_code auto-approval skips the pending gateway prompt. The
+    # trust is profile-scoped and config-visible (approvals.trusted_execute_code_profiles),
+    # NOT a global yolo — the per-call terminal() dangerous-command guards still run on
+    # any sub-command the script issues. YOLO / approval_mode == "off" (checked above)
+    # still take precedence.
+    if _execute_code_profile_is_trusted():
+        logger.info("execute_code auto-approved by trusted-profile lane in session %s", get_current_session_key())
         return _approved()
 
     session_key = get_current_session_key()

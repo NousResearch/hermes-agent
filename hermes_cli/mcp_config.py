@@ -85,9 +85,20 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     return True
 
 
+def _mcp_entry_issues(name: str, server_config: dict) -> list[str]:
+    from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network_config
+
+    issues = validate_mcp_server_entry(name, server_config)
+    try:
+        validate_mcp_network_config(server_config)
+    except InvalidMcpNetworkError as exc:
+        issues.append(f"Server '{name}': {exc}")
+    return issues
+
+
 def _validate_or_warn(name: str, server_config: dict) -> bool:
     """Print every suspicious-config issue as a warning; True when the entry is clean."""
-    issues = validate_mcp_server_entry(name, server_config)
+    issues = _mcp_entry_issues(name, server_config)
     for issue in issues:
         _warning(issue)
     if issues:
@@ -131,7 +142,7 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
         if not isinstance(cfg, dict):
             issues.append(f"Server '{name}': expected an object")
             continue
-        issues.extend(validate_mcp_server_entry(name, cfg))
+        issues.extend(_mcp_entry_issues(name, cfg))
     if issues:
         return False, issues
     config = load_config()
@@ -363,7 +374,7 @@ def _configure_http_auth(
         oauth_ok = False
         try:
             from tools.mcp_oauth_manager import get_manager
-            if get_manager().get_or_build_provider(name, url, server_config.get("oauth")):
+            if get_manager().get_or_build_provider(name, url, server_config.get("oauth"), http_config=server_config):
                 server_config["auth"] = "oauth"
                 _success("OAuth configured (tokens will be acquired on first connection)")
                 oauth_ok = True
@@ -473,6 +484,19 @@ def cmd_mcp_add(args):
             server_config["args"] = cmd_args
         if explicit_env:
             server_config["env"] = explicit_env
+    network = getattr(args, "network", None)
+    transport = getattr(args, "transport", None)
+    if url:
+        # New entries opt into automatic WSL→Windows fallback explicitly.
+        # Legacy/raw configs with no field remain backend-local.
+        server_config["network"] = network if network is not None else "auto"
+    elif network is not None:
+        server_config["network"] = network
+    if transport is not None:
+        if not url:
+            _error("--transport is only supported with an HTTP/SSE URL")
+            return
+        server_config["transport"] = transport
     if raw_connect_timeout is not None:
         server_config["connect_timeout"] = raw_connect_timeout
 
@@ -577,6 +601,11 @@ def cmd_mcp_list(args=None):
             enabled = enabled.lower() in {"true", "1", "yes"}
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
+        if cfg.get("url"):
+            from tools.mcp_windows import effective_mcp_network
+            network = effective_mcp_network(cfg)
+            suffix = " (legacy default)" if "network" not in cfg else ""
+            _info(f"Network: {network}{suffix}")
     print()
 
 
@@ -664,7 +693,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             _login_connect_timeout = 0.0
         if selected_flow == "device":
             from tools.mcp_oauth_device import login_device
-            asyncio.run(login_device(name, url, oauth_cfg))
+            asyncio.run(login_device(name, url, oauth_cfg, server_config=server_config))
         probe_config = {**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}}
         with force_interactive_oauth():
             tools = _probe_single_server(
@@ -782,7 +811,14 @@ def _rebuild_exclude_list(
 
 
 def cmd_mcp_configure(args):
-    """Reconfigure which tools are enabled for an existing MCP server."""
+    """Reconfigure tools, or explicitly change the backend-relative network target."""
+    network = getattr(args, "network", None)
+    if network is not None:
+        cfg = _lookup_server(args.name, _get_mcp_servers(), "Available")
+        if cfg is not None and _save_mcp_server(args.name, {**cfg, "network": network}):
+            _success(f"Saved network '{network}' for '{args.name}'")
+            _info("Start a new session or explicitly reload MCP to apply the change.")
+        return
     import sys as _sys
     if not _sys.stdin.isatty():
         print("Error: 'hermes mcp configure' requires an interactive terminal.", file=_sys.stderr)
@@ -892,7 +928,7 @@ def mcp_command(args):
             mcp_picker.show_catalog()
         else:
             import sys as _sys
-            rc = mcp_picker.install_by_name(getattr(args, "identifier", "") or "")
+            rc = mcp_picker.install_by_name(getattr(args, "identifier", "") or "", **({"network": args.network} if getattr(args, "network", None) is not None else {}))
             if rc:
                 _sys.exit(rc)
         return

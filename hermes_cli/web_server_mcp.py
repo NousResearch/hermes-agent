@@ -12,6 +12,7 @@ if TYPE_CHECKING:  # pragma: no cover - annotation only
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 from hermes_cli.config import redact_key
 from hermes_cli.web_models import MCPServerCreate
+from tools.mcp_windows import effective_mcp_network
 
 
 def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, Any], Optional[str]]:
@@ -22,7 +23,7 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
     the MCP page and the Profile Builder so both enforce one transport/auth contract.
     """
     from hermes_cli.mcp_config import _bearer_auth_headers, _strip_bearer_prefix
-    from hermes_cli.mcp_security import validate_mcp_server_entry
+    from hermes_cli.mcp_config import _mcp_entry_issues
 
     name = (body.name or "").strip()
     if not name:
@@ -64,7 +65,17 @@ def _normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, Dict[str, 
         if body.env:
             server_config["env"] = dict(body.env)
 
-    issues = validate_mcp_server_entry(name, server_config)
+    if body.transport is not None:
+        if not url:
+            raise ValueError("HTTP/SSE transport requires a URL")
+        server_config["transport"] = body.transport
+    if url:
+        # This endpoint creates a new entry, so persist its default choice. Raw
+        # map replacement remains lossless and keeps legacy omission local.
+        server_config["network"] = body.network or "auto"
+    elif body.network is not None:
+        server_config["network"] = body.network
+    issues = _mcp_entry_issues(name, server_config)
     if issues:
         raise ValueError(f"Server '{name}' rejected: {'; '.join(issues)}")
     return name, server_config, bearer_token
@@ -82,7 +93,7 @@ def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
-    transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+    transport = (cfg.get("transport") or "http") if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
     auth = cfg.get("auth")
     headers = cfg.get("headers") or {}
     if not auth and isinstance(headers, dict) and any(str(key).lower() == "authorization" for key in headers):
@@ -90,6 +101,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "name": name,
         "transport": transport,
+        **({"network": effective_mcp_network(cfg)} if cfg.get("url") else {}),
         "url": cfg.get("url"),
         "command": cfg.get("command"),
         "args": list(cfg.get("args") or []),

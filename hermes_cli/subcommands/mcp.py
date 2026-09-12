@@ -33,6 +33,10 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_add_p.add_argument(
         "--args", nargs=argparse.REMAINDER, default=[],
         help="Arguments for stdio command; must be the last option")
+    mcp_add_p.add_argument("--network", choices=["auto", "local", "windows"],
+                           help="HTTP/SSE network target (new URL entries persist auto; omitted legacy configs stay local)")
+    mcp_add_p.add_argument("--transport", choices=["http", "sse"],
+                           help="HTTP transport: Streamable HTTP or legacy SSE")
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
     mcp_add_p.add_argument("--preset", help="Known MCP preset name")
     mcp_add_p.add_argument(
@@ -51,6 +55,8 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
 
     mcp_cfg_p = mcp_sub.add_parser("configure", aliases=["config"], help="Toggle tool selection")
     mcp_cfg_p.add_argument("name", help="Server name to configure")
+    mcp_cfg_p.add_argument("--network", choices=["auto", "local", "windows"],
+                           help="Set the HTTP/SSE network without opening the tool picker")
 
     mcp_login_p = mcp_sub.add_parser(
         "login", help="Force re-authentication for an OAuth-based MCP server")
@@ -74,6 +80,8 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_install_p = mcp_sub.add_parser(
         "install", help="Install a catalog MCP by name (e.g. `hermes mcp install n8n`)")
     mcp_install_p.add_argument("identifier", help="Catalog entry name (or `official/<name>`)")
+    mcp_install_p.add_argument("--network", choices=["auto", "local", "windows"],
+                             help="HTTP catalog entry network (preserves prior choice on reinstall)")
 
     add_accept_hooks_flag(mcp_parser)
     mcp_parser.set_defaults(func=cmd_mcp)

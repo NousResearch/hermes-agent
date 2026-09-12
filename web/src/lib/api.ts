@@ -1091,13 +1091,14 @@ export const api = {
     name: string,
     env: Record<string, string> = {},
     enable = true,
+    network?: McpNetwork,
   ) =>
     fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
       "/api/mcp/catalog/install",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, env, enable }),
+        body: JSON.stringify({ name, env, enable, ...(network ? { network } : {}) }),
       },
     ),
 
@@ -1493,7 +1494,8 @@ export interface SkillHubScan {
 
 export interface McpServer {
   name: string;
-  transport: "http" | "stdio" | "unknown";
+  transport: "http" | "sse" | "stdio" | "unknown";
+  network?: McpNetwork;
   url: string | null;
   command: string | null;
   args: string[];
@@ -1534,9 +1536,12 @@ export interface McpCatalogDiagnostic {
 
 
 export type McpHttpAuth = "none" | "header" | "oauth";
+export type McpNetwork = "auto" | "local" | "windows";
 
 export interface McpServerCreate {
   name: string;
+  network?: McpNetwork;
+  transport?: "http" | "sse";
   url?: string;
   command?: string;
   args?: string[];

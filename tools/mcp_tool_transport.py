@@ -10,6 +10,7 @@ from typing import Dict, Optional, Set
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
+from tools.mcp_windows import effective_mcp_network, mcp_http_route
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
@@ -255,7 +256,8 @@ class MCPServerTransportMixin:
     # ------------------------------------------------------------------- HTTP
 
     async def _preflight_content_type(self, url: str, *, headers: Optional[dict] = None,
-                                      ssl_verify: bool = True, client_cert=None, timeout: float = 5.0) -> None:
+                                      ssl_verify: bool = True, client_cert=None, timeout: float = 5.0,
+                                      network: str = "local") -> None:
         """Probe *url* before the SDK connects: a plain web page would make the SDK sit out the full
         ``connect_timeout`` before an opaque ``CancelledError``; this raises NonMcpEndpointError within
         ``timeout``. Allow-list based: only a 2xx with a definite non-MCP content type is rejected, and
@@ -273,20 +275,23 @@ class MCPServerTransportMixin:
             return _is_2xx(resp) and bool(ct) and ct not in self._MCP_CONTENT_TYPES
         probe_headers = dict(headers) if headers else {}
         try:
-            async with _httpx.AsyncClient(verify=ssl_verify, follow_redirects=True, timeout=_httpx.Timeout(timeout),
-                                          **_present(cert=client_cert)) as client:
-                resp = await client.head(url, headers=probe_headers)  # cheapest; GET on 405/501
-                if resp.status_code in (405, 501):
-                    resp = await client.get(url, headers=probe_headers)
-                # Non-MCP content type on HEAD/GET: try a JSON-RPC POST so POST-only servers pass.
-                if _non_mcp_2xx(resp):
-                    post_resp = await client.post(
-                        url, content=_PROBE_INITIALIZE_BODY,
-                        headers={**probe_headers, "Content-Type": "application/json",
-                                 "Accept": "application/json, text/event-stream"})
-                    if _is_2xx(post_resp) and _content_type_base(post_resp) in self._MCP_CONTENT_TYPES:
-                        resp = post_resp
-        except _httpx.HTTPError:
+            async with mcp_http_route(url, network=network, connect_timeout=timeout) as route:
+                async with _httpx.AsyncClient(verify=ssl_verify, follow_redirects=True, timeout=_httpx.Timeout(timeout),
+                                              **_present(cert=client_cert),
+                                              **(route.client_options(_httpx, verify=ssl_verify, cert=client_cert)
+                                                 if route else {})) as client:
+                    resp = await client.head(url, headers=probe_headers)  # cheapest; GET on 405/501
+                    if resp.status_code in (405, 501):
+                        resp = await client.get(url, headers=probe_headers)
+                    # Non-MCP content type on HEAD/GET: try a JSON-RPC POST so POST-only servers pass.
+                    if _non_mcp_2xx(resp):
+                        post_resp = await client.post(
+                            url, content=_PROBE_INITIALIZE_BODY,
+                            headers={**probe_headers, "Content-Type": "application/json",
+                                     "Accept": "application/json, text/event-stream"})
+                        if _is_2xx(post_resp) and _content_type_base(post_resp) in self._MCP_CONTENT_TYPES:
+                            resp = post_resp
+        except (_httpx.HTTPError, ConnectionError):
             return  # DNS/connect/timeout/transport error — let the SDK try.
         if not _non_mcp_2xx(resp):
             return
@@ -331,13 +336,13 @@ class MCPServerTransportMixin:
             return None
         try:
             from tools.mcp_oauth_manager import get_manager
-            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
+            return get_manager().get_or_build_provider(self.name, url, config.get("oauth"), http_config=config)
         except Exception as exc:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
             raise
 
     def _sse_transport(self, url: str, headers: dict, connect_timeout: float,
-                       ssl_verify, client_cert, oauth_auth, strict_cfg_headers: bool):
+                       ssl_verify, client_cert, oauth_auth, strict_cfg_headers: bool, route=None):
         """``sse_client`` context manager for ``transport: sse`` entries."""
         if strict_cfg_headers:  # fail closed: SSE cannot enforce the redirect boundary
             raise ValueError(f"MCP server '{self.name}': strict_redirect_headers is "
@@ -350,22 +355,25 @@ class MCPServerTransportMixin:
         # Streamable HTTP read timeout), not tool_timeout. ``auth`` must be forwarded or OAuth SSE 401s silently.
         sse_kwargs: dict = {"url": url, "headers": headers or None, "timeout": float(connect_timeout),
                             "sse_read_timeout": 300.0, **_present(auth=oauth_auth)}
-        if client_cert is not None or ssl_verify is not True:
+        if route or client_cert is not None or ssl_verify is not True:
             # sse_client has no verify/cert kwargs: an httpx_client_factory forwards the SDK's (headers,
             # auth, timeout) and layers TLS on top. Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
             _httpx_mod = _core.sdk_httpx()
             sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
                 follow_redirects=True, verify=ssl_verify,
                 timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
-                **_present(headers=headers, auth=auth, cert=client_cert))
+                **_present(headers=headers, auth=auth, cert=client_cert),
+                **(route.client_options(_httpx_mod, verify=ssl_verify, cert=client_cert) if route else {}))
         return _core.sse_client(**sse_kwargs)
 
     def _streamable_http_transport(self, url: str, headers: dict, connect_timeout: float,
                                    ssl_verify, client_cert, oauth_auth,
-                                   strict_cfg_headers: bool, configured_header_names: set):
+                                   strict_cfg_headers: bool, configured_header_names: set, route=None):
         """Streamable HTTP context manager: mcp >= 1.24.0 gets a caller-owned httpx client; on the
         deprecated API (mcp < 1.24.0) the SDK owns the client."""
         if not _core._MCP_NEW_HTTP:
+            if route:
+                raise ImportError("Windows loopback MCP requires mcp >= 1.24.0; upgrade MCP support")
             if strict_cfg_headers:  # fail closed: without an owned client redirects can't be hooked
                 raise ImportError(f"MCP server '{self.name}' requires mcp >= 1.24.0 to "
                                   "enforce the portable redirect-header boundary "
@@ -380,7 +388,8 @@ class MCPServerTransportMixin:
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                "verify": ssl_verify, **({"headers": headers} if headers else {}),
                                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
-                               **_present(auth=oauth_auth, cert=client_cert)}
+                               **_present(auth=oauth_auth, cert=client_cert),
+                               **(route.client_options(httpx, verify=ssl_verify, cert=client_cert) if route else {})}
 
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided
@@ -407,14 +416,16 @@ class MCPServerTransportMixin:
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
-        common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
-                  self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
-        if config.get("transport") == "sse":
-            transport, label = self._sse_transport(*common), "SSE"
-        else:
-            transport = self._streamable_http_transport(*common, configured_header_names)
-            label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
-        return await self._serve_transport(transport, label, float(connect_timeout))
+        async with mcp_http_route(url, network=effective_mcp_network(config),
+                                  connect_timeout=float(connect_timeout)) as route:
+            common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
+                      self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
+            if config.get("transport") == "sse":
+                transport, label = self._sse_transport(*common, route=route), "SSE"
+            else:
+                transport = self._streamable_http_transport(*common, configured_header_names, route=route)
+                label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
+            return await self._serve_transport(transport, label, float(connect_timeout))
 
     # -------------------------------------------------------------- discovery
 

@@ -21,7 +21,7 @@ DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
 
 @contextmanager
-def oauth_fixture(mode="success"):
+def oauth_fixture(mode="success", *, advertised_base: str | None = None):
     wire = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -102,11 +102,12 @@ def oauth_fixture(mode="success"):
             self.reply(404, {})
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    base = f"http://127.0.0.1:{server.server_port}"
+    direct_base = f"http://127.0.0.1:{server.server_port}"
+    base = advertised_base or direct_base
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
-        yield base, wire
+        yield direct_base, wire
     finally:
         server.shutdown()
         server.server_close()

@@ -311,6 +311,100 @@ Then run `hermes mcp login googledrive` — with the pre-registered client, Herm
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
+## Windows MCP servers from WSL
+
+When the Hermes **backend** runs in WSL and an HTTP MCP server runs on Windows
+(for example, in Unity), the same `localhost` URL can name different machines.
+The OS namespace is therefore part of the endpoint identity: a missing WSL
+listener is not permission to send requests or credentials to a Windows process
+on the same port.
+
+Existing/raw entries with no `network` field keep the historical backend-local
+meaning of `localhost` and fail closed. New URL entries created through the CLI,
+dashboard or typed Desktop API persist `network: auto` explicitly. With that
+explicit choice, Hermes tries the WSL-local listener first and reaches Windows
+loopback through Windows interop only when no local TCP listener is reachable.
+Native Windows, macOS, ordinary Linux, and non-loopback URLs retain their normal
+direct connection.
+
+Keep the server's original URL. For example, when Unity displays
+`http://localhost:8080/mcp`, paste that URL into Desktop's MCP editor or use:
+
+```yaml
+mcp_servers:
+  unity:
+    url: http://localhost:8080/mcp  # use the actual port/path shown by your server
+    network: windows
+```
+
+`network: windows` selects Windows explicitly, including when an unrelated WSL
+service occupies the same port. Explicit `network: auto` enables local-first
+fallback; `network: local`, or omitting the field in a legacy/raw config, prohibits
+crossing into Windows. The setting also works with `transport: sse`. The MCP tool
+probe and runtime connection use the same routing. Changing `network` invalidates
+Desktop's cached probe result.
+
+The bridge uses Windows PowerShell via WSL interop and a private Unix socket. It
+opens **no TCP listening port** and changes no Windows firewall rules. It preserves
+the configured URL, HTTP Host, TLS certificate verification/SNI, and authentication
+headers. Only the configured loopback origin uses the bridge; another redirect
+origin is not tunneled to that local server. The current MCP dependency supports
+this path; old Streamable HTTP SDKs below 1.24 require upgrading.
+
+Windows interop and `powershell.exe` must be available, and the Windows MCP server
+must be running. The server may remain bound to Windows loopback; changing its bind
+to `0.0.0.0` or adding a LAN firewall exception is unnecessary. A bridge failure
+reports the endpoint and an interop/start-server hint without logging credentials.
+
+Routing is relative to the **selected backend**, not the Desktop window. A remote
+Linux gateway cannot use this setting to reach your PC's Windows localhost.
+This feature does not import another installation's MCP configuration, translate
+stdio executables/arguments, or make Windows filesystem paths valid inside WSL.
+
+### Configuring the target across Hermes surfaces
+
+The network target belongs to the **server configuration in the selected profile**.
+CLI, TUI, Desktop, dashboard, messaging gateway, scheduled runs and ACP use the
+same MCP runtime. HTTP/SSE sessions carry tools, prompts and resources through the
+same route. Ordinary backend-local and remote non-loopback URLs remain direct.
+
+```bash
+hermes mcp add unity --url http://localhost:8080/mcp --network windows
+hermes mcp add unity-sse --url http://localhost:8080/sse --transport sse --network windows
+hermes mcp configure unity --network local
+hermes mcp install <catalog-entry> --network windows
+```
+
+The MCP picker has a **Network target (HTTP/SSE)** action for configured URL
+servers. The dashboard Add Server and Profile Builder forms expose both the
+network target and HTTP/SSE protocol. New structured URL creation saves its
+selected target explicitly (`auto` in the default form state). Desktop's MCP JSON
+editor/importer accepts the same `network` and `transport` fields. Raw bulk-save
+and import preserve an omitted legacy field as local; they do not silently migrate
+it to `auto`. Catalog reinstall retains an existing choice or legacy omission
+unless explicitly overridden; a fresh HTTP catalog install saves `auto`.
+
+Browser OAuth requests use the session route. Device-code login and cold-start
+OAuth metadata discovery also use the configured route and TLS settings, with
+separate connection lifetimes. A different authorization-server origin remains
+direct rather than being sent to the MCP loopback listener. In-memory OAuth
+providers and the on-disk tool-schema cache are invalidated when network intent
+changes; existing prompt/tool snapshots still follow the normal new-session or
+explicit MCP reload policy.
+
+ACP-supplied HTTP and SSE servers remain backend-local, and SSE remains SSE.
+ACP's standard server description does not provide Hermes' explicit `network`
+selector, so it cannot authorize a cross-namespace retarget. Set `auto` or
+`windows` explicitly in Hermes' own profile configuration instead. Import from
+supported other-agent JSON configurations preserves explicit network and HTTP/SSE
+fields without importing literal credentials; omission remains local.
+
+Invalid network names, explicit Windows targeting of non-loopback URLs, and
+network options on stdio entries are rejected rather than silently ignored.
+These choices do **not** import another OS installation's config, translate
+stdio executables or filesystem paths, scan for unconfigured application ports,
+or add reverse Windows-to-WSL tunneling.
+
 ## mTLS / client certificates
 
 Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.

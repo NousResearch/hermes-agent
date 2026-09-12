@@ -169,7 +169,9 @@ def _history_replay_updates(history: list[dict[str, Any]]):
 def _mcp_server_config(server: McpServerStdio | McpServerHttp | McpServerSse) -> dict:
     if isinstance(server, McpServerStdio):
         return {"command": server.command, "args": list(server.args), "env": {i.name: i.value for i in server.env}}
-    return {"url": server.url, "headers": {i.name: i.value for i in server.headers}}
+    return {"url": server.url, "headers": {i.name: i.value for i in server.headers},
+            "network": "local",
+            **({"transport": "sse"} if isinstance(server, McpServerSse) else {})}
 
 
 def _restore_env(key: str, value: str | None) -> None:

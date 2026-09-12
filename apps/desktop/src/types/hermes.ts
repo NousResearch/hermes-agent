@@ -1657,6 +1657,7 @@ export interface SkillHubScanResult {
 export interface McpServerSummary {
   name: string
   transport: string
+  network?: 'auto' | 'local' | 'windows'
   command: string | null
   args: string[]
   url: string | null

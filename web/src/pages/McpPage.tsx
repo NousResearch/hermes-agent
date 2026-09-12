@@ -10,6 +10,7 @@ import type {
   McpCatalogDiagnostic,
   McpCatalogEntry,
   McpHttpAuth,
+  McpNetwork,
   McpServer,
   McpTestResult,
 } from "@/lib/api";
@@ -27,6 +28,7 @@ import {
   buildMcpServerCreate,
   type McpTransport,
 } from "@/lib/mcp-server-create";
+import { McpNetworkFields } from "@/components/McpNetworkFields";
 import { completeMcpDashboardOAuth } from "@/lib/mcp-dashboard-oauth";
 
 function isHttpUrl(value: string): boolean {
@@ -56,6 +58,8 @@ export default function McpPage() {
   const [name, setName] = useState("");
   const [transport, setTransport] = useState<McpTransport>("http");
   const [url, setUrl] = useState("");
+  const [network, setNetwork] = useState<McpNetwork>("auto");
+  const [httpTransport, setHttpTransport] = useState<"http" | "sse">("http");
   const [httpAuth, setHttpAuth] = useState<McpHttpAuth>("none");
   const [bearerToken, setBearerToken] = useState("");
   const [command, setCommand] = useState("");
@@ -123,6 +127,8 @@ export default function McpPage() {
       body = buildMcpServerCreate({
         name,
         transport,
+        network,
+        httpTransport,
         url,
         httpAuth,
         bearerToken,
@@ -148,6 +154,8 @@ export default function McpPage() {
         "success",
       );
       setName("");
+      setNetwork("auto");
+      setHttpTransport("http");
       setUrl("");
       setHttpAuth("none");
       setBearerToken("");
@@ -404,6 +412,8 @@ export default function McpPage() {
 
               {transport === "http" ? (
                 <>
+                  <McpNetworkFields id="mcp" network={network} transport={httpTransport}
+                    onNetworkChange={setNetwork} onTransportChange={setHttpTransport} />
                   <div className="grid gap-2">
                     <Label htmlFor="mcp-url">URL</Label>
                     <Input
@@ -637,10 +647,11 @@ export default function McpPage() {
                         {server.auth === "header" ? "bearer" : server.auth}
                       </Badge>
                     )}
+                    {server.network && <Badge tone="outline">network: {server.network}</Badge>}
                     {!server.enabled && <Badge tone="outline">disabled</Badge>}
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    {server.transport === "http" ? (
+                    {server.url ? (
                       <span className="font-mono truncate">
                         {server.url ?? "—"}
                       </span>

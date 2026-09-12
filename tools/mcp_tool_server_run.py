@@ -12,6 +12,8 @@ from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _res
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
+from tools.mcp_windows import (InvalidMcpNetworkError, effective_mcp_network,
+                               validate_mcp_network, validate_mcp_network_config)
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -167,10 +169,13 @@ class MCPServerRunMixin:
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
                            "('url'). Remove 'command' to silence this warning.", self.name)
-        if not self._is_http():
-            return True
         try:
+            validate_mcp_network_config(config)
+            if not self._is_http():
+                return True
             _errors._validate_remote_mcp_url(self.name, config.get("url"))
+            network = effective_mcp_network(config)
+            validate_mcp_network(config["url"], network)
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a
             # web-app root returns HTML and would hang the SDK for connect_timeout. Skipped once
             # _ready was ever set and for OAuth servers (a token-less probe sees HTML/401).
@@ -179,8 +184,9 @@ class MCPServerRunMixin:
                 await self._preflight_content_type(
                     config["url"], headers=dict(config.get("headers") or {}),
                     ssl_verify=config.get("ssl_verify", True),
-                    client_cert=_errors._resolve_client_cert(self.name, config))
-        except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:
+                    client_cert=_errors._resolve_client_cert(self.name, config),
+                    network=network)
+        except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError, InvalidMcpNetworkError) as exc:
             logger.warning("%s", exc)
             self._publish_error(exc)  # fail fast and non-retryably
             return False

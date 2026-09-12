@@ -24,6 +24,7 @@ mcp_servers:
     # OR
     url: "..."          # HTTP servers
     headers: {}
+    network: auto      # auto | local | windows; see WSL-to-Windows guide
 
     # Optional HTTP/SSE TLS settings:
     ssl_verify: true                # bool or path to a CA bundle (PEM)
@@ -50,6 +51,7 @@ mcp_servers:
 | `env` | mapping | stdio | Environment passed to the subprocess |
 | `url` | string | HTTP | Remote MCP endpoint |
 | `headers` | mapping | HTTP | Headers for remote server requests |
+| `network` | string | HTTP/SSE | Omitted: preserve the historical backend-local meaning of `localhost` (equivalent to `local`, fail-closed). New structured CLI/dashboard/Desktop URL creation saves `auto` explicitly. Explicit `auto`: in WSL, try local loopback first, then Windows loopback through Windows interop. `local`: disable bridging. `windows`: explicitly select Windows loopback (requires a WSL or native Windows backend and a loopback URL). See [Windows MCP servers from WSL](/user-guide/features/mcp#windows-mcp-servers-from-wsl). |
 | `ssl_verify` | bool or string | HTTP | TLS verification. `true` (default) uses system CAs, `false` disables verification (insecure), or a string path to a custom CA bundle (PEM) |
 | `client_cert` | string or list | HTTP | mTLS client certificate. String = path to a PEM file containing cert + key. List `[cert, key]` = separate files. List `[cert, key, password]` = encrypted key |
 | `client_key` | string | HTTP | Path to the client private key, when `client_cert` is a string and the key is in a separate file |

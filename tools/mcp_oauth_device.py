@@ -163,7 +163,7 @@ async def _authorize(client, provider, cfg):
         raise RuntimeError(f"Device authorization failed: {safe_error}")
 
 
-async def login_device(name, server_url, oauth_config):
+async def login_device(name, server_url, oauth_config, *, server_config: dict | None = None):
     """Authorize then commit state in the active profile; failed grants preserve old state."""
     from tools.mcp_oauth import _build_client_metadata
     from tools.mcp_oauth_manager import HermesMCPOAuthProvider, get_manager
@@ -178,7 +178,10 @@ async def login_device(name, server_url, oauth_config):
                                      token_user_agent=cfg.get("user_agent"))
     httpx = sdk_httpx()
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+        from tools.mcp_windows import mcp_http_client
+        async with mcp_http_client(
+            httpx, name, {**(server_config or {}), "url": server_url}, timeout=10, follow_redirects=False
+        ) as client:
             await _discover(client, provider)
             await _register(client, provider, cfg)
             tokens = await _authorize(client, provider, cfg)

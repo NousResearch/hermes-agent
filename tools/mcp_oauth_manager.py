@@ -38,6 +38,7 @@ class _ProviderEntry:
     last_mtime_ns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
+    http_config: dict = field(default_factory=dict)
 
 
 class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
@@ -52,13 +53,14 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 
     _hermes_logger = logger
 
-    def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False, **kwargs: Any):
+    def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False, http_config: dict | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         # mcp 2.0 uses a task-owned anyio.Lock held across the yielded resource request (a session-long GET blocks
         # every POST; HTTPX may close the generator from another task). A binary semaphore drops task ownership.
         import anyio
         self.context.lock = anyio.Semaphore(1, max_value=1)
         self._hermes_server_name = server_name
+        self._hermes_http_config = dict(http_config or {})
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
@@ -115,7 +117,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             except httpx.HTTPError as exc:
                 logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
                 return None
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        from tools.mcp_windows import mcp_http_client
+        async with mcp_http_client(
+            httpx, self._hermes_server_name, {**self._hermes_http_config, "url": server_url}, timeout=10.0
+        ) as client:
             # PRM discovery to learn the authorization_server URL.
             for url in build_protected_resource_metadata_discovery_urls(None, server_url):
                 resp = await _send(client, url, "PRM")
@@ -275,17 +280,22 @@ class MCPOAuthManager:
         # Strong refs to in-flight 401 tasks so the loop's weak bookkeeping cannot GC them mid-run.
         self._inflight_tasks: set[asyncio.Task] = set()
 
-    def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict]) -> Optional[Any]:
-        """Cached OAuth provider for ``server_name``, built on first use (rebuilt when ``server_url`` changes);
+    def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict], *, http_config: dict | None = None) -> Optional[Any]:
+        """Cached OAuth provider for ``server_name``, built on first use (rebuilt when endpoint or network/TLS settings change);
         None if the MCP SDK's OAuth support is unavailable."""
+        # Cache immutable routing settings, not a connection's Unix socket.
+        http_config = {k: v for k, v in (http_config or {}).items()
+                       if k in {"network", "ssl_verify", "client_cert", "client_key"}}
+        from tools.mcp_windows import effective_mcp_network
+        http_config["network"] = effective_mcp_network(http_config)
         key = self._key(server_name)
         with self._entries_lock:
             entry = self._entries.get(key)
-            if entry is not None and entry.server_url != server_url:
-                logger.info("MCP OAuth '%s': URL changed from %s to %s, discarding cache", server_name, entry.server_url, server_url)
+            if entry is not None and (entry.server_url != server_url or entry.http_config != http_config):
+                logger.info("MCP OAuth '%s': endpoint or network/TLS settings changed, discarding provider cache", server_name)
                 entry = None
             if entry is None:
-                entry = self._entries[key] = _ProviderEntry(server_url=server_url, oauth_config=oauth_config)
+                entry = self._entries[key] = _ProviderEntry(server_url=server_url, oauth_config=oauth_config, http_config=http_config)
             if entry.provider is None:
                 entry.provider = self._build_provider(server_name, entry)
                 if entry.provider is not None:
@@ -314,7 +324,7 @@ class MCPOAuthManager:
                 f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "
                 f"Run `hermes mcp login {server_name}` interactively first to complete initial authorization.")
         return _HERMES_PROVIDER_CLS(
-            server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url,
+            server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url, http_config=entry.http_config,
             **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
 
     def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:

@@ -605,13 +605,26 @@ def _apply_tool_selection(
     _say(f"  ✓ {len(chosen_names)}/{len(probed)} tools enabled.")
 
 
-def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
+def install_entry(entry: CatalogEntry, *, enable: bool = True, network: Optional[str] = None) -> None:
     """Install a catalog entry end-to-end.
 
     Order: git clone + bootstrap (if any); API-key prompt to .env or the ``auth: oauth`` marker;
     write ``mcp_servers.<name>``; probe + tool checklist (falling back per
     :func:`_apply_tool_selection`); print post_install notes.
     """
+    from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network_config
+
+    if network is None and entry.transport.type == "http":
+        existing = installed_servers().get(entry.name)
+        # A fresh catalog install is a new user choice and may opt into auto.
+        # Reinstalling a legacy entry with no field must preserve its historical
+        # backend-local authority rather than silently crossing namespaces.
+        network = "auto" if existing is None else existing.get("network")
+    if network is not None:
+        try:
+            validate_mcp_network_config({"url": entry.transport.url, "network": network})
+        except InvalidMcpNetworkError as exc:
+            raise CatalogError(str(exc)) from exc
     print()
     _say(f"  Installing MCP '{entry.name}'", Colors.CYAN + Colors.BOLD)
     if entry.description:
@@ -646,6 +659,8 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 
     server_cfg = _build_server_config(entry, install_dir)
     server_cfg["enabled"] = enable
+    if network is not None:
+        server_cfg["network"] = network
 
     from hermes_cli.mcp_config import _save_mcp_server
 

@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tools.mcp_windows import effective_mcp_network
+
 logger = logging.getLogger(__name__)
 
 _CACHE_FILENAME = "mcp_schema_cache.json"
@@ -32,6 +34,7 @@ def config_fingerprint(config: dict) -> str:
         "args": config.get("args") or [],
         "url": config.get("url"),
         "transport": config.get("transport"),
+        "network": effective_mcp_network(config) if config.get("url") else None,
         "tools_include": sorted(tools_filter.get("include") or []),
         "tools_exclude": sorted(tools_filter.get("exclude") or [])}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))

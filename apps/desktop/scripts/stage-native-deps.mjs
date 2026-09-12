@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
   chmodSync,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -80,6 +81,26 @@ function copyGlobByExt(srcDir, destDir, extensions) {
 }
 
 /**
+ * Recursive directory copy built on per-file copyFileSync.
+ *
+ * fs.cpSync(..., { recursive: true }) fails on Windows when the *source*
+ * path contains non-ASCII characters (user names like "Pınar"): Node 22
+ * throws EIO/errno 5 and Node 24 fail-fasts with 0xC0000409 inside the
+ * native recursive copy, before any catch handler runs. Per-file
+ * copyFileSync never enters that native path (#60447, #70779).
+ */
+function copyDirByFile(srcDir, destDir) {
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      copyDirByFile(join(srcDir, entry.name), join(destDir, entry.name))
+    } else if (entry.isFile()) {
+      copyFileSync(join(srcDir, entry.name), join(destDir, entry.name))
+    }
+  }
+}
+
+/**
  * Copies the locally-compiled build/Release output (used when no prebuild
  * was available and node-pty was built from source for the host machine).
  *
@@ -96,7 +117,7 @@ function copyBuildRelease(srcDir, destDir) {
   mkdirSync(destDir, { recursive: true })
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      copyDirByFile(join(srcDir, entry.name), join(destDir, entry.name))
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
@@ -261,7 +282,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyDirByFile(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'))
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {

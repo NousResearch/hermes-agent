@@ -1231,7 +1231,13 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
 
         access_token = resolve_codex_runtime_credentials(refresh_if_expiring=True).get("api_key")
     except Exception:
-        access_token = None
+        try:
+            from agent.credential_pool import load_pool
+
+            entry = load_pool("openai-codex").peek()
+            access_token = str(getattr(entry, "runtime_api_key", "") or "").strip() or None
+        except Exception:
+            access_token = None
     return get_codex_model_ids(access_token=access_token)
 
 

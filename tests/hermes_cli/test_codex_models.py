@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 from hermes_cli.codex_models import (
@@ -141,6 +142,46 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
     )
     entitled = get_codex_model_ids(access_token="entitled-token")
     assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
+
+
+def test_named_profile_codex_catalog_borrows_root_pool_credential(monkeypatch, tmp_path):
+    from hermes_cli import models
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    (root / "auth.json").write_text(json.dumps({"credential_pool": {"openai-codex": [{
+        "id": "root-codex", "source": "manual", "auth_type": "oauth",
+        "access_token": "borrowed-token", "priority": 0, "last_status": "ok",
+    }]}}))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("No Codex credentials stored")),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-6-astra"] if access_token == "borrowed-token" else [],
+    )
+
+    assert models.provider_model_ids("openai-codex") == ["gpt-6-astra"]
+
+
+def test_codex_catalog_without_credentials_keeps_offline_astra_gate(monkeypatch, tmp_path):
+    from hermes_cli import models
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    profile = tmp_path / ".hermes" / "profiles" / "coder"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty-codex"))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("No Codex credentials stored")),
+    )
+
+    assert "gpt-6-astra" not in models.provider_model_ids("openai-codex")
 
 
 

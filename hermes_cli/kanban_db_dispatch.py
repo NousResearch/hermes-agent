@@ -506,6 +506,109 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 _STALE_HEARTBEAT_GAP_SECONDS = 3600
 
 
+class KanbanWorkerScanError(RuntimeError):
+    """A gateway restart cannot prove that every board was inspected."""
+
+
+def list_running_workers(
+    conn: sqlite3.Connection,
+    *,
+    include_wedged: bool = False,
+    now: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """Return live host-local workers for a gateway lifecycle drain.
+
+    Kanban workers are child processes of the dispatcher, not gateway turns;
+    their durable PID/heartbeat rows are the source of truth for restart
+    handoff.  Workers with no heartbeat for the same one-hour threshold used
+    by stale detection are wedged and excluded from the graceful wait unless
+    ``include_wedged`` is requested for the force path.
+    """
+    current = int(time.time()) if now is None else int(now)
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.claim_lock, t.current_run_id, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
+        "       COALESCE(r.last_heartbeat_at, t.last_heartbeat_at) AS last_heartbeat_at "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
+    ).fetchall()
+    workers: list[dict[str, Any]] = []
+    for row in rows:
+        claim_lock = row["claim_lock"] or ""
+        if not claim_lock.startswith(_kb._host_prefix()):
+            continue
+        pid = int(row["worker_pid"])
+        if not _pid_alive(pid):
+            continue
+        last_activity = row["last_heartbeat_at"] or row["active_started_at"]
+        wedged = last_activity is None or current - int(last_activity) >= _STALE_HEARTBEAT_GAP_SECONDS
+        if wedged and not include_wedged:
+            continue
+        workers.append({
+            "task_id": row["id"],
+            "worker_pid": pid,
+            "claim_lock": claim_lock,
+            "run_id": int(row["current_run_id"]) if row["current_run_id"] is not None else None,
+            "started_at": row["active_started_at"],
+            "last_heartbeat_at": row["last_heartbeat_at"],
+            "wedged": wedged,
+        })
+    return workers
+
+
+def prepare_workers_for_gateway_restart(
+    conn: sqlite3.Connection,
+    *,
+    reason: str = "gateway restart",
+    signal_fn=None,
+) -> list[dict[str, Any]]:
+    """Block and SIGTERM live workers before a gateway restart force path.
+
+    The durable block commits before SIGTERM.  A worker later killed by the
+    supervisor is therefore an intentional restart interruption, not a crash
+    or retry-consuming dispatcher failure.  The run-id CAS leaves a task
+    alone if it completed between the read and the transition.
+    """
+    import signal
+
+    prepared: list[dict[str, Any]] = []
+    for worker in list_running_workers(conn, include_wedged=True):
+        run_id = worker["run_id"]
+        if run_id is None:
+            continue
+        if not _kb.block_task(
+            conn,
+            worker["task_id"],
+            reason=reason,
+            kind="transient",
+            expected_run_id=run_id,
+        ):
+            continue
+        payload = {
+            "worker_pid": worker["worker_pid"],
+            "run_id": run_id,
+            "reason": reason,
+            "wedged": worker["wedged"],
+            "signal": "SIGTERM",
+        }
+        with _kb.write_txn(conn):
+            _kb._append_event(
+                conn, worker["task_id"], "gateway_restart_worker", payload, run_id=run_id,
+            )
+        kill = signal_fn if signal_fn is not None else os.kill
+        signaled = False
+        try:
+            kill(worker["worker_pid"], signal.SIGTERM)
+            signaled = True
+        except (ProcessLookupError, OSError):
+            # The durable block won the race; an already-exited child is not a
+            # second failure and does not need a signal.
+            pass
+        prepared.append({**payload, "task_id": worker["task_id"], "signaled": signaled})
+    return prepared
+
+
 def detect_stale_running(
     conn: sqlite3.Connection,
     *,

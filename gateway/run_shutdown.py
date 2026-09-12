@@ -163,11 +163,14 @@ class GatewayShutdownMixin:
     # Active-work accounting
     def _active_work_count(self) -> int:
         """All agent work the gateway must expose and drain as one total."""
+        count_kanban = getattr(self, "_active_kanban_worker_count", None)
+        active_kanban = max(0, int(count_kanban())) if callable(count_kanban) else 0
         return (
             self._running_agent_count()
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
+            + active_kanban
         )
 
     @staticmethod
@@ -1368,65 +1371,154 @@ class GatewayShutdownMixin:
         )
 
     def _awaitable_work_count(self) -> int:
-        """Active work minus wedged turns — what the restart wait waits on."""
-        return max(0, self._active_work_count() - self._wedged_agent_count())
+        """Active work minus wedged turns — what the restart wait waits on.
 
-    async def _await_active_work_before_restart(self) -> bool:
+        Kanban visibility is safety-critical: an unreadable board must not be
+        converted into zero workers and allow ``stop()`` to run.
+        """
+        count_wedged_kanban = getattr(self, "_wedged_kanban_worker_count", None)
+        wedged_kanban = (
+            max(0, int(count_wedged_kanban()))
+            if callable(count_wedged_kanban)
+            else 0
+        )
+        return max(0, self._active_work_count() - self._wedged_agent_count() - wedged_kanban)
+
+    async def _await_active_work_before_restart(self) -> Optional[bool]:
         """Wait for in-flight work before ``stop()`` so the requesting turn isn't force-interrupted.
 
-        Wedged turns are excluded (restart is their remedy). True when drained to zero, False when the
-        cap elapsed or only wedged work remains (caller proceeds to ``stop()``).
+        ``True`` means all work drained safely; ``False`` means the bounded wait
+        expired or only known wedged work remains and force cleanup is complete.
+        ``None`` means Kanban accounting was incomplete or force cleanup failed;
+        the caller must keep the gateway alive and draining rather than calling
+        ``stop()`` while systemd could SIGKILL an unaccounted worker.
         """
-        active = self._active_work_count()
+        def _interrupt_kanban_or_abort() -> bool:
+            interrupt_kanban = getattr(self, "_interrupt_kanban_workers_for_restart", None)
+            if not callable(interrupt_kanban):
+                return True
+            try:
+                interrupt_kanban()
+            except Exception:
+                logger.exception(
+                    "Restart drain cannot account for all Kanban boards; "
+                    "leaving gateway draining without calling stop()"
+                )
+                return False
+            return True
+
+        try:
+            active = self._active_work_count()
+        except Exception:
+            logger.exception(
+                "Restart drain cannot account for all Kanban boards; "
+                "leaving gateway draining without calling stop()"
+            )
+            return None
         if active <= 0:
             return True
-        if self._awaitable_work_count() <= 0:
+
+        try:
+            awaitable = self._awaitable_work_count()
+        except Exception:
+            logger.exception(
+                "Restart drain lost Kanban worker visibility; "
+                "leaving gateway draining without calling stop()"
+            )
+            return None
+        if awaitable <= 0:
             logger.warning(
                 "Restart requested with %d active work unit(s), all wedged "
                 "past the inactivity timeout; skipping the after-turn wait "
-                "and proceeding to stop()/drain which will interrupt them", active,
+                "and proceeding to stop()/drain which will interrupt them",
+                active,
             )
-            return False
+            return False if _interrupt_kanban_or_abort() else None
+
         timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
         if timeout <= 0:
             logger.info(
                 "Restart requested with %d active work unit(s); "
-                "restart_after_turn_timeout=0 — entering stop()/drain immediately", active,
+                "restart_after_turn_timeout=0 — entering stop()/drain immediately",
+                active,
             )
-            return False
+            return False if _interrupt_kanban_or_abort() else None
+
         logger.info(
             "Restart requested with %d active work unit(s); "
             "deferring stop() until they finish (cap=%.0fs) so in-flight "
-            "turns are not amputated (#77184)", active, timeout,
+            "turns are not amputated (#77184)",
+            active,
+            timeout,
         )
         self._scale_to_zero_status("draining", "restart wait: status mark failed")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         last_status_at = 0.0
-        while self._awaitable_work_count() > 0:
+        while True:
+            try:
+                awaitable = self._awaitable_work_count()
+            except Exception:
+                logger.exception(
+                    "Restart drain lost Kanban worker visibility; "
+                    "leaving gateway draining without calling stop()"
+                )
+                return None
+            if awaitable <= 0:
+                break
             now = loop.time()
             if now >= deadline:
+                try:
+                    active_now = self._active_work_count()
+                except Exception:
+                    logger.exception(
+                        "Restart drain cannot account for all Kanban boards; "
+                        "leaving gateway draining without calling stop()"
+                    )
+                    return None
                 logger.warning(
                     "Restart after-turn wait timed out after %.0fs with %d "
                     "still active; proceeding to stop()/drain which may "
-                    "interrupt remaining work (#77184)", timeout, self._active_work_count(),
+                    "interrupt remaining work (#77184)",
+                    timeout,
+                    active_now,
                 )
-                return False
+                return False if _interrupt_kanban_or_abort() else None
             if (now - last_status_at) >= 30.0:
+                try:
+                    status_awaitable = self._awaitable_work_count()
+                except Exception:
+                    logger.exception(
+                        "Restart drain lost Kanban worker visibility; "
+                        "leaving gateway draining without calling stop()"
+                    )
+                    return None
                 logger.info(
                     "Restart deferred: waiting on %d active work unit(s) "
                     "(%d wedged and excluded; %.0fs remaining before force drain)",
-                    self._awaitable_work_count(), self._wedged_agent_count(), deadline - now,
+                    status_awaitable,
+                    self._wedged_agent_count(),
+                    deadline - now,
                 )
                 self._scale_to_zero_status("draining", "restart wait: status mark failed")
                 last_status_at = now
             await asyncio.sleep(0.1)
-        if self._active_work_count() > 0:
+
+        try:
+            active = self._active_work_count()
+        except Exception:
+            logger.exception(
+                "Restart drain cannot account for all Kanban boards; "
+                "leaving gateway draining without calling stop()"
+            )
+            return None
+        if active > 0:
             logger.warning(
                 "Restart deferred wait: %d wedged work unit(s) remain; "
-                "proceeding to stop()/drain which will interrupt them", self._active_work_count(),
+                "proceeding to stop()/drain which will interrupt them",
+                active,
             )
-            return False
+            return False if _interrupt_kanban_or_abort() else None
         logger.info("Restart deferred wait complete — active work drained; proceeding to stop()")
         return True
 
@@ -1441,7 +1533,18 @@ class GatewayShutdownMixin:
         self._draining = True
 
         async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
+            drain_result = await self._await_active_work_before_restart()
+            if drain_result is None:
+                # A partial board scan is unsafe: keeping the gateway alive and
+                # draining is preferable to letting systemd KillMode amputate
+                # an unaccounted worker. A later operator restart request can
+                # retry after the board/runtime fault is repaired.
+                self._restart_task_started = False
+                logger.error(
+                    "Gateway restart deferred: Kanban worker accounting failed; "
+                    "gateway remains alive and draining"
+                )
+                return
             # Detached helper only AFTER the after-turn wait, or its drain_timeout+5 deadline fires mid-turn.
             if detached:
                 with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart helper: %s"):

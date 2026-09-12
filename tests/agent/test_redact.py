@@ -59,6 +59,13 @@ class TestKnownPrefixes:
         ]:
             assert redact_sensitive_text(benign) == benign
 
+    def test_agentmail_prefix_needs_a_key_shaped_hex_suffix(self):
+        """``am_`` is a common identifier prefix; only the documented hex key body is a secret (#10983)."""
+        for benign in ["schema.am_example_identifier_123", "path/to/am_monthly_report.sql"]:
+            assert redact_sensitive_text(benign) == benign
+        key = "am_" + "0123456789abcdef" * 2
+        assert "0123456789abcdef" not in redact_sensitive_text(f"AGENTMAIL_API_KEY is {key}")
+
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
         result = redact_sensitive_text(token)

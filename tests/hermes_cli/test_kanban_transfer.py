@@ -30,6 +30,7 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_transfer as kt
 from hermes_cli.archive_safe import normalize_archive_parts, safe_extract_targz
 
@@ -62,7 +63,7 @@ def _seed_board(slug: str = "alpha") -> dict[str, str]:
     """Create a board with one task of each interesting shape."""
     kb.create_board(slug, name="Alpha Board")
     ids = {}
-    with kb.connect_closing(board=slug) as conn:
+    with kbc.connect_closing(board=slug) as conn:
         ids["scratch"] = kb.create_task(
             conn, title="scratch task", body="body", assignee="coder"
         )
@@ -80,7 +81,7 @@ def _seed_board(slug: str = "alpha") -> dict[str, str]:
 
 def _claim(task_id: str, slug: str = "alpha") -> None:
     """Put a task into the state a live worker would leave behind."""
-    with kb.connect_closing(board=slug) as conn:
+    with kbc.connect_closing(board=slug) as conn:
         with kb.write_txn(conn):
             conn.execute(
                 "UPDATE tasks SET status='running', claim_lock='lock-1', "
@@ -91,7 +92,7 @@ def _claim(task_id: str, slug: str = "alpha") -> None:
 
 
 def _subscribe(task_id: str, slug: str = "alpha") -> None:
-    with kb.connect_closing(board=slug) as conn:
+    with kbc.connect_closing(board=slug) as conn:
         with kb.write_txn(conn):
             conn.execute(
                 "INSERT INTO kanban_notify_subs "
@@ -102,7 +103,7 @@ def _subscribe(task_id: str, slug: str = "alpha") -> None:
 
 
 def _tasks_by_title(slug: str) -> dict[str, dict]:
-    with kb.connect_closing(board=slug) as conn:
+    with kbc.connect_closing(board=slug) as conn:
         return {
             row["title"]: dict(row)
             for row in conn.execute("SELECT * FROM tasks").fetchall()
@@ -137,7 +138,7 @@ def test_attachment_blob_travels_and_is_readable(kanban_root, tmp_path):
     target_root = kanban_root("target")
     result = kt.import_board(archive)
 
-    with kb.connect_closing(board=result["board"]) as conn:
+    with kbc.connect_closing(board=result["board"]) as conn:
         row = conn.execute(
             "SELECT filename, stored_path FROM task_attachments"
         ).fetchone()
@@ -211,7 +212,7 @@ def test_gateway_subscriptions_never_travel(kanban_root, tmp_path):
     # at all, because the archive is the thing that gets shared.
     kanban_root("target")
     result = kt.import_board(archive)
-    with kb.connect_closing(board=result["board"]) as conn:
+    with kbc.connect_closing(board=result["board"]) as conn:
         assert conn.execute(
             "SELECT COUNT(*) FROM kanban_notify_subs"
         ).fetchone()[0] == 0
@@ -274,12 +275,12 @@ def test_slug_collision_creates_a_new_board(kanban_root, tmp_path):
 
 
 def test_import_never_targets_the_default_board(kanban_root, tmp_path):
-    with kb.connect_closing(board="default") as conn:
+    with kbc.connect_closing(board="default") as conn:
         kb.create_task(conn, title="exported default task")
     archive = kt.export_board("default", str(tmp_path / "default"))["archive"]
 
     kanban_root("target")
-    with kb.connect_closing(board="default") as conn:
+    with kbc.connect_closing(board="default") as conn:
         kb.create_task(conn, title="local default task")
 
     result = kt.import_board(archive)

@@ -147,19 +147,21 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   const restartGatewayNow = useCallback(async () => {
     setRestarting(true)
 
-    try {
-      await runGatewayRestart()
+    // runGatewayRestart never rejects (it toasts its own failure); the boolean
+    // is the only signal that the receiver actually came back.
+    const ok = await runGatewayRestart()
+
+    if (ok) {
       setRestartNeeded(false)
       setRestartError(null)
       // Give the receiver a moment to bind before re-reading state.
       window.setTimeout(() => void reload(true), 4000)
-    } catch (err) {
+    } else {
       setRestartNeeded(true)
-      setRestartError(String(err))
-      notifyError(err, w.restartFailed(''))
-    } finally {
-      setRestarting(false)
+      setRestartError(w.restartFailed(''))
     }
+
+    setRestarting(false)
   }, [reload, w])
 
   const handleEnable = useCallback(async () => {

@@ -437,6 +437,9 @@ def test_honcho_sync_turn_does_not_suppress_genuine_user_messages():
                 manager_calls.append(session_key)
                 return SimpleNamespace()
 
+            def resolve_author_peer_id(self, session_key, author_id, author_name=None):
+                return None
+
         provider._config = _configured_tools_config(init_on_session_start=True)
         provider._manager = Manager()
         provider._session_key = "test-session"
@@ -481,7 +484,10 @@ def test_honcho_sync_turn_same_instance_config_flip_gates_writes():
     class Manager:
         def get_or_create(self, session_key):
             manager_calls.append(session_key)
-            return SimpleNamespace(add_message=lambda role, content: None)
+            return SimpleNamespace(add_message=lambda role, content, **kwargs: None)
+
+        def resolve_author_peer_id(self, session_key, author_id, author_name=None):
+            return None
 
         def save(self, session):
             write_done.set()

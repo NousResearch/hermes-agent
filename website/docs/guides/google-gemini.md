@@ -76,6 +76,11 @@ Hermes detects this endpoint and creates its native Gemini adapter. Internally, 
 - tool results → Gemini `functionResponse` parts
 - streaming responses → OpenAI-shaped stream chunks for the Hermes loop
 
+Tool parameter type arrays such as `"type": ["number", "null"]` are translated
+into Gemini's scalar type plus `nullable` form. Multi-type unions keep every
+alternative through `anyOf`, including nested properties and array items. This
+happens automatically; no MCP server or provider configuration change is needed.
+
 :::note Gemini 3 thought signatures
 For Gemini 3 tool use, Hermes preserves the `thoughtSignature` values attached to function-call parts and replays them on the next tool turn. That covers the validation-critical path for multi-step agent workflows.
 
@@ -104,6 +109,7 @@ The `hermes model` picker shows Gemini models maintained in Hermes' provider reg
 
 | Model | ID | Notes |
 |-------|----|-------|
+| Gemini 3.8 Flash | `gemini-3.8-flash` | Most capable Flash model for long-horizon agentic and coding work |
 | Gemini 3.7 Flash | `gemini-3.7-flash` | Recommended default balance of speed, capability, and multimodal understanding |
 | Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | Most capable reasoning, math, and coding model |
 | Gemini 3.5 Flash Lite | `gemini-3.5-flash-lite` | Fastest and lowest-cost option for lightweight tasks |

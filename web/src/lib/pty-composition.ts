@@ -4,6 +4,15 @@
  * xterm is authoritative when it emits the commit. Browsers/layouts where it
  * does not emit onData still forward the compositionend text on the next turn.
  */
+// A revised dictation utterance re-fires compositionend within a second or
+// two of the previous one as the recognizer refines its guess. A gap longer
+// than this means the user moved on (a new, unrelated utterance, possibly
+// repeating an earlier word/phrase) rather than revising the same one, so
+// the diff baseline must not carry over — otherwise the new utterance gets
+// silently truncated or dropped entirely when it shares a prefix with
+// whatever was last committed.
+const REVISION_WINDOW_MS = 2000;
+
 export function createPtyCompositionForwarder(send: (data: string) => void) {
   let pending: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -14,8 +23,10 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   // composition re-fires compositionend with the whole revised utterance
   // rather than just the new suffix, so each commit is diffed against this
   // instead of being forwarded whole — otherwise the already-sent prefix
-  // gets duplicated.
+  // gets duplicated. Only valid as a baseline within REVISION_WINDOW_MS of
+  // the last commit; see above.
   let lastCommitted = "";
+  let lastCommittedAt = 0;
 
   const clearPending = () => {
     pending = null;
@@ -28,10 +39,12 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
   };
 
   const commit = (data: string) => {
-    const delta = data.startsWith(lastCommitted)
-      ? data.slice(lastCommitted.length)
-      : data;
+    const withinRevisionWindow =
+      lastCommittedAt !== 0 && Date.now() - lastCommittedAt <= REVISION_WINDOW_MS;
+    const baseline = withinRevisionWindow ? lastCommitted : "";
+    const delta = data.startsWith(baseline) ? data.slice(baseline.length) : data;
     lastCommitted = data;
+    lastCommittedAt = Date.now();
     if (delta) send(delta);
   };
 
@@ -58,6 +71,7 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
       const observed = matchedTerminalPrefix + data;
       if (observed.startsWith(pending)) {
         lastCommitted = pending;
+        lastCommittedAt = Date.now();
         clearPending();
       } else if (pending.startsWith(observed)) {
         matchedTerminalPrefix = observed;
@@ -68,6 +82,7 @@ export function createPtyCompositionForwarder(send: (data: string) => void) {
     dispose: () => {
       clearPending();
       lastCommitted = "";
+      lastCommittedAt = 0;
     },
   };
 }

@@ -160,4 +160,35 @@ describe("createPtyCompositionForwarder", () => {
     expect(send).toHaveBeenNthCalledWith(1, "hello");
     expect(send).toHaveBeenNthCalledWith(2, "goodbye");
   });
+
+  it("sends a later, unrelated dictation in full even when it repeats an earlier phrase", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    // A long gap (new mic tap, not a revision) separates the two utterances.
+    vi.advanceTimersByTime(5000);
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenNthCalledWith(1, "hello");
+    expect(send).toHaveBeenNthCalledWith(2, "hello");
+  });
+
+  it("still diffs a revision that arrives just under the revision-window boundary", () => {
+    vi.useFakeTimers();
+    const send = vi.fn();
+    const forwarder = createPtyCompositionForwarder(send);
+
+    forwarder.onCompositionEnd("hello");
+    vi.runAllTimers();
+    vi.advanceTimersByTime(1000);
+    forwarder.onCompositionEnd("hello world");
+    vi.runAllTimers();
+
+    expect(send).toHaveBeenNthCalledWith(1, "hello");
+    expect(send).toHaveBeenNthCalledWith(2, " world");
+  });
 });

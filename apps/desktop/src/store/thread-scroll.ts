@@ -158,6 +158,43 @@ export function threadScrollTargetTop(
   return state.kind === 'bottom' ? max : Math.max(0, max - state.fromBottom)
 }
 
+// Composer metrics write --composer-measured-height onto the chat surface,
+// which grows [data-slot="aui_composer-clearance"] and can shrink the
+// clampToComposer viewport. The post-settle restore ResizeObserver sees that
+// as a content resize and used to re-pin a frozen fromBottom — rewriting
+// scrollTop on every keystroke. Transcript height is scrollHeight minus the
+// clearance spacer, so composer-only layout is distinguishable from real
+// message/prepend/streaming growth.
+export type ThreadScrollRestoreResizeMetrics = {
+  clearanceHeight: number
+  clientHeight: number
+  scrollHeight: number
+}
+
+export function threadScrollTranscriptHeight(
+  metrics: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
+): number {
+  return Math.max(0, metrics.scrollHeight - Math.max(0, metrics.clearanceHeight))
+}
+
+/**
+ * Post-settle restore RO may re-pin a frozen offset only when transcript
+ * rows actually changed height. Composer clearance / viewport-box resizes
+ * and no-op RO deliveries must not rewrite scrollTop.
+ */
+export function shouldReapplyFrozenThreadScrollOffset(
+  target: ThreadScrollState,
+  settled: boolean,
+  previous: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>,
+  next: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
+): boolean {
+  if (target.kind !== 'offset' || !settled) {
+    return false
+  }
+
+  return Math.round(threadScrollTranscriptHeight(previous)) !== Math.round(threadScrollTranscriptHeight(next))
+}
+
 // Storage is scoped per profile with the same `.profile.<encoded>` suffix the
 // app's other persisted session state uses (session.ts profileNavigationKey),
 // so two profiles can never read or evict each other's reading positions.

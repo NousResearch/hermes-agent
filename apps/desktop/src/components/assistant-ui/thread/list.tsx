@@ -30,7 +30,9 @@ import {
   publishThreadAtBottom,
   resetPublishedThreadScroll,
   saveThreadScrollPosition,
+  shouldReapplyFrozenThreadScrollOffset,
   THREAD_SCROLL_BOTTOM,
+  type ThreadScrollRestoreResizeMetrics,
   type ThreadScrollState,
   threadScrollStateFromMetrics,
   threadScrollStorageKey,
@@ -874,12 +876,32 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     // Quiet frames are not layout completion: deferred Markdown and intrinsic
     // row measurements can change height after the initial settle. Retain the
-    // restored offset through those resizes until input or a live run takes over.
-    const resizeObserver = new ResizeObserver(() => {
-      if (target.kind === 'offset' && loadSettledRef.current) {
-        el.scrollTop = threadScrollTargetTop(target, el)
-        liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+    // restored offset through those CONTENT resizes until input or a live run
+    // takes over. Composer clearance / surface-var resizes share this observer
+    // (the spacer lives inside the content box) but must not rewrite scrollTop.
+    const restoreResizeMetrics = (): ThreadScrollRestoreResizeMetrics => {
+      const clearance = contentRef.current?.querySelector('[data-slot="aui_composer-clearance"]')
+
+      return {
+        clearanceHeight: clearance instanceof HTMLElement ? clearance.clientHeight : 0,
+        clientHeight: el.clientHeight,
+        scrollHeight: el.scrollHeight
       }
+    }
+
+    let lastRestoreMetrics = restoreResizeMetrics()
+
+    const resizeObserver = new ResizeObserver(() => {
+      const next = restoreResizeMetrics()
+      const previous = lastRestoreMetrics
+      lastRestoreMetrics = next
+
+      if (!shouldReapplyFrozenThreadScrollOffset(target, loadSettledRef.current, previous, next)) {
+        return
+      }
+
+      el.scrollTop = threadScrollTargetTop(target, el)
+      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
     })
 
     if (contentRef.current) {

@@ -433,7 +433,9 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
     thread,
     startEpoch,
     binding,
-    isCurrent
+    isCurrent,
+    // Per-drive transient-failure retry counters (see GroupRoundMemberContext).
+    failedRetries: new Map<string, number>()
   }
 
   let posted = 0
@@ -511,7 +513,12 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           return
         }
 
-        if (result) {
+        // 'retry' = a transient failure that must be re-driven next round:
+        // keep the round alive (so the loop doesn't settle before the retry)
+        // without counting it as a posted message.
+        if (result === 'retry') {
+          spokeThisRound += 1
+        } else if (result) {
           posted += 1
           spokeThisRound += 1
         }

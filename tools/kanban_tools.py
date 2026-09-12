@@ -864,7 +864,7 @@ def _handle_create(args: dict, **kw) -> str:
         return _ok(task_id=new_tid, **landed, subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 
-def _resolve_notify_target() -> Optional[dict[str, Any]]:
+def _resolve_notify_target(delivery_mode: Optional[str] = None) -> Optional[dict[str, Any]]:
     """``kanban_db.add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
     Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
     those are cleared but the subprocess inherits ``HERMES_SESSION_KEY`` -> ``platform="tui"``
@@ -905,7 +905,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         user_id=env("HERMES_SESSION_USER_ID", "") or None,
         user_id_alt=env("HERMES_SESSION_USER_ID_ALT", "") or None,
         notifier_profile=notifier_profile,
-        delivery_mode="notify+wake" if platform != "tui" else None,
+        delivery_mode=delivery_mode if platform != "tui" else None,
         delivery_metadata=delivery_metadata or None)
 
 
@@ -915,16 +915,26 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     ``kanban_notify-subscribe``). Gated by ``kanban.auto_subscribe_on_create`` (default
     True). Failures are logged and swallowed: bookkeeping must never fail kanban_create."""
     try:
-        if not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
-            return False
+        config = load_config()
     except Exception:
-        pass  # unreadable config keeps the user-friendly default (True)
+        config = None  # unreadable config keeps the user-friendly defaults
+    if not cfg_get(config, "kanban", "auto_subscribe_on_create", default=True):
+        return False
     target = None
     try:
-        target = _resolve_notify_target()
+        delivery_mode = cfg_get(
+            config, "kanban", "auto_subscribe_delivery_mode", default="notify+wake",
+        )
+        target = _resolve_notify_target(delivery_mode)
         if target is None:
             return False  # CLI / cron / test — no persistent channel
         from hermes_cli import kanban_db_notify as _kbn
+        if target["platform"] != "tui" and delivery_mode not in _kbn._NOTIFY_DELIVERY_MODES:
+            logger.warning(
+                "kanban.auto_subscribe_delivery_mode=%r is invalid; skipping creator subscription for %s",
+                delivery_mode, task_id,
+            )
+            return False
         # Inheritance and explicit subscriptions already encode the delivery policy.
         # Auto-subscribe must not turn a passive destination into an agent wake.
         if any(sub["platform"] == target["platform"] and sub["chat_id"] == target["chat_id"]

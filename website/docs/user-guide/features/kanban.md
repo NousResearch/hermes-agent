@@ -676,7 +676,8 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
-| `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
+| `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events subscribe the originating session. Set to `false` to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
+| `auto_subscribe_delivery_mode` | `notify+wake` | Delivery mode for a new gateway creator subscription: `notify`, `notify+wake`, or `wake`. It never rewrites an inherited or existing subscription. `wake` suppresses the notifier's passive message, but the resumed agent can still send its own reply. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
 
 And the two auxiliary LLM slots:
@@ -1086,7 +1087,7 @@ Coverage window: desktop notifications ride the live event stream, so they fire 
 
 ## Gateway notifications
 
-When you run `/kanban create …` from the gateway (Telegram, Discord, Slack, etc.), the originating chat is automatically subscribed to the new task. The gateway's background notifier polls `task_events` every few seconds and delivers one message per terminal event (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`) to that chat. Completed tasks also send the first line of the worker's `--result` so you see the outcome without having to `/kanban show`.
+When you run `/kanban create …` from the gateway (Telegram, Discord, Slack, etc.), the originating chat is automatically subscribed to the new task. The default `kanban.auto_subscribe_delivery_mode: notify+wake` sends one notifier message per terminal event (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`) and resumes the originating agent. Set the mode to `notify` for a passive message only, or `wake` to resume the agent without the separate notifier message. A `wake` subscription suppresses only that passive message: the resumed agent's normal reply is still delivered. Completed-task messages include the first line of the worker's `--result` so you see the outcome without having to `/kanban show`.
 
 You can manage subscriptions explicitly from the CLI — useful when a script / cron job wants to notify a chat it didn't originate from:
 

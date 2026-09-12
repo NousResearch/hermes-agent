@@ -59,6 +59,25 @@ def _sounddevice_output_allowed() -> bool:
     return platform.system() != "Darwin"
 
 
+def _spawn_system_player(cmd: List[str], env: Dict[str, str]) -> "subprocess.Popen":
+    """Spawn a system audio player (``afplay`` / ``ffplay`` / ``aplay`` / the
+    WSL2 PowerShell pipeline).
+
+    This is the only place voice_mode starts a process that reaches the
+    speakers. It is a module attribute rather than an inline ``Popen`` so the
+    test suite's audio-playback guard (``tests/conftest.py``) can neutralise
+    real speaker output at exactly this point without stubbing ``subprocess``
+    for everything else.
+    """
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        env=env,
+    )
+
+
 def _play_int16_via_tempfile(audio, sample_rate: int) -> None:
     """Play int16 mono PCM via a temp WAV + play_audio_file (macOS: afplay, no TCC prompt)."""
     tmp_path = None
@@ -1061,8 +1080,7 @@ def _run_system_player(cmd: List[str]) -> bool:
         # Sibling of the TTS/STT credential scrub: players must not inherit tokens/keys.
         # See #56332, #70342.
         from tools.environments.local import hermes_subprocess_env
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                                env=hermes_subprocess_env(inherit_credentials=False))
+        proc = _spawn_system_player(cmd, hermes_subprocess_env(inherit_credentials=False))
         _set_active_playback(proc)
         proc.wait(timeout=300)
         rc = proc.returncode

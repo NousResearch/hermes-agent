@@ -190,7 +190,6 @@ def _rollback_interrupted_preflight_display(agent, interrupted) -> None:
         if callable(_rollback_fn):
             _rollback_fn(_preflight_snapshot)
 
-
 def _drop_transcript_scaffolding(agent, messages) -> None:
     """Strip private retry scaffolding first, or a later "continue" replays
     assistant("(empty)") / recovery nudges into the same empty-response loop. Only
@@ -293,7 +292,6 @@ def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
                 logger.info("Micro-compaction: %d -> %d messages", _before, len(messages))
     except Exception as _mc_err:
         logger.info("Micro-compaction failed: %s", _mc_err)
-
 
 def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger) -> None:
     """Always INFO so agent.log captures WHY every turn ended; WARNING when the last
@@ -398,12 +396,14 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
     return None
 
 
-def _apply_output_hooks(
-    agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
-    messages,
-) -> Tuple[Any, bool, Optional[Any]]:
-    """Fire ``transform_llm_output`` then ``post_llm_call`` once per turn after the tool loop.
-    Returns ``(final_response, transformed, pre_transform_response)``."""
+def _run_transform_hook(agent, final_response, logger, *, platform) -> Tuple[Any, bool, Optional[Any]]:
+    """Fire ``transform_llm_output`` once per turn; first string result wins.
+
+    Returns ``(final_response, transformed, pre_transform_response)``.
+    Separated from :func:`_apply_output_hooks` so ``finalize_turn`` can run
+    the transform BEFORE the durable snapshot lands (#14913) while
+    ``post_llm_call`` still fires after it.
+    """
     transformed, pre_transform = False, None
     # First hook to return a string wins; None/empty leaves the text unchanged.
     for _hook_result in _invoke_hook_safely(
@@ -416,6 +416,14 @@ def _apply_output_hooks(
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True
             break
+    return final_response, transformed, pre_transform
+
+
+def _fire_post_llm_call(
+    agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
+    messages,
+) -> None:
+    """Fire ``post_llm_call`` once per turn (observes the transformed response)."""
     # Detached forks are internal work and must not publish turns under the parent's session ID.
     if not getattr(agent, "_persist_disabled", False):
         _invoke_hook_safely(
@@ -429,6 +437,21 @@ def _apply_output_hooks(
             model=agent.model,
             platform=platform,
         )
+
+
+def _apply_output_hooks(
+    agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
+    messages,
+) -> Tuple[Any, bool, Optional[Any]]:
+    """Fire ``transform_llm_output`` then ``post_llm_call`` once per turn after the tool loop.
+    Returns ``(final_response, transformed, pre_transform_response)``."""
+    final_response, transformed, pre_transform = _run_transform_hook(
+        agent, final_response, logger, platform=platform,
+    )
+    _fire_post_llm_call(
+        agent, final_response, logger, platform=platform, effective_task_id=effective_task_id,
+        turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+    )
     return final_response, transformed, pre_transform
 
 
@@ -474,13 +497,39 @@ def finalize_turn(
     # stream-recovered ``final_response`` is rebound the moment it is computed — BEFORE
     # the fallible tail-shaping / override / micro-compaction / persist calls — so a
     # raise in any of them can't drop text the user already saw (#95514, #8049).
+    _response_transformed = False
+    _pre_transform_response = None
     def _persist_step():
-        nonlocal final_response
+        nonlocal final_response, _response_transformed, _pre_transform_response
         _drop_transcript_scaffolding(agent, messages)
         final_response, _recovered_from_stream = _recover_final_from_stream(
             agent, final_response, interrupted, failed
         )
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
+        # Plugin hook: transform_llm_output — fired BEFORE persistence so a
+        # rewritten response lands in the durable session (what /resume
+        # replays). Runs after the tail-close above so the row it rewrites is
+        # this turn's final assistant message. First hook to return a
+        # non-empty string wins; None/empty leaves the text unchanged.
+        # post_llm_call still fires below (after the snapshot) and observes
+        # the transformed response. See #14913.
+        if final_response and not interrupted:
+            final_response, _response_transformed, _pre_transform_response = _run_transform_hook(
+                agent, final_response, logger,
+                platform=getattr(agent, "platform", None) or "",
+            )
+            if _response_transformed:
+                # Keep the persisted transcript consistent with the delivered
+                # response: rewrite the closing assistant row (same durability
+                # steps as the pure-tool-tail fill — restamp, drop the flush
+                # marker so the persist re-writes content, invalidate the
+                # bounded flush-scan cursor).
+                _tail = messages[-1] if messages else None
+                if isinstance(_tail, dict) and _tail.get("role") == "assistant":
+                    _tail["content"] = final_response
+                    stamp_message_timestamp(_tail)
+                    _tail.pop(_DB_PERSISTED_MARKER, None)
+                    agent._db_flush_scan_prefix = None
         if not interrupted and not failed:
             _micro_compact_after_turn(agent, messages, final_response, logger)
         agent._persist_session(messages, conversation_history)
@@ -503,17 +552,13 @@ def finalize_turn(
         )
 
     _platform = getattr(agent, "platform", None) or ""
-    _response_transformed = False
-    _pre_transform_response = None
-    if final_response and not interrupted:
-        final_response, _response_transformed, _pre_transform_response = _apply_output_hooks(
-            agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
-            turn_id=turn_id, original_user_message=original_user_message, messages=messages,
-        )
-
-    # Context engine observation hook: the turn finished with the finalized transcript.
-    # Fail-open. ``_last_turn_usage`` is the last response's canonical usage dict, or
-    # ``None`` on turns that never reached a provider response — by contract.
+    # post_llm_call observes the (possibly transformed) response after the
+    # durable snapshot lands; the transform itself ran pre-persist inside
+    # _persist_step above, so its row rewrite is already durable (#14913).
+    _fire_post_llm_call(
+        agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,
+        turn_id=turn_id, original_user_message=original_user_message, messages=messages,
+    )
     try:
         from agent.conversation_loop import _notify_context_engine_turn_complete
         _notify_context_engine_turn_complete(

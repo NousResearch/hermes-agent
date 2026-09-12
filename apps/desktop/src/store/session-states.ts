@@ -1494,6 +1494,12 @@ export function openSessionTile(
     // Adoption is async via the registry — order sync runs after the move path
     // below; a brand-new tile's strip slot is already in `before`.
 
+    // Front it anyway: "open this session in a tab" has to mean the tab the
+    // user lands on, not one appended behind whatever the zone was showing.
+    // `revealTreePane` adopts the registered pane when the tree hasn't caught
+    // up yet, exactly like the session-create path in use-session-actions.
+    revealTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`)
+
     return
   }
 

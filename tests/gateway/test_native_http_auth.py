@@ -233,3 +233,20 @@ async def test_native_http_preserves_gated_auth_and_actual_socket_boundary(tmp_p
         clear_providers()
     print(json.dumps({'normal_oauth_bearer_cookie': 'passed',
                       'native_gated_auth_raw_peer_readiness': 'passed'}))
+
+
+@pytest.mark.linux_only
+def test_native_http_principal_satisfies_route_local_token_policy(tmp_path):
+    """Routes that call ``_require_token`` honor the verified native owner (F16).
+
+    Local Desktop runs with authMode=native and no static token; the outer seam
+    admitted the ticket, so the route-local check must not 401 the same request.
+    """
+    with daemon(tmp_path) as (home, descriptor), httpx.Client(
+            base_url=descriptor['api_origin'], trust_env=False, timeout=30) as client:
+        hub = client.get('/api/dashboard/plugins/hub', headers=headers(ticket(home, descriptor)))
+        assert hub.status_code == 200, hub.text
+        oauth = client.delete('/api/providers/oauth/__not_a_real_provider__',
+                              headers=headers(ticket(home, descriptor)))
+        assert oauth.status_code == 400, oauth.text
+        assert client.delete('/api/providers/oauth/__not_a_real_provider__').status_code == 401

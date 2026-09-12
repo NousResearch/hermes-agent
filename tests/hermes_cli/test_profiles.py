@@ -107,6 +107,68 @@ class TestGetProfileDir:
 
 
 # ===================================================================
+# TestExtraProfilesRoots
+# ===================================================================
+
+class TestExtraProfilesRoots:
+    """Read-only extra profile roots for dispatch (``profiles.extra_profiles_roots``).
+
+    Profiles under an extra root are reachable by name via
+    ``resolve_profile_env`` (and thus `hermes -p <name>` / the kanban dispatcher)
+    but are intentionally NOT enumerated by ``_get_profiles_root``. Default
+    ``[]`` must preserve the current single-root behaviour exactly.
+    """
+
+    @staticmethod
+    def _seed_extra_root(profile_env, name="worker"):
+        """Create an extra profiles root on disk with one profile + wire it into the
+        root config.yaml under ``profiles.extra_profiles_roots``."""
+        tmp_path = profile_env
+        extra_root = tmp_path / "stashed-profiles"
+        (extra_root / name).mkdir(parents=True)
+        (extra_root / name / "config.yaml").write_text(
+            "model:\n  default: some/model\n", encoding="utf-8"
+        )
+        cfg = tmp_path / ".hermes" / "config.yaml"
+        cfg.write_text(
+            "profiles:\n  extra_profiles_roots:\n    - %s\n" % extra_root,
+            encoding="utf-8",
+        )
+        return extra_root
+
+    def test_extra_root_profile_resolves_by_name(self, profile_env):
+        extra_root = self._seed_extra_root(profile_env)
+        # get_profile_dir is the primary root only; resolve_profile_env must look
+        # further and find the extra-root copy.
+        assert resolve_profile_env("worker") == str(extra_root / "worker")
+
+    def test_empty_extra_roots_preserves_default_single_root(self, profile_env):
+        # No config key at all -> worker must NOT resolve (default behaviour).
+        with pytest.raises(FileNotFoundError):
+            resolve_profile_env("worker")
+
+    def test_primary_profile_wins_over_extra_root_same_name(self, profile_env):
+        tmp_path = profile_env
+        # A primary profile with the same name shadows the extra-root copy.
+        (tmp_path / ".hermes" / "profiles" / "worker").mkdir(parents=True)
+        (tmp_path / ".hermes" / "profiles" / "worker" / "config.yaml").write_text(
+            "model:\n  default: primary\n", encoding="utf-8"
+        )
+        self._seed_extra_root(profile_env)
+        assert resolve_profile_env("worker") == str(
+            tmp_path / ".hermes" / "profiles" / "worker"
+        )
+
+    def test_extra_root_not_enumerated_by_profiles_root(self, profile_env):
+        """Extra-root profiles must NOT appear in the single enumeration root, so
+        the desktop roster / `profiles list` never spawns them."""
+        extra_root = self._seed_extra_root(profile_env)
+        assert (extra_root / "worker").is_dir()
+        # _get_profiles_root still points at the primary root only.
+        assert _get_profiles_root() == profile_env / ".hermes" / "profiles"
+
+
+# ===================================================================
 # TestCreateProfile
 # ===================================================================
 

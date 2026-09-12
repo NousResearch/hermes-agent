@@ -227,6 +227,26 @@ Note: "Set as active" on the dashboard's Profiles page is the sticky
 default for **future CLI/gateway runs** (same as `hermes profile use`) —
 to edit a profile from the dashboard, use the switcher instead.
 
+### Additional (read-only) profile roots for dispatch
+
+By default the only named-profile root is `~/.hermes/profiles`. If you keep
+some profiles **outside** that root — e.g. stashed worker profiles you don't
+want in the desktop bot roster or the `profiles list` enumeration — you can
+make them *dispatch-addressable* (reachable by `hermes -p <name>` and the
+kanban dispatcher) without joining the roster, via the root config's
+`profiles.extra_profiles_roots` key:
+
+```yaml
+profiles:
+  extra_profiles_roots:
+    - /absolute/path/to/stashed-worker-profiles
+```
+
+Profiles under these roots are resolved by name for **dispatch only**: they do
+**not** appear in `hermes profile list` and are **not** spawned by the desktop
+as bot backends. The primary `~/.hermes/profiles` root wins if a name exists
+in both. Leave the list empty (the default) for current behaviour.
+
 ## Updating
 
 `hermes update` pulls code once (shared) and syncs new bundled skills to **all** profiles automatically:

@@ -28,6 +28,18 @@ database:
   # synchronous: FULL
 
 # =============================================================================
+# Profiles
+# =============================================================================
+# Read-only additional named-profile roots for *dispatch* (`hermes -p <name>`,
+# kanban workers). Profiles under these absolute dirs are reachable by name but
+# are intentionally NOT enumerated by `hermes profile list` / the desktop bot
+# roster, so low-activity or worker profiles can stay out of the spawn pool while
+# still receiving dispatcher work. Default [] = current behaviour.
+profiles:
+  # extra_profiles_roots:
+  #   - /path/to/stashed-worker-profiles
+
+# =============================================================================
 # Runtime Limits
 # =============================================================================
 # Long-running Hermes server processes raise their RLIMIT_NOFILE soft limit to

@@ -135,6 +135,62 @@ def _get_profiles_root() -> Path:
     return _get_default_hermes_home() / "profiles"
 
 
+def _extra_profiles_roots() -> List[Path]:
+    """Read-only additional profile roots for *named-profile dispatch*, from the
+    root ``config.yaml`` ``profiles.extra_profiles_roots`` key (a list of absolute dirs).
+
+    Profiles under these roots are reachable by `hermes -p <name>` and the kanban
+    dispatcher, but are intentionally NOT enumerated by `profiles list` / the desktop
+    roster. This lets an operator keep low-activity or specialized worker profiles out
+    of the primary roster (so the desktop doesn't spawn backend processes for them)
+    while still routing dispatcher work to them.
+
+    Defaults to ``[]`` (existing behaviour: the only root is ``~/.hermes/profiles``).
+    Reads are intentionally lazy + defensive: a missing/parse-error config must never
+    break early import-time resolution (mirrors ``_apply_profile_override``).
+    """
+    from hermes_cli.config import read_user_config_raw
+
+    try:
+        root_home = _get_default_hermes_home()
+        cfg = read_user_config_raw(root_home / "config.yaml")
+        raw = (cfg or {}).get("profiles", {}).get("extra_profiles_roots")
+    except Exception:
+        return []
+    if not raw:
+        return []
+    roots = []
+    for entry in raw if isinstance(raw, list) else [raw]:
+        try:
+            p = Path(os.path.expanduser(entry))
+            if p.is_absolute() and p.is_dir() and p != _get_profiles_root():
+                roots.append(p)
+        except (TypeError, OSError):
+            continue
+    return roots
+
+
+def _lookup_profile_dir(canon: str) -> Optional[Path]:
+    """Live profile dir for *canon* across the primary root + any extra roots.
+
+    Returns None when no live (non-tombstoned) directory exists for the name, so
+    callers keep a single ``resolve`` vs ``does-not-exist`` decision. The primary
+    root wins when a name exists in both (an extra-root profile is shadowed by a
+    primary one of the same name).
+    """
+    def _live(candidate: Path) -> bool:
+        return candidate.is_dir() and not named_profile_is_deleted(candidate)
+
+    primary = _get_profiles_root() / canon
+    if _live(primary):
+        return primary
+    for root in _extra_profiles_roots():
+        candidate = root / canon
+        if _live(candidate):
+            return candidate
+    return None
+
+
 def _get_default_hermes_home() -> Path:
     """Default (pre-profile) HERMES_HOME: ``~/.hermes``, or HERMES_HOME itself in
     Docker/custom deployments (e.g. ``/opt/data``)."""
@@ -1690,8 +1746,8 @@ def resolve_profile_env(profile_name: str) -> str:
         root = _get_default_hermes_home()
     if canon == "default":
         return str(root)
-    profile_dir = root / "profiles" / canon
-    if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):
+    profile_dir = _lookup_profile_dir(canon)
+    if profile_dir is None:
         raise _missing_profile_error(canon)
     return str(profile_dir)
 

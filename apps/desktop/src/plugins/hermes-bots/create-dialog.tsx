@@ -1173,16 +1173,22 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     }
 
     const route = captureCanonicalGroupRoute()
+
+    const sourceCurrent = () => route.connectionId === host.state.connectionId.get() &&
+      route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+
     const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
     const mode = groupExecutionMode(capabilities)
 
-    if (route.connectionId !== host.state.connectionId.get() || route.profile !== host.state.profile.get() ||
-      host.state.gateway.get() !== 'open' || mode === 'unavailable') {
+    if (!sourceCurrent() || mode === 'unavailable') {
       throw new Error(b.canonical.driverUnavailable)
     }
 
     if (mode === 'canonical') {
       const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+
+      // Creation already succeeded; leave it on its owner without adopting a stale result.
+      if (!sourceCurrent()) {return}
       const key = registerCanonicalGroup(route, created.room)
       onClose()
       onCreated?.(key)

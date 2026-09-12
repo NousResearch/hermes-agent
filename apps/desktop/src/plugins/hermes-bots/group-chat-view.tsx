@@ -42,7 +42,7 @@ import { groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -509,11 +509,23 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     <p>{mode === 'canonical' ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.' : mode === 'unavailable' ? b.canonical.driverUnavailable : 'Checking group driver…'}</p>
     {error && <p role="alert">{error}</p>}
     <Button disabled={mode !== 'canonical' || busy} onClick={() => {
+      const route = { connectionId: connectionId ?? '', profile }
+
+      const sourceCurrent = () => route.connectionId === host.state.connectionId.get() &&
+        route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+
+      if (mode !== 'canonical' || !sourceCurrent()) {
+        setError(b.canonical.driverUnavailable)
+
+        return
+      }
+
       setBusy(true)
-      const route = captureCanonicalGroupRoute()
       void createCanonicalGroup(route, props.group, props.members)
-        .then(({ room }) => openGroupChat(registerCanonicalGroup(route, room)))
-        .catch(e => setError(String(e))).finally(() => setBusy(false))
+        .then(({ room }) => {
+          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
+        })
+        .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
     }}>Start gateway group</Button>
   </div>
 }

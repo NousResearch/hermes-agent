@@ -3,6 +3,7 @@ client; messages are polled over a local HTTP API and responses are posted back 
 
 import asyncio
 import logging
+import mimetypes
 import os
 import platform
 import re
@@ -233,6 +234,11 @@ _MEDIA_NEEDLES = (("image", MessageType.PHOTO), ("video", MessageType.VIDEO), ("
 _MEDIA_INFO = {
     MessageType.PHOTO: ("image", "image/jpeg"), MessageType.VOICE: ("audio", "audio/ogg"), MessageType.AUDIO: ("audio", "audio/mpeg"),
     MessageType.VIDEO: ("video", "video/mp4"), MessageType.DOCUMENT: ("document", ""),
+}
+_MEDIA_TYPE_BY_BRIDGE_KIND = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.VOICE, "document": MessageType.DOCUMENT}
+_QUOTED_MIME_BY_BRIDGE_KIND = {
+    "image": "image/jpeg", "video": "video/mp4", "gif": "video/mp4", "audio": "audio/ogg", "ptt": "audio/ogg",
+    "document": "application/octet-stream", "sticker": "image/webp",
 }
 
 
@@ -599,9 +605,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _send_media_to_bridge(self, chat_id: str, file_path: str, media_type: str, caption: Optional[str] = None, file_name: Optional[str] = None) -> SendResult:
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
-        payload: Dict[str, Any] = {"chatId": to_whatsapp_jid(chat_id), "filePath": file_path, "mediaType": media_type}
+        jid = to_whatsapp_jid(chat_id)
+        payload: Dict[str, Any] = {"chatId": jid, "filePath": file_path, "mediaType": media_type}
         payload.update({k: v for k, v in (("caption", caption), ("fileName", file_name)) if v})
-        return await self._post_bridge_message("send-media", payload, timeout=120)
+        result = await self._post_bridge_message("send-media", payload, timeout=120)
+        if result.success and result.message_id:
+            # A later quote of this attachment carries only a thumbnail stub; the bridge's cache
+            # knows inbound media only, so index our own sends (the cron-delivered image case).
+            from gateway import rich_sent_store
+            mime = mimetypes.guess_type(file_path)[0] or _MEDIA_INFO.get(_MEDIA_TYPE_BY_BRIDGE_KIND.get(media_type), ("", ""))[1]
+            rich_sent_store.record_media(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
+        return result
 
     @_needs_bridge
     async def send_poll(self, chat_id: str, question: str, options: list[str], *, selectable_count: int = 1) -> SendResult:
@@ -785,6 +799,27 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Failed to read document text: {e}", flush=True)
         return body
 
+    def _quoted_media(self, data: Dict[str, Any], raw_reply_id: Any) -> list[tuple[str, str]]:
+        """``(path, mime)`` for the quoted message's attachment, folded into this event's own media so the
+        vision/audio pipeline sees it like a direct send. ``contextInfo.quotedMessage`` carries only a
+        thumbnail stub, so the bridge resolves INBOUND quotes from its download cache (``quotedMediaUrls``,
+        guarded like direct media: a rogue bridge could hand back /etc/passwd); quotes of OUR media (cron
+        chart, generated image — any path we chose) resolve from the outbound index written by
+        ``_send_media_to_bridge``."""
+        quoted_type = str(data.get("quotedMediaType") or "").strip()
+        accepted: list[tuple[str, str]] = []
+        for path in data.get("quotedMediaUrls") or []:
+            if not (isinstance(path, str) and os.path.isabs(path) and _is_allowed_bridge_path(path)):
+                print(f"[{self.name}] Rejected quoted-media path outside cache dir: {path}", flush=True)
+                continue
+            accepted.append((path, _QUOTED_MIME_BY_BRIDGE_KIND.get(quoted_type, "application/octet-stream")))
+        if not accepted and raw_reply_id is not None:
+            from gateway import rich_sent_store
+            accepted = rich_sent_store.lookup_media(data.get("chatId", ""), str(raw_reply_id))
+        for path, _ in accepted:
+            print(f"[{self.name}] Attached quoted-reply media: {path}", flush=True)
+        return accepted
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
@@ -803,33 +838,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             quoted = bool(data.get("hasQuotedMessage"))
             raw_reply_id = data.get("quotedMessageId") if quoted else None
             if quoted:
-                # contextInfo.quotedMessage only ever carries a thumbnail-sized
-                # stub for media (or nothing for an uncaptioned attachment) —
-                # never a way to fetch the original file. The bridge resolves
-                # the quoted message's already-downloaded media via its own
-                # cache and hands back real local paths in quotedMediaUrls.
-                # Append them to this event's own media so the existing
-                # vision/audio pipeline (which reads media_urls/media_types)
-                # picks up the quoted attachment exactly like a direct one —
-                # no separate reply-media code path needed.
-                quoted_media_urls = data.get("quotedMediaUrls") or []
-                quoted_media_type = str(data.get("quotedMediaType") or "").strip()
-                _quoted_mime_map = {
-                    "image": "image/jpeg",
-                    "video": "video/mp4",
-                    "gif": "video/mp4",
-                    "audio": "audio/ogg",
-                    "ptt": "audio/ogg",
-                    "document": "application/octet-stream",
-                    "sticker": "image/webp",
-                }
-                for _qurl in quoted_media_urls:
-                    if not (isinstance(_qurl, str) and os.path.isabs(_qurl) and _is_allowed_bridge_path(_qurl)):
-                        print(f"[{self.name}] Rejected quoted-media path outside cache dir: {_qurl}", flush=True)
-                        continue
-                    cached_urls.append(_qurl)
-                    media_types.append(_quoted_mime_map.get(quoted_media_type, "application/octet-stream"))
-                    print(f"[{self.name}] Attached quoted-reply media: {_qurl}", flush=True)
+                for path, mime in self._quoted_media(data, raw_reply_id):
+                    cached_urls.append(path)
+                    media_types.append(mime)
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 body = self._inject_document_text(cached_urls, body)
             native_metadata = data.get("nativeMetadata")

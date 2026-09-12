@@ -302,6 +302,34 @@ class TestBridgeEventMetadata:
         assert event is not None
         assert "/etc/passwd" not in event.media_urls
 
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_sent_image_resolves_from_outbound_index(self, tmp_path):
+        """The bridge's quoted-media cache knows inbound messages only. A quote of an image WE sent
+        (cron chart, generated plot) must resolve from the outbound index written at send time —
+        otherwise "what is this?" under the bot's own image reaches the agent with no image."""
+        adapter = _make_adapter()
+        image = tmp_path / "chart.png"  # a workspace path, deliberately NOT inside a cache dir
+        image.write_bytes(b"\x89PNG fake")
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "BOT_IMG"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        sent = await adapter.send_image_file("15551234567", str(image))
+        assert sent.success and sent.message_id == "BOT_IMG"
+
+        event = await adapter._build_message_event({
+            "messageId": "reply-1", "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net", "senderName": "Alice", "isGroup": False,
+            "body": "what is this?", "hasMedia": False, "mediaUrls": [], "mediaType": "",
+            "quotedMessageId": "BOT_IMG", "quotedParticipant": "15550000000@s.whatsapp.net",
+            "hasQuotedMessage": True, "quotedText": "", "quotedMediaUrls": [], "quotedMediaType": "",
+            "botIds": ["15550000000@s.whatsapp.net"],
+        })
+        assert event is not None
+        assert event.reply_to_is_own_message is True
+        assert event.media_urls == [str(image)]
+        assert event.media_types == ["image/png"]
+
 
 # ---------------------------------------------------------------------------
 # display_config tier classification

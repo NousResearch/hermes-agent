@@ -302,7 +302,13 @@ class StreamDeliveryMixin:
             think_scrubber = getattr(self, "_stream_think_scrubber", None)
             # See #5719.
             scrubber = getattr(self, "_stream_context_scrubber", None)
-            text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
+            if think_scrubber is not None:
+                text = think_scrubber.feed(text)
+                stripped_reasoning = think_scrubber.pop_stripped_reasoning()
+                if stripped_reasoning:
+                    self._fire_reasoning_delta(stripped_reasoning)
+            else:
+                text = self._strip_think_blocks(text)
             text = scrubber.feed(text) if scrubber is not None else sanitize_context(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             # Check the parts list, not the joined property (joining per token copies the whole reply).

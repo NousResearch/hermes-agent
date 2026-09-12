@@ -1303,7 +1303,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             }
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
-              isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
+              target.kind !== 'url' || isBrowserWindow() || !tabId || !canOpenBrowserWindow()
+                ? undefined
+                : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}

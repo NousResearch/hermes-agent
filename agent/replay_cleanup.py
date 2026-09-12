@@ -7,12 +7,14 @@ re-issues the unanswered call → endless "thinking"/reboot loop. These pure hel
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any, Dict, List, Optional
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
 from agent.turn_context import drop_stale_api_content
+from hermes_cli.timefmt import coerce_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +29,20 @@ _DANGLING_NOTICES = (
 )
 
 
+# Every executor renders an interrupt as a bracketed marker: "[Command interrupted]" (terminal
+# backends, tools/environments/), "[Command interrupted - Modal ...]" (managed_modal.py) and
+# "[execution interrupted ...]" (code_execution_tool.py).
+_INTERRUPT_MARKERS = ("[command interrupted", "[execution interrupted")
+
+
 def is_interrupted_tool_result(content: Any) -> bool:
-    """Return True if a tool result indicates the tool was interrupted."""
+    """True only for an executor's interrupt marker. Nothing looser: this also runs on every
+    live request, where a substring heuristic rewrote an ordinary ``grep KeyboardInterrupt``
+    result mid-turn and broke the cached prefix."""
     if not isinstance(content, str):
         return False
     lowered = content.lower()
-    return "[command interrupted]" in lowered or ("exit_code" in lowered and ("130" in lowered or "-1" in lowered) and "interrupt" in lowered)
+    return any(marker in lowered for marker in _INTERRUPT_MARKERS)
 
 
 def _call_name(call: Dict[str, Any]) -> str:
@@ -132,15 +142,11 @@ def canonicalize_replay_history(
 ) -> List[Dict[str, Any]]:
     """Apply every destructive replay transform in the shared, fixed order.
 
-    Resume surfaces and the send path must serialize the same history bytes. The
-    older consumers each applied only a subset of these transforms: interrupted
-    blocks and dangling tails were handled by TUI replay, while stale dangerous
-    confirmations were handled by gateway replay. A request built from the
-    unmodified history could therefore diverge in the middle of the cached
-    prefix after a resume.
+    Resume surfaces and the send path must serialize the same history bytes, or a
+    resumed request diverges in the middle of the cached prefix.
 
-    The input is never modified. ``now`` is injectable for deterministic tests;
-    production callers use the same wall clock as the existing expiry policy.
+    The input is never modified. ``now`` is the expiry clock; the send path passes the
+    turn's admission time so every request in one turn sees the same bytes.
     """
     if not agent_history:
         return agent_history
@@ -149,10 +155,6 @@ def canonicalize_replay_history(
     cleaned = strip_interrupted_tool_tails(agent_history)
     cleaned = strip_dangling_tool_call_tail(cleaned)
     return strip_stale_dangerous_confirmations(cleaned, now=now)
-
-
-# Backward-compatible alias for the send-path name (2026-09-07 code).
-canonicalize_history_for_send = canonicalize_replay_history
 
 
 # --- Stale dangerous-confirmation text expiry ---
@@ -203,21 +205,19 @@ def strip_stale_dangerous_confirmations(
     cleaned: List[Dict[str, Any]] = []
     for msg in agent_history:
         ts = msg.get("timestamp") if isinstance(msg, dict) and msg.get("role") == "user" else None
-        try:
-            is_stale = (
-                ts is not None
-                and is_dangerous_confirmation(msg.get("content", ""))
-                and (float(now) - float(ts)) > expiry_seconds
-            )
-        except (ValueError, TypeError):
-            is_stale = False
-
-        if not is_stale:
+        if ts is None or not is_dangerous_confirmation(msg.get("content", "")):
+            cleaned.append(msg)
+            continue
+        # A present-but-corrupt stamp is treated as expired: the age is unknowable, and
+        # keeping the text (plus its api_content sidecar) would replay a live confirmation.
+        ts_f = coerce_epoch(ts, field="message timestamp")
+        age = math.inf if ts_f is None else now - ts_f
+        if age <= expiry_seconds:
             cleaned.append(msg)
             continue
         logger.debug(
             "Redacting stale dangerous-confirmation text in user message (age=%.1fs, expiry=%.1fs): %r",
-            float(now) - float(ts), expiry_seconds, (msg.get("content") or "")[:80],
+            age, expiry_seconds, (msg.get("content") or "")[:80],
         )
         redacted = dict(msg)
         redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL

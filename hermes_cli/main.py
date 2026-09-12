@@ -2234,7 +2234,13 @@ def _update_preflight_handled(args) -> bool:
             print_update_plan,
         )
 
-        print_update_plan(collect_runtime_inventory())
+        plan = collect_runtime_inventory()
+        if getattr(args, "json_output", False):
+            import json as _update_json
+
+            print(_update_json.dumps(plan.to_dict(), indent=2))
+        else:
+            print_update_plan(plan)
         return True
 
     # Image/package-managed admission gate: baked provenance marker first

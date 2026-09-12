@@ -839,6 +839,78 @@ class TestBackgroundReviewDeleteGate:
         # Atomic: the batch is only a proposal — its add must not land either.
         assert "fork consolidation" not in store._entries_for("memory")
 
+    @pytest.mark.parametrize("proposal", [
+        {"action": "replace", "old_text": "missing anchor", "content": "replacement"},
+        {"action": "replace", "old_text": "seed", "content": "x" * 501},
+        {"operations": [
+            {"action": "add", "content": "must not commit"},
+            {"action": "replace", "old_text": "missing batch anchor", "content": "replacement"},
+        ]},
+    ])
+    def test_invalid_proposals_are_rejected_before_background_staging(
+        self, store, tmp_path, monkeypatch, proposal
+    ):
+        from tools.write_approval import MEMORY, pending_count
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "seed")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(store=store, **proposal))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False
+        assert pending_count(MEMORY) == 0
+        assert store.memory_entries == ["seed"]
+
+    def test_invalid_proposal_is_rejected_before_write_approval_staging(
+        self, store, tmp_path, monkeypatch
+    ):
+        from tools import write_approval as wa
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            wa, "evaluate_gate", lambda *args, **kwargs: wa.GateDecision(stage=True, message="stage"))
+        store.add("memory", "seed")
+
+        result = json.loads(memory_tool(
+            action="replace", old_text="missing anchor", content="replacement", store=store))
+
+        assert result["success"] is False
+        assert wa.pending_count(wa.MEMORY) == 0
+        assert store.memory_entries == ["seed"]
+
+    @pytest.mark.parametrize("proposal", [
+        {"action": "replace", "old_text": "first", "content": "first revised"},
+        {"operations": [
+            {"action": "replace", "old_text": "first", "content": "first revised"},
+            {"action": "remove", "old_text": "second"},
+        ]},
+    ])
+    def test_drifted_proposals_are_rejected_without_staging_or_backup(
+        self, store, tmp_path, monkeypatch, proposal
+    ):
+        from tools.write_approval import MEMORY, pending_count
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "first entry")
+        store.add("memory", "second entry")
+        path = store._path_for("memory")
+        path.write_text(path.read_text(encoding="utf-8").replace("\n§\n", "\n§\n "), encoding="utf-8")
+        before = path.read_text(encoding="utf-8")
+
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(store=store, **proposal))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False
+        assert pending_count(MEMORY) == 0
+        assert path.read_text(encoding="utf-8") == before
+        assert not list(path.parent.glob("MEMORY.md.bak.*"))
+
     def test_add_still_allowed_in_background_review(self, store):
         token = set_current_write_origin("background_review")
         try:

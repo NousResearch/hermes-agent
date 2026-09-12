@@ -769,8 +769,99 @@ _SECRET_FILE_BASENAMES = _ENV_FILE_BASENAMES | frozenset({
 
 
 def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments of a shell command, stripped, empties dropped."""
-    return [seg.strip() for seg in re.split(r"[|;&]+", command) if seg.strip()]
+    """Shell command segments, split only at unquoted operators."""
+    segments: list[str] = []
+    start = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if char in "\"'":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+            continue
+        if quote is None and char in "|;&":
+            segment = command[start:index].strip()
+            if segment:
+                segments.append(segment)
+            start = index + 1
+    segment = command[start:].strip()
+    if segment:
+        segments.append(segment)
+    return segments
+
+
+def _command_words(segment: str) -> list[str]:
+    """Tokenize one command segment without consuming Windows path separators."""
+    lexer = shlex.shlex(segment, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        return segment.split()
+
+
+_SEARCH_READ_COMMANDS = frozenset({"grep", "egrep", "fgrep", "rg"})
+_PROGRAM_READ_COMMANDS = frozenset({"awk", "sed"})
+
+
+def _reader_file_operands(reader: str, args: list[str]) -> list[str]:
+    """Return operands that a supported reader treats as input files."""
+    if reader not in _SEARCH_READ_COMMANDS | _PROGRAM_READ_COMMANDS:
+        return [arg for arg in args if not arg.startswith("-")]
+
+    long_program_flags = {"--regexp", "--file"}
+    if reader == "sed":
+        long_program_flags.add("--expression")
+    elif reader == "awk":
+        long_program_flags.add("--source")
+    short_program_flags = "ef" if reader != "awk" else "f"
+
+    explicit_program = False
+    positionals: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            positionals.extend(args[index + 1:])
+            break
+
+        if arg in long_program_flags:
+            explicit_program = True
+            index += 2
+            continue
+        if any(arg.startswith(flag + "=") for flag in long_program_flags):
+            explicit_program = True
+            index += 1
+            continue
+
+        if arg.startswith("-") and not arg.startswith("--"):
+            marker = next(
+                (pos for pos, char in enumerate(arg[1:], start=1) if char in short_program_flags),
+                None,
+            )
+            if marker is not None:
+                explicit_program = True
+                index += 2 if marker == len(arg) - 1 else 1
+                continue
+            index += 1
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        positionals.append(arg)
+        index += 1
+
+    return positionals if explicit_program else positionals[1:]
 
 
 def _command_reads_secret_file(command: str | None) -> bool:
@@ -782,13 +873,11 @@ def _command_reads_secret_file(command: str | None) -> bool:
     if not command:
         return False
     for seg in _command_segments(command):
-        tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
+        tokens = _command_words(seg)
         if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
             continue
-        for arg in tokens[1:]:
-            if arg.startswith("-"):
-                continue
-            basename = arg.strip("\"'").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        for arg in _reader_file_operands(tokens[0], tokens[1:]):
+            basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
             if basename.lower() in _SECRET_FILE_BASENAMES:
                 return True
     return False
@@ -800,10 +889,7 @@ def is_env_dump_command(command: str | None) -> bool:
     if not command or not isinstance(command, str):
         return False
     for seg in _command_segments(command):
-        try:
-            tokens = shlex.split(seg)
-        except ValueError:
-            tokens = seg.split()
+        tokens = _command_words(seg)
         if tokens and tokens[0] in _ENV_DUMP_COMMANDS:
             return True
     return False

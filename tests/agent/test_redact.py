@@ -882,6 +882,10 @@ class TestTerminalOutputRedaction:
         assert _command_reads_secret_file("cat ./config/.env.local")
         assert _command_reads_secret_file("grep TOKEN ~/.hermes/config.yaml")
         assert _command_reads_secret_file("awk '{print $0}' ~/.bashrc")
+        assert _command_reads_secret_file("grep -E 'API_KEY|TOKEN' ~/.hermes/config.yaml")
+        assert _command_reads_secret_file("sed -n '1;5p' ~/.bashrc")
+        assert _command_reads_secret_file("grep -e config.yaml ~/.hermes/config.yaml")
+        assert _command_reads_secret_file("sed --expression='1p' ~/.profile")
         # In a pipeline / sequence
         assert _command_reads_secret_file("cat .env | grep KEY")
         assert _command_reads_secret_file("echo '---' && cat .env")
@@ -908,6 +912,10 @@ class TestTerminalOutputRedaction:
         assert not _command_reads_secret_file("cat .envrc.bak")  # .bak not in list
         assert not _command_reads_secret_file("python app.py")
         assert not _command_reads_secret_file("echo .env")  # echo is not a file-read cmd
+        assert not _command_reads_secret_file("grep config.yaml README.md")
+        assert not _command_reads_secret_file("grep -e config.yaml README.md")
+        assert not _command_reads_secret_file("sed -e config.yaml README.md")
+        assert not _command_reads_secret_file("awk -f config.yaml README.md")
         assert not _command_reads_secret_file("")
         assert not _command_reads_secret_file(None)
 
@@ -916,12 +924,20 @@ class TestTerminalOutputRedaction:
         [
             ("ADS_API_TOKEN: " + "A" * 40, "grep -n mcp ~/.hermes/config.yaml"),
             ("export FOO_TOKEN=" + "B" * 40, "awk '{print $0}' ~/.bashrc"),
+            ("ADS_API_TOKEN: " + "C" * 40, "grep -E 'API_KEY|TOKEN' ~/.hermes/config.yaml"),
+            ("export FOO_TOKEN=" + "D" * 40, "sed -n '1;5p' ~/.bashrc"),
         ],
     )
     def test_secret_bearing_file_reads_mask_opaque_assignments(self, output, command):
         from agent.redact import redact_terminal_output
         secret = output.rsplit(" ", 1)[-1].split("=", 1)[-1]
         assert secret not in redact_terminal_output(output, command)
+
+    def test_search_pattern_named_like_secret_file_preserves_unrelated_output(self):
+        from agent.redact import redact_terminal_output
+        secret = "E" * 40
+        output = f"config.yaml example: FOO_TOKEN={secret}"
+        assert secret in redact_terminal_output(output, "grep config.yaml README.md")
 
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""

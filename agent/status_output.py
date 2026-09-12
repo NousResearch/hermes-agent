@@ -80,6 +80,15 @@ class StatusOutputMixin:
         """Emit a user-visible warning for degraded side paths where the turn continues but the user must know."""
         self._emit_status_kind("warn", message, origin="_emit_warning")
 
+    def _emit_recovery(self, message: str) -> None:
+        """Emit a recovery-class status (empty-after-tools nudge, thinking prefill).
+
+        Gateway consumers receive it through ``status_callback("recovery", ...)`` so
+        ``display.diagnostic_status: off`` can filter this class without dropping
+        lifecycle or warning events.
+        """
+        self._emit_status_kind("recovery", message, origin="_emit_recovery")
+
     def _warn_context_overflow_blocked(self, reason: str, preflight_tokens: int, threshold_tokens: int) -> None:
         """Warn (deduped on the block *kind* — ``cooldown`` / ``ineffective`` — not the countdown string;
         cleared by ``_clear_context_overflow_warn``) when context is over the threshold but compression is blocked."""
@@ -138,16 +147,17 @@ class StatusOutputMixin:
     def _buffer_retry_message(self, kind: str, message: str) -> None:
         """Buffer a retry/fallback line as ``(kind, text)`` until we know whether the turn recovered.
 
-        ``kind`` is ``"status"`` (replays via ``_emit_status``), ``"vprint"`` (``_vprint(force=True)``) or
-        ``"warn"`` (``_emit_warning``).
+        ``kind`` is ``"status"`` (replays via ``_emit_status``), ``"recovery"`` (``_emit_recovery``),
+        ``"vprint"`` (``_vprint(force=True)``) or ``"warn"`` (``_emit_warning``).
         """
         buf = getattr(self, "_retry_status_buffer", None)
         if buf is None:
             buf = self._retry_status_buffer = []
         buf.append((kind, message))
 
-    def _buffer_status(self, message: str) -> None:
-        self._buffer_retry_message("status", message)
+    def _buffer_status(self, message: str, *, kind: str = "status") -> None:
+        replay_kind = kind if kind in {"status", "recovery", "vprint", "warn"} else "status"
+        self._buffer_retry_message(replay_kind, message)
 
     def _buffer_vprint(self, message: str) -> None:
         self._buffer_retry_message("vprint", message)
@@ -184,7 +194,7 @@ class StatusOutputMixin:
         # Drain first so a callback exception doesn't double-emit.
         messages = list(buf)
         buf.clear()
-        replay = {"status": self._emit_status, "warn": self._emit_warning}
+        replay = {"status": self._emit_status, "recovery": self._emit_recovery, "warn": self._emit_warning}
         for kind, msg in messages:
             try:
                 if kind in replay:

@@ -269,6 +269,19 @@ def _probe_single_server(
     from tools.mcp_tool_discovery import _connect_server
     from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
     from tools.mcp_tool_common import _parse_boolish
+    from tools.mcp_tool import _MCP_AVAILABLE
+
+    # Fail fast before event loop + connect retry/timeout bury the SDK ImportError (#34220).
+    if not _MCP_AVAILABLE:
+        raise ImportError(
+            "The 'mcp' Python SDK is required for 'hermes mcp' commands but "
+            "is not installed. Install with:\n"
+            "  pip install 'hermes-agent[mcp]'\n"
+            "or, for pipx installs:\n"
+            "  pipx inject hermes-agent mcp\n"
+            "or, for the full install:\n"
+            "  pip install 'hermes-agent[all]'"
+        )
 
     config = _resolve_mcp_server_config(config)
     if connect_timeout is None:

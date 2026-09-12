@@ -171,13 +171,34 @@ def clear_session_vars(tokens: list) -> None:
     falling back to a stale ``os.environ`` value.  Async-delivery's top-level baseline is
     ``_UNSET``: a cleared context is default-supported, not opted-out.  Wake capability's
     top-level baseline is ``_UNSET`` too — but for the opposite reason: a cleared context has
-    declared nothing, and an undeclared capability FAILS CLOSED (#98619)."""
-    for var, token in zip(_SESSION_VARS, tokens):
-        _restore_or_baseline(var, token, "")
-    for var, token in zip(
-            (_SESSION_ASYNC_DELIVERY, _SESSION_HISTORY_DELIVERY), tokens[len(_SESSION_VARS):]):
-        _restore_or_baseline(var, token, _UNSET)
+    declared nothing, and an undeclared capability FAILS CLOSED (#98619).
+
+    ``tokens`` MUST have exactly ``len(_SESSION_VARS) + 2`` entries (the shape
+    ``set_session_vars`` always returns) — SRL-4543 Gate B rodada 1 (Kimi): a plain
+    ``zip(_SESSION_VARS, tokens)`` silently truncates on a shorter/malformed list, leaving every
+    ContextVar past the truncation point (INCLUDING identity vars — ``HERMES_SESSION_USER_ID``,
+    ``HERMES_SESSION_KEY``, ``HERMES_BROWSER_CONTROL_PRINCIPAL``) holding the PREVIOUS turn's
+    value, leaking identity across turns on the same task/thread. Every var is therefore always
+    reset by explicit index over the full ``_SESSION_VARS`` + async/history-delivery set — never
+    positional ``zip`` against the caller-supplied ``tokens`` — before any mismatch is reported,
+    so the reset happens unconditionally and a malformed ``tokens`` degrades to "loud error", not
+    "silent leak"."""
+    all_vars = _SESSION_VARS + (_SESSION_ASYNC_DELIVERY, _SESSION_HISTORY_DELIVERY)
+    expected = len(all_vars)
+    for i, var in enumerate(all_vars):
+        baseline = "" if i < len(_SESSION_VARS) else _UNSET
+        if i < len(tokens):
+            _restore_or_baseline(var, tokens[i], baseline)
+        else:
+            var.set(baseline)
     _runtime_cwd("clear_session_cwd")
+    if len(tokens) != expected:
+        raise ValueError(
+            f"clear_session_vars: tokens length mismatch — got {len(tokens)}, expected "
+            f"{expected} (the shape set_session_vars always returns). All ContextVars were "
+            f"still reset to their safe baseline before this error was raised; this exception "
+            f"only flags that the caller's tokens list was malformed, e.g. from a truncated "
+            f"capture or an exception swallowed mid-admission.")
 
 
 def reset_session_vars() -> None:
@@ -204,7 +225,14 @@ def bound_identity_for_session(session_key: str) -> tuple[str, str, str] | None:
     the current transport."""
     if _SESSION_KEY.get() is _UNSET or _SESSION_KEY.get() != session_key:
         return None
-    return (_SESSION_USER_ID.get(), _BROWSER_CONTROL_PRINCIPAL.get(), _BROWSER_CONTROL_TRANSPORT_FAMILY.get())
+    # SRL-4543 Gate B rodada 1 (Kimi): normalize the raw _UNSET sentinel to "" here so it can
+    # never flow as a literal user_id/principal into set_session_vars — a caller passing this
+    # tuple straight through must never see the internal sentinel object leak into a session var.
+    def _normalize(value: Any) -> str:
+        return "" if value is _UNSET else value
+    return (
+        _normalize(_SESSION_USER_ID.get()), _normalize(_BROWSER_CONTROL_PRINCIPAL.get()),
+        _normalize(_BROWSER_CONTROL_TRANSPORT_FAMILY.get()))
 
 
 def get_session_env(name: str, default: str = "") -> str:

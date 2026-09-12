@@ -891,6 +891,14 @@ class GatewaySlashCommandsMixin(
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its
         # system prompt/tool schema (prompt-cache prefix is sacred).
+        if requested:
+            from hermes_cli.policy_mutation import PolicyMutationBroker
+            broker = PolicyMutationBroker()
+            pending = broker.request(self._session_key_for_source(event.source), "approvals.mode", "set")
+            # The gateway's authenticated admin interaction is the operator confirmation event.
+            proof = broker.operator_confirm(pending.request_id)
+            return run_approval_mode_command(requested, proof=proof,
+                                             session_id=pending.session_id).message
         return run_approval_mode_command(requested).message
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:

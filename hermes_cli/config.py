@@ -3400,11 +3400,13 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "this notice.)", Colors.DIM))
 
 
-def set_config_value(key: str, value: str, force: bool = False):
-    """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
-    ``force`` skips the unknown-key warning AND authorizes replacing a mapping section with a
-    scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
-    to ``model.default``."""
+def set_config_value(key: str, value: str, force: bool = False, *, proof=None, session_id: str = "local"):
+    """Set a configuration value at a dotted key.
+
+    Policy-class keys additionally require a one-shot operator confirmation proof.
+    """
+    from hermes_cli.policy_mutation import require_policy_proof
+    require_policy_proof(key, "set", proof, session_id=session_id)
     if is_managed():
         managed_error("set configuration values")
         return
@@ -3502,8 +3504,10 @@ def get_config_value(key: str, *, as_json: bool = False):
     print(_format_config_get_value(value, as_json=as_json))
 
 
-def unset_config_value(key: str):
+def unset_config_value(key: str, *, proof=None, session_id: str = "local"):
     """Remove a user-set configuration or .env value."""
+    from hermes_cli.policy_mutation import require_policy_proof
+    require_policy_proof(key, "unset", proof, session_id=session_id)
     if is_managed():
         managed_error("unset configuration values")
         return

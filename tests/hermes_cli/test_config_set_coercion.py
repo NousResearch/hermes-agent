@@ -75,6 +75,9 @@ class TestMalformedKey:
 class TestStringTypedGuardPreserved:
     def test_enum_off_stays_string(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        cfg.set_config_value("approvals.mode", "off")
+        from hermes_cli.policy_mutation import PolicyMutationBroker
+        broker = PolicyMutationBroker()
+        request = broker.request("local", "approvals.mode", "set")
+        cfg.set_config_value("approvals.mode", "off", proof=broker.operator_confirm(request.request_id))
         v = _read(tmp_path, "approvals", "mode")
         assert v == "off" and isinstance(v, str)  # not bool False

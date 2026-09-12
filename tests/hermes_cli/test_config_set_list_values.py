@@ -112,7 +112,10 @@ def test_string_typed_key_bracket_value_stays_string(user_home):
     even when the value looks like a list literal."""
     from hermes_cli.config import set_config_value, read_raw_config
 
-    set_config_value("approvals.mode", "[off]")
+    from hermes_cli.policy_mutation import PolicyMutationBroker
+    broker = PolicyMutationBroker()
+    request = broker.request("local", "approvals.mode", "set")
+    set_config_value("approvals.mode", "[off]", proof=broker.operator_confirm(request.request_id))
     raw = read_raw_config()
     assert raw["approvals"]["mode"] == "[off]"
     assert isinstance(raw["approvals"]["mode"], str)
@@ -122,7 +125,10 @@ def test_string_typed_key_negative_number_stays_string(user_home):
     """'-5' for a string-typed key must remain the string '-5'."""
     from hermes_cli.config import set_config_value, read_raw_config
 
-    set_config_value("approvals.mode", "-5")
+    from hermes_cli.policy_mutation import PolicyMutationBroker
+    broker = PolicyMutationBroker()
+    request = broker.request("local", "approvals.mode", "set")
+    set_config_value("approvals.mode", "-5", proof=broker.operator_confirm(request.request_id))
     raw = read_raw_config()
     assert raw["approvals"]["mode"] == "-5"
 

@@ -85,6 +85,45 @@ def _rich_api_kwargs(adapter):
     return call.kwargs["api_kwargs"]
 
 
+def test_rich_payload_promotes_pipe_table_to_native_html():
+    adapter = _make_adapter()
+
+    markdown = adapter._rich_message_payload(TABLE_ONLY_CONTENT)["markdown"]
+
+    assert '<table bordered striped>' in markdown
+    assert '<th align="left">Team</th>' in markdown
+    assert '<td align="left">Red Sox</td>' in markdown
+    assert '<td align="left">6.0</td>' in markdown
+    assert '|---|---|---|---|' not in markdown
+    assert markdown.endswith('</table>')
+
+
+def test_rich_native_table_preserves_alignment_and_safe_inline_bold():
+    adapter = _make_adapter()
+    content = (
+        '| Engine | Score | Notes |\n'
+        '|:---|---:|:---:|\n'
+        '| **LEAN** | 9 | A < B & C |'
+    )
+
+    markdown = adapter._rich_message_payload(content)["markdown"]
+
+    assert '<td align="left"><b>LEAN</b></td>' in markdown
+    assert '<td align="right">9</td>' in markdown
+    assert '<td align="center">A &lt; B &amp; C</td>' in markdown
+    assert '**LEAN**' not in markdown
+
+
+def test_rich_native_table_does_not_convert_fenced_example():
+    adapter = _make_adapter()
+    content = '```markdown\n| A | B |\n|---|---|\n| 1 | 2 |\n```'
+
+    markdown = adapter._rich_message_payload(content)["markdown"]
+
+    assert '<table' not in markdown
+    assert '|---|---|' in markdown
+
+
 @pytest.mark.asyncio
 async def test_details_without_math_still_uses_rich_send():
     adapter = _make_adapter()
@@ -612,7 +651,9 @@ async def test_dm_topic_table_survives_when_drafts_degrade_to_edit():
             rich_kwargs = call.kwargs["api_kwargs"]
             break
     assert rich_kwargs is not None
-    assert "| F1 |" in rich_kwargs["rich_message"]["markdown"]
+    rich_markdown = rich_kwargs["rich_message"]["markdown"]
+    assert '<table bordered striped>' in rich_markdown
+    assert '<td align="left">F1</td>' in rich_markdown
     # Degraded preview is deleted so the user is not left with the bullet rewrite.
     adapter._bot.delete_message.assert_awaited()
 
@@ -670,8 +711,10 @@ async def test_finalize_edit_uses_rich_for_table_content():
     assert result.message_id == "555"  # same message, edited in place
     api_kwargs = _rich_edit_kwargs(adapter)
     assert api_kwargs["message_id"] == 555
-    # RAW markdown is passed through so table pipes survive.
-    assert api_kwargs["rich_message"]["markdown"] == RICH_CONTENT
+    # Pipe tables are promoted to Telegram's native rich table representation.
+    rich_markdown = api_kwargs["rich_message"]["markdown"]
+    assert '<table bordered striped>' in rich_markdown
+    assert '|---|---|' not in rich_markdown
     # No fresh send / delete — the whole point of the in-place rich edit.
     adapter._bot.edit_message_text.assert_not_called()
     adapter._bot.delete_message.assert_not_called()
@@ -708,7 +751,8 @@ async def test_finalize_edit_dm_topic_omits_send_only_routing_fields():
     assert api_kwargs["message_id"] == 555
     assert "message_thread_id" not in api_kwargs
     assert "direct_messages_topic_id" not in api_kwargs
-    assert "| F1 |" in api_kwargs["rich_message"]["markdown"]
+    assert '<table bordered striped>' in api_kwargs["rich_message"]["markdown"]
+    assert '<td align="left">F1</td>' in api_kwargs["rich_message"]["markdown"]
     adapter._bot.edit_message_text.assert_not_called()
 
 

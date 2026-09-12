@@ -287,7 +287,88 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE,
+    compile_mention_patterns,
+    convert_table_to_bullets as _wrap_markdown_tables,
+    is_table_row as _is_table_row,
+    split_markdown_table_row as _split_markdown_table_row,
+)
+
+def _rich_table_cell_html(value: str) -> str:
+    """Escape one rich-table cell and preserve whole-cell Markdown bold."""
+    value = value.strip()
+    if len(value) > 4 and value.startswith("**") and value.endswith("**"):
+        return f"<b>{_html.escape(value[2:-2], quote=False)}</b>"
+    return _html.escape(value, quote=False)
+
+
+def _rich_table_alignments(delimiter: str, count: int) -> list[str]:
+    """Translate GFM delimiter colons to Telegram table alignments."""
+    alignments: list[str] = []
+    for cell in _split_markdown_table_row(delimiter):
+        marker = cell.strip()
+        if marker.startswith(":") and marker.endswith(":"):
+            alignments.append("center")
+        elif marker.endswith(":"):
+            alignments.append("right")
+        else:
+            alignments.append("left")
+    return (alignments + ["left"] * count)[:count]
+
+
+def _render_rich_table(table_lines: list[str]) -> str:
+    """Render a detected GFM table as Telegram Rich Markdown HTML."""
+    headers = _split_markdown_table_row(table_lines[0])
+    if len(table_lines) < 3 or len(headers) < 2:
+        return "\n".join(table_lines)
+    alignments = _rich_table_alignments(table_lines[1], len(headers))
+    rows = ["<table bordered striped>", "<tr>"]
+    rows.extend(
+        f'<th align="{alignments[index]}">{_rich_table_cell_html(value)}</th>'
+        for index, value in enumerate(headers)
+    )
+    rows.append("</tr>")
+    for line in table_lines[2:]:
+        cells = _split_markdown_table_row(line)
+        rows.append("<tr>")
+        rows.extend(
+            f'<td align="{alignments[index] if index < len(alignments) else "left"}">'
+            f'{_rich_table_cell_html(value)}</td>'
+            for index, value in enumerate(cells)
+        )
+        rows.append("</tr>")
+    rows.append("</table>")
+    return "\n".join(rows)
+
+
+def _convert_rich_tables_to_html(text: str) -> str:
+    """Promote GFM tables outside code fences to native Telegram tables."""
+    if "|" not in text:
+        return text
+    lines = text.split("\n")
+    output: list[str] = []
+    in_fence = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            output.append(line)
+            index += 1
+            continue
+        if not in_fence and index + 1 < len(lines) and "|" in line and _TABLE_SEPARATOR_RE.match(lines[index + 1]):
+            table_lines = [line, lines[index + 1]]
+            cursor = index + 2
+            while cursor < len(lines) and _is_table_row(lines[cursor]):
+                table_lines.append(lines[cursor])
+                cursor += 1
+            output.append(_render_rich_table(table_lines))
+            index = cursor
+            continue
+        output.append(line)
+        index += 1
+    return "\n".join(output)
+
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
 # fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
@@ -1315,9 +1396,14 @@ class TelegramAdapter(BasePlatformAdapter):
         return self.RICH_MESSAGE_MAX_CHARS if self._rich_transport_available() else None
 
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> Dict[str, Any]:
-        """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
-        escaping destroys table pipes."""
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        """Build ``InputRichMessage`` from raw markdown.
+
+        GFM pipe tables are promoted to Telegram Rich Markdown HTML tables;
+        other rich constructs stay unchanged. The legacy MarkdownV2 fallback
+        remains independent and continues to use its mobile bullet rendering.
+        """
+        markdown = _rich_normalize_linebreaks(content)
+        payload: Dict[str, Any] = {"markdown": _convert_rich_tables_to_html(markdown)}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload

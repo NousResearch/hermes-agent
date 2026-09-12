@@ -67,4 +67,18 @@ class TestConvertTableToBullets:
         assert "• head1: a" not in out
         assert "• head2: b" in out
 
+    def test_bold_first_cell_does_not_create_nested_markers(self):
+        text = (
+            "| Component | Purpose |\n"
+            "|---|---|\n"
+            "| **LEAN** | Backtests |\n"
+            "| **NautilusTrader** | Trading core |"
+        )
+
+        out = convert_table_to_bullets(text)
+
+        assert "**LEAN**\n• Purpose: Backtests" in out
+        assert "**NautilusTrader**\n• Purpose: Trading core" in out
+        assert "****LEAN****" not in out
+        assert "****NautilusTrader****" not in out
 

@@ -435,6 +435,57 @@ def test_cold_profile_hydration_replaces_partial_snapshot_after_failed_retry(
     assert attempts == 2
 
 
+def test_cold_profile_hydration_clears_partial_snapshot_when_sources_are_removed(
+    tmp_path, monkeypatch
+):
+    """Removing secret sources during a retry must revoke values from a partial snapshot."""
+    from agent.secret_scope import build_profile_secret_scope
+    from agent.secret_sources.base import ErrorKind, FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from agent.secret_sources import registry as reg_module
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n  command:\n    enabled: true\n", encoding="utf-8"
+    )
+    failed = FetchResult().fail("helper exited 1", ErrorKind.AUTH_FAILED)
+
+    def _apply_partial_result(_cfg, _home_path, environ=None):
+        environ["OPENAI_API_KEY"] = "partial-key"
+        return ApplyReport(
+            sources=[
+                SourceReport(
+                    name="onepassword",
+                    label="1Password",
+                    result=FetchResult(secrets={"OPENAI_API_KEY": "partial-key"}),
+                    applied=["OPENAI_API_KEY"],
+                ),
+                SourceReport(name="command", label="command", result=failed),
+            ],
+            provenance={
+                "OPENAI_API_KEY": AppliedVar(
+                    name="OPENAI_API_KEY",
+                    source="onepassword",
+                    shape="bulk",
+                    overrode_env=False,
+                )
+            },
+        )
+
+    monkeypatch.setattr(reg_module, "apply_all", _apply_partial_result)
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {
+        "OPENAI_API_KEY": "partial-key"
+    }
+    assert build_profile_secret_scope(tmp_path)["OPENAI_API_KEY"] == "partial-key"
+
+    config_path.write_text("{}\n", encoding="utf-8")
+
+    assert env_loader.hydrate_profile_secret_sources(tmp_path) == {}
+    assert env_loader.get_secret_source_values(tmp_path) == {}
+    assert "OPENAI_API_KEY" not in build_profile_secret_scope(tmp_path)
+
+
 def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch):
     """Disabled Bitwarden config must not touch the source map."""
 

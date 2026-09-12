@@ -691,7 +691,14 @@ def convert_messages_to_converse(messages: List[Dict]) -> Tuple[Optional[List[Di
             append_turn("user", [{"toolResult": {
                 "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
         elif role == "assistant":
-            append_turn("assistant", _assistant_blocks(msg, content) or [dict(_PLACEHOLDER_BLOCK)])
+            blocks = _assistant_blocks(msg, content)
+            # Sonnet 5 / Fable 5.1 reject a reasoningContent-only assistant message as
+            # prefill, killing the whole request even when a user turn follows (#105780).
+            # Such a turn carries no text and no toolUse, so dropping it cannot orphan a
+            # toolResult; same-role neighbours merge in append_turn, keeping alternation.
+            if blocks and all("reasoningContent" in block for block in blocks):
+                continue
+            append_turn("assistant", blocks or [dict(_PLACEHOLDER_BLOCK)])
         elif role == "user":
             append_turn("user", _convert_content_to_converse(content))
     if converse_msgs and converse_msgs[0]["role"] != "user":

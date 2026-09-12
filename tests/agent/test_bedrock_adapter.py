@@ -255,6 +255,59 @@ class TestConvertMessagesToConverse:
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
+    def test_reasoning_only_sidecar_turn_is_dropped(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": None,
+                "bedrock_content_blocks": [
+                    {"reasoningContent": {"redactedContentBase64": "cjE="}}
+                ],
+            },
+            {"role": "user", "content": "next"},
+        ]
+        _system, msgs = convert_messages_to_converse(messages)
+        # Sonnet 5 / Fable 5.1 reject the reasoning-only assistant message as prefill (#105780);
+        # the surrounding user turns merge into one.
+        assert [m["role"] for m in msgs] == ["user"]
+        assert all("reasoningContent" not in b for b in msgs[0]["content"])
+
+    def test_reasoning_details_only_turn_is_dropped(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_details": [{"type": "redacted_thinking", "data": "cjE="}],
+            },
+            {"role": "user", "content": "next"},
+        ]
+        _system, msgs = convert_messages_to_converse(messages)
+        assert [m["role"] for m in msgs] == ["user"]
+        assert all("reasoningContent" not in b for b in msgs[0]["content"])
+
+    def test_leading_reasoning_only_turn_keeps_user_first_invariant(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "bedrock_content_blocks": [
+                    {"reasoningContent": {"redactedContentBase64": "cjE="}}
+                ],
+            },
+            {"role": "user", "content": "hello"},
+        ]
+        _system, msgs = convert_messages_to_converse(messages)
+        assert msgs and msgs[0]["role"] == "user"
+        assert msgs[-1]["role"] == "user"
+
 
 # ---------------------------------------------------------------------------
 # Response normalization: Converse → OpenAI

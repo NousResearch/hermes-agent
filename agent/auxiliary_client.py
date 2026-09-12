@@ -7003,11 +7003,18 @@ def _ladder_credential_rungs(
                 return (yield _LadderStep(
                     "retry_same_provider", (resolved_provider, route.resolved_model))), None
             except Exception as retry2_err:
-                # Rotated key also hit a wall: mark it now so concurrent processes skip it,
-                # then fall through to the provider fallback.
+                # The post-rotation retry also hit a wall. Attribute the failure to the key
+                # we KNOW failed (_client_api_key): the retry runs through the route-label
+                # client cache (e.g. "auto"), which embeds the pre-rotation main-runtime key,
+                # so a fast retry2 failure is usually the SAME stale key again. Marking the
+                # pool's current() here benches the just-rotated-to healthy entry with the
+                # old key's error (observed: healthy second z.ai key benched 0.4s after
+                # rotation, taking the whole pool offline). If the rotated key genuinely
+                # failed, the next recovery cycle identifies and marks it via its own
+                # _client_api_key instead — one extra failure cycle at worst.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err)
+                    _recover_provider_pool(pool_provider, retry2_err, failed_api_key=_client_api_key)
                     first_err = retry2_err
                 else:
                     raise

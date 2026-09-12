@@ -105,6 +105,7 @@ class SolReviewer:
         *,
         provider: str,
         model: str,
+        reasoning_effort: str = "medium",
         agent_factory: Callable[..., Any] | None = None,
     ) -> None:
         if not provider or not model:
@@ -115,12 +116,14 @@ class SolReviewer:
             agent_factory = AIAgent
         self.provider = provider
         self.model = model
+        self.reasoning_effort = reasoning_effort
         self.agent_factory = agent_factory
 
     def __call__(self, prompt: str) -> dict[str, str]:
         agent = self.agent_factory(
             provider=self.provider,
             model=self.model,
+            reasoning_config={"enabled": True, "effort": self.reasoning_effort},
             max_iterations=3,
             enabled_toolsets=[],
             disabled_toolsets=[],

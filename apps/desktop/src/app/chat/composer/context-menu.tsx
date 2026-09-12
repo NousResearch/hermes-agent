@@ -18,13 +18,14 @@ import { useI18n } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-import { useComposerAttachmentProviders } from './contrib'
+import { type NativeChatInvocationContext, useComposerAttachmentProviders } from './contrib'
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
 
 const SNIPPET_KEYS = ['codeReview', 'implementationPlan', 'explainThis']
 
 export function ContextMenu({
+  invocation,
   state,
   onInsertText,
   onOpenUrlDialog,
@@ -99,7 +100,7 @@ export function ContextMenu({
             <DropdownMenuItem
               className="text-[length:var(--conversation-tool-font-size)] focus:bg-(--ui-bg-tertiary)"
               key={provider.key}
-              onSelect={() => void provider.run({ insertText: onInsertText })}
+              onSelect={() => void provider.run({ insertText: onInsertText, ...invocation })}
             >
               <Codicon name={provider.icon ?? 'plug'} size="0.875rem" />
               <span>{provider.label}</span>
@@ -185,6 +186,7 @@ interface ContextMenuItemProps {
 }
 
 interface ContextMenuProps {
+  invocation: NativeChatInvocationContext
   onInsertText: (text: string) => void
   onOpenUrlDialog: () => void
   onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void

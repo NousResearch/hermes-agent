@@ -203,6 +203,25 @@ export function useSessionTileDelegate({
       deleteSession: async storedSessionId => {
         await removeSession(storedSessionId)
       },
+      bindCreatedSession: (created, storedSessionId) => {
+        const info = created.info
+
+        updateSessionState(
+          created.session_id,
+          state => ({
+            ...state,
+            busy: Boolean(info?.running),
+            ...(typeof info?.cwd === 'string' ? { cwd: info.cwd } : {}),
+            ...(typeof info?.model === 'string' ? { model: info.model } : {}),
+            ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
+            ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+            ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {})
+          }),
+          storedSessionId
+        )
+
+        return created.session_id
+      },
       executeSlash: async (rawCommand, sessionId) => {
         await executeSlashCommand(rawCommand, { sessionId })
       },
@@ -436,7 +455,7 @@ export function useSessionTileDelegate({
           { requestGateway: routedRequest, onRecovered: rebindTileRuntime(runtimeId) }
         )
       },
-      updateSession: (runtimeId, updater) => updateSessionState(runtimeId, updater)
+      updateSession: (runtimeId, updater, storedSessionId) => updateSessionState(runtimeId, updater, storedSessionId)
     })
   }, [
     archiveSession,

@@ -45,10 +45,23 @@ export interface ComposerDraft {
   attachments?: ComposerAttachment[]
 }
 
+/** Exact native chat surface invoking a composer contribution. Plugins that
+ * bind private context to one conversation must key off this identity rather
+ * than the globally focused workspace session: embedded chat panels are
+ * intentionally non-navigational and therefore never become layout focus. */
+export interface NativeChatInvocationContext {
+  runtimeSessionId: null | string
+  storedSessionId: null | string
+  target: string
+}
+
 /** Payload of a `composer.middleware` data contribution. */
 export interface ComposerMiddleware {
   /** Rewrite (return a draft), pass through (same draft), or cancel (null). */
-  handler: (draft: ComposerDraft) => ComposerDraft | null | Promise<ComposerDraft | null>
+  handler: (
+    draft: ComposerDraft,
+    invocation?: NativeChatInvocationContext
+  ) => ComposerDraft | null | Promise<ComposerDraft | null>
 }
 
 /** One row a `composer.atCompletions` source offers for the current query. */
@@ -74,6 +87,9 @@ export interface ComposerAtCompletionSource {
 
 export interface ComposerAttachmentContext {
   insertText: (text: string) => void
+  runtimeSessionId?: null | string
+  storedSessionId?: null | string
+  target?: string
 }
 
 /** Payload of a `composer.attachments` data contribution — an entry in the
@@ -91,7 +107,10 @@ export interface ComposerAttachmentProvider {
  * and cancels the send. A throwing handler is treated as pass-through so a
  * broken plugin can't eat messages.
  */
-export async function runComposerMiddleware(draft: ComposerDraft): Promise<ComposerDraft | null> {
+export async function runComposerMiddleware(
+  draft: ComposerDraft,
+  invocation?: NativeChatInvocationContext
+): Promise<ComposerDraft | null> {
   let current = draft
 
   for (const contribution of registry.getArea(COMPOSER_AREAS.middleware)) {
@@ -102,7 +121,7 @@ export async function runComposerMiddleware(draft: ComposerDraft): Promise<Compo
     }
 
     try {
-      const next = await middleware.handler(current)
+      const next = await middleware.handler(current, invocation)
 
       if (next === null) {
         return null

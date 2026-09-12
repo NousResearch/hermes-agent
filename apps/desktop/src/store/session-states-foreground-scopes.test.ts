@@ -14,7 +14,8 @@ import {
   foregroundSessionScopes,
   holdSessionOwnerUntilForeground,
   recordSessionEventScope,
-  releaseSessionOwnerHold
+  releaseSessionOwnerHold,
+  retainForegroundSessionSurface
 } from './session-states'
 
 // A routed session.create returns a stored id on the owner's socket, but the
@@ -130,5 +131,18 @@ describe('foregroundSessionScopes: owner hold across the create → foreground g
     holdSessionOwnerUntilForeground('stored-legacy', 'research')
 
     expect(foregroundSessionScopes()).toEqual(new Set(['research']))
+  })
+
+  it('keeps a non-layout native chat owner and runtime alive only while its surface is mounted', () => {
+    const route = { connectionId: 'internal', profile: 'Internal' }
+    const release = retainForegroundSessionSurface(route, 'runtime-native')
+
+    recordSessionEventScope({ connectionId: 'internal', profile: 'Internal', session_id: 'runtime-native' })
+
+    expect($sessionTiles.get()).toEqual([])
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:internal::internal']))
+
+    release()
+    expect(foregroundSessionScopes()).toEqual(new Set())
   })
 })

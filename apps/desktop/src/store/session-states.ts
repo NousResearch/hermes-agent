@@ -33,7 +33,7 @@ import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pan
 import type { WorkspaceMode } from '@/contrib/types'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo } from '@/types/hermes'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
@@ -217,15 +217,35 @@ export function releaseSessionOwnerHold(storedSessionId: string): void {
   forgetSessionOwnerHold(storedSessionId.trim(), true)
 }
 
+// Exact owners of native chat surfaces that are visible outside the layout
+// tree (for example, a plugin-owned right sidebar). They must participate in
+// the same gateway keep-set as a session tile without pretending to be a tile
+// or changing global layout/focus state.
+const foregroundSessionSurfaces = new Map<symbol, { owner: SessionOwnerRoute; runtimeId?: string }>()
+
+export function retainForegroundSessionSurface(owner: SessionOwnerRoute, runtimeId?: null | string): () => void {
+  const token = Symbol('foreground-session-surface')
+
+  foregroundSessionSurfaces.set(token, { owner, ...(runtimeId?.trim() ? { runtimeId: runtimeId.trim() } : {}) })
+  bumpSessionOwnerHoldRevision()
+
+  return () => {
+    if (foregroundSessionSurfaces.delete(token)) {
+      bumpSessionOwnerHoldRevision()
+    }
+  }
+}
+
 /** @internal Tests. */
 export function _resetSessionOwnerHoldsForTests(): void {
-  const hadHolds = sessionOwnerHolds.size > 0
+  const hadHolds = sessionOwnerHolds.size > 0 || foregroundSessionSurfaces.size > 0
 
   for (const hold of sessionOwnerHolds.values()) {
     clearTimeout(hold.timer)
   }
 
   sessionOwnerHolds.clear()
+  foregroundSessionSurfaces.clear()
 
   if (hadHolds) {
     bumpSessionOwnerHoldRevision()
@@ -276,6 +296,11 @@ export function foregroundSessionScopes(): Set<string> {
     if (!tile.ownerRoute && tile.ownerProfile) {
       scopes.add(normalizeProfileKey(tile.ownerProfile))
     }
+  }
+
+  for (const surface of foregroundSessionSurfaces.values()) {
+    addRuntimeScope(surface.runtimeId)
+    addRouteScope(surface.owner)
   }
 
   // Create → foreground holds. A hold whose scope the rungs above already
@@ -464,6 +489,10 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
  *  runtime binding is patched in after `resumeTile` returns.) */
 function runtimeReferenced(runtimeId: string, storedSessionId: null | string): boolean {
   if (runtimeId === $activeSessionId.get()) {
+    return true
+  }
+
+  if ([...foregroundSessionSurfaces.values()].some(surface => surface.runtimeId === runtimeId)) {
     return true
   }
 
@@ -1366,6 +1395,11 @@ export interface SessionTileDelegate {
   branchSession(storedSessionId: string): Promise<void>
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */
   deleteSession(storedSessionId: string): Promise<void>
+  /** Seed the canonical session cache from a freshly created runtime without
+   *  selecting it or creating a layout tile. Native plugin chat panels use
+   *  this so an in-memory pre-first-turn session never needs an invalid
+   *  `session.resume` round-trip just to obtain its runtime id. */
+  bindCreatedSession?(created: SessionCreateResponse, storedSessionId: string): string
   /** Run a slash command against a tile's session (app-level effects — e.g.
    *  branch/handoff — act on the main surface, as they should). */
   executeSlash(rawCommand: string, sessionId: string): Promise<void>
@@ -1393,7 +1427,11 @@ export interface SessionTileDelegate {
   submitToSession(runtimeId: string, text: string): Promise<void>
   /** THE session-state write path — routes through the wiring cache so the
    *  cache, the primary view (when active), and every tile mirror agree. */
-  updateSession(runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState): ClientSessionState
+  updateSession(
+    runtimeId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: null | string
+  ): ClientSessionState
 }
 
 let delegate: SessionTileDelegate | null = null

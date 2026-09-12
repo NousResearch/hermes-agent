@@ -51,4 +51,27 @@ describe('runComposerMiddleware', () => {
 
     expect(await runComposerMiddleware({ text: 'quiet' })).toEqual({ text: 'QUIET' })
   })
+
+  it('passes exact native surface identity without breaking legacy handlers', async () => {
+    const seen: unknown[] = []
+
+    addMiddleware('legacy', d => ({ ...d, text: `${d.text}:legacy` }), 10)
+    addMiddleware(
+      'bound',
+      (d, invocation) => {
+        seen.push(invocation)
+        return { ...d, text: `${d.text}:${invocation?.storedSessionId}` }
+      },
+      20
+    )
+
+    const invocation = {
+      runtimeSessionId: 'runtime-mail',
+      storedSessionId: 'stored-mail',
+      target: 'native:stored-mail'
+    }
+
+    expect(await runComposerMiddleware({ text: 'x' }, invocation)).toEqual({ text: 'x:legacy:stored-mail' })
+    expect(seen).toEqual([invocation])
+  })
 })

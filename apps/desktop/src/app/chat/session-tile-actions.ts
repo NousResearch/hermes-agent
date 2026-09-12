@@ -117,13 +117,24 @@ export function listTileSessionRow(deps: {
 }
 
 interface SessionTileActionsArgs {
+  listSessionOnFirstSend?: boolean
+  onRuntimeRecovered?: (runtimeId: string) => void
+  ownerRoute?: SessionProfileRoute
   requestGateway: GatewayRequester
   runtimeId: string
   scope: ComposerScope
   storedSessionId: string
 }
 
-export function useSessionTileActions({ requestGateway, runtimeId, scope, storedSessionId }: SessionTileActionsArgs) {
+export function useSessionTileActions({
+  listSessionOnFirstSend = true,
+  onRuntimeRecovered,
+  ownerRoute,
+  requestGateway,
+  runtimeId,
+  scope,
+  storedSessionId
+}: SessionTileActionsArgs) {
   const { t } = useI18n()
   const copy = t.desktop
 
@@ -142,8 +153,12 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
     runtimeIdRef.current = recoveredId
     runtimeIdByStoredSessionIdRef.current.set(storedId, recoveredId)
-    patchSessionTile(storedId, { error: undefined, runtimeId: recoveredId })
-  }, [])
+    if (onRuntimeRecovered) {
+      onRuntimeRecovered(recoveredId)
+    } else {
+      patchSessionTile(storedId, { error: undefined, runtimeId: recoveredId })
+    }
+  }, [onRuntimeRecovered])
 
   // Tile busy tracks the SESSION state, never the global $busy — and it must
   // read LIVE. A render-time snapshot goes stale (this hook's host doesn't
@@ -178,7 +193,9 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
   const requestSessionGateway = useCallback(
     <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
       const knownOwner: SessionOwnerScope =
-        sessionTileOwnerRoute(storedIdRef.current) ?? knownSessionOwner(ownerLookupSessionRows(), storedIdRef.current)
+        ownerRoute ??
+        sessionTileOwnerRoute(storedIdRef.current) ??
+        knownSessionOwner(ownerLookupSessionRows(), storedIdRef.current)
 
       // A bare profile is the legacy/unknown tile shape. Preserve its ambient
       // behavior; only a composite route is strong enough to retarget a tile
@@ -187,13 +204,17 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       return requestForSessionProfile<T>(owner, requestGateway, method, params ?? {}, timeoutMs, signal)
     },
-    [requestGateway]
+    [ownerRoute, requestGateway]
   )
 
   // A ⌘T tab's session is unlisted until its first turn persists — seed the
   // row from the user's first message so the tab and sidebar name it right
   // away (see listTileSessionRow).
   const listTileSession = useCallback((preview: string) => {
+    if (!listSessionOnFirstSend) {
+      return
+    }
+
     const runtimeId = runtimeIdRef.current
     const state = $sessionStates.get()[runtimeId]
 
@@ -205,7 +226,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       sessions: $sessions.get(),
       storedSessionId: storedIdRef.current
     })
-  }, [])
+  }, [listSessionOnFirstSend])
 
   // Tile-side attachment staging: same upload rules as the primary submit
   // (skip synced/pathless, byte-upload files+images), against the tile scope.

@@ -106,6 +106,7 @@ export function ChatBar({
   maxRecordingSeconds = 120,
   queueSessionKey,
   sessionId,
+  storedSessionId,
   state,
   onCancel,
   onAddUrl,
@@ -131,6 +132,7 @@ export function ChatBar({
     controlDrag: hudWindowing?.controlDrag === true,
     workspaceTransfer: hudWindowing?.workspaceTransfer === true
   })
+  const scope = useComposerScope()
 
   // Typed stop phrase during an active voice conversation ends it — same
   // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
@@ -158,7 +160,10 @@ export function ChatBar({
         return true
       }
 
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
+      const draft = await runComposerMiddleware(
+        { text: value, attachments: options?.attachments },
+        { runtimeSessionId: sessionId ?? null, storedSessionId: storedSessionId ?? null, target: scope.target }
+      )
 
       if (!draft) {
         return false
@@ -166,12 +171,11 @@ export function ChatBar({
 
       return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
     },
-    [onSubmitProp]
+    [onSubmitProp, scope.target, sessionId, storedSessionId]
   )
 
   // Which live composer this instance IS (main | tile) — its attachment set,
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
-  const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
   const scrolledUp = useStore($threadScrolledUp)
@@ -1058,6 +1062,7 @@ export function ChatBar({
 
   const contextMenu = (
     <ContextMenu
+      invocation={{ runtimeSessionId: sessionId ?? null, storedSessionId: storedSessionId ?? null, target: scope.target }}
       onInsertText={insertText}
       onOpenUrlDialog={openUrlDialog}
       onPasteClipboardImage={onPasteClipboardImage}

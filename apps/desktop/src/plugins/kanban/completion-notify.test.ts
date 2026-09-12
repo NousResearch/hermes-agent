@@ -550,6 +550,6 @@ describe('i18n routing', () => {
 
     await m.onKanbanEventsFrame('smoke', [ev(101, 'timed_out')])
 
-    expect(lastNotify().title).toBe('Task timed out — will retry')
+    expect(lastNotify().title).toBe('Task timed out')
   })
 })

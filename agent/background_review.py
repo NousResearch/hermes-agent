@@ -380,9 +380,21 @@ _MEMORY_ROUTING_BLOCK = (
     "target, that store is the only one enabled — use it and skip the other.\n\n"
 )
 
+# Shared by the memory-only and combined review prompts: a batch is validated on its FINAL total and
+# an over-budget proposal is refused, not queued (tools/memory_tool.py), so the review must plan its
+# write against the budget instead of discovering the wall on every pass.
+_MEMORY_BUDGET_BLOCK = (
+    "Memory is a BOUNDED store (the tool reports usage/limit and the live entries). Plan the write "
+    "against that budget: a batch is validated on its FINAL total, so every addition must be paid "
+    "for by removes or merges in the same batch. An over-budget batch is refused, not queued — and "
+    "when a durable fact has no room and nothing can be merged, its home is the skill that governs "
+    "the task, not memory.\n\n"
+)
+
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Memory has " + _MEMORY_ROUTING_BLOCK +
+    _MEMORY_BUDGET_BLOCK +
     "If something stands out, save it once, in the right store, using the memory tool with the "
     "matching target. If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
@@ -519,6 +531,7 @@ _SKILL_REVIEW_PROMPT = (
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
     "**Memory**: " + _MEMORY_ROUTING_BLOCK +
+    _MEMORY_BUDGET_BLOCK +
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"

@@ -282,18 +282,25 @@ def _(rid, params: dict) -> dict:
     # (generation-only coalescing).
     req_rev = str(params.get("rev") or "")
 
-    def _refresh_session_agent() -> None:
-        """Rebuild THIS session's cached tool snapshot + push session.info (the agent never
-        re-reads the registry). Runs under _mcp_reload_lock so a concurrent reload can't
-        tear the registry down mid-refresh."""
-        if not session:
-            return
-        agent = session["agent"]
-        try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-            _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
-        except Exception as _exc:
-            logger.warning("Failed to refresh cached agent tools after /reload-mcp: %s", _exc)
-        _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
+    def _refresh_session_agents() -> None:
+        """Rebuild EVERY live session's cached tool snapshot + push session.info (agents never
+        re-read the registry). The pool is process-global, so refreshing only the requester leaves
+        siblings stale — and a missing/unknown session_id would refresh nothing at all. Runs under
+        _mcp_reload_lock so a concurrent reload can't tear the registry down mid-refresh."""
+        with _sessions_lock:
+            sessions = list(_sessions.items())
+        for sid, sess in sessions:
+            agent = sess.get("agent")
+            # agent=None: lazy session (nothing cached to refresh). Compute-host sessions: the
+            # agent lives in the host process — the RPC forwards there separately.
+            if agent is None or _session_uses_compute_host(sess):
+                continue
+            try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
+                _mcp_agent.refresh_agent_mcp_tools(
+                    agent, enabled_override=_load_enabled_toolsets(_session_source(sess)), quiet_mode=True)
+            except Exception as _exc:
+                logger.warning("Failed to refresh cached agent tools after /reload-mcp: %s", _exc)
+            _emit_session_info_for_session(sid, sess)
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
@@ -309,7 +316,7 @@ def _(rid, params: dict) -> dict:
             if after == loaded:
                 break
             loaded = after
-        _refresh_session_agent()
+        _refresh_session_agents()
         _mcp_reload_loaded_rev = loaded
         _mcp_reload_gen += 1
 
@@ -325,7 +332,7 @@ def _(rid, params: dict) -> dict:
     gen_before = _mcp_reload_gen
     with _mcp_reload_lock:
         coalesced = _mcp_reload_gen > gen_before and (not req_rev or req_rev == _mcp_reload_loaded_rev)
-        _refresh_session_agent() if coalesced else _do_full_reload()
+        _refresh_session_agents() if coalesced else _do_full_reload()
     return _finish_reload(rid, params, coalesced=coalesced)
 
 

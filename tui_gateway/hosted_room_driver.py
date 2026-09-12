@@ -30,8 +30,8 @@ _TERMINAL_TRUNCATION_NOTICE = (
 _STOP_PENDING = "stop retry remains pending: {exc}"
 
 
-class InternalSessionRPC(Protocol):
-    """Normalized in-process session operations required by the room driver.
+class SessionOperations(Protocol):
+    """Session operations shared by the two explicit submission contracts.
 
     ``submit`` durably reports one fenced turn's terminal result via ``on_terminal``;
     ``interrupt`` acts only while the current turn still matches ``expected_task_id``.
@@ -41,10 +41,6 @@ class InternalSessionRPC(Protocol):
         self, *, profile: str, title: str, source: str) -> Mapping[str, Any] | None: ...
     def create(self, *, profile: str, title: str, source: str) -> Mapping[str, Any]: ...
     def resume(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
-    def submit(
-        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
-    ) -> Mapping[str, Any]: ...
     def history(
         self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]: ...
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
@@ -52,6 +48,28 @@ class InternalSessionRPC(Protocol):
         self, *, profile: str, session_id: str, source: str, expected_task_id: str,
     ) -> Mapping[str, Any] | None: ...
 
+
+class InternalSessionRPC(SessionOperations, Protocol):
+    """Descriptor-bound submission of original text and complete event references.
+
+    Canonical local/cross-profile and peer transports own input materialization;
+    they do not accept the legacy session's pending-attachment staging protocol.
+    """
+
+    def submit(
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> Mapping[str, Any]: ...
+
+
+class LegacySessionRPC(SessionOperations, Protocol):
+    """Explicit in-process session staging; member proof is bound before submit."""
+
+    def submit(
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+    ) -> Mapping[str, Any]: ...
 
     def rollback_attachment_staging(
         self,
@@ -99,7 +117,7 @@ class InternalSessionRPC(Protocol):
         """Stage one verified canonical blob into the local member session."""
 
 
-MemberTransportResolver = Callable[["HostedRoomBinding", Mapping[str, Any]], InternalSessionRPC]
+MemberTransportResolver = Callable[["HostedRoomBinding", Mapping[str, Any]], InternalSessionRPC | LegacySessionRPC]
 
 
 @dataclass(frozen=True)
@@ -144,7 +162,7 @@ class HostedRoomRuntime:
     def __init__(
         self, *, db_path: Path | str,
         rooms: Iterable[HostedRoomBinding] | Callable[[], Iterable[HostedRoomBinding]],
-        turn_lock: Callable[[str], ContextManager[Any]], rpc: InternalSessionRPC | None = None,
+        turn_lock: Callable[[str], ContextManager[Any]], rpc: LegacySessionRPC | None = None,
         transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
         prepare_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
@@ -669,7 +687,7 @@ class HostedRoomRuntime:
                 session_id = _session_id(session)
                 prompt = str(task["payload"]["prompt"])
                 manifests = task["payload"].get("attachments") or []
-                if manifests:
+                if manifests and transport is self.rpc:
                     if self.attachment_loader is None:
                         raise RuntimeError("hosted attachments are unavailable for this member transport")
                     transport.begin_attachment_staging(
@@ -688,7 +706,7 @@ class HostedRoomRuntime:
                             execution_generation=attempt.execution_generation)
                         if attachment.get("kind") == "file":
                             ref = str(staged.get("ref_text") or "").strip()
-                            if not ref and transport is self.rpc:
+                            if not ref:
                                 raise RuntimeError("hosted file attachment returned no staged reference")
                             if ref:
                                 file_refs.append(f"{attachment['name']}: {ref}")
@@ -702,12 +720,24 @@ class HostedRoomRuntime:
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted = True
+                bind_artifact_scope = (
+                    getattr(transport, "bind_artifact_scope", None) if transport is self.rpc else None)
+                if callable(bind_artifact_scope):
+                    bind_artifact_scope(
+                        task=attempt.identity, execution_generation=attempt.execution_generation,
+                        member_id=str(task["payload"].get("target_member_id") or profile),
+                        authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
+                        profile=profile, session_id=session_id,
+                    )
                 deadline_monotonic = time.monotonic() + self.turn_timeout_seconds
-                transport.submit(
+                submit_params = dict(
                     **_session_kw(profile, session_id), prompt=prompt,
                     task=attempt.identity, execution_generation=attempt.execution_generation,
-                    **({"attachments": task["payload"]["attachments"]} if task["payload"].get("attachments") else {}),
                     on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
+                if transport is self.rpc:
+                    transport.submit(**submit_params)
+                else:
+                    transport.submit(**submit_params, attachments=task["payload"].get("attachments"))
                 if attachment_staging_active:
                     transport.commit_attachment_staging(
                         **_session_kw(profile, session_id), execution_generation=attempt.execution_generation)

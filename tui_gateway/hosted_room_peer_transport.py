@@ -173,6 +173,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         source_event_seq: int = 1,
         task_id: str | None = None,
         execution_generation: int | None = None,
+        attachment_store=None,
     ) -> None:
         self.binding = binding
         self.route = route
@@ -182,6 +183,7 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         self.source_event_seq = int(source_event_seq)
         self.task_id = task_id
         self.execution_generation = execution_generation
+        self.attachment_store = attachment_store
         self._session_id: str | None = None
         self._dispatch: HostedMemberDispatch | None = None
         if callable(bind_scope := getattr(self.client, "bind_room_scope", None)):
@@ -194,8 +196,6 @@ class PeerHostedRoomTransport(InternalSessionRPC):
                 target_install_id=route.target_install_id,
                 target_profile=route.target_profile,
             )
-        self._attachment_attempt: tuple[str, int] | None = None
-        self._pending_attachments: list[dict[str, Any]] = []
 
     def _validate_coordinates(self, *, profile: str, source: str, title: str | None = None) -> None:
         if source != ROOM_SESSION_SOURCE:
@@ -234,12 +234,17 @@ class PeerHostedRoomTransport(InternalSessionRPC):
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: TaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str = "",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         del member_id  # the signed route already names the member
         self._validate_coordinates(profile=profile, source=source)
         if self._session_id not in {None, session_id}:
             raise ValueError("peer room session changed during admission")
-        pending = list(self._pending_attachments)
+        from tui_gateway.hosted_room_peer_attachments import bound_attachment_payloads
+        pending = bound_attachment_payloads(
+            self.attachment_store, self.binding.room_id, self.route.member_id, attachments)
+        if pending and not self.route.attachments:
+            raise ValueError("This gateway does not support Group Chat files")
         manifest = [{key: item[key] for key in ("attachment_id", "kind", "name", "size", "mime", "sha256")}
                     for item in pending]
         dispatch = build_member_dispatch(
@@ -263,14 +268,17 @@ class PeerHostedRoomTransport(InternalSessionRPC):
                         "error": "A Group Chat file exceeded the peer gateway's upload limit."}
                     on_terminal(receipt)
                     return receipt
-                # A lost idempotent upload response cannot mean a model run was admitted.
-                self._discard_terminal_attachments()
-                try:
-                    exc.not_admitted = True
-                    exc.ambiguous = False
-                except Exception:
-                    pass
-                raise
+                from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+                failure = PeerRunsHTTPError(
+                    "Group Chat files could not be transferred",
+                    retryable=bool(getattr(exc, "retryable", False)), not_admitted=False,
+                    status_code=getattr(exc, "status_code", None),
+                    error_code=getattr(exc, "error_code", None))
+                # Phase evidence only: an earlier call may have admitted this identity.
+                # Only the driver's already-existing fresh-generation fence can
+                # turn this invocation's preflight into proven nonadmission.
+                failure.dispatch_not_attempted = True
+                raise failure from exc
         try:
             result = self.client.dispatch(dispatch=dispatch.as_mapping(), grant=self.route.grant)
         except Exception as exc:
@@ -315,22 +323,6 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             grant=self.route.grant)
 
 
-    def rollback_attachment_staging(
-        self,
-        *,
-        profile: str,
-        session_id: str,
-        source: str,
-        execution_generation: int,
-    ) -> None:
-        """Drop local bytes; target-side partial batches expire without admission."""
-
-        self.commit_attachment_staging(
-            profile=profile,
-            session_id=session_id,
-            source=source,
-            execution_generation=execution_generation,
-        )
 
 
     def _discard_terminal_attachments(self) -> None:
@@ -350,73 +342,3 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             # Terminal observation retries this cleanup; target TTL and quotas
             # remain the crash backstop.
             return
-
-
-    def commit_attachment_staging(
-        self,
-        *,
-        profile: str,
-        session_id: str,
-        source: str,
-        execution_generation: int,
-    ) -> None:
-        """Forget local bytes once target run admission becomes authoritative."""
-
-        self._validate_coordinates(profile=profile, source=source)
-        if self._attachment_attempt == (str(self.task_id or ""), int(execution_generation)):
-            self._attachment_attempt = None
-            self._pending_attachments = []
-
-
-    def stage_attachment(
-        self,
-        *,
-        profile: str,
-        session_id: str,
-        source: str,
-        attachment: Mapping[str, Any],
-        data: bytes,
-        execution_generation: int,
-    ) -> Mapping[str, Any]:
-        """Buffer verified home-owned bytes for one pre-admission peer push."""
-
-        self._validate_coordinates(profile=profile, source=source)
-        attempt = (str(self.task_id or ""), int(execution_generation))
-        if self._session_id not in {None, session_id} or self._attachment_attempt != attempt:
-            raise ValueError("peer attachment staging is outside its fenced attempt")
-        payload = bytes(data)
-        if int(attachment.get("size") or -1) != len(payload):
-            raise ValueError("peer attachment bytes no longer match their manifest")
-        manifest = {
-            "attachment_id": str(attachment.get("attachment_id") or ""),
-            "kind": str(attachment.get("kind") or ""),
-            "name": str(attachment.get("name") or ""),
-            "size": len(payload),
-            "mime": str(attachment.get("mime") or ""),
-            "sha256": hashlib.sha256(payload).hexdigest(),
-            "data": payload,
-        }
-        self._pending_attachments.append(manifest)
-        return {"attached": True}
-
-
-    def begin_attachment_staging(
-        self,
-        *,
-        profile: str,
-        session_id: str,
-        source: str,
-        execution_generation: int,
-    ) -> None:
-        """Start one peer-upload batch without admitting the target run."""
-
-        self._validate_coordinates(profile=profile, source=source)
-        if self._session_id not in {None, session_id}:
-            raise ValueError("peer room session changed during attachment staging")
-        if not self.task_id or execution_generation < 1:
-            raise ValueError("peer attachment attempt identity is unavailable")
-        attempt = (self.task_id, int(execution_generation))
-        if self._attachment_attempt not in {None, attempt}:
-            raise ValueError("peer attachment attempt changed during staging")
-        self._attachment_attempt = attempt
-        self._pending_attachments = []

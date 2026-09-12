@@ -184,7 +184,7 @@ def register_peer(authority, actor, service, params):
         route = PeerMemberRoute(home_install_id=gateway_id, member_id=member_id,
             target_install_id=catalog.installation_id, target_profile=profile,
             capability_digest=catalog.catalog_digest, execution_policy_digest=catalog.execution_policy.policy_digest,
-            cancellation_scope_id=cancel, trace_id=trace, grant=grant)
+            cancellation_scope_id=cancel, trace_id=trace, grant=grant, attachments=catalog.attachments)
         service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
             target_url=url, catalog=catalog, expected_grant_sha256=pending['previous_grant_sha256'], setup_guard=guard)
     except RuntimeStoreError:

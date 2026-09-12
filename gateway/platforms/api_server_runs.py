@@ -488,6 +488,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     limited = self._concurrency_limited_response()
     if limited is not None:
         return limited
+    from gateway.platforms.api_server_room_dispatch import prepare_new_room_input
+    body, input_error = await prepare_new_room_input(self, request, body, _openai_error=_openai_error)
+    if input_error is not None:
+        return input_error
     run_id = f"run_{uuid.uuid4().hex}"
     self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
@@ -549,6 +553,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 launch.admission = admit_api_turn(self, user_message=launch.user_message,
                     conversation_history=launch.conversation_history, active_run_id=run_id,
                     run_owner_scope=self._run_owners[run_id],
+                    room_input_media=body.get("_room_input_media"),
                     turn_author=launch.turn_author,
                     history_from_session=session_history_delivery,
                     session_history_delivery='1' if session_history_delivery else '',

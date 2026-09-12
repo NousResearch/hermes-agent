@@ -373,6 +373,7 @@ class RoomAttachmentSpool:
         self,
         dispatch: HostedMemberDispatch,
         manifest_value: Any,
+        *, authorize_write=None,
     ) -> dict[str, Any]:
         manifest = canonical_attachment_manifest(manifest_value)
         digest = attachment_manifest_digest(manifest)
@@ -395,6 +396,8 @@ class RoomAttachmentSpool:
         self.prune(now=now)
         retired: list[tuple[str, str]] = []
         with self._lock, self._transaction(immediate=True) as conn:
+            if authorize_write is not None:
+                authorize_write(conn)
             scope = _attempt_scope(dispatch)
             existing = conn.execute(
                 "SELECT * FROM roomlink_attachment_batches WHERE batch_key=?",
@@ -549,6 +552,7 @@ class RoomAttachmentSpool:
         execution_generation: int,
         attachment_id: str,
         data: bytes,
+        authorize_write=None,
     ) -> dict[str, Any]:
         if not data or len(data) > MAX_ROOM_LINK_ATTACHMENT_BYTES:
             raise RoomAttachmentSpoolError(
@@ -557,6 +561,8 @@ class RoomAttachmentSpool:
         now = float(self.clock())
         self.prune(now=now)
         with self._lock, self._transaction(immediate=True) as conn:
+            if authorize_write is not None:
+                authorize_write(conn)
             batch = conn.execute(
                 """SELECT * FROM roomlink_attachment_batches
                     WHERE room_id=? AND home_install_id=?
@@ -810,11 +816,14 @@ class RoomAttachmentSpool:
         claims: Mapping[str, Any],
         task_id: str,
         execution_generation: int,
+        authorize_write=None,
     ) -> int:
         """Delete one exact terminal run's private attachment batch idempotently."""
 
         removed: list[tuple[str, str]] = []
         with self._lock, self._transaction(immediate=True) as conn:
+            if authorize_write is not None:
+                authorize_write(conn)
             rows = conn.execute(
                 """SELECT batch_key FROM roomlink_attachment_batches
                     WHERE room_id=? AND home_install_id=?
@@ -993,6 +1002,25 @@ def _validate_target_scope(claims: Mapping[str, Any], profile: str) -> None:
         )
 
 
+def _write_guard(adapter, request, expected, permission):
+    def authorize(conn):
+        from gateway import hosted_rooms
+        from gateway.platforms.api_server import _api_request_profile
+        from gateway.platforms.api_server_room_grants import _decode_request_grant
+        claims = _decode_request_grant(adapter, request, permission=permission)
+        _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
+        if claims != expected:
+            raise HostedRoomGrantError('room grant changed')
+        from gateway.hosted_room_grant_state import grant_state_db_paths
+        # The shared spool transaction fences grant writers; use the route owner's
+        # public readers rather than assuming an obsolete connection keyword.
+        for db_path in grant_state_db_paths():
+            if (hosted_rooms.room_grant_is_revoked(db_path, claims=claims)
+                    or not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims)):
+                raise RoomGrantReauthorizationRequired('room grant is no longer current')
+    return authorize
+
+
 async def _handle_room_attachment_manifest(
     self,
     request: "web.Request",
@@ -1041,6 +1069,7 @@ async def _handle_room_attachment_manifest(
             _default_spool().prepare,
             dispatch,
             manifest,
+            authorize_write=_write_guard(self, request, claims, "attachment.stage"),
         )
     except RoomAttachmentSpoolConflict as exc:
         return web.json_response(
@@ -1114,6 +1143,7 @@ async def _handle_room_attachment_upload(
             execution_generation=generation,
             attachment_id=attachment_id,
             data=bytes(data),
+            authorize_write=_write_guard(self, request, claims, "attachment.stage"),
         )
     except RoomAttachmentSpoolConflict as exc:
         return web.json_response(
@@ -1172,6 +1202,7 @@ async def _handle_room_attachment_discard(
             claims=claims,
             task_id=str(request.match_info["task_id"]),
             execution_generation=generation,
+            authorize_write=_write_guard(self, request, claims, "status"),
         )
     except (HostedRoomGrantError, RoomGrantReauthorizationRequired) as exc:
         return web.json_response(

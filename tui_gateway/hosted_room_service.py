@@ -425,6 +425,7 @@ class HostedRoomService:
             source_event_seq=int(payload.get("source_event_seq") or 0),
             task_id=getattr(identity, "task_id", None),
             execution_generation=execution_generation,
+            attachment_store=self.attachments,
         )
 
     def _recover_peer_admission(
@@ -934,9 +935,11 @@ class HostedRoomService:
             stored = self.attachments.read(
                 room_id=binding.room_id,
                 attachment_id=manifest.get("attachment_id"),
+                event_id=manifest.get("event_id"),
                 recipient_member_id=member_id,
             )
             safe = {
+                "event_id": stored.attachment["event_id"],
                 "attachment_id": stored.attachment["attachment_id"],
                 "kind": stored.attachment["kind"],
                 "name": stored.attachment["name"],
@@ -947,7 +950,7 @@ class HostedRoomService:
                 raise RuntimeError(
                     "hosted attachment metadata changed after task admission"
                 )
-            yield safe, stored.data
+            yield {key: value for key, value in safe.items() if key != "event_id"}, stored.data
 
 
     def _refresh_peer_attachment_catalog(
@@ -1150,6 +1153,7 @@ class HostedRoomService:
                 cancellation_scope_id=stored.cancellation_scope_id,
                 trace_id=stored.trace_id,
                 grant=stored.grant,
+                attachments=stored.catalog.attachments,
             )
             self.peer_routes[key] = route
             self.peer_clients[key] = client

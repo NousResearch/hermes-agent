@@ -36,6 +36,9 @@ class HostedRoomServerRPC:
         self._attachment_lock = threading.Lock()
         self._staged_attachments: dict[tuple[str, str, int], dict[str, Any]] = {}
         self._attachment_attempts: dict[tuple[str, int], tuple[str, ...]] = {}
+        self._artifact_scopes: dict[
+            tuple[str, int], tuple[state.TaskIdentity, str | None, dict[str, Any]]
+        ] = {}
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)
@@ -73,21 +76,57 @@ class HostedRoomServerRPC:
 
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str | None = None,
     ) -> Mapping[str, Any]:
+        bound = self._artifact_scopes.pop((task.task_id, execution_generation), None)
+        scope = bound[2] if bound is not None else None
+        if (bound is None or scope is None or bound[0] != task
+                or (bound[1] is not None and bound[1] != session_id)
+                or scope["target_profile"] != profile
+                or (member_id is not None and scope["member_id"] != member_id)):
+            exc = HostedRoomSessionError("prompt.submit", 4120, "hosted room input scope is missing or mismatched")
+            exc.not_admitted = True
+            raise exc
         try:
             return self._call("prompt.submit", {
                 "profile": profile, "session_id": session_id, "text": prompt, "source": source,
                 "_hosted_task": {
                     "room_id": task.room_id, "task_id": task.task_id, "thread_id": task.thread_id,
                     "turn_id": task.turn_id, "execution_generation": execution_generation,
-                    "member_id": member_id},
+                    "member_id": scope["member_id"]},
                 "_hosted_terminal_callback": on_terminal})
         except HostedRoomSessionError as exc:
             # In-process prompt.submit error envelopes come back before the background turn is
             # admitted; keep that proof so the driver can defer/requeue without an ambiguity lease.
             exc.not_admitted = True
             raise
+
+    def bind_artifact_scope(
+        self,
+        *,
+        task: state.TaskIdentity,
+        execution_generation: int,
+        member_id: str,
+        authority_gateway_id: str,
+        authority_epoch: int,
+        profile: str,
+        session_id: str | None = None,
+    ) -> None:
+        """Bind the complete input identity before one legacy local submit."""
+
+        from gateway import hosted_rooms
+        installation_id = hosted_rooms.local_authority_gateway_id()
+        self._artifact_scopes[(task.task_id, execution_generation)] = (task, session_id, {
+            "room_id": task.room_id,
+            "task_id": task.task_id,
+            "execution_generation": execution_generation,
+            "member_id": member_id,
+            "target_profile": profile,
+            "home_install_id": installation_id,
+            "target_install_id": installation_id,
+            "authority_gateway_id": authority_gateway_id,
+            "authority_epoch": authority_epoch,
+        })
 
     def history(self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]:
         del source

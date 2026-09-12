@@ -88,7 +88,7 @@ export function UninstallSection(): ReactElement | null {
   const agentInstalled: boolean = summary.agent_installed
   const visibleOptions: ModeOption[] = OPTIONS.filter((opt: ModeOption): boolean => agentInstalled || !opt.needsAgent)
 
-  const handleConfirm = async (): Promise<void> => {
+  const handleConfirm: () => Promise<void> = async (): Promise<void> => {
     if (!pending) {
       return
     }

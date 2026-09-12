@@ -17390,7 +17390,7 @@ async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
     let stdout: string = ''
     let settled: boolean = false
 
-    const done = (value: UninstallSummaryDetails): void => {
+    const done: (value: UninstallSummaryDetails) => void = (value: UninstallSummaryDetails): void => {
       if (settled) {
         return
       }

@@ -342,6 +342,69 @@ function escapeCurrencyDollarsPreservingMath(text: string): string {
   return out + text.slice(copiedThrough)
 }
 
+// East Asian script ranges: CJK Symbols/Punctuation and Fullwidth Forms,
+// Han, Hiragana, Katakana, Hangul, and the halfwidth/fullwidth kana blocks.
+// A single-dollar span whose body contains any of these is prose, not TeX —
+// see #103546. Fullwidth punctuation (（） ， ：) is near-universal in CJK
+// prose and is included so a `$foo（bar）$`-style span with no Han/Hangul
+// glyph in its body still classifies as prose rather than math.
+const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\uff00-\uffef]/u
+
+/**
+ * Escape the opening `$` of a single-dollar span whose body contains CJK
+ * characters, so remark-math leaves it as literal text instead of pairing it
+ * with a later `$` and typesetting the intervening prose as one KaTeX
+ * inline formula.
+ *
+ * A bare `$identifier` written in CJK prose (e.g. `$connection` appearing
+ * twice in one Chinese sentence) is the classic false positive for
+ * `singleDollarTextMath: true`: micromark pairs the two `$` signs and feeds
+ * dozens of characters of prose to KaTeX, which renders the CJK glyphs in
+ * its serif fallback face at a larger fixed size and — worse — makes the
+ * copy-out yield per-character math-italic codepoints instead of the source
+ * text (#103546).
+ *
+ * Escaping just the OPENING `$` is enough: the closing `$` then has no
+ * partner and renders as a literal dollar, while any real math that follows
+ * on the same line (`$x^2$`, `$\alpha = 1$`) is unaffected because its body
+ * has no CJK. Display math `$$…$$` is untouched (`findClosingSingleDollar`
+ * skips `$$` runs, so its opener is never treated as an inline candidate).
+ *
+ * Tradeoff (accepted): real inline math whose body happens to contain CJK
+ * — e.g. `$x = 变量$`, common in Chinese-language math writing — is treated
+ * as prose and escapes instead of rendering through KaTeX. That is the safer
+ * default for an assistant chat surface: false-positive prose-as-math breaks
+ * copy-out (per-character math-italic codepoints) and renders CJK in a serif
+ * fallback face, while prose-as-literal only loses a single equation.
+ */
+function escapeCjkProseDollars(text: string): string {
+  let out = ''
+  let copiedThrough = 0
+
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    if (text[cursor] !== '$' || text[cursor - 1] === '$' || isEscapedAt(text, cursor)) {
+      continue
+    }
+
+    const closingIndex = findClosingSingleDollar(text, cursor)
+
+    if (closingIndex === -1) {
+      continue
+    }
+
+    const body = text.slice(cursor + 1, closingIndex)
+
+    if (!CJK_RE.test(body)) {
+      continue
+    }
+
+    out += `${text.slice(copiedThrough, cursor)}\\$`
+    copiedThrough = cursor + 1
+  }
+
+  return out + text.slice(copiedThrough)
+}
+
 /**
  * Moves the `$$` delimiters of a MULTI-LINE display-math block onto their own
  * lines: `$$\begin{aligned}` … `\end{aligned}$$` becomes a `$$`-only line, the
@@ -460,8 +523,9 @@ function normalizeProseMath(text: string): string {
   // `$$\begin{aligned}…\end{aligned}$$`. Running afterwards catches both the
   // hugging math the model emitted and the hugging math the rewrite produced.
   const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
+  const cjkEscaped = escapeCjkProseDollars(normalized)
 
-  return escapeCurrencyDollarsPreservingMath(normalized)
+  return escapeCurrencyDollarsPreservingMath(cjkEscaped)
 }
 
 function extend(out: string[], lines: string[]) {

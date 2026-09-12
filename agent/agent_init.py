@@ -2107,8 +2107,14 @@ def _snapshot_primary_runtime(agent):
 
 
 def _init_usage_state(agent):
-    from agent.runtime_cwd import scope_terminal_cwd
-    agent._subdirectory_hints = SubdirectoryHintTracker(working_dir=scope_terminal_cwd() or None)
+    from agent.runtime_cwd import _is_install_tree, resolve_agent_cwd
+    session_cwd = resolve_agent_cwd()
+    agent._subdirectory_hints = SubdirectoryHintTracker(
+        working_dir=str(session_cwd),
+        # Platform identity alone is not authority: a TUI rooted at $HOME can
+        # visit the install tree. Only an in-tree session root opts in.
+        allow_install_tree=_is_install_tree(session_cwd),
+    )
     _set_defaults(agent, _USAGE_STATE)
 
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
+from agent.runtime_cwd import _is_install_tree
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,18 @@ class SubdirectoryHintTracker:
     and append the returned text to the tool result.
     """
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(
+        self,
+        working_dir: Optional[str] = None,
+        *,
+        allow_install_tree: Optional[bool] = None,
+    ):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        # Explicit callers may deliberately use a Hermes checkout as their workspace.
+        # A fallback cwd must opt in explicitly.
+        self.allow_install_tree = (
+            working_dir is not None if allow_install_tree is None else allow_install_tree
+        )
         # The working dir is pre-marked loaded (startup context handles it).
         self._loaded_dirs: Set[Path] = {self.working_dir}
         # Content digests already injected: the same file reached through
@@ -141,7 +152,12 @@ class SubdirectoryHintTracker:
                 return False
         except OSError:
             return False
-        return path not in self._loaded_dirs and self._within_working_dir(path) and not self._is_excluded(path)
+        return (
+            path not in self._loaded_dirs
+            and (not _is_install_tree(path) or self.allow_install_tree)
+            and self._within_working_dir(path)
+            and not self._is_excluded(path)
+        )
 
     def _is_excluded(self, path: Path) -> bool:
         """True when a segment *below* the working dir is an excluded copy dir
@@ -155,6 +171,8 @@ class SubdirectoryHintTracker:
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""
         self._loaded_dirs.add(directory)
+        if _is_install_tree(directory) and not self.allow_install_tree:
+            return None
         if not self._within_working_dir(directory):
             logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)
             return None

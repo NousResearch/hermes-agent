@@ -351,21 +351,38 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (!live.sid) { return sys('session not ready — draft kept; reconnect or choose a session') }
 
+      // The composer is the only copy of a draft until the pending-input
+      // journal holds it, so it is cleared after that first durable write and
+      // kept — text and image tokens — when the write fails.
+      const journaled = <T,>(write: () => T): { value: T } | undefined => {
+        try {
+          const value = write()
+          composerActions.clearIn()
+
+          return { value }
+        } catch (error) {
+          sys(`input not saved: ${(error as Error).message} — draft kept`)
+          patchUiState({ status: 'input not saved' })
+
+          return undefined
+        }
+      }
+
       if (live.gatewayConnected === false) {
         composerActions.pushHistory(toHistory)
-        const retained = composerActions.enqueue(submission.text, submission.display, destination)
+        journaled(() => {
+          const retained = composerActions.enqueue(submission.text, submission.display, destination)
 
-        if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
-        composerActions.clearIn()
+          if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
+        })
 
         return
       }
 
       const editIdx = composerRefs.queueEditRef.current
-      composerActions.clearIn()
 
       if (editIdx !== null) {
-        const picked = composerActions.takeQueue(editIdx, full)
+        const picked = journaled(() => composerActions.takeQueue(editIdx, full))?.value
         composerActions.setQueueEdit(null)
 
         if (!picked || !live.sid) {
@@ -396,13 +413,16 @@ export function useSubmission(opts: UseSubmissionOptions) {
       composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
-        return handleBusyInput({ ...queueItem(submission.text, submission.display), attachments: submission.attachments })
+        return void journaled(() =>
+          handleBusyInput({ ...queueItem(submission.text, submission.display), attachments: submission.attachments }))
       }
 
       if (shouldInterpolateSubmission(full)) {
-        patchUiState({ busy: true })
+        const staged = journaled(() => composerActions.stage?.(submission.text, submission.display, destination))
 
-        const item = composerActions.stage?.(submission.text, submission.display, destination)
+        if (!staged) { return }
+        patchUiState({ busy: true })
+        const item = staged.value
 
         return interpolate(
           full,
@@ -415,7 +435,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         )
       }
 
-      send(submission.text, true, submission.display, value => value, { attachments: submission.attachments })
+      journaled(() => send(submission.text, true, submission.display, value => value, { attachments: submission.attachments }))
     },
     [
       appendMessage,

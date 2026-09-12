@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -213,4 +213,28 @@ it('a skill slash command keeps the staged image descriptors through the expande
     expect(wire.text).not.toContain('[[ Image')
     expect(h.composer.refs.tokensRef.current).toEqual([])
   } finally { h.close() }
+})
+
+it('keeps the caption and its image token in the composer when the pending-input journal cannot be written', async () => {
+  const h = mount(true)
+  vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
+  const path = join(h.home, 'shot.png')
+  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64'))
+  const journal = join(h.home, 'tui-pending-inputs')
+  mkdirSync(journal, { recursive: true })
+
+  try {
+    await h.submit(`/image ${path}`)
+    await vi.waitFor(() => expect(h.composer.state.input).toContain('[[ Image 1 ]]'))
+    chmodSync(journal, 0o500)
+    await h.submit('caption [[ Image 1 ]]')
+    expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(false)
+    expect(h.composer.state.input).toBe('caption [[ Image 1 ]]')
+    expect(h.composer.refs.tokensRef.current).toEqual([expect.objectContaining({ kind: 'image', mime: 'image/png' })])
+    expect(getUiState().status).toBe('input not saved')
+    chmodSync(journal, 0o700)
+    await h.submit('caption [[ Image 1 ]]')
+    await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true))
+    expect(h.request.mock.calls.find(([method]) => method === 'prompt.submit')![1].attachments).toHaveLength(1)
+  } finally { chmodSync(journal, 0o700); h.close() }
 })

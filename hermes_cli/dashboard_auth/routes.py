@@ -331,8 +331,8 @@ async def auth_callback(
 
 # --- Public: password (non-redirect) login ---------------------------------
 # Brute-force throttle: a process-local sliding window per client IP. Best-effort
-# defence-in-depth on top of the provider's constant-time verify (resets on restart; behind a
-# proxy the IP is the proxy's unless X-Forwarded-For).
+# defence-in-depth on top of the provider's constant-time verify (resets on restart).
+# Uses the ASGI peer; trusted proxy normalization must happen upstream.
 _PW_RATE_MAX_ATTEMPTS = 10
 _PW_RATE_WINDOW_SEC = 60.0
 _pw_attempts: Dict[str, Deque[float]] = defaultdict(deque)

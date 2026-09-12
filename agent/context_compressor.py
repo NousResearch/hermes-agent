@@ -650,6 +650,57 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
+# ── User-correction retention markers ────────────────────────────────────────
+# Messages containing user corrections/negative feedback are tagged so the
+# summary prompt preserves them even when surrounding context is trimmed.
+# The marker is a content prefix that survives compression passes; the summary
+# LLM is instructed (via SUMMARY_PREFIX) to retain correction patterns.
+_USER_CORRECTION_MARKER = "[USER CORRECTION — RETAIN]"
+_USER_CORRECTION_PATTERNS = re.compile(
+    r"\b(don'?t|do not|never|stop|no[,.]?\s+don'?t|wrong|incorrect|"
+    r"that'?s not right|i said|not like that|undo|revert|don'?t do that|"
+    r"please don'?t|stop doing|no more)\b",
+    re.IGNORECASE,
+)
+
+
+def _tag_user_corrections(messages: List[Dict[str, Any]]) -> int:
+    """Tag user messages containing corrections/feedback with a retention marker.
+
+    Prepends ``_USER_CORRECTION_MARKER`` to the content of user messages that
+    contain correction patterns. Idempotent: skips already-tagged messages.
+    Returns count of newly tagged messages. Used before compression so the
+    summary LLM preserves these signals.
+    """
+    tagged = 0
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        if content.startswith(_USER_CORRECTION_MARKER):
+            continue
+        if _USER_CORRECTION_PATTERNS.search(content):
+            msg["content"] = _USER_CORRECTION_MARKER + " " + content
+            tagged += 1
+    return tagged
+
+
+def _strip_correction_markers(messages: List[Dict[str, Any]]) -> None:
+    """Remove correction retention markers from messages after compression.
+
+    Markers are transient scaffolding for the summary LLM; they must not
+    persist in the live transcript. In-place mutation.
+    """
+    prefix = _USER_CORRECTION_MARKER + " "
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content.startswith(prefix):
+            msg["content"] = content[len(prefix):]
+
 
 def _is_summary_stub(content: str) -> bool:
     """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary."""
@@ -4617,6 +4668,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         except Exception as exc:
             logger.debug("post-compression memory trim failed: %s: %s", type(exc).__name__, exc)
 
+        # Strip transient correction markers BEFORE returning — they served their purpose
+        # during summarization and must not persist in the live transcript.
+        _strip_correction_markers(compressed)
+
         # Batch marker holds MORE history than the rolling summary: reset micro state so it can't
         # supersede/defrag content it lacks; the next micro pass rehydrates from the batch marker.
         self._reset_micro_compact_cursor_state()
@@ -4651,6 +4706,11 @@ Write only the summary body. Do not include any preamble or prefix."""
                 telemetry, "insufficient_messages", f"only {n_messages} messages (need > {_min_for_compress})",
             )
             return messages
+        # Tag user corrections BEFORE compression so the summary LLM preserves them.
+        # Markers are stripped after assembly so they never persist in the live transcript.
+        _corrections_tagged = _tag_user_corrections(messages)
+        if _corrections_tagged and not self.quiet_mode:
+            logger.info("Pre-compression: tagged %d user correction(s) for retention", _corrections_tagged)
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(

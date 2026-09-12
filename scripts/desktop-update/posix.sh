@@ -352,8 +352,11 @@ linux_gate() {
 }
 
 mac_swap() {
-  local rebuilt="" c
-  for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
+  # Native-architecture bundle first, then the legacy `mac` layout — never
+  # the opposite architecture (an arm64 bundle on x64 fails at exec time).
+  local rebuilt="" c mac_arch
+  mac_arch="$(uname -m | sed 's/aarch64/arm64/; s/x86_64/x64/')"
+  for c in "$INSTALL_ROOT/apps/desktop/release/mac-$mac_arch/Hermes.app" \
            "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
     [ -d "$c" ] && { rebuilt="$c"; break; }
   done

@@ -289,14 +289,14 @@ class TestAsyncWriterThread:
 
     def test_shutdown_joins_thread(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         assert mgr._async_thread.is_alive()
         mgr.shutdown()
         assert not mgr._async_thread.is_alive()
 
     def test_async_writer_calls_flush(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "async msg")
 
@@ -318,7 +318,7 @@ class TestAsyncWriterThread:
 
     def test_shutdown_sentinel_stops_loop(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         thread = mgr._async_thread
         mgr.shutdown()
         thread.join(timeout=10)
@@ -331,7 +331,7 @@ class TestAsyncWriterThread:
 
     def test_stop_async_writer_joins_thread_without_flushing(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "must not be written")
         with mgr._cache_lock:
@@ -432,7 +432,7 @@ class TestStopAsyncWriterDrain:
 class TestAsyncWriterRetry:
     def test_retries_once_on_failure(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "msg")
 
@@ -459,7 +459,7 @@ class TestAsyncWriterRetry:
         """The shutdown flush already attempts the session within its budget; a 2s sleep and a second upload from
         the writer would run past it."""
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "msg")
         calls = []
@@ -483,7 +483,7 @@ class TestAsyncWriterRetry:
 
     def test_drops_after_two_failures(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "msg")
 
@@ -509,7 +509,7 @@ class TestAsyncWriterRetry:
 
     def test_retries_when_flush_reports_failure(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "msg")
 

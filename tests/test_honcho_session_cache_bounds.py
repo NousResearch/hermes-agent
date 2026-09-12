@@ -11,9 +11,13 @@ import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
+    _PEERS_CACHE_MAX_SIZE,
+    _SESSION_CACHE_MAX_SIZE,
     _SESSION_IDLE_TTL_SECONDS,
     _SESSION_MESSAGE_RETENTION,
 )
@@ -161,12 +165,6 @@ def test_get_or_create_triggers_sweep_without_blocking_on_lock_reentrancy():
 # hard caps, unsynced buffers, peers, and read activity (follows #71463)
 # ---------------------------------------------------------------------------
 
-import pytest  # noqa: E402
-
-from plugins.memory.honcho.session import (  # noqa: E402
-    _PEERS_CACHE_MAX_SIZE,
-    _SESSION_CACHE_MAX_SIZE,
-)
 
 
 def _fill_sessions(mgr, count, unsynced_keys=()):

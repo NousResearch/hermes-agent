@@ -24,13 +24,12 @@ logger = logging.getLogger(__name__)
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
 
-# Sessions remembered in _joined_author_peers; the oldest is dropped past this and its authors rejoin on their next write.
-_SESSION_CACHE_MAX_SIZE = 128
 # Honcho persists every message and get_or_create() re-hydrates on a miss, so the local copies stay bounded.
 _SESSION_MESSAGE_RETENTION = 200
 _SESSION_IDLE_TTL_SECONDS = 3600
 _SESSION_SWEEP_INTERVAL_SECONDS = 300
-# Hard caps for a burst of distinct sessions inside one TTL window; both dicts evict least recently used.
+# Hard caps for a burst of distinct sessions inside one TTL window; the dicts evict least recently used,
+# and _joined_author_peers drops its oldest session so its authors rejoin on their next write.
 _SESSION_CACHE_MAX_SIZE = 128
 _PEERS_CACHE_MAX_SIZE = 512
 
@@ -109,7 +108,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._prefetch_cache_lock = threading.Lock()
 
         # Async write queue — the writer thread starts lazily on first enqueue
-        # (_ensure_async_writer): constructing a manager must not spawn background
+        # (_ensure_async_writer_locked): constructing a manager must not spawn background
         # work or touch the network (unit tests build managers with mocked clients).
         self._async_queue: queue.Queue | None = queue.Queue() if self._write_frequency == "async" else None
         self._async_thread: threading.Thread | None = None
@@ -493,31 +492,29 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             except Exception as e:
                 logger.error("Honcho async writer error: %s", e)
 
+    def _reclaim_key_locked(self, session: HonchoSession) -> HonchoSession | None:
+        """Put a session with unsynced messages back where flush_all() looks. Returns the newer object that
+        owns the key when there is one (this session's batch still needs a home), None otherwise."""
+        if not self._has_unsynced(session):
+            return None
+        current = self._cache.get(session.key)
+        if current is None:
+            self._cache[session.key] = session
+        return None if current is None or current is session else current
+
     def _retain_for_retry(self, session: HonchoSession) -> None:
-        """Keep a session with unsynced messages where flush_all() looks. An evicted key takes it back; a key a
-        newer object owns keeps that object, and this one waits in the retry list."""
+        """An evicted key takes the session back; a key a newer object owns keeps that object, and this one
+        waits in the retry list."""
         with self._cache_lock:
-            if not self._has_unsynced(session):
-                return
-            current = self._cache.get(session.key)
-            if current is session or any(s is session for s in self._retry_sessions):
-                return
-            if current is None:
-                self._cache[session.key] = session
-            else:
+            if self._reclaim_key_locked(session) is not None and not any(s is session for s in self._retry_sessions):
                 self._retry_sessions.append(session)
 
     def _keep_until_flushed(self, session: HonchoSession) -> None:
-        """Put an evicted session that still holds unsynced messages back where flush_all() looks. When a
-        newer object already owns the key, this one's batch is written now instead."""
+        """Like _retain_for_retry, but when a newer object owns the key this batch is written now."""
         with self._cache_lock:
-            current = self._cache.get(session.key)
-            if current is session or not self._has_unsynced(session):
-                return
-            if current is None:
-                self._cache[session.key] = session
-                return
-        self._flush_now(session)
+            owner = self._reclaim_key_locked(session)
+        if owner is not None:
+            self._flush_now(session)
 
     def _flush_now(self, session: HonchoSession) -> None:
         """A save-time flush whose failed batch stays reachable for flush_all(), even after an eviction."""
@@ -588,13 +585,6 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 skipped.append(item)
         return skipped
 
-    def _ensure_async_writer(self) -> None:
-        """Start the async writer on first enqueue (idempotent, thread-safe)."""
-        if self._async_thread is not None and self._async_thread.is_alive():
-            return
-        with self._async_thread_lock:
-            self._ensure_async_writer_locked()
-
     def _ensure_async_writer_locked(self) -> None:
         if self._async_thread is None or not self._async_thread.is_alive():
             self._async_thread = spawn_context_thread(self._async_writer_loop, name="honcho-async-writer", owner=self)
@@ -620,7 +610,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         """Flush everything, then stop the async writer thread, within ``timeout``. The budget stops new uploads
         from starting and bounds the lock waits and the join; an upload already in flight runs to the client's
         HTTP timeout. Whatever stayed unsynced is counted in one warning."""
-        self._shutting_down = True
+        with self._async_thread_lock:
+            self._shutting_down = True
         if self._async_queue is not None:
             deadline = time.monotonic() + timeout
             skipped = self._flush_cached_before(deadline)

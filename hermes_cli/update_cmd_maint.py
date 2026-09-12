@@ -308,11 +308,16 @@ def _reload_process_scan_modules() -> None:
 
 def _finish_dashboard_update_cleanup(
     node_failures: list[str], already_restarted_units: "set[str] | None" = None
-) -> None:
+) -> "set[int]":
     """Refresh managed dashboards or stop stale manual ones after an update.
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
     already restarted, so a Serve-only install isn't restarted a second time here.
+
+    Returns the PIDs whose manual-argv respawn was attempted and failed, so the update
+    receipt can record the runtime as ``failed`` instead of deriving ``restarted`` from the
+    incarnation probe — a killed pre-update pid is exactly what a failed respawn looks like
+    from the outside. See #109290.
 
     See #83595.
     """
@@ -321,20 +326,22 @@ def _finish_dashboard_update_cleanup(
         print()
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
-        return
+        return set()
 
     _reload_process_scan_modules()
 
     stop_result = _m()._kill_stale_dashboard_processes(
         restart_managed=True, already_restarted_units=already_restarted_units
     )
+    failed_respawn_pids = {int(p) for p in stop_result.get("failed_respawn_pids") or ()}
     if not stop_result.get("unrecovered"):
-        return
+        return failed_respawn_pids
 
     print()
     print("⚠ A web dashboard/serve process was stopped during update and could not be auto-restarted.")
     print("  Re-launch it when you want the web UI back:")
     print("    hermes dashboard --port <port>")
+    return failed_respawn_pids
 
 
 def _print_update_completion(message: str) -> None:

@@ -246,19 +246,23 @@ class GatewayNotificationsMixin:
             switched = await self.async_session_store.advance_compression_session(
                 session_entry.session_key, prior_session_id, target_session_id,
             )
-        else:
-            switched = await self.async_session_store.switch_session(session_entry.session_key, target_session_id)
-        if switched is None:
-            logger.warning(
-                "Async-delegation completion could not bind routing key %s to "
-                "owning session %s; dropping injection.", session_entry.session_key, target_session_id,
+            if switched is None:
+                logger.warning(
+                    "Async-delegation completion could not bind routing key %s to "
+                    "owning session %s; dropping injection.", session_entry.session_key, target_session_id,
+                )
+                return None
+            logger.info(
+                "Pinned async-delegation completion to owning session %s (was %s) for routing key %s (#57498)",
+                target_session_id, prior_session_id, session_entry.session_key,
             )
-            return None
+            return switched
         logger.info(
-            "Pinned async-delegation completion to owning session %s (was %s) for routing key %s (#57498)",
-            target_session_id, prior_session_id, session_entry.session_key,
+            "Async-delegation completion pinned to non-compression session %s; "
+            "retargeting to chat's current session %s.",
+            pinned_session_id, session_entry.session_id,
         )
-        return switched
+        return session_entry
 
     async def _deliver_media_from_response(
         self, response: str, event: MessageEvent, adapter, thread_metadata: Optional[Dict[str, Any]] = None

@@ -210,16 +210,14 @@ def _resolve_child_credential_pool(
     effective_provider: Optional[str], parent_agent, effective_base_url: Optional[str] = None,
 ):
     """Credential pool for the child: parent's pool (same provider), that provider's own pool, or None (child keeps
-    its fixed credential). Custom endpoints all collapse to ``provider="custom"``, so they are matched by endpoint
-    identity (the ``custom:<name>`` pool key) — sharing the parent's pool across different custom endpoints would
-    overwrite the child's delegated base_url on lease; an unregistered custom endpoint (no custom_providers entry)
-    keeps the child's fixed credential rather than inherit the parent's.
+    its fixed credential). Direct custom endpoints collapse to ``provider="custom"`` while named custom providers
+    retain their configured alias, so both forms are normalized to an endpoint-scoped pool key. Sharing the parent's
+    pool across different custom endpoints would overwrite the child's delegated base_url on lease; an unregistered
+    custom endpoint (no custom_providers entry) keeps the child's fixed credential rather than inherit the parent's.
 
-    Custom endpoints are a special case: every direct ``delegation.base_url`` runtime collapses to
-    ``provider="custom"``, so bare provider equality would treat two *different* custom endpoints as
-    interchangeable and let the child inherit the parent's pool. We therefore resolve custom runtimes by
-    endpoint identity (the ``custom:<name>`` pool key derived from the base_url) and only share the parent's
-    pool when both resolve to the *same* custom endpoint. See #7833.
+    Custom endpoints are a special case: bare provider equality can treat two *different* custom endpoints as
+    interchangeable and let the child inherit the parent's pool. We therefore resolve custom runtimes by endpoint
+    identity and only share the parent's pool when both resolve to the *same* custom endpoint. See #7833.
     """
     if not effective_provider:
         return getattr(parent_agent, "_credential_pool", None)

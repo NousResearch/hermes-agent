@@ -19,7 +19,6 @@ _DEAF = "healthy but deaf"
 def _polling_adapter() -> TelegramAdapter:
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
     adapter._webhook_mode = False
-    adapter._app = MagicMock()
     adapter._begin_polling_generation()
     return adapter
 
@@ -34,56 +33,64 @@ def _receive(adapter: TelegramAdapter, n: int, generation: int | None = None) ->
     )
 
 
+async def _dispatch(adapter: TelegramAdapter, n: int) -> None:
+    for _ in range(n):
+        await adapter._on_platform_update(MagicMock(), MagicMock())
+
+
+def _heartbeats(adapter: TelegramAdapter, n: int) -> None:
+    for _ in range(n):
+        adapter._check_ingress_dispatch_stall()
+
+
 def _deaf_reports(caplog) -> list[str]:
     return [r.getMessage() for r in caplog.records if _DEAF in r.message]
 
 
 @pytest.mark.asyncio
-async def test_dispatch_stall_is_reported_on_backlog_not_update_age(caplog):
-    """A wedged dispatcher is reported after two heartbeats even while new updates keep arriving;
-    dispatch progress re-arms it; a stale generation cannot inflate the backlog."""
+async def test_stall_reported_once_on_backlog_regardless_of_update_age(caplog):
+    """Healthy dispatch never reports; a wedged dispatcher is reported after two heartbeats even
+    while new updates keep arriving, and only once per stall."""
     adapter = _polling_adapter()
     caplog.set_level(logging.WARNING)
-
-    # Healthy: every fetched update reaches the group-99 catch-all.
     _receive(adapter, 2)
-    for _ in range(2):
-        await adapter._on_platform_update(MagicMock(), MagicMock())
-    for _ in range(3):
-        adapter._check_ingress_dispatch_stall()
+    await _dispatch(adapter, 2)
+    _heartbeats(adapter, 3)
     assert _deaf_reports(caplog) == []
 
-    # Dispatcher wedged: a fresh update lands before every heartbeat, none dispatched.
-    _receive(adapter, 1)
-    adapter._check_ingress_dispatch_stall()
-    assert _deaf_reports(caplog) == [], "one heartbeat is not a stall"
-    _receive(adapter, 1)
-    adapter._check_ingress_dispatch_stall()
+    for _ in range(3):  # a fresh update lands before every heartbeat, none dispatched
+        _receive(adapter, 1)
+        adapter._check_ingress_dispatch_stall()
     (report,) = _deaf_reports(caplog)
     assert "2 update(s) fetched" in report and "4 received, 2 dispatched" in report
-    _receive(adapter, 1)
-    adapter._check_ingress_dispatch_stall()
-    assert len(_deaf_reports(caplog)) == 1, "a persistent stall is reported once"
 
-    # Dispatch resumes but only partially drains the backlog: progress re-arms the check, and the
-    # next two heartbeats without progress are a new stall.
-    await adapter._on_platform_update(MagicMock(), MagicMock())
+
+@pytest.mark.asyncio
+async def test_dispatch_progress_rearms_the_report(caplog):
+    adapter = _polling_adapter()
+    caplog.set_level(logging.WARNING)
+    _receive(adapter, 3)
+    _heartbeats(adapter, 3)
+    assert len(_deaf_reports(caplog)) == 1
+
+    await _dispatch(adapter, 1)  # partial drain: progress, backlog remains
     adapter._check_ingress_dispatch_stall()
     assert len(_deaf_reports(caplog)) == 1
-    for _ in range(2):
-        adapter._check_ingress_dispatch_stall()
+    _heartbeats(adapter, 2)
     assert len(_deaf_reports(caplog)) == 2
 
-    # A rebuilt consumer starts the backlog from zero, and a late response from the fenced
-    # generation is ignored.
+
+def test_new_generation_restarts_backlog_and_ignores_fenced_polls(caplog):
+    adapter = _polling_adapter()
+    caplog.set_level(logging.WARNING)
+    _receive(adapter, 3)
     stale_generation = adapter._polling_generation
     adapter._begin_polling_generation()
     assert adapter._record_polling_progress(stale_generation) is False
     _receive(adapter, 5, generation=stale_generation)
     assert adapter._updates_received_total == 0
-    for _ in range(3):
-        adapter._check_ingress_dispatch_stall()
-    assert len(_deaf_reports(caplog)) == 2
+    _heartbeats(adapter, 3)
+    assert _deaf_reports(caplog) == []
 
 
 @pytest.mark.asyncio

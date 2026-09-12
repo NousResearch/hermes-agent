@@ -1607,7 +1607,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # See #92991.
         self._polling_generation_started_monotonic = time.monotonic()
         self._polling_last_progress_monotonic = None
-        # A rebuilt consumer drops whatever the old update_queue held; start the backlog from zero.
+        # Re-base the backlog per generation. On an in-place updater restart PTB keeps the old
+        # update_queue, so old dispatches can briefly exceed received; the check treats that as no backlog.
         self._updates_received_total = self._updates_dispatched_total = 0
         self._ingress_dispatched_seen = self._ingress_stalled_heartbeats = 0
         return self._polling_generation, self._polling_progress_event
@@ -1655,7 +1656,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Count updates Telegram handed us on the getUpdates wire (#102260). Only reached for the
         accepted generation, so a late response from a fenced poll cannot inflate the backlog."""
         if isinstance(result, list) and result:
-            self._updates_received_total = getattr(self, "_updates_received_total", 0) + len(result)
+            self._updates_received_total += len(result)
 
     def _instrument_polling_request(self, request):
         """Instrument one dedicated PTB getUpdates request with progress tracking.
@@ -2156,12 +2157,10 @@ class TelegramAdapter(BasePlatformAdapter):
     def _check_ingress_dispatch_stall(self) -> None:
         """Report fetched updates PTB's dispatcher is not handing to handlers (#102260).
 
-        ``received`` and ``dispatched`` count the same population — every update in a getUpdates
-        result reaches the group-99 catch-all (no handler raises ApplicationHandlerStop and no error
-        handler is registered) — so a backlog that does not shrink across
-        ``_INGRESS_DISPATCH_STALL_HEARTBEATS`` heartbeats is a wedged dispatcher, whatever the traffic
-        rate. Keyed on dispatcher progress rather than update age: a steady trickle of new updates must
-        not keep resetting the clock. Reports once per stall and re-arms when dispatch resumes.
+        ``received`` and ``dispatched`` count the same population (every fetched update reaches the
+        group-99 catch-all: no handler raises ApplicationHandlerStop, no error handler is registered),
+        so a backlog with no dispatch progress across ``_INGRESS_DISPATCH_STALL_HEARTBEATS`` heartbeats
+        is a wedged dispatcher at any traffic rate. Reports once per stall, re-arms on progress.
         """
         if self._webhook_mode or self._teardown_started or self.has_fatal_error:
             return
@@ -2171,8 +2170,11 @@ class TelegramAdapter(BasePlatformAdapter):
             self._ingress_dispatched_seen = dispatched
             self._ingress_stalled_heartbeats = 0
             return
-        self._ingress_stalled_heartbeats = getattr(self, "_ingress_stalled_heartbeats", 0) + 1
-        if self._ingress_stalled_heartbeats != _INGRESS_DISPATCH_STALL_HEARTBEATS:
+        stalled = getattr(self, "_ingress_stalled_heartbeats", 0)
+        if stalled >= _INGRESS_DISPATCH_STALL_HEARTBEATS:
+            return  # already reported this stall
+        self._ingress_stalled_heartbeats = stalled + 1
+        if stalled + 1 < _INGRESS_DISPATCH_STALL_HEARTBEATS:
             return
         logger.warning(
             "[%s] Telegram ingress is healthy but deaf: %d update(s) fetched by getUpdates have not been "

@@ -109,6 +109,14 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
+/** Row order inside a provider group: A–Z by display name, id as the tiebreak
+ *  so equal names from different upstreams stay deterministic. */
+export function compareModelIds(a: string, b: string): number {
+  const byName = displayModelName(a).localeCompare(displayModelName(b), undefined, { sensitivity: 'base' })
+
+  return byName !== 0 ? byName : a.toLowerCase() < b.toLowerCase() ? -1 : 1
+}
+
 /** Status bar trigger label — model name plus the live session state (effort/fast).
  *  `defaultEffort` is the profile's configured level, used when the surface has
  *  no explicit effort so the label never advertises a default the agent won't use. */

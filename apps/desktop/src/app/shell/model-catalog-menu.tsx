@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -17,14 +17,16 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { usePointerQuiet } from '@/components/ui/keyboard-first'
+import { HoverScroll } from '@/components/ui/marquee'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { compareModelIds, displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
-import { foldIncludes, normalize } from '@/lib/text'
+import { foldIncludes, normalize, searchFold } from '@/lib/text'
+import { useDebouncedValue } from '@/lib/use-debounced-value'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -43,6 +45,56 @@ import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+
+/** One model row's text lines. Hovering anywhere on them scrolls every
+ *  clipped line together; the meter, chips and toggles stay pinned. */
+function ModelRowLines({
+  idKey,
+  idNode,
+  meter,
+  nameNode,
+  tagNode,
+  title
+}: {
+  idKey: string
+  idNode: ReactNode
+  meter: ReactNode
+  nameNode: ReactNode
+  tagNode: ReactNode
+  title: string
+}) {
+  const [go, setGo] = useState(false)
+
+  return (
+    <span
+      className="block min-w-0 flex-1 overflow-hidden"
+      onMouseOut={event => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          return
+        }
+
+        setGo(false)
+      }}
+      onMouseOver={() => setGo(true)}
+      title={title}
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        <HoverScroll className="min-w-0 flex-1" go={go} marqueeKey={`name:${idKey}`}>
+          {nameNode}
+        </HoverScroll>
+        {tagNode}
+        {meter}
+      </span>
+      <HoverScroll
+        className="font-mono text-[0.65rem] font-normal text-(--ui-text-tertiary)"
+        go={go}
+        marqueeKey={`id:${idKey}`}
+      >
+        {idNode}
+      </HoverScroll>
+    </span>
+  )
+}
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
 // a way to dismiss itself so clicking a model row commits + closes, while the
@@ -109,7 +161,41 @@ interface ModelCatalogMenuProps {
 interface ProviderGroup {
   families: ModelFamily[]
   provider: ModelOptionProvider
+  /** Matches before the render cap (search mode); families.length otherwise. */
+  total: number
 }
+
+const SearchInput = ({ onDebouncedChange, onKeyAction, placeholder }: {
+  onDebouncedChange: (value: string) => void
+  onKeyAction: (key: string) => void
+  placeholder: string
+}) => {
+  const [value, setValue] = useState('')
+  const debounced = useDebouncedValue(value, 150)
+  const ref = useRef(onDebouncedChange)
+  ref.current = onDebouncedChange
+  useEffect(() => { ref.current(debounced) }, [debounced])
+
+  return (
+    <DropdownMenuSearch
+      aria-label={placeholder}
+      onKeyDown={event => {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter') {
+          event.preventDefault()
+          event.stopPropagation()
+          onKeyAction(event.key)
+        }
+      }}
+      onValueChange={setValue}
+      placeholder={placeholder}
+      value={value}
+    />
+  )
+}
+
+/** Render cap per provider in search mode — filtering 6k ids is cheap, mounting
+ *  6k submenu rows is not. The trailing note says how much is hidden. */
+const SEARCH_RENDER_CAP = 100
 
 /**
  * THE model catalog menu: searchable, provider-grouped, `-fast` families
@@ -254,6 +340,39 @@ export function ModelCatalogMenu({
 
   const q = normalize(search)
 
+  // Token terms for filtering + highlighting (match the token-AND filter in
+  // groupModels). Single-word queries keep the raw string so separator
+  // folding still highlights one contiguous range.
+  const searchTerms = useMemo(() => {
+    const tokens = searchFold(q).split(/\s+/).filter(Boolean)
+
+    return tokens.length > 1 && /\s/.test(search) ? tokens : search
+  }, [q, search])
+
+  // Per-catalog search index: collapsed families + folded haystacks, built once
+  // per catalog so keystrokes only scan cheap substrings instead of re-folding
+  // every id per keystroke.
+  const catalogIndex = useMemo(() => {
+    const families = new Map<string, ModelFamily[]>()
+    const haystacks = new Map<string, string>()
+
+    for (const provider of pickerProviders) {
+      const collapsed = collapseModelFamilies(provider.models ?? [])
+      families.set(provider.slug, collapsed)
+
+      for (const family of collapsed) {
+        haystacks.set(
+          `${provider.slug}::${family.id}`,
+          searchFold(
+            `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`
+          )
+        )
+      }
+    }
+
+    return { families, haystacks }
+  }, [pickerProviders])
+
   // In-flight downloads render inside the Local provider group when it
   // exists, else as their own trailing 'Local' group (first download —
   // nothing staged yet, so the catalog has no local provider row).
@@ -269,8 +388,15 @@ export function ModelCatalogMenu({
   )
 
   const groups = useMemo(
-    () => groupModels(pickerProviders, search, { model: current.model, provider: current.provider }, shownKeys),
-    [pickerProviders, search, current.model, current.provider, shownKeys]
+    () =>
+      groupModels(
+        pickerProviders,
+        catalogIndex,
+        search,
+        { model: current.model, provider: current.provider },
+        shownKeys
+      ),
+    [pickerProviders, catalogIndex, search, current.model, current.provider, shownKeys]
   )
 
   // Presets are searchable rows like everything else — an unfiltered preset
@@ -337,6 +463,7 @@ export function ModelCatalogMenu({
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
+
   // A parked cursor is not a cursor in use: until the mouse actually moves,
   // hover can't take rows out from under the keyboard.
   const pointerQuiet = usePointerQuiet()
@@ -403,27 +530,19 @@ export function ModelCatalogMenu({
 
   return (
     <>
-      <DropdownMenuSearch
-        aria-label={copy.search}
-        onKeyDown={event => {
-          // Claim arrows and Enter from Radix so DOM focus stays in the input
-          // and Enter commits the highlighted row without a DownArrow first.
-          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            event.preventDefault()
-            event.stopPropagation()
-            stepKb(event.key === 'ArrowDown' ? 1 : -1)
-          } else if (event.key === 'Enter') {
-            event.preventDefault()
-            event.stopPropagation()
-            commitKbRow()
-          }
-        }}
-        onValueChange={value => {
+      <SearchInput
+        onDebouncedChange={value => {
           setSearch(value)
           setKbOverride(null)
         }}
+        onKeyAction={key => {
+          if (key === 'ArrowDown' || key === 'ArrowUp') {
+            stepKb(key === 'ArrowDown' ? 1 : -1)
+          } else if (key === 'Enter') {
+            commitKbRow()
+          }
+        }}
         placeholder={copy.search}
-        value={search}
       />
 
       <DropdownMenuSeparator className="mx-0" />
@@ -471,6 +590,12 @@ export function ModelCatalogMenu({
                   <span className="truncate">
                     <HighlightMatches foldSeparators query={search} text={group.provider.name} />
                   </span>
+                  {typeof group.provider.total_models === 'number' &&
+                  group.provider.total_models > group.families.length ? (
+                    <span className="shrink-0 font-normal normal-case tracking-normal">
+                      {group.families.length} of {group.provider.total_models.toLocaleString()}
+                    </span>
+                  ) : null}
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
                     open={!collapsed}
@@ -488,7 +613,7 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -541,10 +666,26 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                          </span>
+                          <ModelRowLines
+                            idKey={family.id}
+                            idNode={<HighlightMatches query={searchTerms} text={family.id} />}
+                            meter={
+                              meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null
+                            }
+                            nameNode={
+                              <span data-row-label>
+                                <HighlightMatches foldSeparators query={searchTerms} text={name} />
+                              </span>
+                            }
+                            tagNode={
+                              tag ? (
+                                <span className="shrink-0 rounded bg-(--ui-bg-tertiary) px-1 text-[0.625rem] font-medium text-(--ui-text-secondary)">
+                                  {tag}
+                                </span>
+                              ) : null
+                            }
+                            title={family.id}
+                          />
                           {loadProgress ? (
                             <span
                               className="ml-auto flex shrink-0 items-center gap-1.5"
@@ -590,6 +731,11 @@ export function ModelCatalogMenu({
                       </DropdownMenuSub>
                     )
                   })}
+                {search && group.total > group.families.length ? (
+                  <div className="px-2.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)">
+                    Showing {group.families.length} of {group.total.toLocaleString()} — keep typing to narrow
+                  </div>
+                ) : null}
                 {!collapsed &&
                   slug === LOCAL_PROVIDER_SLUG &&
                   shownDownloads.map(job => (
@@ -627,7 +773,7 @@ export function ModelCatalogMenu({
                 }}
                 {...kbRowProps(`moa:${preset}`)}
               >
-                <span className="min-w-0 flex-1 truncate">
+                <span className="min-w-0 flex-1 truncate" data-row-label>
                   MoA: <HighlightMatches foldSeparators query={search} text={preset} />
                 </span>
                 {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
@@ -700,54 +846,78 @@ function DownloadingModelRow({ jobId, target }: { jobId: string; target: string 
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search
 // is itself a narrowing action, so we do NOT cap per-provider matches.
+/** Family order inside a provider group: A–Z by display name, id as the
+ *  tiebreak (shared with the visibility dialog). */
+function compareFamilies(a: ModelFamily, b: ModelFamily): number {
+  return compareModelIds(a.id, b.id)
+}
+
 function groupModels(
   providers: ModelOptionProvider[],
+  index: { families: Map<string, ModelFamily[]>; haystacks: Map<string, string> },
   search: string,
   current: { model: string; provider: string },
   visible: Set<string> | null
 ): ProviderGroup[] {
   const q = normalize(search)
+  const foldedQuery = searchFold(q)
+  // Token-AND: `deepseek v4 flash opencode` finds `opencode/deepseek-v4-flash`
+  // regardless of token order. Computed once — keystrokes only scan.
+  const queryTokens = foldedQuery.split(/\s+/).filter(Boolean)
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
-    const allFamilies = collapseModelFamilies(provider.models ?? [])
+    const allFamilies = index.families.get(provider.slug) ?? []
 
     if (allFamilies.length === 0) {
       continue
     }
 
-    const matches = (family: ModelFamily) =>
-      foldIncludes(
-        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`,
-        q
-      )
+    const matches = (family: ModelFamily) => {
+      const haystack = index.haystacks.get(`${provider.slug}::${family.id}`) ?? ''
 
-    let shown: Set<string>
-
-    if (q) {
-      // Search spans every family, regardless of visibility.
-      shown = new Set(allFamilies.filter(matches).map(family => family.id))
-    } else if (visible) {
-      // User has customized which models show — honor their selection exactly.
-      shown = new Set(
-        allFamilies.filter(family => visible.has(modelVisibilityKey(provider.slug, family.id))).map(family => family.id)
-      )
-    } else {
-      shown = new Set(allFamilies.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => family.id))
+      return queryTokens.every(token => haystack.includes(token))
     }
 
-    // Always include the active model — but keep every row in the provider's
-    // stable curated order, so selecting a model can't shuffle the list. While
-    // SEARCHING the pin is skipped: a query means "show me matches".
+    // Rows read A–Z by display name (ties by id, so duplicate names from
+    // different upstreams order deterministically). The slices below therefore
+    // keep the first N alphabetically, not an arbitrary curated head.
+    const ordered = [...allFamilies].sort(compareFamilies)
+
+    // The active model pins first whenever it is listed — browsing and
+    // searching alike. A non-matching active model stays out (a query means
+    // "show me matches", never "plus my current pick").
     const activeId =
-      !q && catalogProviderMatches(provider, current.provider) && current.model
+      catalogProviderMatches(provider, current.provider) && current.model
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 
-    const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
+    const pinActiveFirst = (a: ModelFamily, b: ModelFamily) =>
+      a.id === activeId ? -1 : b.id === activeId ? 1 : compareFamilies(a, b)
+
+    let families: ModelFamily[]
+    let total: number
+
+    if (q) {
+      // Search spans every family, regardless of visibility — capped for
+      // render (see SEARCH_RENDER_CAP); the group carries the true total.
+      const matched = ordered.filter(matches).sort(pinActiveFirst)
+      families = matched.slice(0, SEARCH_RENDER_CAP)
+      total = matched.length
+    } else {
+      // A customized shortlist is honored exactly, else the first 50 A–Z.
+      const shown = new Set(
+        visible
+          ? ordered.filter(family => visible.has(modelVisibilityKey(provider.slug, family.id))).map(family => family.id)
+          : ordered.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => family.id)
+      )
+
+      families = ordered.filter(family => shown.has(family.id) || family.id === activeId).sort(pinActiveFirst)
+      total = families.length
+    }
 
     if (families.length > 0) {
-      groups.push({ families, provider })
+      groups.push({ families, provider, total })
     }
   }
 

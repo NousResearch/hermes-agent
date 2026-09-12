@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
+import { displayModelName } from '@/lib/model-status-label'
 import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/lib/reasoning-effort'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
@@ -107,6 +108,7 @@ function ModelEditSubmenuBody({
   effort,
   fastControl,
   isActive,
+  model,
   onSelectModel,
   onSetOptions,
   reasoning
@@ -144,6 +146,15 @@ function ModelEditSubmenuBody({
     <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
   ) : (
     <>
+      {/* Which model these controls edit — duplicate names across upstreams
+        are otherwise indistinguishable here. */}
+      <DropdownMenuLabel className="px-2 pb-1 pt-2">
+        <span className="block truncate text-xs font-semibold text-foreground">{displayModelName(model)}</span>
+        <span className="block font-mono text-[0.65rem] font-normal break-all whitespace-normal text-(--ui-text-tertiary)">
+          {model}
+        </span>
+      </DropdownMenuLabel>
+      <DropdownMenuSeparator className="mx-0" />
       <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
       {showThinkingToggle ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>

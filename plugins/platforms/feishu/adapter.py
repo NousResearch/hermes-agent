@@ -359,6 +359,32 @@ def _to_boolean(value: Any) -> bool:
     return value is True or value == 1 or value == "true"
 
 
+def _rule_id_set(values: Any) -> set[str]:
+    return {str(u).strip() for u in values if str(u).strip()}
+
+
+def _parse_feishu_group_rule(rule_cfg: dict) -> FeishuGroupRule:
+    return FeishuGroupRule(
+        policy=str(rule_cfg.get("policy", "open")).strip().lower(),
+        allowlist=_rule_id_set(rule_cfg.get("allowlist", [])),
+        blacklist=_rule_id_set(rule_cfg.get("blacklist", [])),
+        # Only override when explicitly set — missing vs false must not collapse.
+        require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
+    )
+
+
+def _merge_hot_group_rule(base: Optional[FeishuGroupRule], rule_cfg: dict) -> FeishuGroupRule:
+    """Field-level overlay: hot keys win; omitted keys keep the boot rule (or parse defaults)."""
+    if base is None:
+        return _parse_feishu_group_rule(rule_cfg)
+    return FeishuGroupRule(
+        policy=str(rule_cfg["policy"]).strip().lower() if "policy" in rule_cfg else base.policy,
+        allowlist=_rule_id_set(rule_cfg["allowlist"]) if "allowlist" in rule_cfg else set(base.allowlist),
+        blacklist=_rule_id_set(rule_cfg["blacklist"]) if "blacklist" in rule_cfg else set(base.blacklist),
+        require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else base.require_mention,
+    )
+
+
 def _is_style_enabled(style: Dict[str, Any] | None, key: str) -> bool:
     if not style:
         return False
@@ -1257,9 +1283,6 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
-        def _id_set(values: Any) -> set[str]:
-            return {str(u).strip() for u in values if str(u).strip()}
-
         def _secret(name: str, default: str = "") -> str:
             return _get_scoped_secret(name, default).strip()
 
@@ -1275,13 +1298,7 @@ class FeishuAdapter(BasePlatformAdapter):
             for chat_id, rule_cfg in raw_group_rules.items():
                 if not isinstance(rule_cfg, dict):
                     continue
-                group_rules[str(chat_id)] = FeishuGroupRule(
-                    policy=str(rule_cfg.get("policy", "open")).strip().lower(),
-                    allowlist=_id_set(rule_cfg.get("allowlist", [])),
-                    blacklist=_id_set(rule_cfg.get("blacklist", [])),
-                    # Only override when explicitly set — missing vs false must not collapse.
-                    require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
-                )
+                group_rules[str(chat_id)] = _parse_feishu_group_rule(rule_cfg)
 
         # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
         # feishu.allow_bots reaches it via ``extra`` (the env bridge is skipped under its scope).
@@ -1305,7 +1322,7 @@ class FeishuAdapter(BasePlatformAdapter):
             encrypt_key=_extra_or_secret("encrypt_key", "FEISHU_ENCRYPT_KEY"),
             verification_token=_extra_or_secret("verification_token", "FEISHU_VERIFICATION_TOKEN"),
             group_policy=_secret("FEISHU_GROUP_POLICY", "allowlist").lower(),
-            allowed_group_users=frozenset(_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
+            allowed_group_users=frozenset(_rule_id_set(_get_scoped_secret("FEISHU_ALLOWED_USERS", "").split(","))),
             bot_open_id=_secret("FEISHU_BOT_OPEN_ID"),
             bot_user_id=_secret("FEISHU_BOT_USER_ID"),
             bot_name=_secret("FEISHU_BOT_NAME"),
@@ -1322,7 +1339,7 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
-            admins=frozenset(_id_set(extra.get("admins", []))),
+            admins=frozenset(_rule_id_set(extra.get("admins", []))),
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
@@ -3251,8 +3268,30 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.exception("[Feishu] Background inbound processing failed")
 
+    def _refresh_group_rules_from_hot_file(self) -> None:
+        """Overlay ``~/.hermes/feishu_group_rules.json`` onto boot ``group_rules`` (mtime-cached)."""
+        settings = getattr(self, "_settings", None)
+        if settings is None:
+            return
+        try:
+            from plugins.platforms.feishu.feishu_group_rules import load_hot_group_rules
+
+            hot_raw = load_hot_group_rules()
+        except Exception:
+            logger.warning("[Feishu] Failed to refresh group rules from hot file", exc_info=True)
+            return
+        boot = getattr(settings, "group_rules", None) or {}
+        if not hot_raw:
+            self._group_rules = dict(boot)
+            return
+        merged = dict(boot)
+        for chat_id, rule_cfg in hot_raw.items():
+            merged[chat_id] = _merge_hot_group_rule(merged.get(chat_id), rule_cfg)
+        self._group_rules = merged
+
     # --- Inbound admission ---
     def _admit(self, sender: Any, message: Any) -> Optional[RejectReason]:
+        self._refresh_group_rules_from_hot_file()
         sender_ids = _sender_identity(sender)
         self_ids = frozenset(v for v in (self._bot_open_id, self._bot_user_id) if v)
         is_bot = _is_bot_sender(sender)

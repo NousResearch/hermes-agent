@@ -269,9 +269,17 @@ def _find_uv_binary() -> str | None:
 
     uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so the stdlib ``pip``
     fallback refuses to touch them; the only sanctioned installer is then uv itself, which Hermes
-    vendors (``~/.hermes/bin/uv.exe``) or the user has on PATH.
+    vendors (``~/.hermes/bin/uv.exe`` on POSIX, ``%LOCALAPPDATA%\\hermes\\bin`` on Windows)
+    or the user has on PATH.
     """
     exe = "uv.exe" if sys.platform == "win32" else "uv"
+    # Windows-first: Hermes vendors uv to %LOCALAPPDATA%\hermes\bin, but Path.home()
+    # there is not where the vendor dir lives. Probe the managed location before the
+    # POSIX-style home candidates so recovery works even when no uv is on PATH.
+    if sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
+        managed = Path(os.environ["LOCALAPPDATA"]) / "hermes" / "bin" / exe
+        if managed.is_file():
+            return str(managed)
     for sub in ((".hermes", "bin"), (".local", "bin"), (".cargo", "bin")):
         path = Path.home().joinpath(*sub, exe)
         if path.is_file():

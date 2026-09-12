@@ -968,6 +968,53 @@ class TestTerminalOutputRedaction:
         assert "abc123secret" not in red
         assert "export MISTRAL_API_KEY=*** # prod key" in red
 
+    @pytest.mark.parametrize(
+        ("command", "output", "secret"),
+        [
+            ("cat ~/.hermes/config.yaml", "api_key: hermesConfigSecret123", "hermesConfigSecret123"),
+            (
+                "head ~/.hermes/profiles/work/config.yaml",
+                "provider.token=profileConfigSecret456",
+                "profileConfigSecret456",
+            ),
+            ("tail ~/.bashrc", "export SERVICE_TOKEN=bashRcSecret789", "bashRcSecret789"),
+            ("grep TOKEN ~/.zshrc", "SERVICE_TOKEN=zshRcSecret123", "zshRcSecret123"),
+            (
+                "awk -F= '/TOKEN/ {print $2}' ~/.profile",
+                "SERVICE_TOKEN=profileSecret456",
+                "profileSecret456",
+            ),
+            ("sed -n '1,20p' ~/.zprofile", "api_key: zprofileSecret789", "zprofileSecret789"),
+        ],
+    )
+    def test_secret_bearing_file_commands_mask_assignments(self, command, output, secret):
+        from agent.redact import redact_terminal_output
+
+        assert secret not in redact_terminal_output(output, command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat config.yaml",
+            "cat /project/config.yaml",
+            "cat ~/.hermes/config.example.yaml",
+            "cat ~/.hermes/config.template.yaml",
+            "cat ~/.bashrc.example",
+            'cat "$HERMES_HOME/config.yaml"',
+            "grep TOKEN app.py",
+            "awk '/TOKEN/' settings.yaml",
+            "sed -n '1,20p' template.yaml",
+        ],
+    )
+    def test_secret_bearing_file_detection_preserves_fail_open_controls(self, command):
+        from agent.redact import redact_terminal_output
+
+        output = "SERVICE_TOKEN=placeholder_value_here"
+        assert redact_terminal_output(output, command) == output
+        assert "realEnvSecret123" not in redact_terminal_output(
+            "SERVICE_TOKEN=realEnvSecret123", "cat .env"
+        )
+
 
 
     def test_disabled_passes_through(self, monkeypatch):

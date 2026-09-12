@@ -1957,7 +1957,10 @@ def get_plugin_error_classification(
         return None
     result, reason = valid[0]
     winner: Dict[str, Any] = {"reason": reason}
-    for key in ("retryable", "should_compress", "should_rotate_credential", "should_fallback"):
+    for key in (
+        "retryable", "should_compress", "should_rotate_credential",
+        "should_fallback", "is_empty_or_invalid",
+    ):
         if key in result:
             winner[key] = bool(result[key])
     message = result.get("message")

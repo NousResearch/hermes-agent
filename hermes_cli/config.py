@@ -1052,6 +1052,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
     "unauthorized_dm_behavior", "signal",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
+    "provider_routing",  # OpenRouter routing (passthrough; not in DEFAULT_CONFIG)
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
@@ -3140,6 +3141,14 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "personalities", "command_allowlist", "model_catalog", "channel_prompts", "server_actions",
     "secrets", "goals", "loops"})
 
+# Flat OpenRouter routing keys. Arbitrary children are allowed only under models.<id>.
+_PROVIDER_ROUTING_KNOWN_KEYS = frozenset({
+    "only", "ignore", "order", "sort", "require_parameters", "data_collection",
+    "sticky_order", "models",
+})
+_PROVIDER_ROUTING_LIST_KEYS = frozenset({"only", "ignore", "order"})
+_STICKY_ORDER_KNOWN_KEYS = frozenset({"enabled", "ttl_seconds"})
+
 # Top-level keys whose sub-keys are partially schema-defined (e.g. a PlatformConfig dataclass) but
 # where users may add fields DEFAULT_CONFIG doesn't enumerate: validate the FIRST segment only.
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
@@ -3168,7 +3177,40 @@ _OPEN_SUBKEY_TOP_LEVEL_KEYS = _OPEN_DICT_TOP_LEVEL_KEYS | _DYNAMIC_TOP_LEVEL_KEY
 
 def _known_top_level_keys() -> set[str]:
     """Return the union of known top-level config keys for validation."""
-    return set(DEFAULT_CONFIG) | _OPEN_SUBKEY_TOP_LEVEL_KEYS
+    return set(DEFAULT_CONFIG) | _OPEN_SUBKEY_TOP_LEVEL_KEYS | {"provider_routing"}
+
+
+def _validate_provider_routing_key(segments: list[str]) -> tuple[bool, Optional[str]]:
+    """Known flat routing keys + sticky_order children; open only under models.<id>."""
+    if len(segments) == 1:
+        return True, None
+    child = segments[1]
+    if child == "models":
+        # * Dotted model ids (openai/gpt-6-astra) and their children stay settable.
+        return True, None
+    if child == "sticky_order":
+        if len(segments) == 2:
+            return True, None
+        sticky_child = segments[2]
+        if sticky_child not in _STICKY_ORDER_KNOWN_KEYS:
+            suggestion = _suggest_closest_key(sticky_child, set(_STICKY_ORDER_KNOWN_KEYS))
+            return False, f"provider_routing.sticky_order.{suggestion}" if suggestion else None
+        if len(segments) > 3:
+            return False, f"provider_routing.sticky_order.{sticky_child}"
+        return True, None
+    if child in _PROVIDER_ROUTING_KNOWN_KEYS:
+        if len(segments) == 2:
+            return True, None
+        # * List index paths (order.0) stay settable; extra depth is a typo.
+        if (
+            child in _PROVIDER_ROUTING_LIST_KEYS
+            and len(segments) == 3
+            and segments[2].isdigit()
+        ):
+            return True, None
+        return False, f"provider_routing.{child}"
+    suggestion = _suggest_closest_key(child, set(_PROVIDER_ROUTING_KNOWN_KEYS))
+    return False, f"provider_routing.{suggestion}" if suggestion else None
 
 
 def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) -> Optional[str]:
@@ -3195,6 +3237,9 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     # (test harnesses/tooling); only the first segment is exempt so ``agent._max_turns`` is caught.
     if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS:
         return True, None
+
+    if top == "provider_routing":
+        return _validate_provider_routing_key(segments)
 
     known = _known_top_level_keys()
     if top not in known:

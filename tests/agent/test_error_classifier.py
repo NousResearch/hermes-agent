@@ -1438,6 +1438,15 @@ class Test408RequestTimeout:
         assert result.should_fallback is True
         assert result.should_compress is False
 
+    def test_empty_provider_response_is_marked_empty_or_invalid(self):
+        e = RuntimeError("Provider returned an empty response")
+        result = classify_api_error(
+            e, provider="openrouter", model="google/gemini-flash",
+        )
+        assert result.reason == FailoverReason.server_error
+        assert result.is_empty_or_invalid is True
+        assert result.retryable is True
+
 
 # ── Test: connection/DNS failure message patterns on generic exception types ──
 # Port of anomalyco/opencode#40707 (expand retryable error patterns): errors

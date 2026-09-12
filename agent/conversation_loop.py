@@ -1526,6 +1526,15 @@ def _run_conversation_turn(
         _run_phase(announce_api_call, agent, s)
 
         s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
+        try:
+            from agent.sticky_provider_order import apply_sticky_retry_budget
+
+            s.max_retries = apply_sticky_retry_budget(agent, s.max_retries)
+        except Exception:
+            logger.warning(
+                "sticky_provider_order: failed to apply retry budget",
+                exc_info=True,
+            )
         s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
         s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
 

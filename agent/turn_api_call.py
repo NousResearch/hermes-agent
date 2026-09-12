@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
+from agent.responses_replay_identity import enforce_responses_replay_identity_closure
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -84,6 +85,17 @@ def perform_api_call(
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
+            )
+            # Final wire guard after middleware + preflight. Stateless Responses
+            # replay strips rs_* reasoning identities; never let a dependent
+            # msg_* identity reach the provider by itself. If encrypted replay
+            # has been disabled for recovery, no historical message identity can
+            # be proven independent, so degrade all typed message IDs.
+            next_api_kwargs = enforce_responses_replay_identity_closure(
+                next_api_kwargs,
+                drop_all_message_ids=not bool(
+                    getattr(agent, "_codex_reasoning_replay_enabled", True)
+                ),
             )
         if _use_streaming:
             return agent._interruptible_streaming_api_call(

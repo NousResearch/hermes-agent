@@ -30,6 +30,14 @@ import { $workspaceIsPage, sessionRoute } from './routes'
 
 export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 
+/** Same shape as `host.openWorkspace` dock. Edge `pos` opens a native session
+ *  tile beside main; `center` / omitted / unrecognized keep the intent path. */
+export interface OpenSessionDock {
+  before?: null | string
+  pane: string
+  pos: 'bottom' | 'center' | 'left' | 'right' | 'top'
+}
+
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
 
 export interface OpenSessionWorkspaceScope {
@@ -75,15 +83,30 @@ export function openSessionIntentFromModifiers(
   return base
 }
 
+function edgeSessionDockPos(dock: unknown): 'bottom' | 'left' | 'right' | 'top' | null {
+  if (!dock || typeof dock !== 'object') {
+    return null
+  }
+
+  const pos = (dock as { pos?: unknown }).pos
+
+  return pos === 'bottom' || pos === 'left' || pos === 'right' || pos === 'top' ? pos : null
+}
+
 /**
  * @param navigate Required for `in-place` (route into main when not on screen).
  *   `tab` / `window` ignore it — pass a no-op when you don't have a router handle.
+ * @param dock Optional in-window split. Edge `pos` calls `openSessionTile`
+ *   (create or relocate/focus) and never replaces main. Ignored when
+ *   `intent` is `'window'`. Unrecognized / `center` / omitted keep the
+ *   existing intent path.
  */
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
   intent: OpenSessionIntent = 'in-place',
-  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' }
+  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' },
+  dock?: OpenSessionDock
 ): void {
   if (!storedSessionId) {
     return
@@ -108,6 +131,24 @@ export function openSession(
 
     // No pop-out support → treat like a new tab.
     resolved = 'tab'
+  }
+
+  // `intent: 'window'` keeps pop-out (or its tab fallback). Dock only applies
+  // to in-window opens so a plugin cannot silently convert a window request
+  // into a split.
+  const edgePos = intent === 'window' ? null : edgeSessionDockPos(dock)
+
+  if (edgePos) {
+    const pane = typeof dock?.pane === 'string' ? dock.pane : undefined
+    const before = dock?.before
+
+    if (botWorkspaceScope) {
+      openSessionTile(storedSessionId, edgePos, pane, before, botWorkspaceScope)
+    } else {
+      openSessionTile(storedSessionId, edgePos, pane, before)
+    }
+
+    return
   }
 
   if (resolved === 'main') {

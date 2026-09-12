@@ -640,6 +640,49 @@ describe('profile-aware plugin session opens', () => {
     })
   })
 
+  it('forwards an edge dock into the core session open', async () => {
+    const dock = { pane: 'workspace', pos: 'right' as const }
+
+    await host.openSession('docked-chat', { dock })
+
+    expect(openSessionCore).toHaveBeenCalledWith(
+      'docked-chat',
+      expect.any(Function),
+      'in-place',
+      undefined,
+      dock
+    )
+  })
+
+  it('forwards an edge dock alongside a Bot workspace scope', async () => {
+    const dock = { pane: 'workspace', pos: 'right' as const }
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'default',
+      targetProfile: 'backend-default'
+    }
+
+    await host.openSession('bot-chat', {
+      dock,
+      route,
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'source-a::default'
+    })
+
+    expect(openSessionCore).toHaveBeenCalledWith(
+      'bot-chat',
+      expect.any(Function),
+      'in-place',
+      {
+        ownerRoute: route,
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'source-a::default'
+      },
+      dock
+    )
+  })
+
   it('finishes hydration on the focused Bot tile without moving the Sessions gateway', async () => {
     const route = {
       connectionId: 'source-a',

@@ -95,6 +95,11 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     requested = (
         job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
     model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+    if _cron_cfg.get("follow_profile") is True:
+        from hermes_cli.config import resolve_cron_model_drift_defaults
+        profile_provider, profile_model = resolve_cron_model_drift_defaults(cfg)
+        requested = requested or profile_provider or None
+        model = job.get("model") or _cron_cfg.get("model") or profile_model
 
     from hermes_cli.auth import AuthError
     try:

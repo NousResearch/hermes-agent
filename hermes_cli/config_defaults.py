@@ -1620,6 +1620,9 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Opt in to following this profile's current defaults for unpinned axes.
+        # Explicit job/fleet overrides still win; stored snapshots remain available for rollback.
+        "follow_profile": False,
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
         # default: policy-denied in cron context to prevent unattended scheduling loops. Jobs
         # created this way are user-owned in the same flat jobs table. Interactive toolsets

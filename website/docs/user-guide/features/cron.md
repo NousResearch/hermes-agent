@@ -28,6 +28,24 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 - **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
 - **Global default** — only when neither of the above is set does a job follow `hermes model`. Hermes **snapshots** the provider and model at creation, and that snapshot is the job's effective pin: if you later switch the global default (`hermes model`, `/model`, `hermes config set model.default …`), the job **keeps running on the model and provider it was created under** and logs one INFO line per run noting the difference. A global model change never stops a scheduled job, and an unattended job never silently inherits a switch to a paid provider/model (#44585). To move a job to the new default, pin it (`hermes cron edit <job_id> --provider <provider> --model <model>`) or set `cron.model` to move the whole fleet at once. Jobs created before snapshots existed keep following the live global default.
 
+To make unpinned scheduled jobs automatically follow future provider and model changes **within
+this profile**, opt in once:
+
+```bash
+hermes config set cron.follow_profile true
+```
+
+At the next run, Hermes reads the profile's current defaults instead of the job's creation
+snapshots. This includes existing jobs, without rewriting their schedule, history or snapshots.
+Per-job `model` / `provider` / `base_url` overrides and `cron.model` / `cron.model_provider`
+fleet defaults still take precedence; clear unwanted overrides before relying on inheritance.
+An explicit model-only override keeps that model while its unpinned provider follows the profile;
+choose a model compatible with that provider. Existing configured fallback behavior is unchanged.
+Profiles remain independent, and an already running job keeps its resolved runtime. Turning
+`cron.follow_profile` back to `false` restores creation-snapshot behavior for subsequent runs.
+This opt-in means unattended jobs can inherit a move to a paid provider or model.
+
+
 Whichever provider a job resolves to, its provider-specific request settings (e.g. `request_overrides` such as `extra_body`/`extra_headers` for custom providers) carry into the scheduled run just like an interactive session.
 
 `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).

@@ -2988,10 +2988,19 @@ class GatewayTurnMixin:
             await asyncio.sleep(0.05)
 
     @staticmethod
-    async def _await_stream_task(stream_task) -> None:
-        """Give the stream consumer task 5s to flush, then cancel it."""
+    async def _await_stream_task(stream_task, consumer: Any = None) -> None:
+        """Give the stream consumer task 5s to flush, then cancel it.
+
+        A consumer sitting out a bounded platform flood penalty gets that wait on top of the
+        5s: cancelling it mid-penalty abandons an in-place final edit in favour of a fresh
+        send into the same ban, which is exactly what the delivery ledger then has to
+        redeliver minutes later. The budget is read once, so a penalty that only begins after
+        the join has started still cancels at 5s and falls back, as it did before."""
+        _flood_wait = 0.0
+        with suppress(Exception):
+            _flood_wait = max(0.0, float(getattr(consumer, "flood_pause_remaining", 0.0) or 0.0))
         try:
-            await asyncio.wait_for(stream_task, timeout=5.0)
+            await asyncio.wait_for(stream_task, timeout=5.0 + _flood_wait)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             stream_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -3427,7 +3436,7 @@ class GatewayTurnMixin:
         _sc = turn_ctx.stream_consumer_holder[0]
         if _sc and stream_task:
             try:
-                await self._await_stream_task(stream_task)
+                await self._await_stream_task(stream_task, _sc)
             except Exception as e:
                 logger.debug("Stream consumer wait before queued message failed: %s", e)
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
@@ -3606,7 +3615,7 @@ class GatewayTurnMixin:
                 with suppress(asyncio.CancelledError):
                     await stream_task
             else:
-                await self._await_stream_task(stream_task)
+                await self._await_stream_task(stream_task, stream_consumer_holder[0])
 
         # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
         _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]

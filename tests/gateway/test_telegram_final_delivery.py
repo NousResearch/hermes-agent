@@ -70,8 +70,14 @@ async def test_turn_final_flood_immediately_delivers_missing_tail():
 
 
 @pytest.mark.asyncio
-async def test_non_opt_in_adapter_keeps_adaptive_final_edit_retry():
-    """Immediate final fallback remains scoped to opted-in adapters."""
+async def test_non_opt_in_adapter_keeps_adaptive_final_edit_retry(monkeypatch):
+    """Immediate final fallback remains scoped to opted-in adapters.
+
+    A non-opt-in adapter now sits out the server's bounded penalty and retries the final edit
+    once, rather than charging the first refusal a strike. Only a refusal that survives that
+    compliance falls back, so the fresh send is never fired straight into the same ban."""
+    sleep = AsyncMock()
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", sleep)
     adapter = _adapter()
     adapter.FALLBACK_ON_FINAL_EDIT_FLOOD = False
     adapter.edit_message.return_value = SendResult(
@@ -92,8 +98,10 @@ async def test_non_opt_in_adapter_keeps_adaptive_final_edit_retry():
     )
 
     assert ok is False
-    assert consumer._flood_strikes == 1
-    assert consumer._fallback_final_send is False
+    assert adapter.edit_message.await_count == 2   # the refusal, then one retry after the wait
+    assert sleep.await_count == 1                  # the penalty was waited out, not burned
+    assert consumer._flood_strikes == 1            # only the post-compliance refusal counts
+    assert consumer._fallback_final_send is True   # and only then does the fallback arm
 
 
 @pytest.mark.asyncio

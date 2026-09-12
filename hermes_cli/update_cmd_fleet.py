@@ -145,12 +145,11 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
 def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """Require current successors for every recorded runtime, not just any live row.
 
-    A PID changes on restart; the stable identity is (runtime kind, profile).
-    The gateway matrix can vouch for gateway runtimes only, so a non-gateway runtime
-    (serve / dashboard) is checked against the receipt's own ``runtime_outcomes``
-    instead of being treated as unprovable: those runtimes are reconciled in their own
-    vocabulary by ``match_runtime_outcomes``, and their mere presence must not veto the
-    gateway obligations this function exists to discharge.
+    A PID changes when a runtime restarts, so the live-fleet comparison is keyed on
+    (runtime kind, profile). The gateway matrix cannot vouch for serve/dashboard, so those are
+    checked against the receipt's own ``runtime_outcomes`` — their vocabulary, keyed per planned
+    runtime and carrying its PID, so a restarted sibling cannot vouch for an unaccounted one —
+    and their presence must not veto the gateway obligations this function discharges.
     Keep the historical receipt intact: a manual restart is not a successful update.
     """
     if not expected_sha:
@@ -162,8 +161,8 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         plan = receipt.get("plan") or {}
         runtimes = plan.get("runtimes") or []
         recorded_fleet = receipt.get("fleet") or []
-        resolved = {
-            (row.get("kind"), row.get("profile"))
+        restarted_ids = {
+            (row.get("kind"), row.get("profile"), row.get("pid"))
             for row in receipt.get("runtime_outcomes") or []
             if isinstance(row, dict) and row.get("outcome") == "restarted"
         }
@@ -178,8 +177,12 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
             if not profile or profile == "unknown":
                 return False
             if kind != "gateway":
-                # Not the gateway matrix's business — but an unresolved one still fails closed.
-                if (kind, profile) not in resolved:
+                # Not the gateway matrix's business — but each planned process has to clear on its
+                # own outcome. Inventory permits two serve/dashboard processes on one profile, so
+                # identity is the planned runtime's PID: a restarted sibling must not vouch for an
+                # unaccounted one. Every non-gateway plan record carries an integer PID
+                # (update_inventory._collect_ledger_runtimes requires `isinstance(pid, int)`).
+                if (kind, profile, entry.get("pid")) not in restarted_ids:
                     return False
                 continue
             owed.add((kind, profile))

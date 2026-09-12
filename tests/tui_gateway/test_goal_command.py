@@ -231,6 +231,152 @@ def test_goal_resume_without_goal_stays_exec(server, session):
     assert "No goal to resume" in r["result"]["output"]
 
 
+def test_goal_continuation_admission_serializes_goal_update(server, session, monkeypatch):
+    """A goal edit cannot commit between the state snapshot and admission."""
+    from hermes_cli.goals import GoalManager
+
+    _sid, key, entry = session
+    manager = GoalManager(key)
+    manager.set("original objective")
+    entry["_goal_continuation_token"] = manager.continuation_token()
+    entered_lookup = threading.Event()
+    release_lookup = threading.Event()
+    update_started = threading.Event()
+    update_finished = threading.Event()
+    dispatched = []
+
+    def blocked_lookup(session):
+        manager = GoalManager(key)
+        entered_lookup.set()
+        assert release_lookup.wait(2)
+        return manager
+
+    def update_goal():
+        update_started.set()
+        GoalManager(key).update("replacement objective")
+        update_finished.set()
+
+    monkeypatch.setattr(server, "_active_goal_manager", blocked_lookup)
+    monkeypatch.setattr(
+        server,
+        "_dispatch_followup_turn",
+        lambda *args, **kwargs: dispatched.append(update_finished.is_set()),
+    )
+
+    worker = threading.Thread(
+        target=server._run_post_turn_followups,
+        args=("rid", _sid, entry, {}, "old continuation"),
+    )
+    worker.start()
+    assert entered_lookup.wait(2)
+
+    updater = threading.Thread(target=update_goal)
+    updater.start()
+    assert update_started.wait(2)
+
+    release_lookup.set()
+    worker.join(2)
+    updater.join(2)
+    assert dispatched == [False]
+    assert update_finished.is_set()
+
+
+def test_goal_continuation_skips_busy_history_without_blocking_pause(server, session, monkeypatch):
+    from hermes_cli.goals import GoalManager
+
+    _sid, key, entry = session
+    manager = GoalManager(key)
+    manager.set("original objective")
+    entry["_goal_continuation_token"] = manager.continuation_token()
+    history_acquired = threading.Event()
+    release_history = threading.Event()
+    pause_finished = threading.Event()
+    dispatched = []
+
+    def hold_history():
+        entry["history_lock"].acquire()
+        history_acquired.set()
+        release_history.wait(2)
+        entry["history_lock"].release()
+
+    holder = threading.Thread(target=hold_history)
+    holder.start()
+    assert history_acquired.wait(2)
+
+    monkeypatch.setattr(
+        server,
+        "_dispatch_followup_turn",
+        lambda *args, **kwargs: dispatched.append(args[3]),
+    )
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *args: False)
+
+    worker = threading.Thread(
+        target=server._run_post_turn_followups,
+        args=("rid", _sid, entry, {}, "old continuation"),
+    )
+    worker.start()
+    assert worker.is_alive()
+
+    def pause_goal():
+        GoalManager(key).pause("user-paused")
+        pause_finished.set()
+
+    pauser = threading.Thread(target=pause_goal)
+    pauser.start()
+    assert pause_finished.wait(2)
+
+    release_history.set()
+    holder.join(2)
+    worker.join(2)
+    pauser.join(2)
+    assert not worker.is_alive()
+    assert dispatched == []
+    assert entry["running"] is False
+    assert GoalManager(key).state.status == "paused"
+
+
+def test_goal_continuation_dispatches_after_history_release(server, session, monkeypatch):
+    from hermes_cli.goals import GoalManager
+
+    _sid, key, entry = session
+    manager = GoalManager(key)
+    manager.set("original objective")
+    entry["_goal_continuation_token"] = manager.continuation_token()
+    history_acquired = threading.Event()
+    release_history = threading.Event()
+    dispatched = []
+
+    def hold_history():
+        entry["history_lock"].acquire()
+        history_acquired.set()
+        assert release_history.wait(2)
+        entry["history_lock"].release()
+
+    holder = threading.Thread(target=hold_history)
+    holder.start()
+    assert history_acquired.wait(2)
+    monkeypatch.setattr(
+        server,
+        "_dispatch_followup_turn",
+        lambda *args, **kwargs: dispatched.append(args[3]),
+    )
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *args: False)
+
+    worker = threading.Thread(
+        target=server._run_post_turn_followups,
+        args=("rid", _sid, entry, {}, "old continuation"),
+    )
+    worker.start()
+    assert worker.is_alive()
+    release_history.set()
+    holder.join(2)
+    worker.join(2)
+
+    assert not worker.is_alive()
+    assert dispatched == ["old continuation"]
+    assert entry["running"] is True
+
+
 # ── slash.exec /goal routing ──────────────────────────────────────────
 
 
@@ -377,6 +523,66 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
     assert seen_prompts == ["initial work", "real user input"]
     assert continuation not in seen_prompts
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
+
+
+def test_desktop_followup_does_not_dispatch_after_done_verdict(server, turn_env):
+    """The real Desktop backend follow-up path must stop after a done judge verdict."""
+    from hermes_cli.goals import GoalManager
+
+    session_key = "desktop-goal-done-no-followup"
+    GoalManager(session_key).set("finish the current task")
+    seen_prompts = []
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return {"final_response": "Done — goal complete."}
+
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    desktop_session = _turn_session(agent, session_key)
+    desktop_session["surface"] = "desktop"
+
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("done", "verified completion", False, None, False),
+    ):
+        server._run_prompt_submit("rid", "desktop-sid", desktop_session, "initial work")
+
+    assert seen_prompts == ["initial work"]
+
+
+def test_desktop_followup_does_not_dispatch_after_pause_during_judge(server, turn_env):
+    """A Desktop pause arriving during judging must prevent the real chained follow-up."""
+    from hermes_cli.goals import GoalManager
+
+    session_key = "desktop-goal-pause-no-followup"
+    GoalManager(session_key).set("finish the current task")
+    seen_prompts = []
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return {"final_response": "Worked toward it."}
+
+    def judge_pauses(*_args, **_kwargs):
+        GoalManager(session_key).pause(reason="user-paused")
+        return "continue", "keep going", False, None, False
+
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    desktop_session = _turn_session(agent, session_key)
+    desktop_session["surface"] = "desktop"
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=judge_pauses):
+        server._run_prompt_submit("rid", "desktop-sid", desktop_session, "initial work")
+
+    assert seen_prompts == ["initial work"]
+    assert GoalManager(session_key).state.status == "paused"
 
 
 def test_compression_deferred_is_not_treated_as_exhaustion(server):

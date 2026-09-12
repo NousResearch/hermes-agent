@@ -33,10 +33,17 @@ export const MOCK_REPLY = 'Hello from the mock inference server! The full boot c
 export interface MockServerOptions {
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
-/** Pause the first completion whose request JSON contains this text. */
-holdFirstCompletionContaining?: string
-/** Absolute sandbox path written by the verify-on-stop scripted tool call. */
-verificationWritePath?: string
+  /** Pause the first completion whose request JSON contains this text. */
+  holdFirstCompletionContaining?: string
+  /** Absolute sandbox path written by the verify-on-stop scripted tool call. */
+  verificationWritePath?: string
+/**
+ * When a goal-judge aux call carries this marker in its goal text, return a
+ * deterministic DONE verdict. Lets criteria-driven Goal completion be proven
+ * in a packaged test (a fresh goal plus criteria, judge says done, no extra
+ * automatic continuation fires) without a real LLM.
+ */
+goalJudgeDoneForPrompt?: string
 /**
  * Sentinel path that ends the E2E_SIDEBAR_CROSS background process.
  *
@@ -51,6 +58,9 @@ export interface MockServer {
   port: number
   url: string
   receivedPrompts: string[]
+  /** User-prompt text of every goal-judge aux call (see `isGoalJudgeCall`). Lets
+   *  tests assert the judge actually received a committed completion criterion. */
+  receivedJudgeEvaluations: string[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -406,6 +416,8 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
     const receivedPrompts: string[] = []
+    // User-prompt text of every goal-judge aux call that reached this mock.
+    const receivedJudgeEvaluations: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
@@ -506,6 +518,23 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
           const isTaskPanelResumeTrigger = userText.includes(TASK_PANEL_RESUME_TRIGGER)
 
+          // Deterministic criteria-driven Goal completion: the goal judge is an
+          // aux LLM call whose system message is the strict-judge prompt. When
+          // `goalJudgeDoneForPrompt` is set and that goal text is present, return
+          // a DONE verdict so the goal is judged complete with no continuation.
+          const isGoalJudgeCall = messages.some(
+            message => message?.role === 'system'
+              && typeof message?.content === 'string'
+              && message.content.includes('You are a strict judge evaluating whether')
+          )
+          // Surface the judge's user prompt so tests can prove the judge saw a
+          // committed completion criterion before any DONE verdict it returned.
+          if (isGoalJudgeCall && typeof lastUserMessage?.content === 'string') {
+            receivedJudgeEvaluations.push(lastUserMessage.content)
+          }
+          const isJudgeDone = isGoalJudgeCall
+            && Boolean(options.goalJudgeDoneForPrompt)
+            && JSON.stringify(parsed).includes(options.goalJudgeDoneForPrompt!)
           const isVerificationStopTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
           )
@@ -649,6 +678,18 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
+          // Deterministic judge DONE verdict — no continuation fires after it.
+          if (isJudgeDone) {
+            const verdict = { verdict: 'done', reason: 'E2E judge: completion criteria met' }
+            const verdictText = JSON.stringify(verdict)
+            if (stream) {
+              streamTextResponse(res, model, verdictText)
+            } else {
+              nonStreamingTextResponse(res, model, verdictText)
+            }
+            return
+          }
+
           if (stream) {
             const holdThisStream = Boolean(
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
@@ -706,6 +747,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         port,
         url,
         receivedPrompts,
+        receivedJudgeEvaluations,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),

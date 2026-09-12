@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { openAutomationComposerForEdit } from '@/store/automation-composer'
 import {
   runSessionControlAction,
   type SessionControlAction,
@@ -120,6 +121,11 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
 
     return (
       <>
+        <Item disabled={isBusy} onSelect={() => openAutomationComposerForEdit('heartbeat', sessionId)}>
+          <Codicon name="edit" size="0.8rem" />
+          <span>{ctrl.editHeartbeat}</span>
+        </Item>
+        <Sep />
         {heartbeat.status === 'active' && (
           <Item disabled={isBusy} onSelect={() => void handleAction('heartbeat.pause')}>
             <Codicon name="debug-pause" size="0.8rem" />

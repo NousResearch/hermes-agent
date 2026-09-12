@@ -2,12 +2,15 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import errno
 import logging
+import math
 import mimetypes
 import os
 import platform
 import re
 import signal
+import socket
 import subprocess
 from contextlib import suppress
 from functools import wraps
@@ -61,6 +64,44 @@ def _windows_listener_pids(port: int) -> list:
     result = subprocess.run(["netstat", "-ano", "-p", "TCP"], timeout=5, creationflags=windows_hide_flags(), **_RUN_TEXT)
     rows = (line.split() for line in result.stdout.splitlines())
     return _safe_ints(p[4] for p in rows if len(p) >= 5 and p[3] == "LISTENING" and p[1].endswith(f":{port}"))
+
+
+def _port_is_bindable(port: int) -> Optional[bool]:
+    """Whether the bridge address can be bound; ``None`` means the probe failed."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            # Match Node's server bind semantics: tolerate TIME_WAIT residue,
+            # while an active listener still keeps the port unavailable.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("127.0.0.1", port))
+        return True
+    except OSError as exc:
+        code = getattr(exc, "winerror", None) or exc.errno
+        if code in {errno.EACCES, errno.EADDRINUSE, 10013, 10048}:
+            return False
+        return None
+
+
+async def _wait_port_free(port: int, timeout: float = 10.0, interval: float = 0.2) -> bool:
+    """Wait for a bindable bridge port without blocking the event loop."""
+    safe_timeout = max(0.0, float(timeout))
+    safe_interval = max(0.01, float(interval))
+    max_rounds = max(1, math.ceil(safe_timeout / safe_interval))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + safe_timeout
+
+    for _ in range(max_rounds):
+        try:
+            bindable = await asyncio.to_thread(_port_is_bindable, port)
+        except Exception:
+            bindable = None
+        if bindable is True:
+            return True
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(safe_interval, remaining))
+    return False
 
 
 def _pid_looks_like_node_bridge(pid: int) -> bool:
@@ -350,6 +391,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._http_session = aiohttp.ClientSession()
         self._poll_task = asyncio.create_task(self._poll_messages())
 
+    def _bridge_health_matches(self, data: Any, disk_hash: str) -> bool:
+        """Whether health identifies a connected bridge with the expected code and config."""
+        if not isinstance(data, dict):
+            return False
+        running_hash = data.get("scriptHash", "")
+        return bool(
+            data.get("status") == "connected"
+            and running_hash
+            and disk_hash
+            and running_hash == disk_hash
+            and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts
+        )
+
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
         """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
         try:
@@ -360,15 +414,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if bridge_status != "connected":
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
-            running_hash, disk_hash = data.get("scriptHash", ""), _file_content_hash(bridge_path)
-            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
-                print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                self._mark_connected()
-                self._attach_to_bridge(None)  # Not managed by us
-                self._wire_plugin_handlers(None)
-                return True
-            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
-            print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
+            disk_hash = _file_content_hash(bridge_path)
+            if not self._bridge_health_matches(data, disk_hash):
+                running_hash = data.get("scriptHash", "")
+                stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
+                print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
+                return False
+            # A stale bridge can answer once while already exiting. Adopt it
+            # only after it stays healthy across a short liveness window.
+            await asyncio.sleep(0.3)
+            ok, confirmed = await self._probe_bridge_health()
+            if not ok or not self._bridge_health_matches(confirmed, disk_hash):
+                print(f"[{self.name}] Existing bridge disappeared during health re-check; restarting")
+                return False
+            print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+            self._mark_connected()
+            self._attach_to_bridge(None)  # Not managed by us
+            self._wire_plugin_handlers(None)
+            return True
         except Exception:
             pass  # Bridge not running, start a new one
         return False
@@ -456,6 +519,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        self._shutting_down = False
         if not self._preflight():
             return False
         bridge_path = Path(self._bridge_script)
@@ -474,7 +538,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return True
             _kill_stale_bridge_by_pidfile(self._session_path)
             _kill_port_process(self._bridge_port)
-            await asyncio.sleep(1)
+            if not await _wait_port_free(self._bridge_port, timeout=10.0):
+                logger.warning(
+                    "[%s] Port %s still busy after killing stale bridge; refusing to start a duplicate",
+                    self.name,
+                    self._bridge_port,
+                )
+                self._set_fatal_error(
+                    "whatsapp_bridge_port_busy",
+                    f"Bridge port {self._bridge_port} is still in use after stale-bridge cleanup; retrying automatically.",
+                    retryable=True,
+                )
+                return False
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
@@ -696,6 +771,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _poll_messages(self) -> None:
         while self._running:
+            if getattr(self, "_shutting_down", False):
+                break
             if not self._http_session or await self._report_bridge_exit():
                 break
             try:
@@ -713,6 +790,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if getattr(self, "_shutting_down", False):
+                    break
                 if await self._report_bridge_exit():
                     break
                 print(f"[{self.name}] Poll error: {e}")

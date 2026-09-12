@@ -408,6 +408,77 @@ _SPECS = [
               "routed to specialist profiles by description. Falls back "
               "to specify-style single-task promotion when the task "
               "doesn't benefit from fan-out. Uses auxiliary.kanban_decomposer."),
+    _cmd("workflow", children=("workflow_action", [
+        _cmd("create", [
+            _arg("workflow_id", help="Stable workflow identifier"),
+            _arg("--name", required=True, help="Human-readable workflow name"),
+            _TENANT,
+            _arg("--acceptance-task", required=True, help="Designated acceptance task id"),
+            _arg("--root-task", help="Optional root task id"),
+            _arg("--mutation-id", help="Idempotency key for this workflow mutation"),
+            _json_flag(),
+        ], help="Create an aggregate workflow"),
+        _cmd("show", [
+            _arg("workflow_id", help="Workflow identifier"),
+            _TENANT,
+            _arg("--generation", type=int, help="Read one immutable workflow generation"),
+            _arg("--outcomes", action="store_true", help="Include outcome history"),
+            _json_flag(),
+        ], help="Show an aggregate workflow"),
+        _cmd("add-member", [
+            _arg("workflow_id"), _arg("task_id"), _TENANT,
+            _arg("--stage-key", required=True),
+            _arg("--stage-role", required=True),
+            _arg("--required", action="store_true"),
+            _arg("--expected-version", required=True, type=int),
+            _arg("--mutation-id", required=True), _json_flag(),
+        ], help="Add a task to the active workflow generation"),
+        _cmd("remove-member", [
+            _arg("workflow_id"), _arg("task_id"), _TENANT,
+            _arg("--reason", required=True), _arg("--expected-version", required=True, type=int),
+            _arg("--mutation-id", required=True), _json_flag(),
+        ], help="Remove a task from the active workflow generation"),
+        _cmd("outcome", [
+            _arg("workflow_id"), _arg("task_id"), _arg("outcome"), _TENANT,
+            _arg("--run-id", type=int), _arg("--supersedes-outcome-id", type=int),
+            _arg("--summary"), _arg("--metadata", help="Outcome metadata JSON object"),
+            _arg("--expected-version", required=True, type=int),
+            _arg("--mutation-id", required=True), _json_flag(),
+        ], help="Record an outcome for an active workflow member"),
+        _cmd("subscribe", [
+            _arg("workflow_id"), _TENANT, _arg("--platform", required=True),
+            _arg("--chat-id", required=True), _arg("--notifier-profile", required=True),
+            _arg("--chat-type"), _arg("--thread-id"), _arg("--user-id"),
+            _arg("--delivery-metadata", help="Delivery metadata JSON object"),
+            _arg("--target-states", help="Target workflow states JSON array"),
+            _arg("--expected-version", required=True, type=int),
+            _arg("--mutation-id", required=True), _json_flag(),
+        ], help="Set the durable workflow notification destination"),
+        _cmd("reopen", [
+            _arg("workflow_id"), _TENANT, _arg("--acceptance-task", required=True),
+            _arg("--members", required=True, help="New generation members JSON array"),
+            _arg("--reason", required=True), _arg("--expected-version", required=True, type=int),
+            _arg("--mutation-id", required=True), _json_flag(),
+        ], help="Open a new workflow generation"),
+        _cmd("cancel", [
+            _arg("workflow_id"), _TENANT, _arg("--reason", required=True),
+            _arg("--expected-version", required=True, type=int),
+            _arg("--mutation-id", required=True), _json_flag(),
+        ], help="Cancel the active workflow generation"),
+        _cmd("disable", [
+            _arg("workflow_id"), _TENANT, _arg("--role", default="origin"),
+            _arg("--reason", required=True), _json_flag(),
+        ], help="Disable a workflow notification subscription"),
+        _cmd("skip", [
+            _arg("workflow_id"), _arg("event_id", type=int), _TENANT,
+            _arg("--role", default="origin"), _arg("--reason", required=True),
+            _arg("--expected-version", required=True, type=int),
+            _arg("--mutation-id", required=True), _json_flag(),
+        ], help="Skip the next pending workflow subscription event"),
+        _cmd("resume", [
+            _arg("workflow_id"), _TENANT, _arg("--role", default="origin"), _json_flag(),
+        ], help="Resume a dead-lettered workflow subscription"),
+    ]), help="Manage native aggregate workflows"),
     _cmd("gc", [
         _arg("--event-retention-days", type=int, default=30,
              help="Delete task_events older than N days for terminal tasks (default: 30)"),

@@ -10,6 +10,7 @@ in ``kanban_watchers_common``.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from pathlib import Path
@@ -35,6 +36,138 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
+
+
+class WorkflowAdapterUnavailable(RuntimeError):
+    """The workflow's stamped notifier profile has no live adapter."""
+
+
+def _format_workflow_notification(board: str, snapshot: dict[str, Any]) -> str:
+    """Render one aggregate snapshot; routing data never comes from members."""
+    workflow = snapshot.get("workflow") or {}
+    generation = workflow.get("active_generation")
+    title = f" — {workflow['name']}" if workflow.get("name") else ""
+    lines = [f"🧭 [{board}] Aggregate workflow {workflow.get('id', '<unknown>')}{title}"
+             + (f" (generation {generation})" if generation is not None else ""),
+             f"State: {workflow.get('state', 'UNKNOWN')}"]
+    outcomes = {row.get("task_id"): row for row in snapshot.get("outcomes") or []
+                if generation is None or row.get("generation") == generation}
+    for member in snapshot.get("members") or []:
+        if generation is not None and member.get("generation") not in (None, generation):
+            continue
+        task_id = str(member.get("task_id") or "")
+        line = f"- {member.get('stage_key') or member.get('stage_role') or 'stage'}: {task_id} ({member.get('task_status') or 'unknown'})"
+        if outcome := outcomes.get(task_id):
+            line += f" — {outcome.get('outcome')}"
+            if outcome.get("summary"):
+                line += f": {str(outcome['summary']).splitlines()[0][:180]}"
+        lines.append(line)
+    lines.append("Final acceptance is recorded for this workflow generation." if workflow.get("state") == "PASS" else "Final acceptance remains pending for this workflow generation.")
+    return "\n".join(lines)
+
+
+def _collect_workflow_notifications(kb, *, notifier_profile: str) -> list[dict[str, Any]]:
+    """Claim one due aggregate transition per workflow subscription."""
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+    try:
+        boards = kb.list_boards(include_archived=False)
+    except Exception:
+        boards = [kb.read_board_metadata(kb.DEFAULT_BOARD)]
+    deliveries: list[dict[str, Any]] = []
+    seen_db_paths: set[str] = set()
+    for board_meta in boards:
+        board = board_meta.get("slug") or kb.DEFAULT_BOARD
+        try:
+            db_path = str(kb.kanban_db_path(board).resolve())
+        except Exception:
+            db_path = f"board:{board}"
+        if db_path in seen_db_paths:
+            continue
+        seen_db_paths.add(db_path)
+        try:
+            if not kbn.count_workflow_subs(
+                board=board, notifier_profile=notifier_profile,
+            ):
+                logger.debug(
+                    "kanban workflow notifier: board %s has no subscriptions owned by %s; skipping open",
+                    board, notifier_profile,
+                )
+                continue
+        except Exception as exc:
+            logger.debug(
+                "kanban workflow notifier: read-only subscription probe failed for board %s (%s); "
+                "skipping board",
+                board, exc,
+            )
+            continue
+        try:
+            conn = kbc.connect(board=board)
+        except Exception as exc:
+            logger.debug("kanban workflow notifier: cannot open board %s: %s", board, exc)
+            continue
+        try:
+            subscriptions = conn.execute(
+                "SELECT * FROM kanban_workflow_subscriptions "
+                "WHERE notifier_profile=?", (notifier_profile,),
+            ).fetchall()
+            for row in subscriptions:
+                sub = dict(row)
+                old_cursor: Optional[int] = None
+                cursor: Optional[int] = None
+                try:
+                    old_cursor, cursor, events = kb.claim_workflow_events_for_subscription(
+                        conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin",
+                    )
+                    if not events:
+                        continue
+                    event = events[0]
+                    ledger = conn.execute(
+                        "SELECT response_json FROM kanban_workflow_mutations "
+                        "WHERE workflow_id=? AND mutation_id=?",
+                        (sub["workflow_id"], event["mutation_id"]),
+                    ).fetchone()
+                    if ledger is None:
+                        raise kb.WorkflowIntegrityError(
+                            "claimed workflow event has no immutable mutation response"
+                        )
+                    try:
+                        snapshot = json.loads(ledger["response_json"])
+                    except (TypeError, ValueError) as exc:
+                        raise kb.WorkflowIntegrityError(
+                            "claimed workflow mutation response is invalid"
+                        ) from exc
+                    workflow = snapshot.get("workflow") if isinstance(snapshot, dict) else None
+                    payload = event["payload"]
+                    if (not isinstance(workflow, dict)
+                            or workflow.get("id") != sub["workflow_id"]
+                            or int(workflow.get("version", -1)) != int(payload["resulting_version"])
+                            or int(workflow.get("active_generation", -1)) != int(event["generation"])
+                            or workflow.get("state") != payload["resulting_state"]):
+                        raise kb.WorkflowIntegrityError(
+                            "claimed workflow event does not match its immutable response"
+                        )
+                    deliveries.append({
+                        "sub": sub, "old_cursor": old_cursor, "cursor": cursor,
+                        "snapshot": snapshot, "board": board,
+                    })
+                except Exception as exc:
+                    if cursor is not None and old_cursor is not None and cursor != old_cursor:
+                        try:
+                            kb.fail_workflow_delivery(
+                                conn, workflow_id=sub["workflow_id"],
+                                role=sub.get("role") or "origin", claimed_cursor=cursor,
+                                old_cursor=old_cursor, error_class=type(exc).__name__,
+                            )
+                        except Exception:
+                            logger.exception("kanban workflow notifier could not rewind invalid claim")
+                    logger.warning("kanban workflow notifier: subscription for %s on board %s failed: %s",
+                                   sub.get("workflow_id"), board, exc)
+        except Exception as exc:
+            logger.debug("kanban workflow notifier: cannot collect board %s: %s", board, exc)
+        finally:
+            conn.close()
+    return deliveries
 
 
 class GatewayKanbanWatchersMixin:
@@ -96,17 +229,63 @@ class GatewayKanbanWatchersMixin:
                     _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
                     _retention = _gc_retention_days()
 
-                deliveries = await asyncio.to_thread(
-                    _notifier_collect, self, _kb,
-                    notifier_profile=notifier_profile, gc_due=_gc_due, gc_retention_days=_retention,
-                )
+                def collect_deliveries():
+                    task_deliveries = _notifier_collect(
+                        self, _kb, notifier_profile=notifier_profile,
+                        gc_due=_gc_due, gc_retention_days=_retention,
+                    )
+                    workflow_deliveries = _collect_workflow_notifications(
+                        _kb, notifier_profile=notifier_profile,
+                    ) if self.adapters else []
+                    return task_deliveries, workflow_deliveries
+
+                deliveries, workflow_deliveries = await asyncio.to_thread(collect_deliveries)
                 for d in deliveries:
                     await _KanbanNotification(
                         self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
                     ).deliver()
+                for delivery in workflow_deliveries:
+                    await self._deliver_workflow_notification(delivery, _Platform, _kb)
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             await self._sleep_between_ticks(interval)
+
+    async def _deliver_workflow_notification(self, delivery, platform_enum, kb) -> bool:
+        """Deliver a claimed workflow event with its subscription as sole routing authority."""
+        sub, board = delivery["sub"], delivery.get("board")
+        text = _format_workflow_notification(board or kb.DEFAULT_BOARD, delivery["snapshot"])
+        metadata = sub.get("delivery_metadata")
+        if isinstance(metadata, str):
+            try: metadata = json.loads(metadata)
+            except ValueError: metadata = {}
+        metadata = dict(metadata or {})
+        metadata["idempotency_key"] = f"workflow:{sub['workflow_id']}:event:{delivery['cursor']}"
+        try:
+            adapter = self._authorization_adapter(platform_enum(sub["platform"].lower()), sub.get("notifier_profile") or None)
+            if adapter is None:
+                raise WorkflowAdapterUnavailable("stamped workflow notifier profile has no live adapter")
+            result = await adapter.send(sub["chat_id"], text, metadata=metadata)
+            if getattr(result, "success", True) is False:
+                raise RuntimeError(getattr(result, "error", None) or "adapter rejected workflow notification")
+            def complete():
+                from hermes_cli import kanban_db_connect as kbc
+
+                conn = kbc.connect(board=board)
+                try: return kb.complete_workflow_delivery(conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin", claimed_cursor=delivery["cursor"])
+                finally: conn.close()
+            await asyncio.to_thread(complete)
+            return True
+        except Exception as exc:
+            def fail():
+                from hermes_cli import kanban_db_connect as kbc
+
+                conn = kbc.connect(board=board)
+                try: return kb.fail_workflow_delivery(conn, workflow_id=sub["workflow_id"], role=sub.get("role") or "origin", claimed_cursor=delivery["cursor"], old_cursor=delivery.get("old_cursor", 0), error_class=type(exc).__name__)
+                finally: conn.close()
+            try: await asyncio.to_thread(fail)
+            except Exception: logger.exception("kanban workflow notifier could not persist retry state")
+            logger.warning("kanban workflow notification retained for retry: %s", exc)
+            return False
 
     def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:
         """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription on its board."""

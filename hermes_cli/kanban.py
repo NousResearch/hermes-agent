@@ -13,6 +13,7 @@ import os
 import shlex
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -1229,6 +1230,123 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _workflow_actor(tenant: str) -> kb.KanbanActorContext:
+    profile = _profile_author()
+    return kb.KanbanActorContext(
+        principal_id=f"cli:{profile}", profile_name=profile,
+        board_identity=str(kb.kanban_db_path().resolve()), tenant=tenant,
+        capabilities=frozenset({"workflow.read", "workflow.manage", "workflow.outcome", "workflow.admin"}),
+        source_kind="cli",
+    )
+
+
+def _workflow_json_value(raw: Optional[str], *, flag: str, expected: type) -> object:
+    """Decode one workflow JSON flag without allowing an ambiguous scalar."""
+    try:
+        value = json.loads(raw or "")
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{flag} must be valid JSON") from exc
+    if not isinstance(value, expected):
+        kind = "object" if expected is dict else "array"
+        raise ValueError(f"{flag} must be a JSON {kind}")
+    return value
+
+
+def _cmd_workflow(args: argparse.Namespace) -> int:
+    """Run a native workflow operation with locally derived authority."""
+    actor = _workflow_actor(args.tenant)
+    mutation_id = getattr(args, "mutation_id", None) or f"cli-{uuid.uuid4().hex}"
+    action = args.workflow_action
+    metadata = (
+        _workflow_json_value(args.metadata, flag="--metadata", expected=dict)
+        if getattr(args, "metadata", None) is not None else None
+    )
+    delivery_metadata = (
+        _workflow_json_value(args.delivery_metadata, flag="--delivery-metadata", expected=dict)
+        if getattr(args, "delivery_metadata", None) is not None else None
+    )
+    target_states = (
+        _workflow_json_value(args.target_states, flag="--target-states", expected=list)
+        if getattr(args, "target_states", None) is not None else None
+    )
+    members = (
+        _workflow_json_value(args.members, flag="--members", expected=list)
+        if getattr(args, "members", None) is not None else None
+    )
+    with kbc.connect_closing() as conn:
+        if action == "show":
+            result = kb.get_workflow(
+                conn, args.workflow_id, actor=actor, include_events=True,
+                generation=args.generation, include_outcomes=args.outcomes,
+            )
+            if result is None:
+                raise ValueError(f"unknown workflow: {args.workflow_id}")
+        else:
+            operations = {
+                "create": lambda: kb.create_workflow(
+                    conn, workflow_id=args.workflow_id, name=args.name, tenant=args.tenant,
+                    designated_acceptance_task_id=args.acceptance_task, actor=actor,
+                    mutation_id=mutation_id, root_task_id=getattr(args, "root_task", None),
+                ),
+                "add-member": lambda: kb.add_workflow_member(
+                    conn, workflow_id=args.workflow_id, task_id=args.task_id,
+                    stage_key=args.stage_key, stage_role=args.stage_role, required=args.required,
+                    actor=actor, mutation_id=mutation_id, expected_version=args.expected_version,
+                ),
+                "remove-member": lambda: kb.remove_workflow_member(
+                    conn, workflow_id=args.workflow_id, task_id=args.task_id, actor=actor,
+                    mutation_id=mutation_id, expected_version=args.expected_version, reason=args.reason,
+                ),
+                "outcome": lambda: kb.record_workflow_outcome(
+                    conn, workflow_id=args.workflow_id, task_id=args.task_id, outcome=args.outcome,
+                    actor=actor, mutation_id=mutation_id, expected_version=args.expected_version,
+                    run_id=args.run_id, supersedes_outcome_id=args.supersedes_outcome_id,
+                    summary=args.summary, metadata=metadata,
+                ),
+                "subscribe": lambda: kb.set_workflow_subscription(
+                    conn, workflow_id=args.workflow_id, platform=args.platform, chat_id=args.chat_id,
+                    notifier_profile=args.notifier_profile, actor=actor, mutation_id=mutation_id,
+                    expected_version=args.expected_version, chat_type=args.chat_type,
+                    thread_id=args.thread_id, user_id=args.user_id,
+                    delivery_metadata=delivery_metadata, target_states=target_states,
+                ),
+                "reopen": lambda: kb.reopen_workflow(
+                    conn, workflow_id=args.workflow_id,
+                    designated_acceptance_task_id=args.acceptance_task, members=members or [],
+                    actor=actor, mutation_id=mutation_id, expected_version=args.expected_version,
+                    reason=args.reason,
+                ),
+                "cancel": lambda: kb.cancel_workflow(
+                    conn, workflow_id=args.workflow_id, actor=actor, mutation_id=mutation_id,
+                    expected_version=args.expected_version, reason=args.reason,
+                ),
+                "disable": lambda: kb.disable_workflow_subscription(
+                    conn, workflow_id=args.workflow_id, role=args.role, actor=actor, reason=args.reason,
+                ),
+                "skip": lambda: kb.skip_workflow_subscription_event(
+                    conn, workflow_id=args.workflow_id, event_id=args.event_id, role=args.role,
+                    actor=actor, mutation_id=mutation_id, expected_version=args.expected_version,
+                    reason=args.reason,
+                ),
+                "resume": lambda: kb.resume_workflow_subscription(
+                    conn, workflow_id=args.workflow_id, role=args.role, actor=actor,
+                ),
+            }
+            operation = operations.get(action)
+            if operation is None:
+                raise ValueError(f"unsupported workflow action: {action}")
+            result = operation()
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        workflow = result.get("workflow") if isinstance(result, dict) else None
+        if workflow is None:
+            print(f"Workflow subscription {args.workflow_id}/{getattr(args, 'role', 'origin')} updated")
+        else:
+            print(f"Workflow {workflow['id']}: {workflow['state']} v{workflow['version']} (generation {workflow['active_generation']})")
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1248,6 +1366,7 @@ _HANDLERS = {
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
+    "workflow": _cmd_workflow,
     "gc": _cmd_gc,
 }
 

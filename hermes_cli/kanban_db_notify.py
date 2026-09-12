@@ -240,6 +240,39 @@ def count_notify_subs(
         conn.close()
 
 
+def count_workflow_subs(
+    db_path: Optional[Path] = None,
+    *,
+    board: Optional[str] = None,
+    notifier_profile: str,
+) -> int:
+    """Count workflow subscriptions for one notifier profile read-only.
+
+    This is the workflow collector's zero-work gate: it neither creates a DB
+    nor runs schema initialization. Missing boards and pre-workflow schemas
+    have no eligible subscriptions; unreadable existing databases propagate so
+    the collector can fail closed for that board without a writable open.
+    """
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    if not path.exists():
+        return 0
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM kanban_workflow_subscriptions "
+                "WHERE notifier_profile=?",
+                (notifier_profile,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
 def remove_notify_sub(
     conn: sqlite3.Connection,
     *,

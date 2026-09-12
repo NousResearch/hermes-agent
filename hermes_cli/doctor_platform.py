@@ -129,8 +129,11 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
         else:
             check_info(f"{name}: rollback journal mode ({size}{', not exposed' if vulnerable else ''})")
     if unapplied:
-        check_info("To apply journal_mode=DELETE: stop every connection to the database "
-                   "(`hermes gateway stop`), then run a one-time offline `PRAGMA journal_mode=DELETE` on the file.")
+        check_info("To apply journal_mode=DELETE: stop every process holding the database — "
+                   "`hermes gateway stop --all` (every profile's gateway) AND `hermes dashboard --stop` "
+                   "(dashboard and `hermes serve`, a separate lifecycle) — then run a one-time offline "
+                   "`PRAGMA journal_mode=DELETE` on the file. The dashboard is a database holder too "
+                   "(#100896): converting while it is up leaves the setting unapplied.")
     if exposed:
         check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 

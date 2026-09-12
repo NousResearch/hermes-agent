@@ -143,6 +143,7 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    mcp_servers: List[Any] = field(default_factory=list)
 
 
 class SessionManager:
@@ -184,9 +185,18 @@ class SessionManager:
         if original is None:
             return None
         new_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
+        orig_mcp = getattr(original, "mcp_servers", None) or []
+        mcp_names = [
+            getattr(s, "name", None) or (s.get("name") if isinstance(s, dict) else str(s))
+            for s in orig_mcp
+        ]
+        agent = self._make_agent(
+            session_id=new_id, cwd=cwd, model=original.model or None,
+            mcp_server_names=[n for n in mcp_names if n],
+        )
         model = getattr(agent, "model", original.model) or original.model
         state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        state.mcp_servers = copy.deepcopy(orig_mcp)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -290,6 +300,11 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        if getattr(state, "mcp_servers", None):
+            session_meta["mcp_servers"] = [
+                s.model_dump() if hasattr(s, "model_dump") else (s.__dict__ if hasattr(s, "__dict__") else dict(s))
+                for s in state.mcp_servers
+            ]
 
         try:
             if db.get_session(state.session_id) is None:
@@ -343,6 +358,12 @@ class SessionManager:
 
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None
+        mcp_servers_raw = meta.get("mcp_servers") or []
+        mcp_names = [
+            s.get("name") if isinstance(s, dict) else getattr(s, "name", str(s))
+            for s in mcp_servers_raw
+        ]
+        mcp_names = [n for n in mcp_names if n]
 
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
@@ -356,21 +377,30 @@ class SessionManager:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
                 requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                base_url=meta.get("base_url") or row.get("billing_base_url"),
+                mcp_server_names=mcp_names or None)
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
                                     history, persist=False)
+        state.mcp_servers = list(mcp_servers_raw)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
     # ---- internal -----------------------------------------------------------
 
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
-                    requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None):
+                    requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
+                    mcp_server_names: list[str] | None = None):
         if self._agent_factory is not None:
-            return self._agent_factory()
+            agent = self._agent_factory()
+            if mcp_server_names:
+                agent.enabled_toolsets = _expand_acp_enabled_toolsets(
+                    getattr(agent, "enabled_toolsets", None) or ["hermes-acp"],
+                    mcp_server_names=mcp_server_names,
+                )
+            return agent
 
         from run_agent import AIAgent
         from hermes_cli.config import load_config
@@ -388,9 +418,13 @@ class SessionManager:
             name for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+        all_mcp_servers = list(configured_mcp_servers)
+        for name in (mcp_server_names or []):
+            if name and name not in all_mcp_servers:
+                all_mcp_servers.append(name)
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
-            "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
+            "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=all_mcp_servers),
             "model": model or default_model,
         }
         try:

@@ -337,10 +337,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             endpoint = {
                 "base_url": getattr(state.agent, "base_url", None), "api_mode": getattr(state.agent, "api_mode", None)
             }
+        mcp_names = [
+            getattr(s, "name", None) or (s.get("name") if isinstance(s, dict) else str(s))
+            for s in (getattr(state, "mcp_servers", None) or [])
+        ]
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id, cwd=state.cwd, model=new_model,
-            requested_provider=target_provider, **endpoint,
+            requested_provider=target_provider, mcp_server_names=[n for n in mcp_names if n], **endpoint,
         )
+        self._sync_agent_mcp_tools(state)
         self.session_manager.save_session(state.session_id)
         return current_provider, target_provider, new_model
 
@@ -405,18 +410,16 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             session_id, update, fail_msg="Could not send ACP session info update for %s", level=logging.DEBUG
         )
 
-    async def _register_session_mcp_servers(
-        self, state: SessionState, mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None
-    ) -> None:
-        """Register ACP-provided MCP servers and refresh the agent tool surface."""
-        if not mcp_servers:
+    def _sync_agent_mcp_tools(self, state: SessionState) -> None:
+        """Synchronize ACP-provided MCP tools onto the session agent's tool surface."""
+        if not getattr(state, "mcp_servers", None):
             return
-        try:
-            from tools.mcp_tool_discovery import register_mcp_servers
-
-            await asyncio.to_thread(register_mcp_servers, {s.name: _mcp_server_config(s) for s in mcp_servers})
-        except Exception:
-            logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
+        mcp_names = [
+            getattr(s, "name", None) or (s.get("name") if isinstance(s, dict) else str(s))
+            for s in state.mcp_servers
+        ]
+        mcp_names = [n for n in mcp_names if n]
+        if not mcp_names:
             return
         try:
             from model_tools import get_tool_definitions
@@ -425,24 +428,40 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             agent = state.agent
             agent.enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(agent, "enabled_toolsets", None) or ["hermes-acp"],
-                mcp_server_names=[s.name for s in mcp_servers],
+                mcp_server_names=mcp_names,
             )
             agent.tools = get_tool_definitions(
                 enabled_toolsets=agent.enabled_toolsets,
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True,
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
             )
             agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools or []}
             inject_memory_provider_tools(agent)
             if callable(invalidate := getattr(agent, "_invalidate_system_prompt", None)):
                 invalidate()
-            logger.info(
-                "Session %s: refreshed tool surface after ACP MCP registration (%d tools)",
-                state.session_id, len(agent.tools or []),
-            )
         except Exception:
-            logger.warning(
-                "Session %s: failed to refresh tool surface after ACP MCP registration", state.session_id, exc_info=True,
-            )
+            logger.warning("Session %s: failed to sync agent MCP tools", state.session_id, exc_info=True)
+
+    async def _register_session_mcp_servers(
+        self, state: SessionState, mcp_servers: list[McpServerStdio | McpServerHttp | McpServerSse] | None
+    ) -> None:
+        """Register ACP-provided MCP servers and refresh the agent tool surface."""
+        if not mcp_servers:
+            return
+        state.mcp_servers = list(mcp_servers)
+        try:
+            from tools.mcp_tool_discovery import register_mcp_servers
+
+            await asyncio.to_thread(register_mcp_servers, {s.name: _mcp_server_config(s) for s in mcp_servers})
+        except Exception:
+            logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
+            return
+        self._sync_agent_mcp_tools(state)
+        logger.info(
+            "Session %s: refreshed tool surface after ACP MCP registration (%d tools)",
+            state.session_id, len(getattr(state.agent, "tools", []) or []),
+        )
 
     def _schedule_mcp_late_refresh(self, state: SessionState) -> None:
         """Refresh the tool snapshot when background MCP discovery lands after agent build
@@ -632,7 +651,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if state is None:
             logger.info("Forked session %s -> %s", session_id, "")
             return ForkSessionResponse(session_id="")
-        await self._register_session_mcp_servers(state, mcp_servers)
+        servers_to_register = mcp_servers if mcp_servers is not None else getattr(state, "mcp_servers", None)
+        await self._register_session_mcp_servers(state, servers_to_register)
         logger.info("Forked session %s -> %s", session_id, state.session_id)
         self._schedule_available_commands_update(state.session_id)
         return ForkSessionResponse(
@@ -723,6 +743,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         Interactive routing is a ``tools.approval`` contextvar, not ``HERMES_INTERACTIVE`` in
         os.environ, so concurrent workers can't race a global flag onto the non-interactive
         auto-approve path (GHSA-96vc-wcxf-jjff)."""
+        if getattr(state, "mcp_servers", None):
+            self._sync_agent_mcp_tools(state)
         agent = state.agent
         with contextlib.ExitStack() as stack:
             # HERMES_SESSION_KEY scopes per-session caches (interactive sudo password) to this

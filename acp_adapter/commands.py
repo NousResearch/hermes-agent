@@ -136,8 +136,15 @@ class SlashCommandsMixin:
             from types import SimpleNamespace
             from agent.memory_manager import inject_memory_provider_tools
 
-            toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"])
-            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            mcp_names = [
+                getattr(s, "name", None) or (s.get("name") if isinstance(s, dict) else str(s))
+                for s in (getattr(state, "mcp_servers", None) or [])
+            ]
+            toolsets = _expand_acp_enabled_toolsets(
+                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
+                mcp_server_names=[n for n in mcp_names if n],
+            )
+            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True, skip_tool_search_assembly=True)
             tool_view = SimpleNamespace(
                 tools=list(tools or []),
                 valid_tool_names={t.get("function", {}).get("name") for t in tools or [] if isinstance(t, dict)},

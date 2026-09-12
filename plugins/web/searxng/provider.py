@@ -1,17 +1,38 @@
 """SearXNG search via a user-hosted instance (``/search?format=json``).
 
 Search-only — SearXNG aggregates upstream engines but does not fetch URLs.
-Env: ``SEARXNG_URL=http://localhost:8080``.
+Env: ``SEARXNG_URL=http://localhost:8080``. An empty result set is returned as a
+failure when SearXNG also reports unresponsive engines, since a hit list of zero
+is indistinguishable from "every engine that could have matched was down".
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from plugins.web._common import BaseWebSearchProvider, http_get_json, provider_env, search_fail, search_ok, setup_schema, titled_rows
 
 logger = logging.getLogger(__name__)
+
+# Engines named in the failure error / log line; the rest collapse to "and N more" so the
+# string is bounded by this constant, not by the instance's engine count.
+_MAX_ENGINES_NAMED = 10
+
+
+def _unresponsive_engines(data: Dict[str, Any]) -> List[Dict[str, str]]:
+    """SearXNG's ``unresponsive_engines`` is a list of ``[engine, reason]`` pairs
+    (searx/webutils.py ``get_translated_errors``). Anything that is not a >=2-item
+    list/tuple with a truthy first element is ignored, so a future shape change
+    degrades to today's behaviour instead of blacking out a self-hosted instance."""
+    raw = data.get("unresponsive_engines")
+    if not isinstance(raw, list):
+        return []
+    return [
+        {"engine": str(e[0]), "reason": str(e[1])}
+        for e in raw
+        if isinstance(e, (list, tuple)) and len(e) >= 2 and e[0]
+    ]
 
 
 class SearXNGWebSearchProvider(BaseWebSearchProvider):
@@ -35,7 +56,19 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         # SearXNG may return a score field; sort descending and cap to limit.
         sorted_results = sorted(raw_results, key=lambda r: float(r.get("score", 0)), reverse=True)[:limit]
         web_results = titled_rows(sorted_results, "content")
-        logger.info("SearXNG search '%s': %d results (from %d raw, limit %d)", query, len(web_results), len(raw_results), limit)
+        unresponsive = _unresponsive_engines(data)
+        detail = ", ".join(f"{u['engine']} ({u['reason']})" for u in unresponsive[:_MAX_ENGINES_NAMED])
+        if len(unresponsive) > _MAX_ENGINES_NAMED:
+            detail += f", and {len(unresponsive) - _MAX_ENGINES_NAMED} more"
+        if not web_results and unresponsive:
+            logger.warning("SearXNG search '%s': no results and %d unresponsive engine(s): %s", query, len(unresponsive), detail)
+            return search_fail(f"SearXNG returned no results and {len(unresponsive)} engine(s) were unresponsive: {detail}")
+        # Rows present: still a success. Engine suspensions persist across requests, so a partial
+        # outage stays at INFO rather than turning every search into an errors.log entry.
+        logger.info(
+            "SearXNG search '%s': %d results (from %d raw, limit %d)%s", query, len(web_results), len(raw_results), limit,
+            f"; {len(unresponsive)} unresponsive engine(s): {detail}" if unresponsive else "",
+        )
         return search_ok(web_results)
 
     def get_setup_schema(self) -> Dict[str, Any]:

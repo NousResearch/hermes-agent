@@ -227,6 +227,10 @@ curl -s "http://localhost:8888/search?q=test&format=json" | python3 -c \
 
 You should see something like `10 results`. If you get a `403 Forbidden`, JSON format is still disabled — recheck step 4.
 
+:::note Unresponsive engines
+The JSON reply also carries `unresponsive_engines` — every engine that failed this request: ones SearXNG has suspended after a CAPTCHA, `429` or `403` (`Suspended: ...`), and ones that merely timed out or returned an HTTP/parsing error on this one call. A reply with **no results and at least one unresponsive engine** is treated as a failed search, not an empty one: the error names each engine and reason (up to 10, then `and N more`), and with `web.keyless_rescue` on (the default) that single call is retried on the keyless free-tier ring, so the query leaves your instance. Set `web.keyless_rescue: false` to keep every query on your own instance — the model then sees the engine/reason list instead of an empty result. An empty reply with no unresponsive engines is still an ordinary empty success.
+:::
+
 **7. Configure Hermes:**
 
 ```bash
@@ -423,7 +427,7 @@ If no backend has **ever** been selected (no `web.backend` / per-capability key 
 
 **Keyless free-tier ring:** when *no* credential above is present, requests rotate across the ring vendors' public free tiers (Exa, Parallel, Firecrawl, Keenable) so web tools work on a fresh install with zero setup — and a rate-limited request fails over to the next vendor in the ring automatically. Pin one vendor in `hermes tools` to stop the rotation (the ring is then only used as failover succession on throttles). All free tiers are vendor-rate-limited under burst load; sustained normal usage goes through fine. Set `web.keyless_fallback: false` to turn the tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
 
-**One-shot keyless rescue for keyed backends:** when your chosen/keyed backend fails a call (bad key, outage, upstream 5xx), that single call automatically retries on the keyless free-tier ring instead of erroring — the result notes which vendor served it and why (`rescued_from` / `backend_error`). The failover is never sticky: the very next `web_search`/`web_extract` call attempts your chosen backend again. Disable with `web.keyless_rescue: false` (also off whenever `keyless_fallback` is off).
+**One-shot keyless rescue for keyed backends:** when your chosen/keyed backend fails a call (bad key, outage, upstream 5xx, a SearXNG reply with no results and unresponsive engines), that single call automatically retries on the keyless free-tier ring instead of erroring — the result notes which vendor served it and why (`rescued_from` / `backend_error`). The failover is never sticky: the very next `web_search`/`web_extract` call attempts your chosen backend again. Disable with `web.keyless_rescue: false` (also off whenever `keyless_fallback` is off).
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 
@@ -461,6 +465,7 @@ This prints the active backend and its status:
 - Check `SEARXNG_URL` is reachable: `curl -s "http://localhost:8888/search?q=test&format=json"`
 - If you get HTTP 403, JSON format is disabled — add `json` to the `formats` list in `settings.yml` and restart
 - If you get a connection error, the container may not be running: `docker ps | grep searxng`
+- If the error reads `SearXNG returned no results and N engine(s) were unresponsive: ...`, the instance answered but every listed engine failed this request (suspended after a CAPTCHA/`429`/`403`, or a one-off timeout) and nothing else matched — see the *Unresponsive engines* note under [Option A](#option-a--self-host-with-docker-recommended), step 6
 
 ### `web_extract` says "search-only backend"
 
@@ -474,7 +479,7 @@ web:
 
 ### SearXNG returns 0 results
 
-Some public instances disable certain search engines or categories. Try:
+An empty reply is a success only when SearXNG reports no unresponsive engines; with any engine unresponsive it is a `{"success": false}` error instead (see above). Some public instances disable certain search engines or categories. Try:
 - A different query
 - A different public instance from [searx.space](https://searx.space/)
 - Self-hosting your own instance for reliable results

@@ -14,9 +14,11 @@ import {
   $currentReasoningEffort,
   $messages,
   $selectedStoredSessionId,
-  $turnStartedAt
+  $sessions,
+  $turnStartedAt,
+  idsShareLineage
 } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $sessionStates, $workingSessionIds } from '@/store/session-states'
 
 import { lastVisibleMessageIsUser } from './thread-loading'
 
@@ -82,14 +84,39 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
 const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $messages)
 
 /**
- * Turn-busy for the workspace pane. A selected stored session that has no
- * slice yet (cold resume) must stay idle — the global `$busy` atom is a
- * leftover from whichever session last published, and inheriting it is how
- * focusing B while A runs marked B busy. The draft atom is only for a true
- * new chat (no stored id) so the first-send optimistic lock still paints.
+ * Turn-busy for the workspace pane.
+ *
+ * The slice is authoritative only for the session the pane actually SHOWS.
+ * `$primaryState` keys on `$activeSessionId` (the bound runtime) while the
+ * composer and its queue key on the selected/routed STORED id, and a switch
+ * moves those at different times: selection lands at once, the runtime rebinds
+ * a beat later behind an awaited `session.activate`. In that window the slice
+ * still describes the session the user just LEFT.
+ *
+ * That gap is the queued-prompt bug: queue a turn in A while A runs, switch to
+ * idle B, switch back. Selection is A, the runtime is still B, so the pane
+ * inherits B's `busy: false` — and `shouldAutoDrain` reads exactly this atom,
+ * firing A's queued prompts into A's live turn. Treating "no slice yet" (cold
+ * resume) as idle had the same effect.
+ *
+ * So trust the slice only when it belongs to the selected conversation, else
+ * fall back to `$workingSessionIds`: the per-session projection the sidebar arc
+ * paints from, published under every lineage alias, so it survives both the
+ * slice gap and compression tip rotation. `$busy` stays DRAFT-only (no stored
+ * id) for the first-send optimistic lock — it mirrors whichever session last
+ * published and must never be inherited by a stored session.
  */
-const $primaryBusy = computed([$primaryState, $busy, $selectedStoredSessionId], (state, draftBusy, selected) =>
-  state ? state.busy : selected ? false : draftBusy
+const $primaryBusy = computed(
+  [$primaryState, $busy, $selectedStoredSessionId, $workingSessionIds, $sessions],
+  (state, draftBusy, selected, working, sessions) => {
+    if (!selected) {
+      return state ? state.busy : draftBusy
+    }
+
+    return state?.storedSessionId && idsShareLineage(state.storedSessionId, selected, sessions)
+      ? state.busy
+      : working.includes(selected)
+  }
 )
 
 export const PRIMARY_SESSION_VIEW: SessionView = {

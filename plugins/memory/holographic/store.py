@@ -8,6 +8,20 @@ from pathlib import Path
 
 from . import holographic as hrr
 
+# --- Chinese word segmentation (jieba) for FTS5 compatibility ---
+_CJK_RE = re.compile(r'[\u4e00-\u9fff]')
+
+def _segment(text: str) -> str:
+    """Segment CJK text with jieba so FTS5 can tokenize Chinese words.
+    Non-CJK text passes through unchanged. Returns text with spaces around CJK words."""
+    try:
+        import jieba
+    except ImportError:
+        return text
+    if not text or not _CJK_RE.search(text):
+        return text
+    return ' '.join(jieba.cut(text))
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,9 +156,11 @@ class MemoryStore:
 
     def add_fact(self, content: str, category: str = "general", tags: str = "") -> int:
         """Insert a fact and return its fact_id; on duplicate content (UNIQUE) return the existing fact_id untouched.
+        Content and tags are segmented with jieba for CJK FTS5 tokenization.
         Links extracted entities and rebuilds the category bank."""
         with self._lock:
-            content = content.strip()
+            content = _segment(content.strip())
+            tags = _segment(tags.strip())
             if not content:
                 raise ValueError("content must not be empty")
             try:
@@ -165,7 +181,9 @@ class MemoryStore:
             if row is None:
                 return False
             changes = {col: val for col, val in {
-                "content": content.strip() if content is not None else None, "tags": tags, "category": category,
+                "content": _segment(content.strip()) if content is not None else None,
+                "tags": _segment(tags.strip()) if tags is not None else None,
+                "category": category,
                 "trust_score": _clamp_trust(row["trust_score"] + trust_delta) if trust_delta is not None else None,
             }.items() if val is not None}
             assignments = ", ".join(["updated_at = CURRENT_TIMESTAMP"] + [f"{col} = ?" for col in changes])

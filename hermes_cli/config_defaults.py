@@ -2538,6 +2538,20 @@ OPTIONAL_ENV_VARS = {
     "AZURE_FOUNDRY_BASE_URL": _prov(
         "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
         "Azure Foundry base URL", None, password=False),
+    "CLOUDFLARE_API_TOKEN": _prov(
+        "Cloudflare API token for Workers AI (Account → Workers AI → Read)",
+        "Cloudflare Workers AI API token",
+        "https://developers.cloudflare.com/workers-ai/get-started/rest-api/"),
+    "CLOUDFLARE_API_KEY": _prov(
+        "Cloudflare API token alias (same as CLOUDFLARE_API_TOKEN)",
+        "Cloudflare Workers AI API key",
+        "https://developers.cloudflare.com/workers-ai/get-started/rest-api/"),
+    "CLOUDFLARE_ACCOUNT_ID": _prov(
+        "Cloudflare account ID used to build the Workers AI OpenAI-compatible URL",
+        "Cloudflare Account ID",
+        "https://developers.cloudflare.com/workers-ai/get-started/rest-api/",
+        password=False),
+    "CLOUDFLARE_BASE_URL": _base_url("Cloudflare Workers AI"),
     # ── Tool API keys ──
     "EXA_API_KEY": _tool("Exa API key for AI-native web search and contents", "Exa API key",
         "https://exa.ai/", tools=["web_search", "web_extract"]),

@@ -1,0 +1,5 @@
+name: workers-ai-provider
+kind: model-provider
+version: 1.0.0
+description: Cloudflare Workers AI — OpenAI-compatible edge inference
+author: Nous Research

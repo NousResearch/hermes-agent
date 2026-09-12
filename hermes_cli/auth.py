@@ -1882,6 +1882,16 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     else:
         base_url = env_url or pconfig.inference_base_url
+        if not base_url:
+            try:
+                from providers import get_provider_profile
+                _prof = get_provider_profile(provider_id)
+            except Exception:
+                _prof = None
+            if _prof is not None:
+                base_url = (
+                    _prof.resolve_base_url(api_key, pconfig.inference_base_url, env_url) or base_url
+                )
     actual_local_noauth = False
     if provider_id == "actual":
         base_url = normalize_actual_base_url(base_url)
@@ -2109,6 +2119,14 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     env_url = _provider_env_base_url(pconfig)
     resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
     base_url = resolve_url(api_key, pconfig.inference_base_url, env_url)
+    if not _nonempty_str(base_url):
+        try:
+            from providers import get_provider_profile
+            _prof = get_provider_profile(provider_id)
+        except Exception:
+            _prof = None
+        if _prof is not None:
+            base_url = _prof.resolve_base_url(api_key, pconfig.inference_base_url, env_url)
     # An API-key provider must never hand back an empty base URL (a set-but-empty
     # COPILOT_API_BASE_URL or similar env override otherwise wedges chat inference).
     if not _nonempty_str(base_url):

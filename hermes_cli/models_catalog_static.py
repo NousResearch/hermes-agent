@@ -278,6 +278,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     # Azure Foundry models depend on the user's endpoint configuration.
     "azure-foundry": [],
+    "workers-ai": [
+        "@cf/moonshotai/kimi-k2.6", "@cf/moonshotai/kimi-k2.7-code",
+        "@cf/zai-org/glm-5.3", "@cf/zai-org/glm-5.3-flash", "@cf/zai-org/glm-5.2",
+        "@cf/zai-org/glm-4.7-flash", "@cf/google/gemma-4-26b-a4b-it",
+        "@cf/deepseek-ai/deepseek-v4-flash-0731", "@cf/deepseek-ai/deepseek-v4-pro-0813",
+        "@cf/ibm-granite/granite-4.0-h-micro",
+    ],
     # Vertex's OpenAI-compatible endpoint has no /models route, so without this the /model picker
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
@@ -347,6 +354,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("bedrock", "AWS Bedrock", "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ("azure-foundry", "Azure Foundry", "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ("ai-gateway", "Vercel AI Gateway", "Vercel AI Gateway (Multi-model aggregator)"),
+    ("workers-ai", "Cloudflare Workers AI", "Cloudflare Workers AI (OpenAI-compatible edge inference, @cf/ model ids)"),
     ("qwen-oauth", "Qwen OAuth (Portal)", "Qwen OAuth (Reuses local Qwen CLI login)"),
 )]
 
@@ -473,6 +481,11 @@ _PROVIDER_ALIASES = dict((
     ("lm_studio", "lmstudio"),
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
+    ("cloudflare", "workers-ai"),
+    ("cloudflare-workers-ai", "workers-ai"),
+    ("cf-workers-ai", "workers-ai"),
+    ("workersai", "workers-ai"),
+    ("cloudflare-ai", "workers-ai"),
 ))
 
 
@@ -516,7 +529,7 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # entries lead, curated-only append). Every OTHER provider keeps curated-first so a deliberately
 # surfaced newest model stays on top when the live API lags. Zen/Go re-expose dozens of vendors
 # and rotate them often, so their stale curated entries must not pollute the top.
-_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "meta-ai"})
+_LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "meta-ai", "workers-ai"})
 
 
 # Models supporting OpenAI Priority Processing (service_tier="priority"; see

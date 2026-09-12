@@ -141,6 +141,18 @@ class ProviderProfile:
             return urlparse(self.base_url).hostname or ""
         return ""
 
+    def resolve_base_url(
+        self, api_key: str = "", default_url: str = "", env_override: str = "",
+    ) -> str:
+        """Runtime inference base URL.
+
+        Default: *env_override*, else *default_url*, else ``self.base_url``.
+        Override for account-scoped or key-derived endpoints (Workers AI
+        interpolates ``CLOUDFLARE_ACCOUNT_ID``). Must be cheap — no network.
+        Signature matches ``_API_KEY_BASE_URL_RESOLVERS``.
+        """
+        return (env_override or default_url or self.base_url or "").rstrip("/")
+
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Provider-specific message preprocessing.
 

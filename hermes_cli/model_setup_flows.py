@@ -32,6 +32,68 @@ def _env_base_url(base_url_env: str) -> str:
     return get_env_value(base_url_env) or os.getenv(base_url_env, "")
 
 
+def _workers_ai_url_for_account(account_id: str) -> str:
+    account = (account_id or "").strip().strip("\"'")
+    return f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1" if account else ""
+
+
+def _stored_cloudflare_account_id() -> str:
+    from hermes_cli.config import get_env_value
+    return (get_env_value("CLOUDFLARE_ACCOUNT_ID") or os.getenv("CLOUDFLARE_ACCOUNT_ID", "")).strip().strip("\"'")
+
+
+def _prompt_workers_ai_account_id() -> str:
+    """Keep/Replace (or first-time entry) for CLOUDFLARE_ACCOUNT_ID. Empty string aborts."""
+    from hermes_cli.config import save_env_value
+
+    existing = _stored_cloudflare_account_id()
+    if not existing:
+        _say(
+            "",
+            "No Cloudflare Account ID configured.",
+            "  Copy it from the Workers AI dashboard:",
+            "  https://dash.cloudflare.com/?to=/:account/workers-ai",
+            "",
+        )
+        entered = _ask("  CLOUDFLARE_ACCOUNT_ID (or Enter to cancel): ", raw=True, cancel_msg="")
+        if entered is None:
+            return ""
+        account = str(entered).strip().strip("\"'")
+        if not account:
+            print("  Cancelled — CLOUDFLARE_ACCOUNT_ID is required.")
+            return ""
+        save_env_value("CLOUDFLARE_ACCOUNT_ID", account)
+        # Account ID owns the endpoint in this menu; drop a stale URL override.
+        save_env_value("CLOUDFLARE_BASE_URL", "")
+        _say("  Account ID saved.", "")
+        return account
+
+    print(f"  Cloudflare Account ID: {existing} ✓")
+    choice = _ask("  [K]eep / [R]eplace (default K): ", raw=True, cancel_msg="", on_cancel="k")
+    if choice is None:
+        return ""
+    if str(choice).lower().startswith("r"):
+        entered = _ask("  CLOUDFLARE_ACCOUNT_ID (or Enter to cancel): ", raw=True, cancel_msg="")
+        if entered is None:
+            return ""
+        account = str(entered).strip().strip("\"'")
+        if not account:
+            _say("  No change.", "")
+            return existing
+        save_env_value("CLOUDFLARE_ACCOUNT_ID", account)
+        save_env_value("CLOUDFLARE_BASE_URL", "")
+        _say("  Account ID updated.", "")
+        return account
+    print()
+    return existing
+
+
+def _workers_ai_effective_base(current_base: str = "", pconfig=None) -> str:
+    """Prompt for Account ID (always) and return the constructed Workers AI URL."""
+    account = _prompt_workers_ai_account_id()
+    return _workers_ai_url_for_account(account)
+
+
 def _prompt_base_url_override(effective_base: str, base_url_env: str, *, persist_env: bool = True) -> str:
     """Optional ``Base URL [...]`` prompt; a valid override is saved to *base_url_env*."""
     from hermes_cli.config import save_env_value
@@ -876,12 +938,28 @@ def _novita_models(pconfig, curated, api_key, base_url):
     return curated
 
 
+def _workers_ai_models(pconfig, curated, api_key, base_url):
+    """Live Workers AI catalog (models/search), then curated offline floor."""
+    from providers import get_provider_profile
+    profile = get_provider_profile("workers-ai")
+    live = None
+    if profile is not None and api_key:
+        live = profile.fetch_models(api_key=api_key, base_url=base_url)
+    if live:
+        _report_live_models(live, "Workers AI catalog")
+        seen = set(live)
+        return list(live) + [mid for mid in curated if mid not in seen]
+    _show_curated(curated)
+    return curated
+
+
 # provider id -> (pconfig, curated, api_key_for_probe, effective_base) -> model list
 _SPECIAL_MODEL_LISTS = {
     "lmstudio": _lmstudio_models,
     "ollama-cloud": _ollama_cloud_models,
     "opencode-free": _opencode_free_models,
-    "novita": _novita_models}
+    "novita": _novita_models,
+    "workers-ai": _workers_ai_models}
 
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
@@ -930,7 +1008,24 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print("  OpenCode Free is keyless — no API key or account needed.")
         existing_key = ""
     else:
-        _, existing_key, abort = _ensure_flow_api_key(provider_id, pconfig)
+        missing_hint = ()
+        if provider_id == "workers-ai":
+            _say(
+                "",
+                "Cloudflare Workers AI",
+                "=" * 50,
+                "",
+                "Needs a Cloudflare API token (Account → Workers AI → Read)",
+                "and your Account ID from the Workers AI dashboard.",
+                "",
+            )
+            missing_hint = (
+                "  Create a token at: https://dash.cloudflare.com/profile/api-tokens",
+                "  Prefilled: Workers AI dashboard → Use REST API.",
+                "",
+            )
+        _, existing_key, abort = _ensure_flow_api_key(
+            provider_id, pconfig, missing_hint=missing_hint)
         if abort:
             return
     if provider_id == "gemini" and existing_key and not _gemini_tier_ok(existing_key, pconfig, base_url_env):
@@ -960,6 +1055,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         if chosen_base and chosen_base != effective_base and base_url_env:
             save_env_value(base_url_env, chosen_base)
         effective_base = chosen_base
+    elif provider_id == "workers-ai":
+        effective_base = _workers_ai_effective_base(current_base, pconfig)
+        if not effective_base:
+            return
     else:
         effective_base = _prompt_base_url_override(effective_base, base_url_env, persist_env=provider_id != "actual")
 

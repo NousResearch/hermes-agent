@@ -663,10 +663,11 @@ def _emit_post_tool_call_hook(
     task_id: Optional[str] = None, session_id: Optional[str] = None, tool_call_id: Optional[str] = None,
     turn_id: Optional[str] = None, api_request_id: Optional[str] = None, duration_ms: int = 0,
     status: Optional[str] = None, error_type: Optional[str] = None, error_message: Optional[str] = None,
-    middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    middleware_trace: Optional[List[Dict[str, Any]]] = None, agent: Any = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook; gated on has_hook, and ok/error
-    fields are derived from the result only past that gate when status is None."""
+    fields are derived from the result only past that gate when status is None.
+    A valid ``halt_turn`` return is recorded as a side-channel and never replaces *result*."""
     if _post_tool_call_hook_suppressed.get():
         return
     try:
@@ -675,12 +676,19 @@ def _emit_post_tool_call_hook(
             return
         if status is None:
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
-        invoke_hook(
+        hook_results = invoke_hook(
             "post_tool_call", tool_name=function_name, args=function_args, result=result,
             **_CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id).hook_kwargs(),
             duration_ms=duration_ms, status=status, error_type=error_type, error_message=error_message,
             middleware_trace=list(middleware_trace or []),
         )
+        try:
+            from hermes_cli.plugins import get_plugin_halt_turn_response, note_plugin_halt_turn
+            halt = get_plugin_halt_turn_response(hook_results)
+            if halt:
+                note_plugin_halt_turn(agent, halt)
+        except Exception:
+            pass
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
 

@@ -630,6 +630,7 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
             ref.args,
             **tool_hook_ids(agent, ref.task_id, ref.call_id),
             middleware_trace=list(ref.trace),
+            agent=agent,
         )
         return block_msg, (ref.args if modified_args is None else modified_args)
     except Exception:

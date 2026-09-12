@@ -1767,6 +1767,82 @@ class _PreToolCallDirective:
     modified_args: Optional[Dict[str, Any]] = None
 
 
+_pending_plugin_halt_turn: Optional[str] = None
+
+
+def _halt_turn_response_text(result: Any) -> Optional[str]:
+    """Return the halt text when *result* is a valid ``halt_turn`` directive."""
+    if not isinstance(result, dict):
+        return None
+    action = result.get("action")
+    if not isinstance(action, str) or action.strip() != "halt_turn":
+        return None
+    for key in ("response", "message"):
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def get_plugin_halt_turn_response(results: Any) -> Optional[str]:
+    """First valid ``halt_turn`` in registration order wins; invalid returns are ignored."""
+    if not results:
+        return None
+    for result in results:
+        text = _halt_turn_response_text(result)
+        if text is not None:
+            return text
+    return None
+
+
+def _current_turn_agent() -> Any:
+    """Live agent bound for this turn via ``bind_subagent_parent`` (existing ContextVar)."""
+    try:
+        from agent.subagent_lifecycle import get_active_subagent_parent
+        return get_active_subagent_parent()
+    except Exception:
+        return None
+
+
+def note_plugin_halt_turn(agent: Any, response: Optional[str]) -> None:
+    """Set the per-turn plugin-halt flag; the first valid response wins."""
+    global _pending_plugin_halt_turn
+    if not isinstance(response, str) or not response.strip():
+        return
+    target = agent if agent is not None else _current_turn_agent()
+    if target is not None:
+        if getattr(target, "_plugin_halt_turn_response", None):
+            return
+        target._plugin_halt_turn_response = response
+        return
+    if not _pending_plugin_halt_turn:
+        _pending_plugin_halt_turn = response
+
+
+def consume_plugin_halt_turn(agent: Any = None) -> Optional[str]:
+    """Return the first-wins halt text, attaching any pending fallback onto *agent*."""
+    global _pending_plugin_halt_turn
+    if agent is not None:
+        text = getattr(agent, "_plugin_halt_turn_response", None)
+        if isinstance(text, str) and text.strip():
+            return text
+        pending = _pending_plugin_halt_turn
+        _pending_plugin_halt_turn = None
+        if isinstance(pending, str) and pending.strip():
+            note_plugin_halt_turn(agent, pending)
+            return getattr(agent, "_plugin_halt_turn_response", None)
+        return None
+    pending = _pending_plugin_halt_turn
+    _pending_plugin_halt_turn = None
+    return pending if isinstance(pending, str) and pending.strip() else None
+
+
+def clear_plugin_halt_turn_pending() -> None:
+    """Drop a leftover pending halt at turn start so it cannot leak across turns."""
+    global _pending_plugin_halt_turn
+    _pending_plugin_halt_turn = None
+
+
 def set_thread_tool_whitelist(
     allowed: Optional[Set[str]],
     deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
@@ -1785,7 +1861,8 @@ def _get_pre_tool_call_directive_details(
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
-    the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
+    the tool result), ``{"action": "halt_turn", "response"|"message"}`` (veto + end the current
+    turn), or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
     human-approval gate; ``rule_key`` picks the ``[a]lways`` allowlist grain). First valid directive
     wins; irrelevant returns are ignored."""
     allowed = getattr(_thread_tool_whitelist, "allowed", None)
@@ -1812,6 +1889,9 @@ def _get_pre_tool_call_directive_details(
                 modified_args = {**(modified_args if modified_args is not None else
                                     (args if isinstance(args, dict) else {})), **partial}
             continue
+        halt_text = _halt_turn_response_text(result)
+        if halt_text is not None:
+            return _PreToolCallDirective(action="halt_turn", message=halt_text, modified_args=modified_args)
         if action not in ("block", "approve"):
             continue
         message = result.get("message")
@@ -1828,8 +1908,9 @@ def _get_pre_tool_call_directive_details(
 def get_pre_tool_call_directive(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> tuple[Optional[str], Optional[str]]:
-    """Back-compat: ``(directive, message)`` with directive ``"block"`` / ``"approve"`` / ``None``.
-    ``hook_kwargs`` are the observability ids of :func:`_get_pre_tool_call_directive_details`."""
+    """Back-compat: ``(directive, message)`` with directive ``"block"`` / ``"approve"`` /
+    ``"halt_turn"`` / ``None``. ``hook_kwargs`` are the observability ids of
+    :func:`_get_pre_tool_call_directive_details`."""
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     return (details.action, details.message)
 
@@ -1854,9 +1935,10 @@ def _resolve_block_from_details(
     details: "_PreToolCallDirective", tool_name: str, *, turn_id: str = "", tool_call_id: str = "",
     session_id: str = "",
 ) -> Optional[str]:
-    """The ONE place for the fail-closed approval logic: ``block`` blocks with its message; an
-    ``approve`` whose gate errors, denies, or times out is blocked; anything else proceeds."""
-    if details.action == "block":
+    """The ONE place for the fail-closed approval logic: ``block`` and ``halt_turn`` block with
+    their message; an ``approve`` whose gate errors, denies, or times out is blocked; anything
+    else proceeds."""
+    if details.action in ("block", "halt_turn"):
         return details.message
     if details.action != "approve":
         return None
@@ -1886,10 +1968,14 @@ def _dispatch_pre_tool_call_hooks(
     tool_name: str, args: Optional[Dict[str, Any]], **hook_kwargs: Any
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Invoke ``pre_tool_call`` hooks once; return ``(block_message, modified_args)`` — the resolved
-    block/approve message (``None`` to proceed) and merged ``modify`` args (``None`` if none)."""
+    block/approve/halt message (``None`` to proceed) and merged ``modify`` args (``None`` if none).
+    Optional ``agent=`` (popped, not forwarded to hooks) receives a ``halt_turn`` flag."""
+    agent = hook_kwargs.pop("agent", None)
     details = _get_pre_tool_call_directive_details(tool_name, args, **hook_kwargs)
     block_msg = _resolve_block_from_details(
         details, tool_name, **{k: hook_kwargs.get(k, "") for k in ("turn_id", "tool_call_id", "session_id")})
+    if details.action == "halt_turn" and details.message:
+        note_plugin_halt_turn(agent, details.message)
     return (block_msg, details.modified_args)
 
 

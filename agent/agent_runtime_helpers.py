@@ -2217,6 +2217,7 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
             middleware_trace=list(middleware_trace),
+            agent=agent,
         )
         return block_message, (modified_args if modified_args is not None else function_args)
     except Exception:

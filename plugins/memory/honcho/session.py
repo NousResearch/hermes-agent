@@ -65,6 +65,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
+        self._client_config_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
         # honcho_session_id -> author peer IDs already joined to that session.
         self._joined_author_peers: dict[str, set[str]] = {}
@@ -110,8 +111,17 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
 
         See #69123, #74065.
         """
-        self._honcho = get_honcho_client(self._config)
-        return self._honcho
+        with self._client_config_lock:
+            current = get_honcho_client(self._config)
+            with self._cache_lock:
+                if self._honcho is None:
+                    self._honcho = current
+                elif current is not self._honcho:
+                    self._honcho = current
+                    self._client_generation += 1
+                    self._peers_cache.clear()
+                    self._sessions_cache.clear()
+            return current
 
     # ----- SDK object caches (generation-guarded against client rebuilds) -----
 
@@ -154,11 +164,28 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             ]
             self._authed_call("session peer setup", lambda: self._sdk_session(session_id).add_peers(peer_entries))
 
-            def _adopt_server_config() -> None:
+            def _sync_observation_config() -> None:
                 server_cfgs = self._authed_call(
                     "peer configuration read",
                     lambda: [self._sdk_session(session_id).get_peer_configuration(peer) for _, peer in peers],
                 )
+                if getattr(self._config, "observation_explicit", False) is True:
+                    updates = [
+                        (peer, local_cfg)
+                        for (_, peer), (_, local_cfg), server_cfg in zip(peers, peer_entries, server_cfgs)
+                        if (server_cfg.observe_me, server_cfg.observe_others)
+                        != (local_cfg.observe_me, local_cfg.observe_others)
+                    ]
+                    # Disable observers before enabling replacements so the server limit is not exceeded.
+                    updates.sort(key=lambda update: update[1].observe_others is True)
+                    for peer, local_cfg in updates:
+                        self._authed_call(
+                            "peer configuration update",
+                            lambda peer=peer, local_cfg=local_cfg: self._sdk_session(session_id).set_peer_configuration(
+                                peer, local_cfg
+                            ),
+                        )
+                    return
                 for (kind, _), server_cfg in zip(peers, server_cfgs):
                     for field_name in ("observe_me", "observe_others"):
                         value = getattr(server_cfg, field_name)
@@ -167,7 +194,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 logger.debug("Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
                              self._user_observe_me, self._user_observe_others, self._ai_observe_me, self._ai_observe_others)
 
-            self._guarded(_adopt_server_config, None, logging.DEBUG,
+            self._guarded(_sync_observation_config, None, logging.DEBUG,
                           "Honcho get_peer_configuration failed (using local config): %s")
         except HonchoAuthError:
             return False

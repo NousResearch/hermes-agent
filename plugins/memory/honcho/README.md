@@ -240,6 +240,14 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | `observationMode` | string | `"directional"` | Preset: `"directional"` (all on) or `"unified"` (user observes self, AI observes others). Use `observation` object for granular control |
 | `observation` | object | — | Per-peer observation config (see Observation section) |
 
+Explicit local `observationMode` or `observation` values are authoritative and
+are pushed to Honcho when a session initializes. Remove them to keep observation
+policy managed by the Honcho UI.
+
+Gateway agents reload effective Honcho settings on the next turn, including active-host
+changes and `config.yaml` transport fallbacks even when `honcho.json` is unchanged.
+Normal OAuth access-token refresh does not rebuild the agent; a changed grant does.
+
 ### Write Behavior
 
 | Key | Type | Default | Description |

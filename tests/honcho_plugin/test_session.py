@@ -1,9 +1,10 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
+import sys
 import time
 
 from datetime import datetime
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from plugins.memory.honcho.session import (
@@ -41,6 +42,104 @@ class TestHonchoSession:
         assert session.messages[0]["role"] == "user"
         assert session.messages[0]["content"] == "Hello!"
         assert "timestamp" in session.messages[0]
+
+    def test_effective_config_rebinds_clients_and_syncs_observation_policy(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        from plugins.memory.honcho import client as client_mod
+        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client, reset_honcho_client
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("honcho:\n  base_url: https://one.example\n", encoding="utf-8")
+        cfg = HonchoClientConfig(api_key="test-key")
+        first_client = MagicMock(name="first_client")
+        second_client = MagicMock(name="second_client")
+        reset_honcho_client()
+        try:
+            with patch.object(client_mod, "_build_client", side_effect=[first_client, second_client]):
+                assert get_honcho_client(cfg) is first_client
+                config_path.write_text(
+                    "honcho:\n  base_url: https://two-longer.example\n", encoding="utf-8"
+                )
+                assert get_honcho_client(cfg) is second_client
+
+            manager = HonchoSessionManager(honcho=first_client, config=cfg)
+            manager._peers_cache["user"] = MagicMock()
+            manager._sessions_cache["session"] = MagicMock()
+            assert manager.honcho is second_client
+            assert manager._client_generation == 1
+            assert manager._peers_cache == {}
+            assert manager._sessions_cache == {}
+        finally:
+            reset_honcho_client()
+
+        class PeerConfig:
+            def __init__(self, *, observe_me, observe_others):
+                self.observe_me = observe_me
+                self.observe_others = observe_others
+
+        honcho_module = ModuleType("honcho")
+        honcho_module.__path__ = []
+        session_module = ModuleType("honcho.session")
+        session_module.SessionPeerConfig = PeerConfig
+        honcho_module.session = session_module
+        monkeypatch.setitem(sys.modules, "honcho", honcho_module)
+        monkeypatch.setitem(sys.modules, "honcho.session", session_module)
+
+        user_peer, ai_peer = MagicMock(name="user_peer"), MagicMock(name="ai_peer")
+        sdk = MagicMock(name="sdk")
+        remote = sdk.session.return_value
+        remote.get_peer_configuration.side_effect = [
+            SimpleNamespace(observe_me=True, observe_others=True),
+            SimpleNamespace(observe_me=True, observe_others=False),
+        ]
+        explicit = HonchoClientConfig(
+            observation_explicit=True,
+            user_observe_me=True,
+            user_observe_others=False,
+            ai_observe_me=True,
+            ai_observe_others=True,
+        )
+        explicit_manager = HonchoSessionManager(honcho=sdk, config=explicit)
+        with patch("plugins.memory.honcho.session.get_honcho_client", return_value=sdk):
+            assert explicit_manager._configure_session_peers("session", user_peer, ai_peer) is True
+
+        updates = remote.set_peer_configuration.call_args_list
+        assert [call.args[0] for call in updates] == [user_peer, ai_peer]
+        assert [call.args[1].observe_others for call in updates] == [False, True]
+
+        explicit_manager._peers_cache.update({"user": user_peer, "assistant": ai_peer})
+        explicit_manager._sessions_cache["session"] = remote
+        local = HonchoSession(
+            key="local", user_peer_id="user", assistant_peer_id="assistant",
+            honcho_session_id="session", messages=[{"role": "user", "content": "hello"}],
+        )
+
+        def assert_client_lock_released(_messages):
+            assert explicit_manager._client_config_lock.acquire(blocking=False)
+            explicit_manager._client_config_lock.release()
+
+        remote.add_messages.side_effect = assert_client_lock_released
+        assert explicit_manager._flush_session(local) is True
+
+        server_managed = MagicMock(name="server_managed")
+        server_remote = server_managed.session.return_value
+        server_remote.get_peer_configuration.side_effect = [
+            SimpleNamespace(observe_me=False, observe_others=True),
+            SimpleNamespace(observe_me=True, observe_others=False),
+        ]
+        implicit_manager = HonchoSessionManager(
+            honcho=server_managed, config=HonchoClientConfig(observation_explicit=False)
+        )
+        with patch("plugins.memory.honcho.session.get_honcho_client", return_value=server_managed):
+            assert implicit_manager._configure_session_peers("session", user_peer, ai_peer) is True
+        server_remote.set_peer_configuration.assert_not_called()
+        assert (
+            implicit_manager._user_observe_me,
+            implicit_manager._user_observe_others,
+            implicit_manager._ai_observe_me,
+            implicit_manager._ai_observe_others,
+        ) == (False, True, True, False)
 
 
 # ---------------------------------------------------------------------------

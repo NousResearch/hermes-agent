@@ -125,8 +125,6 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._turn_count = 0
         # Author of the turn in flight, refreshed by on_turn_start.
         self._turn_author: dict[str, Any] = {}
-        # (config path, mtime_ns, size) -> identity_signature() values.
-        self._identity_signature_memo: dict[tuple, dict[str, Any]] = {}
         self._query_rewrite_enabled = False
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
@@ -558,23 +556,18 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     _is_trivial_prompt = staticmethod(is_trivial_prompt)
 
     def identity_signature(self) -> Dict[str, Any]:
-        """Identity-mapping values from honcho.json that bust a cached gateway agent when they change.
+        """Effective settings that rebuild a cached gateway agent when they change.
 
-        Memoized on the file's mtime and size, so the per-message call is one stat. ``{}`` when the
-        config cannot be read."""
+        Resolve on each call: active host, scoped credentials and config.yaml transport
+        fallbacks can change without editing honcho.json. No SDK or network access.
+        """
+        from dataclasses import fields
+        from plugins.memory.honcho.client_cache import _client_cache_key
+
         try:
-            path = resolve_config_path()
-            try:
-                stat = path.stat()
-                memo_key = (str(path), stat.st_mtime_ns, stat.st_size)
-            except OSError:
-                memo_key = (str(path), None, None)
-            cached = self._identity_signature_memo.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-            cfg = HonchoClientConfig.from_global_config(config_path=path)
+            cfg = HonchoClientConfig.from_global_config(config_path=resolve_config_path())
             aliases = cfg.user_peer_aliases if isinstance(cfg.user_peer_aliases, dict) else {}
-            values = {
+            return {
                 "workspace": cfg.workspace_id,
                 "user_identity": cfg.peer_name,
                 "agent_identity": cfg.ai_peer,
@@ -583,9 +576,15 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 "user_identity_aliases": sorted(aliases.items()),
                 "session_prefixing": [bool(cfg.session_peer_prefix)],
                 "a2a_sessions": bool(cfg.a2a_sessions),
+                # Match the SDK's profile/transport identity and stable OAuth fingerprint.
+                # Signature-only material: never log or expose it. Exclude raw credentials
+                # and unrecognized JSON settings.
+                "transport": _client_cache_key(cfg),
+                "configuration": {
+                    f.name: getattr(cfg, f.name) for f in fields(cfg)
+                    if f.name not in {"api_key", "raw", "config_path", "hermes_home"}
+                },
             }
-            self._identity_signature_memo = {memo_key: values}
-            return dict(values)
         except Exception:
             return {}
 

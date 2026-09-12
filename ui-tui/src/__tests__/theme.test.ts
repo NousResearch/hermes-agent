@@ -606,6 +606,27 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(fallback.color.syntaxString).toBe('#abcdef') // string follows accent
   })
 
+  it('gives the turn rule its own key, defaulting to the border tone', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    // Independent override: quieting the turn rule leaves every other border
+    // (overlay frames, banner, gutters) on ui_border.
+    const themed = fromSkin({ ui_border: '#3aa0ff', user_rule: '#404040' }, {})
+    const baseline = fromSkin({ ui_border: '#3aa0ff' }, {})
+    expect(themed.color.userRule).toBe('#404040')
+    expect(themed.color.userRule).not.toBe(themed.color.border)
+    expect(themed.color.border).toBe(baseline.color.border) // override didn't touch border
+
+    // Default: the rule follows the border — same source → identical after
+    // adaptation, so an unset key keeps today's look.
+    expect(baseline.color.userRule).toBe(baseline.color.border)
+
+    // The composer's input_rule is a separate surface and must not leak in:
+    // built-in skins author the two apart (daylight, sisyphus, mono).
+    const composerOnly = fromSkin({ banner_border: '#2563EB', input_rule: '#6E94BE' }, {})
+    expect(composerOnly.color.userRule).toBe(composerOnly.color.border)
+  })
+
   it('lets skins override diff colors', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 

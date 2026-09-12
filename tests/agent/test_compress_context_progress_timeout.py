@@ -125,16 +125,21 @@ class TestContextCompressionTimeoutState:
 
 class TestResolveContextCompressionTimeouts:
     def test_defaults_when_empty_cfg(self):
+        # The shipped defaults (120/600) are both TIGHTER than the inner
+        # auxiliary deadline they wrap (floored to 300s for compression), so
+        # the resolver reconciles them rather than returning them verbatim.
+        # Asserting the raw defaults here would pin the very bug the
+        # reconciliation fixes -- state the invariant instead.
         idle, ceiling = resolve_context_compression_timeouts({})
-        assert idle == 120.0
-        assert ceiling == 600.0
+        assert idle >= 300.0, "outer guard must not undercut the inner deadline"
+        assert ceiling >= idle + 300.0, "ceiling must admit a fallback attempt"
 
     def test_zero_idle_disables_wrapper(self):
         idle, ceiling = resolve_context_compression_timeouts(
             {"context_timeout_seconds": 0}
         )
         assert idle == 0.0
-        assert ceiling == 600.0
+        assert ceiling >= 600.0
 
     def test_ceiling_clamped_to_idle(self):
         idle, ceiling = resolve_context_compression_timeouts(

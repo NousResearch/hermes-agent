@@ -680,6 +680,10 @@ def resolve_context_compression_timeouts(compression_cfg: Optional[dict] = None)
     idle window when the idle budget is positive."""
     idle = DEFAULT_CONTEXT_TIMEOUT_SECONDS
     ceiling = DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS
+    explicit_idle = False
+    explicit_ceiling = False
+    from agent.config_provenance import is_operator_set
+
     cfg = compression_cfg
     if cfg is None:
         cfg = {}
@@ -690,15 +694,42 @@ def resolve_context_compression_timeouts(compression_cfg: Optional[dict] = None)
             cfg = maybe if isinstance(maybe, dict) else {}
     if isinstance(cfg, dict):
         # Explicit 0/negative idle disables; a non-positive ceiling is ignored.
+        # NOTE on `explicit_*`: load_config() deep-merges DEFAULT_CONFIG, which
+        # ships BOTH keys, so presence proves nothing about operator intent.
+        # Only a value that differs from the shipped default counts as
+        # deliberate; otherwise the reconciliation below would be inert.
         with contextlib.suppress(TypeError, ValueError):
             if cfg.get("context_timeout_seconds") is not None:
                 idle = float(cfg["context_timeout_seconds"])
+                explicit_idle = is_operator_set(
+                    cfg, "context_timeout_seconds",
+                    "compression", "context_timeout_seconds",
+                )
         with contextlib.suppress(TypeError, ValueError):
             if cfg.get("context_total_ceiling_seconds") is not None and float(cfg["context_total_ceiling_seconds"]) > 0:
                 ceiling = float(cfg["context_total_ceiling_seconds"])
-    if idle > 0:
-        ceiling = max(ceiling, idle)
-    return idle, ceiling
+                explicit_ceiling = is_operator_set(
+                    cfg, "context_total_ceiling_seconds",
+                    "compression", "context_total_ceiling_seconds",
+                )
+
+    # The outer guards must never out-tighten the inner auxiliary deadline they
+    # wrap. When they do, the watchdog abandons the worker before the aux call
+    # can fail, `call_llm` never raises, and the configured fallback chain --
+    # which only engages on an exception -- is structurally unreachable.
+    from agent.compression_timeout_floor import reconcile_timeouts
+
+    inner_deadline = None
+    with contextlib.suppress(Exception):
+        from agent.auxiliary_client import _effective_aux_timeout
+
+        inner_deadline = _effective_aux_timeout("compression", None)
+
+    return reconcile_timeouts(
+        idle, ceiling, inner_deadline,
+        explicit_idle=explicit_idle,
+        explicit_ceiling=explicit_ceiling,
+    )
 
 
 def compression_attempt_stalled(

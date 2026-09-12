@@ -1159,6 +1159,53 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
     ]
 
 
+def test_find_windows_gateway_services_ignores_task_scheduler_service(monkeypatch):
+    """Task Scheduler's own SCM service must never be treated as a gateway supervisor.
+
+    A gateway launched by a Hermes Scheduled Task reaches the Task Scheduler service
+    (`Schedule`) by ancestry alone while the task bootstrap is alive. Treating that as
+    SCM supervision made `hermes update` run `sc.exe stop Schedule` — Access denied on
+    a protected Windows service — and abort the whole update.
+    """
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
+
+    class FakeService:
+        def __init__(self, name, pid, status="running"):
+            self.name = name
+            self.pid = pid
+            self.status = status
+
+        def as_dict(self):
+            return {"name": self.name, "pid": self.pid, "status": self.status}
+
+    class FakeProcess:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def parents(self):
+            # 100 = the svchost hosting the Task Scheduler service (`Schedule`)
+            return [FakeProcess(100)]
+
+        def children(self, recursive=False):
+            return [FakeProcess(300)]
+
+        def create_time(self):
+            return float(self.pid)
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [FakeService("Schedule", 100)],
+        Process=FakeProcess,
+    )
+
+    # `Schedule` is filtered out of the supervisor candidates, so no service is
+    # found for this gateway: it is Task-supervised, not SCM-supervised.
+    assert gateway.find_windows_gateway_services(
+        psutil_module=fake_psutil,
+        profile_processes=[profile],
+    ) == []
+
+
 def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch):
     """A transitional service in the gateway ancestry remains fail-closed."""
     monkeypatch.setattr(gateway.sys, "platform", "win32")

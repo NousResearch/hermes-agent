@@ -68,7 +68,7 @@ def test_boot_replaces_incumbent_with_stale_presets(hermes_home, monkeypatch):
 
     stopped = {}
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.endpoint._state_endpoint",
+        "hermes_cli.local_runtime.endpoint._managed_state",
         lambda: {"base_url": "http://127.0.0.1:18434/v1", "pid": 12345})
     monkeypatch.setattr(boot, "_stop_state_server",
                         lambda state: stopped.setdefault("pid", state["pid"]))
@@ -104,7 +104,7 @@ def test_refresh_bounces_an_adopted_server(hermes_home, monkeypatch):
     stopped = {}
     monkeypatch.setattr(boot, "_SUPERVISOR", None)
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.endpoint._state_endpoint",
+        "hermes_cli.local_runtime.endpoint._managed_state",
         lambda: {"base_url": "http://127.0.0.1:18434/v1", "pid": 4242})
     monkeypatch.setattr(boot, "_stop_state_server",
                         lambda state: stopped.setdefault("pid", state["pid"]))
@@ -122,5 +122,5 @@ def test_refresh_no_server_anywhere_is_a_noop(hermes_home, monkeypatch):
 
     monkeypatch.setattr(boot, "_SUPERVISOR", None)
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
+        "hermes_cli.local_runtime.endpoint._managed_state", lambda: None)
     assert boot.refresh_local_runtime() is False

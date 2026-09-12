@@ -85,6 +85,72 @@ def staged_model_ids() -> "list[str]":
     return [model_id_from_stem(p.stem) for p in staged_models()]
 
 
+def _lookup_models_by_safety(paths: "list[Path]") -> "tuple[list[Path], list[Path]]":
+    """Staged files with a lookup tensor that llama.cpp lazily mmap's only in new builds.
+
+    This is deliberately a boot-time guard as well as a picker-time fact.  ``llama-server``
+    receives the whole models directory with ``--models-autoload``; without this check a
+    downloaded PLE model can bypass the router's activation checks during a refresh or a later
+    process start.  Header parsing is bounded to metadata/tensor tables, never tensor data.
+
+    A parser failure is conservative only on an old or unknown engine: llama.cpp may understand a
+    newer valid GGUF layout that Hermes does not yet parse, so it could still contain the lookup
+    table.  A capable engine has the automatic mmap path; an incapable engine must not autoload
+    an uninspectable staged file.
+    """
+    from hermes_cli.local_runtime.gguf import read_gguf_header
+
+    found: list[Path] = []
+    uninspectable: list[Path] = []
+    for path in paths:
+        try:
+            if read_gguf_header(path).lazy_table_bytes > 0:
+                found.append(path)
+        except Exception as exc:  # noqa: BLE001 — malformed sideloads must not break session boot
+            logger.warning("could not inspect staged GGUF %s for lazy lookup placement: %s", path, exc)
+            uninspectable.append(path)
+    return found, uninspectable
+
+
+def _lazy_lookup_models(paths: "list[Path]") -> "list[Path]":
+    """Inspectable staged models whose oversized PLE tensor needs a capable engine."""
+    return _lookup_models_by_safety(paths)[0]
+
+
+def _needs_lazy_lookup_engine(paths: "list[Path]", engine_tag: str | None) -> bool:
+    """Whether ``engine_tag`` is too old to safely autoload one of ``paths``.
+
+    Unknown engine identity is deliberately treated as unsupported.  That is important for an
+    incumbent started by an older Hermes build: before engine tags were persisted in server.json,
+    the state file gives us no basis for claiming the PLE table is disk-backed.
+    """
+    from hermes_cli.local_runtime.gguf import supports_automatic_lazy_lookup
+
+    if supports_automatic_lazy_lookup(engine_tag):
+        return False
+    lazy, uninspectable = _lookup_models_by_safety(paths)
+    return bool(lazy or uninspectable)
+
+
+def _needs_required_engine(paths: "list[Path]", engine_tag: str | None) -> bool:
+    """Whether a staged catalog model requires a newer engine for any reason.
+
+    The PLE rule is physical and applies to every GGUF, including sideloads. Catalog ``min_engine``
+    is an additional architecture-level requirement for known publisher variants only. Keeping the
+    latter here matters because llama-server autoloads the whole shared models directory at boot,
+    bypassing the HTTP activation/gateway checks.
+    """
+    if _needs_lazy_lookup_engine(paths, engine_tag):
+        return True
+    from hermes_cli.local_runtime.catalog import engine_meets_minimum, entry_for_model
+
+    return any(
+        (entry := entry_for_model(model_id_from_stem(path.stem))) is not None
+        and not engine_meets_minimum(engine_tag, entry.min_engine)
+        for path in paths
+    )
+
+
 def _presets_stale() -> bool:
     """True when a staged model has no section in the preset INI — it would autoload with stock
     fit instead of a policy decision."""
@@ -126,9 +192,9 @@ def refresh_local_runtime() -> bool:
         from hermes_cli.config import load_config
 
         if _SUPERVISOR is None:
-            from hermes_cli.local_runtime.endpoint import _state_endpoint
+            from hermes_cli.local_runtime.endpoint import _managed_state
 
-            state = _state_endpoint()
+            state = _managed_state()
             if state is None:
                 return False
             logger.info("bouncing adopted llama-server (pid=%s) to rescan models", state.get("pid"))
@@ -183,12 +249,20 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     section = (config or {}).get("local_runtime") or {}
     if not force and not section.get("enabled"):
         return None
+    staged = staged_models()
     if _SUPERVISOR is not None:
-        return _SUPERVISOR
+        # A process-local supervisor normally has an engine tag because this version writes it
+        # at spawn.  Treat a missing tag conservatively: an old in-memory supervisor must not
+        # continue auto-loading an eligible PLE model as ordinary resident weights.
+        if not _needs_required_engine(staged, getattr(_SUPERVISOR, "engine_tag", None)):
+            return _SUPERVISOR
+        logger.warning("stopping managed llama-server: its unknown or old engine cannot safely "
+                       "autoload every staged model")
+        shutdown_local_runtime()
 
     # Residency: no staged models means nothing to serve — don't boot an empty server (delete
     # your last model and boots stop). force boots as ever.
-    if not force and not staged_models():
+    if not force and not staged:
         logger.info("local runtime enabled but no models staged; not booting")
         return None
 
@@ -197,16 +271,25 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     # download serves the new model with no policy at all (--models-autoload + stock fit). A stale
     # incumbent gets stopped and replaced by a fresh boot with regenerated presets; sessions ride
     # through like any other supervised restart (stable port + persisted key).
-    from hermes_cli.local_runtime.endpoint import _state_endpoint
+    from hermes_cli.local_runtime.endpoint import _managed_state
 
-    state = _state_endpoint()
+    state = _managed_state()
     if state is not None:
-        if not _presets_stale():
+        # State files written before engine_tag existed cannot prove that an already-running
+        # server has b10679's automatic lookup path.  Stop rather than adopt it; the boot ladder
+        # below will either restart it with a capable installed build or leave it safely off.
+        if _needs_required_engine(staged, state.get("engine_tag")):
+            logger.warning("stopping incumbent llama-server: engine %s cannot safely autoload "
+                           "every staged model", state.get("engine_tag") or "unknown")
+            _stop_state_server(state)
+            state = None
+        elif not _presets_stale():
             logger.info("managed llama-server already running (another process)")
             return None
-        logger.info("running server's presets predate the staged models; "
-                    "replacing it so every model launches with a policy")
-        _stop_state_server(state)
+        if state is not None:
+            logger.info("running server's presets predate the staged models; "
+                        "replacing it so every model launches with a policy")
+            _stop_state_server(state)
 
     try:
         from hermes_cli.local_runtime.binaries import (
@@ -231,6 +314,10 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 return None
             logger.info("configured tag %s not installed; serving %s "
                         "(update is a click in Local Models)", configured_tag, tag)
+        if _needs_required_engine(staged, tag):
+            logger.warning("not starting managed llama-server with %s: a staged model requires "
+                           "a newer or verifiable llama.cpp build", tag)
+            return None
         install_dir = ensure_runtime_installed(tag, backend)
 
         mdir = models_dir()
@@ -240,6 +327,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             engine_tag=tag)
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
+                                    engine_tag=tag,
+                                    can_spawn=lambda: not _needs_required_engine(staged_models(), tag),
                                     models_max=int(section.get("models_max", 4)),
                                     port=int(section.get("port", 0)) or None)
         try:

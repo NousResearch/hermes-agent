@@ -26,10 +26,14 @@ export function getLocalCatalog(): Promise<{ models: LocalCatalogModel[] }> {
   })
 }
 
-export function installLocalRuntime(backend?: string): Promise<{ backend: string; job_id: string; tag: string }> {
+/** Install the configured engine, or an explicit compatible build selected for a staged model. */
+export function installLocalRuntime(
+  backend?: string,
+  tag?: string
+): Promise<{ backend: string; job_id: string; tag: string }> {
   return hermesApi<{ backend: string; job_id: string; tag: string }>({
     ...profileScoped(),
-    body: { backend: backend ?? null },
+    body: { backend: backend ?? null, tag: tag ?? null },
     method: 'POST',
     path: '/api/local-models/runtime/install'
   })
@@ -194,8 +198,12 @@ export interface HFSearchHit {
 export interface HFFileGroup {
   label: string
   paths: string[]
+  /** Collision-proof ID the download job and staged model will use for this repo/path choice. */
+  download_model_id?: string
   total_bytes: number
   fit: 'fits-gpu' | 'needs-ram' | 'too-big' | 'unknown'
+  /** File-size-only result. Hermes inspects the completed GGUF before claiming placement. */
+  fit_is_estimate?: boolean
 }
 
 export function searchHFModels(q: string, limit = 20): Promise<{ hits: HFSearchHit[] }> {

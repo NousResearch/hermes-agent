@@ -1216,11 +1216,14 @@ export const en: Translations = {
       pillUsesRam: 'Uses system RAM',
       pillDiskBacked: 'Disk-backed lookup',
       pillDiskBackedTip: size =>
-        `${size} lookup table is read from disk on demand; core weights fit the GPU. This is separate from system-RAM spill.`,
+        `${size} lookup table is read from disk on demand. This is separate from any ordinary system-RAM spill.`,
       pillTooBig: 'Too big for this machine',
       browseTitle: 'Find more models',
       browseHint:
-        'Search all of Hugging Face. Models you download here are sized to your machine automatically, but not tested by us.',
+        'Choose a publisher-provided GGUF quant. Hermes checks the finished file before use, including whether a large lookup table stays disk-backed; it never rewrites the model.',
+      browseFitEstimate: label => `Estimate: ${label}`,
+      browseEstimateTip:
+        'This is based on download size only. After download, Hermes reads the GGUF header and shows whether a large lookup table is disk-backed or uses ordinary memory.',
       browsePlaceholder: 'Search models by name or author…',
       browseSearching: 'Searching Hugging Face',
       browseListing: 'Reading model files',
@@ -1235,6 +1238,17 @@ export const en: Translations = {
       addedByYou: 'Added by you',
       browseDownloadStarted: 'Downloading {name}',
       browseDownloadAria: 'Download {name}',
+      lookupResident: 'Lookup uses regular memory',
+      lookupResidentTip: size =>
+        `${size} lookup table is part of the model's ordinary memory footprint; it is not disk-backed or separately offloaded.`,
+      lookupUpdateRequired: 'Update needed for disk-backed lookup',
+      lookupUpdateRequiredTip: engine =>
+        `This large lookup table stays disk-backed only with llama.cpp ${engine} or newer. Update the local engine before using this model.`,
+      lookupUnknown: 'Could not inspect lookup table',
+      lookupUnknownTip:
+        'Hermes could not read this GGUF header, so it cannot verify how any lookup table will be placed.',
+      browseDownloadConfirm: size =>
+        `This publisher-provided GGUF is ${size} and may not fit this machine. Download it anyway?`,
       sideloadButton: 'Add model file',
       sideloadTitle: 'Choose a GGUF model file',
       sideloadDone: 'Added {name}.',

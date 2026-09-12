@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
 
@@ -103,7 +104,9 @@ class LlamaServerSupervisor:
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 engine_tag: str | None = None,
+                 can_spawn: Callable[[], bool] | None = None):
         self.install_dir = Path(install_dir)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
@@ -112,6 +115,13 @@ class LlamaServerSupervisor:
         self.extra_args = list(extra_args or [])
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
+        # Persist the exact build selected by bootstrap, not merely the configured target.  The
+        # latter can be pending while boot falls back to an older installed tag; consumers that
+        # report lazy PLE placement must reason about the server actually serving requests.
+        self.engine_tag = engine_tag
+        # Bootstrap supplies a fresh policy check.  The staged directory may change after the
+        # initial boot, so both first spawn and watchdog restarts must re-evaluate it.
+        self._can_spawn = can_spawn
         self.proc: subprocess.Popen | None = None
         self.primary_model: str | None = None
         self._restarts = 0
@@ -145,7 +155,18 @@ class LlamaServerSupervisor:
 
     # ── lifecycle ────────────────────────────────────────────
 
+    def _spawn_allowed(self) -> bool:
+        if self._can_spawn is None:
+            return True
+        try:
+            return bool(self._can_spawn())
+        except Exception as exc:  # noqa: BLE001 — uncertainty must never bypass model safety
+            logger.warning("llama-server spawn policy could not be checked: %s", exc)
+            return False
+
     def _spawn(self) -> None:
+        if not self._spawn_allowed():
+            raise RuntimeError("managed llama-server spawn is blocked by current model placement policy")
         exe = server_binary(self.install_dir)
         cmd = [
             str(exe),
@@ -195,8 +216,22 @@ class LlamaServerSupervisor:
     def _write_state(self) -> None:
         path = state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"base_url": self.base_url, "api_key": self.api_key,
-                                    "pid": self.proc.pid if self.proc else None}), encoding="utf-8")
+        state = {"base_url": self.base_url, "api_key": self.api_key,
+                 "pid": self.proc.pid if self.proc else None}
+        # Keep legacy/manual construction state compatible.  A missing tag is intentionally
+        # meaningful to readers: it means the engine identity is not proven, not that the
+        # configured/default tag should be guessed.
+        if self.engine_tag:
+            state["engine_tag"] = self.engine_tag
+        # State readers run concurrently with boot and provider resolution.  Replacing a complete
+        # sibling file prevents them from ever parsing a half-written JSON document and guessing a
+        # configured build while an older process still owns the port.
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            tmp.write_text(json.dumps(state), encoding="utf-8")
+            tmp.replace(path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def _wait_health(self, timeout_s: int) -> None:
         deadline = time.monotonic() + timeout_s
@@ -226,6 +261,12 @@ class LlamaServerSupervisor:
             backoff = _RESTART_BACKOFF_S[min(self._restarts, len(_RESTART_BACKOFF_S) - 1)]
             logger.warning("llama-server exited rc=%s; restart #%s in %ss", rc, self._restarts + 1, backoff)
             time.sleep(backoff)
+            if self._stopping:
+                return
+            if not self._spawn_allowed():
+                logger.error("llama-server restart blocked by current model placement policy")
+                self.stop()
+                return
             self._restarts += 1
             try:
                 self._reap_orphaned_children()

@@ -1109,11 +1109,14 @@ export const ja = defineLocale({
       pillUsesRam: 'システム RAM を使用',
       pillDiskBacked: 'ディスク参照テーブル',
       pillDiskBackedTip: size =>
-        `${size} の参照テーブルは必要に応じてディスクから読み込まれます。コアの重みは GPU に収まり、システム RAM へのスピルとは別です。`,
+        `${size} の参照テーブルは必要に応じてディスクから読み込まれます。これは通常のシステム RAM へのスピルとは別です。`,
       pillTooBig: 'このマシンには大きすぎます',
       browseTitle: 'さらにモデルを探す',
       browseHint:
-        'Hugging Face 全体を検索できます。ここでダウンロードしたモデルは自動でマシンに合わせて動作しますが、当方でのテストは行われていません。',
+        '公開済みの GGUF 量子化版を選択します。Hermes は使用前に完成したファイルを検査し、大きな参照テーブルがディスク参照のままかを表示します。モデル自体は書き換えません。',
+      browseFitEstimate: label => `推定: ${label}`,
+      browseEstimateTip:
+        'これはダウンロードサイズだけに基づく推定です。ダウンロード後、Hermes は GGUF ヘッダーを読み、大きな参照テーブルがディスク参照か通常のメモリを使うかを表示します。',
       browsePlaceholder: 'モデル名または作者で検索…',
       browseSearching: 'Hugging Face を検索中',
       browseListing: 'モデルファイルを読み込み中',
@@ -1128,6 +1131,16 @@ export const ja = defineLocale({
       addedByYou: 'あなたが追加',
       browseDownloadStarted: '{name} をダウンロード中',
       browseDownloadAria: '{name} をダウンロード',
+      lookupResident: '参照テーブルは通常メモリを使用',
+      lookupResidentTip: size =>
+        `${size} の参照テーブルはモデルの通常メモリ使用量に含まれます。ディスク参照や個別オフロードではありません。`,
+      lookupUpdateRequired: 'ディスク参照には更新が必要',
+      lookupUpdateRequiredTip: engine =>
+        `この大きな参照テーブルをディスク参照にするには llama.cpp ${engine} 以降が必要です。このモデルを使う前にローカルエンジンを更新してください。`,
+      lookupUnknown: '参照テーブルを確認できませんでした',
+      lookupUnknownTip: 'Hermes はこの GGUF ヘッダーを読み取れなかったため、参照テーブルの配置を確認できません。',
+      browseDownloadConfirm: size =>
+        `この配布元の GGUF は ${size} で、このマシンに収まらない可能性があります。それでもダウンロードしますか？`,
       sideloadButton: 'モデルファイルを追加',
       sideloadTitle: 'GGUF モデルファイルを選択',
       sideloadDone: '{name} を追加しました。',

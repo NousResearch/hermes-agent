@@ -288,7 +288,79 @@ def _packaged_catalog() -> "tuple[CatalogEntry, ...]":
     return _load_catalog(json.loads(raw))
 
 
-CATALOG: "tuple[CatalogEntry, ...]" = _packaged_catalog()
+_PACKAGED_CATALOG: "tuple[CatalogEntry, ...]" = _packaged_catalog()
+CATALOG: "tuple[CatalogEntry, ...]" = _PACKAGED_CATALOG
+
+
+def _engine_build(tag: object) -> int:
+    """Numeric llama.cpp release build, or -1 for an absent/malformed tag."""
+    try:
+        return int(tag[1:]) if tag.startswith("b") and tag[1:].isdigit() else -1
+    except (AttributeError, TypeError, ValueError):
+        return -1
+
+
+def engine_meets_minimum(engine_tag: object, min_engine: str) -> bool:
+    """Whether a concrete llama.cpp tag is known to satisfy a catalog engine floor.
+
+    This is deliberately fail-closed for malformed values: catalog ``min_engine`` is the oldest
+    build that can load the full architecture, independently of any PLE lookup-table behavior.
+    """
+    if not min_engine:
+        return True
+    required = _engine_build(min_engine)
+    return required >= 0 and _engine_build(engine_tag) >= required
+
+
+def _safety_monotonic_catalog(fetched: "tuple[CatalogEntry, ...]") -> "tuple[CatalogEntry, ...]":
+    """Keep known placement and engine floors when a same-schema refresh is stale.
+
+    Catalog documents intentionally remain schema-compatible as new facts are added.  That means a
+    client with PLE support can fetch an older v1 document where omitted fields parse as zero/empty.
+    For an existing family this must never turn a disk-backed lookup back into ordinary resident
+    weight planning, or lower the required runtime build.  New entries and genuinely new variants
+    still arrive untouched; only facts already known for a matching family/variant are floors.
+    """
+    entry_floors: dict[str, list[CatalogEntry]] = {}
+    variant_floors: dict[str, list[QuantVariant]] = {}
+    for source in (*_PACKAGED_CATALOG, *CATALOG):
+        entry_floors.setdefault(source.id, []).append(source)
+        for variant in source.variants:
+            variant_floors.setdefault(variant.model_id, []).append(variant)
+
+    protected: list[CatalogEntry] = []
+    for entry in fetched:
+        floors = entry_floors.get(entry.id, [])
+        min_engine = entry.min_engine
+        for floor in floors:
+            if _engine_build(floor.min_engine) > _engine_build(min_engine):
+                min_engine = floor.min_engine
+        variants = tuple(
+            QuantVariant(
+                quant=variant.quant,
+                files=variant.files,
+                validated=variant.validated,
+                lazy_table_bytes=max(
+                    [variant.lazy_table_bytes]
+                    + [floor.lazy_table_bytes for floor in variant_floors.get(variant.model_id, [])],
+                ),
+            )
+            for variant in entry.variants
+        )
+        if min_engine != entry.min_engine or variants != entry.variants:
+            entry = CatalogEntry(
+                id=entry.id, display_name=entry.display_name, description=entry.description,
+                repo=entry.repo, variants=variants, n_ctx_train=entry.n_ctx_train,
+                full_layers=entry.full_layers, recurrent_layers=entry.recurrent_layers,
+                per_layer_f16=entry.per_layer_f16, swa_layers=entry.swa_layers,
+                swa_window=entry.swa_window, moe=entry.moe, mtp=entry.mtp,
+                mtp_draft_depth=entry.mtp_draft_depth, n_vocab=entry.n_vocab,
+                mmproj=entry.mmproj, draft=entry.draft, sampling=entry.sampling,
+                min_engine=min_engine, quality=entry.quality,
+                decode_fraction=entry.decode_fraction,
+            )
+        protected.append(entry)
+    return tuple(protected)
 
 
 def refresh_catalog(force: bool = False) -> bool:
@@ -305,7 +377,7 @@ def refresh_catalog(force: bool = False) -> bool:
     try:
         req = urllib.request.Request(_CATALOG_URL, headers={"User-Agent": "hermes-local-runtime"})
         with urllib.request.urlopen(req, timeout=10) as r:
-            fetched = _load_catalog(json.load(r))
+            fetched = _safety_monotonic_catalog(_load_catalog(json.load(r)))
     except Exception as exc:  # noqa: BLE001
         logger.debug("catalog refresh skipped: %s", exc)
         return False

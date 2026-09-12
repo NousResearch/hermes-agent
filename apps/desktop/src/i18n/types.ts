@@ -1049,6 +1049,8 @@ export interface Translations {
       pillTooBig: string
       browseTitle: string
       browseHint: string
+      browseFitEstimate: (label: string) => string
+      browseEstimateTip: string
       browsePlaceholder: string
       browseSearching: string
       browseListing: string
@@ -1063,6 +1065,13 @@ export interface Translations {
       addedByYou: string
       browseDownloadStarted: string
       browseDownloadAria: string
+      lookupResident: string
+      lookupResidentTip: (size: string) => string
+      lookupUpdateRequired: string
+      lookupUpdateRequiredTip: (engine: string) => string
+      lookupUnknown: string
+      lookupUnknownTip: string
+      browseDownloadConfirm: (size: string) => string
       sideloadButton: string
       sideloadTitle: string
       sideloadDone: string

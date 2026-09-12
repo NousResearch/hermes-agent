@@ -31,7 +31,14 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _state_endpoint() -> dict | None:
+def _managed_state() -> dict | None:
+    """Validated private managed-server state, including its ownership PID.
+
+    The PID is deliberately retained here because boot/restart code must be able
+    to stop an incumbent Hermes-owned router.  Provider resolution must not
+    expose that process-management detail, so use :func:`_state_endpoint` for
+    request routing instead.
+    """
     from hermes_cli.local_runtime.supervisor import state_path
 
     path = state_path()
@@ -51,9 +58,42 @@ def _state_endpoint() -> dict | None:
     # ONLY tiebreaker: a live pid is ours (healthy, or STARTING — state is written at spawn, and
     # readiness probes racing the boot must see a configured provider, not missing credentials);
     # a dead pid is a crashed-without-cleanup leftover, ignored so requests don't blackhole.
-    if not _pid_alive(int(state.get("pid") or 0)):
+    pid = int(state.get("pid") or 0)
+    if not _pid_alive(pid):
         return None
-    return {"base_url": base_url, "api_key": state.get("api_key", "")}
+    endpoint = {"base_url": base_url, "api_key": state.get("api_key", ""), "pid": pid}
+    # server.json records the build selected at spawn.  Do not invent a value for old state
+    # files: callers deciding whether a PLE lookup is disk-backed need an actual serving-build
+    # fact, and unknown must take the conservative path.
+    engine_tag = state.get("engine_tag")
+    if isinstance(engine_tag, str) and engine_tag.strip():
+        endpoint["engine_tag"] = engine_tag.strip()
+    return endpoint
+
+
+def _state_endpoint() -> dict | None:
+    """Provider-safe endpoint for the validated managed server.
+
+    Keep the router PID private: callers that need to replace an incumbent use
+    ``_managed_state``; API/provider callers only need credentials and the
+    proven engine tag.
+    """
+    state = _managed_state()
+    if state is None:
+        return None
+    return {key: state[key] for key in ("base_url", "api_key", "engine_tag") if key in state}
+
+
+def managed_engine_tag() -> str | None:
+    """Exact managed-server build when state proves it, otherwise ``None``.
+
+    This intentionally does not fall back to config or ``active_tag()``.  A configured update can
+    still be pending while a different installed build is serving, and state files from before
+    engine-tag persistence do not prove lazy lookup support.
+    """
+    state = _managed_state()
+    tag = (state or {}).get("engine_tag")
+    return str(tag) if isinstance(tag, str) and tag else None
 
 
 def managed_root() -> "tuple[str, str] | None":
@@ -78,6 +118,27 @@ def managed_get_json(base: str, api_key: str, route: str, timeout_s: float) -> o
         return json.loads(r.read())
 
 
+def _managed_endpoint_is_safe(endpoint: dict) -> bool:
+    """Whether this managed router may serve requests for the current staged set.
+
+    This duplicates the boot guard at the last possible boundary.  During application startup a
+    provider request can arrive before the asynchronous runtime boot has replaced an old persisted
+    router; returning it even once would let that old build autoload a model it cannot safely serve.
+    """
+    try:
+        from hermes_cli.local_runtime.bootstrap import _needs_required_engine, staged_models
+
+        unsafe = _needs_required_engine(staged_models(), endpoint.get("engine_tag"))
+    except Exception as exc:  # noqa: BLE001 — unknown safety facts must not route a managed model
+        logger.warning("could not verify managed llama-server placement safety: %s", exc)
+        return False
+    if unsafe:
+        logger.warning("refusing managed llama-server with engine %s: a staged model needs a "
+                       "newer or verifiable build", endpoint.get("engine_tag") or "unknown")
+        return False
+    return True
+
+
 def resolve_llamacpp_endpoint(config: dict | None = None,
                               wait_for_boot_s: float = 8.0) -> dict | None:
     """Managed-first, detection-second endpoint for llamacpp aliases.
@@ -88,7 +149,19 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
     """
     managed = _state_endpoint()
     if managed:
-        return managed
+        if _managed_endpoint_is_safe(managed):
+            return managed
+        # Do not fall through to detect_server: it may rediscover the same unsafe managed
+        # process on its port.  Ask bootstrap to replace it, then expose only a verified successor.
+        _kick_managed_boot(config)
+        if wait_for_boot_s > 0:
+            deadline = time.monotonic() + wait_for_boot_s
+            while time.monotonic() < deadline:
+                time.sleep(0.25)
+                managed = _state_endpoint()
+                if managed and _managed_endpoint_is_safe(managed):
+                    return managed
+        return None
 
     from hermes_cli.local_runtime.detect import detect_server
 
@@ -103,7 +176,7 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
         while time.monotonic() < deadline:
             time.sleep(0.25)
             managed = _state_endpoint()
-            if managed:
+            if managed and _managed_endpoint_is_safe(managed):
                 return managed
     return None
 

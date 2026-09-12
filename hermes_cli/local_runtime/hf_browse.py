@@ -62,10 +62,14 @@ class HFFileGroup:
     paths: tuple[str, ...]      # repo-relative, split parts in order
     total_bytes: int
     fit: str = "unknown"        # fits-gpu | needs-ram | too-big | unknown
+    # A repository tree exposes file sizes, not a GGUF tensor table. In particular, a large
+    # PLE/Engram table can be mmap-backed by supported llama.cpp builds, so this is never placement.
+    fit_is_estimate: bool = True
 
 
 _QUANT_RE = re.compile(r"(?:IQ|Q)\d[_A-Z0-9]*|F16|BF16|F32", re.IGNORECASE)
 _SPLIT_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+_GGUF_SUFFIX = ".gguf"
 
 
 def search_models(query: str, limit: int = 20) -> list[HFModelHit]:
@@ -87,6 +91,31 @@ def _quant_label(filename: str) -> str:
     return m.group(0).upper() if m else filename
 
 
+def _group_source_stem(group: HFFileGroup) -> str:
+    """Human-readable identity for a group when two quants have the same short label.
+
+    Repositories commonly put every quant in its own directory (``Q4/model.gguf``).  The
+    quant label alone then is not a stable UI key, so retain the repository-relative source
+    identity only for duplicate labels.  The download route independently makes the staged
+    filename collision-proof.
+    """
+    path = group.paths[0]
+    match = _SPLIT_RE.search(path)
+    return path[:match.start()] if match is not None else path[:-len(_GGUF_SUFFIX)]
+
+
+def _with_unique_labels(groups: list[HFFileGroup]) -> list[HFFileGroup]:
+    """Disambiguate only duplicate display labels, preserving the simple usual-case labels."""
+    counts: dict[str, int] = {}
+    for group in groups:
+        counts[group.label] = counts.get(group.label, 0) + 1
+    return [
+        (replace(group, label=f"{group.label} · {_group_source_stem(group)}")
+         if counts[group.label] > 1 else group)
+        for group in groups
+    ]
+
+
 def repo_files(repo: str) -> list[HFFileGroup]:
     """The servable GGUFs in a repo, grouped: split parts collapse into one entry (first part is
     what llama.cpp loads); mmproj/draft companions are excluded. Largest quant first."""
@@ -94,10 +123,10 @@ def repo_files(repo: str) -> list[HFFileGroup]:
     files = _get_json(url)
 
     singles: list[tuple[str, int]] = []
-    splits: dict[str, list[tuple[int, str, int]]] = {}
+    splits: dict[str, list[tuple[int, int, str, int]]] = {}
     for f in files:
         path = str(f.get("path", ""))
-        if not path.lower().endswith(".gguf"):
+        if not path.casefold().endswith(_GGUF_SUFFIX):
             continue
         name = path.rsplit("/", 1)[-1].lower()
         if name.startswith(("mmproj", "dspark")) or "draft" in name:
@@ -105,16 +134,28 @@ def repo_files(repo: str) -> list[HFFileGroup]:
         size = int(f.get("size") or 0)
         m = _SPLIT_RE.search(path)
         if m:
-            splits.setdefault(path[: m.start()], []).append((int(m.group(1)), path, size))
+            splits.setdefault(path[: m.start()], []).append(
+                (int(m.group(1)), int(m.group(2)), path, size))
         else:
             singles.append((path, size))
 
     groups = [HFFileGroup(label=_quant_label(path), paths=(path,), total_bytes=size)
               for path, size in singles]
     for stem, parts in splits.items():
-        parts.sort()
-        groups.append(HFFileGroup(label=_quant_label(stem), paths=tuple(p for _, p, _ in parts),
-                                  total_bytes=sum(s for _, _, s in parts)))
+        # An incomplete split must never be presented as a quant. llama.cpp can only load it
+        # after every numbered shard exists, and accepting it here would make any header result
+        # deceptively incomplete.
+        totals = {total for _, total, _, _ in parts}
+        expected = next(iter(totals), 0)
+        indexed = {index: (path, size) for index, _, path, size in parts}
+        if (len(totals) != 1 or len(parts) != expected
+                or set(indexed) != set(range(1, expected + 1))):
+            logger.warning("skipping incomplete GGUF split %s", stem)
+            continue
+        ordered = [indexed[index] for index in range(1, expected + 1)]
+        groups.append(HFFileGroup(label=_quant_label(stem), paths=tuple(path for path, _ in ordered),
+                                  total_bytes=sum(size for _, size in ordered)))
+    groups = _with_unique_labels(groups)
     groups.sort(key=lambda g: g.total_bytes, reverse=True)
     return groups
 
@@ -122,6 +163,8 @@ def repo_files(repo: str) -> list[HFFileGroup]:
 def rough_fit(total_bytes: int, budget) -> str:
     """Coarse pre-download verdict from file size alone (GGUF file size ≈ in-memory weights);
     the GGUF header refines this after download. Bands match the catalog pills' language."""
+    # This is deliberately not a placement claim: only the finished header says whether a PLE
+    # lookup can stay disk-backed on the active engine.
     need = total_bytes + _ROUGH_KV_AND_OVERHEAD
     if need <= budget.usable_vram_bytes:
         return "fits-gpu"

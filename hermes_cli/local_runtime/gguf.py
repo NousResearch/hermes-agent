@@ -25,6 +25,16 @@ AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES = 4 << 30
 LAZY_LOOKUP_MIN_ENGINE_BUILD = 10679
 _LAZY_LOOKUP_TENSOR_NAME = "per_layer_token_embd.weight"
 
+# The header reader runs against arbitrary sideloads and downloaded community
+# files from the status poller. These are deliberately generous for real
+# models (Qwen's tokenizer alone has ~320K entries) while preventing a tiny,
+# malformed header from requesting a giant allocation or an unbounded loop.
+_MAX_HEADER_TENSORS = 1_000_000
+_MAX_HEADER_METADATA = 100_000
+_MAX_METADATA_ARRAY_ITEMS = 2_000_000
+_MAX_STRING_BYTES = 16 << 20
+_MAX_TENSOR_DIMS = 8
+
 
 def model_id_from_stem(stem: str) -> str:
     """Model id from a GGUF file stem (split-part suffix stripped)."""
@@ -38,8 +48,15 @@ def supports_automatic_lazy_lookup(engine_tag: str | None) -> bool:
     boot can fall back to an older installed build while a newer configured build is pending.
     Unknown or malformed tags take the safe, resident path.
     """
-    match = re.search(r"(\d+)", engine_tag or "")
-    return bool(match and int(match.group(1)) >= LAZY_LOOKUP_MIN_ENGINE_BUILD)
+    if not isinstance(engine_tag, str):
+        return False
+    match = re.fullmatch(r"b(\d+)", engine_tag.strip())
+    try:
+        return bool(match and int(match.group(1)) >= LAZY_LOOKUP_MIN_ENGINE_BUILD)
+    except ValueError:
+        # Python deliberately rejects absurdly long integers. A hostile or
+        # corrupted state tag must take the conservative resident path too.
+        return False
 
 
 # ggml tensor type sizes: type_id -> (block_bytes, block_elems). IQ-family verified against
@@ -76,6 +93,9 @@ class GGUFHeader:
     n_tensors: int = 0
     tensor_bytes: int = 0          # exact sum over the tensor table
     embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
+    # Every PLE/Engram lookup tensor, before the automatic-lazy threshold is applied.  This is
+    # presentation/compatibility information only: accounting must use ``lazy_table_bytes`` below.
+    lookup_table_bytes: int = 0
     lazy_table_bytes: int = 0      # large per_layer_token_embd.weight, eligible for automatic mmap lookup
 
     # ── typed accessors ──────────────────────────────────────
@@ -173,24 +193,44 @@ def _read_gguf_part(path: Path) -> GGUFHeader:
     """Read one GGUF header. Split aggregation belongs in ``read_gguf_header``."""
 
     def read(f, fmt: str):
-        return struct.unpack(fmt, f.read(struct.calcsize(fmt)))
+        size = struct.calcsize(fmt)
+        raw = f.read(size)
+        if len(raw) != size:
+            raise ValueError(f"truncated GGUF header: {path}")
+        return struct.unpack(fmt, raw)
 
     def read_str(f) -> str:
         (n,) = read(f, "<Q")
-        return f.read(n).decode("utf-8", errors="replace")
+        if n > _MAX_STRING_BYTES:
+            raise ValueError(f"GGUF string is too large in {path}")
+        raw = f.read(n)
+        if len(raw) != n:
+            raise ValueError(f"truncated GGUF string in {path}")
+        return raw.decode("utf-8", errors="replace")
+
+    metadata_items_left = _MAX_METADATA_ARRAY_ITEMS
 
     def read_value(f, vtype: int):
+        nonlocal metadata_items_left
         if vtype == _V_STRING:
             return read_str(f)
         if vtype == _V_ARRAY:
             etype, n = read(f, "<IQ")
+            if n > metadata_items_left:
+                raise ValueError(f"GGUF metadata array is too large in {path}")
+            metadata_items_left -= n
             return [read_value(f, etype) for _ in range(n)]
-        return read(f, _SCALAR_FMT[vtype])[0]
+        fmt = _SCALAR_FMT.get(vtype)
+        if fmt is None:
+            raise ValueError(f"unknown GGUF metadata type {vtype} in {path}")
+        return read(f, fmt)[0]
 
     with open(path, "rb") as f:
         if f.read(4) != _GGUF_MAGIC:
             raise ValueError(f"not a GGUF file: {path}")
         version, n_tensors, n_kv = read(f, "<IQQ")
+        if n_tensors > _MAX_HEADER_TENSORS or n_kv > _MAX_HEADER_METADATA:
+            raise ValueError(f"GGUF header has too many entries: {path}")
 
         metadata: dict = {}
         for _ in range(n_kv):
@@ -200,13 +240,16 @@ def _read_gguf_part(path: Path) -> GGUFHeader:
 
         tensor_bytes = 0
         embd_bytes = 0
+        lookup_bytes = 0
         lazy_bytes = 0
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
+            if n_dims > _MAX_TENSOR_DIMS:
+                raise ValueError(f"GGUF tensor has too many dimensions in {path}")
             dims = read(f, f"<{n_dims}Q")
             (ttype,) = read(f, "<I")
-            f.read(8)  # offset
+            read(f, "<Q")  # offset
             size = _GGML_TYPE_SIZES.get(ttype)
             if size is None:
                 raise ValueError(f"unknown ggml tensor type {ttype} in {path}")
@@ -218,12 +261,15 @@ def _read_gguf_part(path: Path) -> GGUFHeader:
             tensor_bytes += nbytes
             if name == "token_embd.weight":
                 embd_bytes = nbytes
-            if name == _LAZY_LOOKUP_TENSOR_NAME and nbytes > AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES:
-                lazy_bytes += nbytes
+            if name == _LAZY_LOOKUP_TENSOR_NAME:
+                lookup_bytes += nbytes
+                if nbytes > AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES:
+                    lazy_bytes += nbytes
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes, lazy_table_bytes=lazy_bytes)
+                      embd_table_bytes=embd_bytes, lookup_table_bytes=lookup_bytes,
+                      lazy_table_bytes=lazy_bytes)
 
 
 def _split_parts(path: Path) -> tuple[Path, ...]:
@@ -260,5 +306,6 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
         n_tensors=sum(header.n_tensors for header in headers),
         tensor_bytes=sum(header.tensor_bytes for header in headers),
         embd_table_bytes=sum(header.embd_table_bytes for header in headers),
+        lookup_table_bytes=sum(header.lookup_table_bytes for header in headers),
         lazy_table_bytes=sum(header.lazy_table_bytes for header in headers),
     )

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import io
 import json
+import struct
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,6 +41,45 @@ def _write_fake_gguf(path: Path, size: int = 1024) -> None:
     path.write_bytes(b"GGUF" + b"\x00" * size)
 
 
+def _gguf_string(value: str) -> bytes:
+    raw = value.encode("utf-8")
+    return struct.pack("<Q", len(raw)) + raw
+
+
+def _write_binary_gguf(path: Path, *, metadata: dict[str, int | str] | None = None,
+                       tensors: list[tuple[str, list[int], int]] | None = None) -> None:
+    """Real GGUF header/table fixture without allocating the tensor payload."""
+    metadata = metadata or {}
+    tensors = tensors or []
+    body = [b"GGUF", struct.pack("<IQQ", 3, len(tensors), len(metadata))]
+    for key, value in metadata.items():
+        body.append(_gguf_string(key))
+        if isinstance(value, str):
+            body.extend((struct.pack("<I", 8), _gguf_string(value)))
+        else:
+            body.extend((struct.pack("<I", 10), struct.pack("<Q", value)))
+    for name, dims, tensor_type in tensors:
+        body.extend((
+            _gguf_string(name), struct.pack("<I", len(dims)),
+            struct.pack(f"<{len(dims)}Q", *dims), struct.pack("<I", tensor_type),
+            struct.pack("<Q", 0),
+        ))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(body))
+
+
+def _write_split_ple_fixture(mdir: Path, *, name: str = "PLE-Q4") -> tuple[str, int]:
+    """Qwen-shaped split: shard one has metadata only; the lookup table is in shard two."""
+    from hermes_cli.local_runtime.gguf import AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES
+
+    first = mdir / f"{name}-00001-of-00002.gguf"
+    second = mdir / f"{name}-00002-of-00002.gguf"
+    lazy_bytes = AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES + 1
+    _write_binary_gguf(first, metadata={"general.architecture": "toy"})
+    _write_binary_gguf(second, tensors=[("per_layer_token_embd.weight", [lazy_bytes], 24)])
+    return name, lazy_bytes
+
+
 # ── status ───────────────────────────────────────────────────
 
 
@@ -66,6 +107,196 @@ def test_status_lists_staged_models_with_labels(client, tmp_path):
     assert row["size_label"].endswith("GB")
 
 
+def test_status_treats_a_truncated_gguf_as_unknown_instead_of_500(client):
+    """Status polls must survive arbitrary third-party files, including struct.error from a short header."""
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    path = models_dir() / "truncated.gguf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"GGUF")
+
+    response = client.get("/api/local-models/status")
+
+    assert response.status_code == 200
+    row = next(model for model in response.json()["models"] if model["id"] == "truncated")
+    assert row["lookup_placement"] == "unknown"
+    assert client.post("/api/local-models/activate", json={"model_id": "truncated"}).status_code == 422
+
+
+def test_status_inspects_a_complete_split_ple_before_the_server_starts(client, monkeypatch):
+    """The model card gets the exact table placement from the real shard set, not a catalog guess."""
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.web_routers import local_models
+
+    model_id, lazy_bytes = _write_split_ple_fixture(models_dir())
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10679"])
+
+    models = client.get("/api/local-models/status").json()["models"]
+    row = next(model for model in models if model["id"] == model_id)
+
+    assert row["lookup_placement"] == "disk-backed"
+    assert row["lookup_table_bytes"] == lazy_bytes
+    assert row["disk_backed_lookup_bytes"] == lazy_bytes
+    assert row["disk_backed_lookup_label"].endswith("GB")
+
+
+def test_status_requires_a_new_engine_for_an_oversized_split_ple(client, monkeypatch):
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.web_routers import local_models
+
+    model_id, lazy_bytes = _write_split_ple_fixture(models_dir())
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+
+    models = client.get("/api/local-models/status").json()["models"]
+    row = next(model for model in models if model["id"] == model_id)
+
+    assert row["lookup_placement"] == "requires-engine-update"
+    assert row["lookup_table_bytes"] == lazy_bytes
+    assert row["required_engine"] == "b10679"
+    assert "disk_backed_lookup_bytes" not in row
+
+
+@pytest.mark.parametrize("tag", ["b10679-old", "not-a-build-10679", "b" + "9" * 10_000])
+def test_catalog_engine_gate_fails_closed_for_malformed_active_tags(tag, monkeypatch):
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.web_routers import local_models
+
+    monkeypatch.setattr(binaries, "active_tag", lambda section: tag)
+
+    assert local_models._engine_too_old("b10679") is True
+
+
+def test_catalog_engine_gate_blocks_activate_advanced_and_gateway_routes(client, monkeypatch):
+    """An API caller cannot bypass a known catalog architecture's min_engine through alternate UI paths."""
+    from hermes_cli.local_runtime import bootstrap, catalog
+    from hermes_cli.web_routers import local_models
+
+    model_id = "Catalog-Architecture-Gate"
+    _write_binary_gguf(bootstrap.models_dir() / f"{model_id}.gguf")
+    entry = SimpleNamespace(display_name="Catalog-gated Model", min_engine="b10679")
+    monkeypatch.setattr(catalog, "entry_for_model", lambda candidate: entry if candidate == model_id else None)
+    monkeypatch.setattr(local_models, "_serving_engine_tag", lambda: "b10678")
+
+    activate = client.post("/api/local-models/activate", json={"model_id": model_id})
+    advanced = client.post("/api/local-models/advanced/plan", json={"model_id": model_id})
+    gateway = client.post("/api/local-models/gateway-routes", json={
+        "alias": "catalog-gated", "model_id": model_id, "mode": "agent",
+    })
+
+    for response in (activate, advanced, gateway):
+        assert response.status_code == 409
+        assert "b10679" in response.json()["detail"]
+
+
+def test_status_uses_the_next_boot_tag_when_a_state_file_is_corrupt_or_dead(client, monkeypatch):
+    """Atomic writes make a corrupt leftover non-evidence of a live old server, so bootstrap can heal it."""
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.local_runtime.supervisor import state_path
+    from hermes_cli.web_routers import local_models
+
+    model_id, _ = _write_split_ple_fixture(models_dir(), name="Corrupt-State-PLE")
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10679"])
+    state_path().parent.mkdir(parents=True, exist_ok=True)
+    state_path().write_text("{not json", encoding="utf-8")
+
+    row = next(model for model in client.get("/api/local-models/status").json()["models"]
+               if model["id"] == model_id)
+    assert row["lookup_placement"] == "disk-backed"
+    assert row["disk_backed_lookup_bytes"] > 0
+
+
+def test_proven_running_engine_wins_over_a_newer_configured_target(client, monkeypatch):
+    """Installing b10679 must not relabel an already-running b10678 server as lazy-capable."""
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.web_routers import local_models
+
+    model_id, _ = _write_split_ple_fixture(models_dir())
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10679", "b10678"])
+    monkeypatch.setattr(
+        local_models, "_state_endpoint", lambda: {"base_url": "http://127.0.0.1:1/v1", "engine_tag": "b10678"}
+    )
+
+    row = next(model for model in client.get("/api/local-models/status").json()["models"] if model["id"] == model_id)
+
+    assert row["lookup_placement"] == "requires-engine-update"
+    assert row["required_engine"] == "b10679"
+
+
+def test_exact_four_gib_lookup_is_resident_and_needs_no_engine_update(client, monkeypatch):
+    """llama.cpp's automatic path is strict: exactly 4 GiB stays ordinary model memory."""
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.local_runtime.gguf import AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES
+    from hermes_cli.web_routers import local_models
+
+    path = models_dir() / "exact-threshold.gguf"
+    _write_binary_gguf(
+        path, metadata={"general.architecture": "toy"},
+        tensors=[("per_layer_token_embd.weight", [AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES], 24)],
+    )
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10678"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    monkeypatch.setattr(local_models, "_ensure_server", lambda *args, **kwargs: None)
+    monkeypatch.setattr(local_models, "_assign_default", lambda *args, **kwargs: None)
+
+    row = next(model for model in client.get("/api/local-models/status").json()["models"] if model["id"] == "exact-threshold")
+    assert row["lookup_placement"] == "resident"
+    assert row["lookup_table_bytes"] == AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES
+    assert "required_engine" not in row
+    assert "disk_backed_lookup_bytes" not in row
+
+    # No large lazy table means the old engine may proceed through activation.
+    assert client.post("/api/local-models/activate", json={"model_id": "exact-threshold"}).status_code == 200
+
+
+def test_activation_blocks_an_oversized_ple_on_an_old_engine(client, monkeypatch):
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.web_routers import local_models
+
+    model_id, _ = _write_split_ple_fixture(models_dir())
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    monkeypatch.setattr(local_models, "_ensure_server", lambda *args, **kwargs: pytest.fail("must not start"))
+
+    response = client.post("/api/local-models/activate", json={"model_id": model_id})
+
+    assert response.status_code == 409
+    assert "b10679" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/local-models/advanced/plan", {"model_id": "PLE-Q4"}),
+        ("/api/local-models/gateway-routes", {"alias": "ple", "model_id": "PLE-Q4", "mode": "agent"}),
+    ],
+)
+def test_advanced_and_gateway_paths_block_an_oversized_ple_on_an_old_engine(
+    client, monkeypatch, path, body
+):
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_cli.web_routers import local_models
+
+    _write_split_ple_fixture(models_dir())
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+
+    response = client.post(path, json=body)
+
+    assert response.status_code == 409
+    assert "b10679" in response.json()["detail"]
+
+
 def test_status_reports_disk_backed_lookup_separately_from_spill(client, monkeypatch):
     """The API must not turn llama.cpp's mmap lookup path into ordinary host spill."""
     from hermes_cli.local_runtime import presets
@@ -74,7 +305,9 @@ def test_status_reports_disk_backed_lookup_separately_from_spill(client, monkeyp
 
     model_id = "ple-mmap-model"
     lazy_bytes = 28_800_138_240
-    monkeypatch.setattr(local_models, "_state_endpoint", lambda: {"base_url": "http://127.0.0.1:1/v1"})
+    monkeypatch.setattr(
+        local_models, "_state_endpoint", lambda: {"base_url": "http://127.0.0.1:1/v1", "engine_tag": "b10679"}
+    )
     monkeypatch.setattr(
         presets, "read_preset_decisions",
         lambda: {model_id: PresetEntry(model_id, 65536, spilled=False, lazy_table_bytes=lazy_bytes)},
@@ -138,6 +371,20 @@ def test_qwen_download_requires_the_lazy_lookup_engine(client, monkeypatch):
     assert "b10679" in response.json()["detail"]
 
 
+def test_exact_qwen_variant_download_cannot_bypass_the_lazy_lookup_engine(client, monkeypatch):
+    """A future catalog quant picker posts an exact variant id, so it must retain the family gate."""
+    from hermes_cli.local_runtime import binaries
+    from hermes_cli.web_routers import local_models
+
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+
+    response = client.post("/api/local-models/download", json={"model_id": "Qwen3.8-Flash-Next-UD-Q4_K_XL"})
+
+    assert response.status_code == 409
+    assert "b10679" in response.json()["detail"]
+
+
 def test_advanced_plan_uses_the_active_engine_for_sideloaded_models(monkeypatch):
     """Sideloaded files have no catalog min-engine gate, so their parser must receive the boot tag."""
     from pathlib import Path
@@ -159,6 +406,9 @@ def test_advanced_plan_uses_the_active_engine_for_sideloaded_models(monkeypatch)
 
     monkeypatch.setattr(bootstrap, "staged_models", lambda: [path])
     monkeypatch.setattr(gguf, "read_gguf_header", lambda _: object())
+    # This test isolates launch-profile engine propagation; the synthetic path
+    # is not a real GGUF for the separate placement-inspection guard.
+    monkeypatch.setattr(local_models, "_lookup_inspection", lambda _: {"lookup_placement": "none"})
     monkeypatch.setattr(estimator, "profile_from_gguf", profile_from_header)
     monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
     monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
@@ -351,6 +601,56 @@ def test_runtime_install_rejects_impossible_combo(client, monkeypatch):
     r = client.post("/api/local-models/runtime/install", json={"backend": "vulkan"})
     assert r.status_code == 400
     assert "arm64" in r.json()["detail"]
+
+
+def test_explicit_compatible_engine_install_becomes_the_boot_target(client, monkeypatch):
+    """A model-card update click must persist b10679, not reinstall the user's old pinned tag."""
+    from types import SimpleNamespace
+
+    from hermes_cli import config as config_mod
+    from hermes_cli.local_runtime import binaries, bootstrap
+
+    monkeypatch.setattr(binaries, "resolve_assets", lambda tag, backend: SimpleNamespace(assets=["runtime.zip"]))
+    monkeypatch.setattr(binaries, "ensure_runtime_installed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    monkeypatch.setattr(binaries, "prune_old_tags", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: None)
+
+    response = client.post("/api/local-models/runtime/install", json={"backend": "cpu", "tag": "b10679"})
+
+    assert response.status_code == 200
+    assert response.json()["tag"] == "b10679"
+    job_id = response.json()["job_id"]
+    deadline = time.time() + 10
+    status = None
+    while time.time() < deadline:
+        status = client.get(f"/api/local-models/jobs/{job_id}").json()
+        if status["status"] in ("done", "error"):
+            break
+        time.sleep(0.05)
+    assert status is not None and status["status"] == "done", status and status.get("error")
+    assert config_mod.load_config()["local_runtime"]["tag"] == "b10679"
+
+    invalid = client.post("/api/local-models/runtime/install", json={"backend": "cpu", "tag": "not-a-build"})
+    assert invalid.status_code == 422
+
+
+def test_engine_update_restarts_an_adopted_old_server(monkeypatch):
+    """A user-clicked upgrade must switch a persisted server too, not only an in-process supervisor."""
+    from hermes_cli.local_runtime import bootstrap
+    from hermes_cli.web_routers import local_models
+
+    job = {}
+    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: None)
+    monkeypatch.setattr(
+        local_models, "_state_endpoint", lambda: {"base_url": "http://127.0.0.1:1/v1", "engine_tag": "b10678"}
+    )
+    restarted = {}
+    monkeypatch.setattr(bootstrap, "refresh_local_runtime", lambda: restarted.setdefault("yes", True))
+
+    assert local_models._restart_on_new_tag(job, "b10679") is True
+    assert job["phase"] == "restarting"
+    assert restarted["yes"] is True
 
 
 def test_job_poll_unknown_404s(client):

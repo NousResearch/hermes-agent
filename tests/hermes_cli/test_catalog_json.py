@@ -101,6 +101,27 @@ def test_refresh_rejects_wrong_schema(monkeypatch):
     assert [e.id for e in cat.CATALOG] == ids_before
 
 
+def test_refresh_never_weakens_packaged_ple_engine_or_lookup_facts(monkeypatch):
+    """A stale v1 main catalog must not erase fields that were added without a schema bump."""
+    def stale(models):
+        result = []
+        for model in models:
+            item = dict(model)
+            if item["id"] == "qwen3.8-flash-next":
+                item["min_engine"] = "b10678"
+                item["variants"] = [dict(variant, lazy_table_bytes=0)
+                                    for variant in item["variants"]]
+            result.append(item)
+        return result
+
+    _fetch_returns(monkeypatch, _doc_from(stale))
+
+    assert cat.refresh_catalog(force=True) is True
+    entry = cat.catalog_by_id()["qwen3.8-flash-next"]
+    assert entry.min_engine == "b10679"
+    assert entry.variants[0].lazy_table_bytes == 28_800_138_240
+
+
 def test_loader_ignores_unknown_fields():
     doc = _doc_from(lambda m: m)
     doc["models"][0]["future_field"] = {"anything": True}

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import type { HFFileGroup, HFSearchHit } from '@/api/local-models'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -135,6 +136,15 @@ async function renderFullPane() {
   return result
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(r => {
+    resolve = r
+  })
+
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   mocked.getLocalModelsStatus.mockResolvedValue(BASE_STATUS)
   mocked.getLocalHardware.mockResolvedValue(BASE_HARDWARE)
@@ -240,6 +250,144 @@ describe('LocalModelsSettings', () => {
     expect(await screen.findByText('Disk-backed Spilled')).toBeTruthy()
     expect(screen.getByText('Uses system RAM')).toBeTruthy()
     expect(screen.getByText('Disk-backed lookup')).toBeTruthy()
+  })
+
+  it('uses the completed catalog model inspection and offers its required engine update', async () => {
+    const stagedId = 'Qwen3.8-Flash-Next-UD-Q4_K_XL'
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cuda',
+      models: [
+        {
+          id: stagedId,
+          lookup_placement: 'requires-engine-update',
+          lookup_table_bytes: 28_800_138_240,
+          required_engine: 'b10679',
+          size_bytes: 111 * 2 ** 30,
+          size_label: '103.4 GB'
+        }
+      ]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({
+      models: [
+        {
+          ...DISK_BACKED_MODEL,
+          downloaded: true,
+          downloaded_model_id: stagedId,
+          min_engine: 'b10679',
+          needs_engine: true
+        }
+      ]
+    })
+
+    renderPane()
+    await screen.findByText('Disk-backed Model')
+
+    expect(screen.getAllByText('Update needed for disk-backed lookup').length).toBeGreaterThan(0)
+    expect((screen.getByRole('button', { name: /^use$/i }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByText('Fits your GPU')).toBeNull()
+    expect(screen.queryByText('Uses system RAM')).toBeNull()
+    expect(screen.queryByText('Full 256K context')).toBeNull()
+    expect(screen.queryByText('Up to 256K context')).toBeNull()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /update engine/i })[0])
+    await waitFor(() => expect(mocked.installLocalRuntime).toHaveBeenCalledWith(undefined, 'b10679'))
+  })
+
+  it('replaces optimistic catalog fit claims when the completed header says the lookup is resident', async () => {
+    const stagedId = 'Qwen3.8-Flash-Next-Q2'
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      models: [
+        {
+          id: stagedId,
+          lookup_placement: 'resident',
+          lookup_table_bytes: 4 * 2 ** 30,
+          size_bytes: 64 * 2 ** 30,
+          size_label: '64.0 GB'
+        }
+      ]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({
+      models: [{ ...DISK_BACKED_MODEL, downloaded: true, downloaded_model_id: stagedId }]
+    })
+
+    await renderFullPane()
+    await screen.findByText('Disk-backed Model')
+
+    expect(screen.getAllByText('Lookup uses regular memory').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Disk-backed lookup')).toBeNull()
+    expect(screen.queryByText('Fits your GPU')).toBeNull()
+    expect(screen.queryByText('Uses system RAM')).toBeNull()
+    expect(screen.queryByText('Full 256K context')).toBeNull()
+    expect(screen.queryByText('Up to 256K context')).toBeNull()
+  })
+
+  it('replaces optimistic catalog fit claims when the completed header cannot be inspected', async () => {
+    const stagedId = 'Unreadable-Q4'
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      models: [{ id: stagedId, lookup_placement: 'unknown', size_bytes: 64 * 2 ** 30, size_label: '64.0 GB' }]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({
+      models: [{ ...DISK_BACKED_MODEL, downloaded: true, downloaded_model_id: stagedId }]
+    })
+
+    await renderFullPane()
+    await screen.findByText('Disk-backed Model')
+
+    expect(screen.getAllByText('Could not inspect lookup table').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Disk-backed lookup')).toBeNull()
+    expect(screen.queryByText('Fits your GPU')).toBeNull()
+    expect(screen.queryByText('Uses system RAM')).toBeNull()
+    expect(screen.queryByText('Full 256K context')).toBeNull()
+    expect(screen.queryByText('Up to 256K context')).toBeNull()
+  })
+
+  it('does not retain a catalog PLE fit estimate when the completed header has no lookup table', async () => {
+    const stagedId = 'Reuploaded-Without-PLE'
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      models: [{ id: stagedId, lookup_placement: 'none', size_bytes: 64 * 2 ** 30, size_label: '64.0 GB' }]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({
+      models: [{ ...DISK_BACKED_MODEL, downloaded: true, downloaded_model_id: stagedId }]
+    })
+
+    await renderFullPane()
+    await screen.findByText('Disk-backed Model')
+
+    expect(screen.queryByText('Disk-backed lookup')).toBeNull()
+    expect(screen.queryByText('Fits your GPU')).toBeNull()
+    expect(screen.queryByText('Full 256K context')).toBeNull()
+    expect(screen.queryByText('Up to 256K context')).toBeNull()
+  })
+
+  it("keeps a catalog model's broader engine requirement even when its header has no large lookup", async () => {
+    const stagedId = 'Architecture-Needs-Newer-Engine'
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      models: [{ id: stagedId, lookup_placement: 'none', size_bytes: 17 * 2 ** 30, size_label: '17.0 GB' }]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({
+      models: [
+        {
+          ...FITTING_MODEL,
+          downloaded: true,
+          downloaded_model_id: stagedId,
+          min_engine: 'b10679',
+          needs_engine: true
+        }
+      ]
+    })
+
+    renderPane()
+    await screen.findByText('Qwen3.6 27B')
+
+    expect(screen.getAllByText('Update needed for disk-backed lookup').length).toBeGreaterThan(0)
+    expect((screen.getByRole('button', { name: /^use$/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('explains the Recommended pick on hover', async () => {
@@ -457,6 +605,7 @@ describe('BrowseSection', () => {
       vi.mocked(hermes.listHFRepoFiles).mockResolvedValue({
         files: [
           { fit: 'fits-gpu', label: 'Q4_K_M', paths: ['Qwen3.8-27B-Q4_K_M.gguf'], total_bytes: 17 * 2 ** 30 },
+          { fit: 'needs-ram', label: 'Q6_K', paths: ['Qwen3.8-27B-Q6_K.gguf'], total_bytes: 28 * 2 ** 30 },
           { fit: 'too-big', label: 'F16', paths: ['Qwen3.8-27B-F16.gguf'], total_bytes: 56 * 2 ** 30 }
         ]
       })
@@ -489,11 +638,14 @@ describe('BrowseSection', () => {
         await vi.runOnlyPendingTimersAsync()
       })
       expect(screen.getByText('Q4_K_M')).toBeTruthy()
-      // Each tile has an explicit download button; the too-big quant's is
-      // disabled, the fitting one is live and starts the download.
+      // The file-size verdict is deliberately labelled an estimate: the completed GGUF header
+      // decides whether an Engram lookup table is disk-backed. A large-looking download remains
+      // selectable instead of being falsely rejected before Hermes can inspect it.
+      expect(screen.getByText('Estimate: Fits your GPU')).toBeTruthy()
+      expect(screen.getByText('Estimate: Uses system RAM')).toBeTruthy()
       const q4Btn = screen.getByRole('button', { name: 'Download Q4_K_M' })
       const f16Btn = screen.getByRole('button', { name: 'Download F16' })
-      expect((f16Btn as HTMLButtonElement).disabled).toBe(true)
+      expect((f16Btn as HTMLButtonElement).disabled).toBe(false)
       expect((q4Btn as HTMLButtonElement).disabled).toBe(false)
 
       vi.mocked(hermes.downloadBrowsedModel).mockResolvedValue({ job_id: 'j1', model_id: 'Qwen3.8-27B-Q4_K_M' })
@@ -506,9 +658,174 @@ describe('BrowseSection', () => {
       vi.useRealTimers()
     }
   })
+
+  it('does not restore an old search after the query is cleared', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const result = deferred<{ hits: HFSearchHit[] }>()
+      vi.mocked(hermes.searchHFModels).mockReturnValue(result.promise)
+      renderPane()
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync()
+      })
+      fireEvent.click(screen.getByRole('button', { name: /configure/i }))
+
+      const box = screen.getByPlaceholderText(/search models/i)
+      fireEvent.change(box, { target: { value: 'qwen' } })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400)
+      })
+      expect(hermes.searchHFModels).toHaveBeenCalledWith('qwen')
+
+      fireEvent.change(box, { target: { value: '' } })
+      await act(async () => {
+        result.resolve({
+          hits: [{ downloads: 1, gated: false, likes: 1, repo: 'stale/qwen', updated: '2026-09-12' }]
+        })
+        await Promise.resolve()
+      })
+
+      expect(screen.queryByText('stale/qwen')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a file listing and its download paths tied to the latest repo', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const hits: HFSearchHit[] = [
+        { downloads: 1, gated: false, likes: 1, repo: 'publisher/repo-a', updated: '2026-09-12' },
+        { downloads: 1, gated: false, likes: 1, repo: 'publisher/repo-b', updated: '2026-09-12' }
+      ]
+      const a = deferred<{ files: HFFileGroup[] }>()
+      const b = deferred<{ files: HFFileGroup[] }>()
+      vi.mocked(hermes.searchHFModels).mockResolvedValue({ hits })
+      vi.mocked(hermes.listHFRepoFiles).mockImplementation(repo =>
+        repo === 'publisher/repo-a' ? a.promise : b.promise
+      )
+      vi.mocked(hermes.downloadBrowsedModel).mockResolvedValue({ job_id: 'b-job', model_id: 'repo-b-q4' })
+      renderPane()
+      await act(async () => {
+        await vi.runOnlyPendingTimersAsync()
+      })
+      fireEvent.click(screen.getByRole('button', { name: /configure/i }))
+
+      fireEvent.change(screen.getByPlaceholderText(/search models/i), { target: { value: 'repo' } })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400)
+      })
+
+      const showFiles = screen.getAllByRole('button', { name: /show files/i })
+      fireEvent.click(showFiles[0])
+      fireEvent.click(showFiles[1])
+      await act(async () => {
+        b.resolve({ files: [{ fit: 'fits-gpu', label: 'B-Q4', paths: ['B-Q4.gguf'], total_bytes: 2 ** 30 }] })
+        await Promise.resolve()
+      })
+      expect(screen.getByText('B-Q4')).toBeTruthy()
+
+      await act(async () => {
+        a.resolve({ files: [{ fit: 'fits-gpu', label: 'A-Q4', paths: ['A-Q4.gguf'], total_bytes: 2 ** 30 }] })
+        await Promise.resolve()
+      })
+      expect(screen.getByText('B-Q4')).toBeTruthy()
+      expect(screen.queryByText('A-Q4')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Download B-Q4' }))
+      expect(hermes.downloadBrowsedModel).toHaveBeenCalledWith('publisher/repo-b', ['B-Q4.gguf'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('added-by-you rows', () => {
+  it('shows a completed disk-backed lookup inspection before the model is loaded', async () => {
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      models: [
+        {
+          disk_backed_lookup_bytes: 28_800_138_240,
+          id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL',
+          lookup_placement: 'disk-backed',
+          lookup_table_bytes: 28_800_138_240,
+          size_bytes: 111 * 2 ** 30,
+          size_label: '103.4 GB'
+        }
+      ]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({ models: [] })
+
+    renderPane()
+    await screen.findByText('Qwen3.8-Flash-Next-UD-Q4_K_XL')
+
+    expect(screen.getByText('Disk-backed lookup')).toBeTruthy()
+    expect(screen.queryByText('Lookup uses regular memory')).toBeNull()
+    expect(screen.getByRole('button', { name: /use/i })).toBeTruthy()
+  })
+
+  it('requires an engine update before a large lookup model can be used', async () => {
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      models: [
+        {
+          id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL',
+          lookup_placement: 'requires-engine-update',
+          lookup_table_bytes: 28_800_138_240,
+          required_engine: 'b10679',
+          size_bytes: 111 * 2 ** 30,
+          size_label: '103.4 GB'
+        }
+      ]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({ models: [] })
+
+    renderPane()
+    await screen.findByText('Qwen3.8-Flash-Next-UD-Q4_K_XL')
+
+    expect(screen.getByText('Update needed for disk-backed lookup')).toBeTruthy()
+    expect((screen.getByRole('button', { name: /use/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('labels a small whole-model lookup quant as resident rather than disk-backed', async () => {
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      models: [
+        {
+          id: 'Qwen3.8-Flash-Next-Q2',
+          lookup_placement: 'resident',
+          lookup_table_bytes: 4 * 2 ** 30,
+          size_bytes: 64 * 2 ** 30,
+          size_label: '64.0 GB'
+        }
+      ]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({ models: [] })
+
+    renderPane()
+    await screen.findByText('Qwen3.8-Flash-Next-Q2')
+
+    expect(screen.getByText('Lookup uses regular memory')).toBeTruthy()
+    expect(screen.queryByText('Disk-backed lookup')).toBeNull()
+  })
+
+  it('keeps an unreadable GGUF visibly unsafe to use', async () => {
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
+      ...BASE_STATUS,
+      models: [{ id: 'truncated', lookup_placement: 'unknown', size_bytes: 4, size_label: '0.0 GB' }]
+    })
+    vi.mocked(hermes.getLocalCatalog).mockResolvedValue({ models: [] })
+
+    renderPane()
+    await screen.findByText('truncated')
+
+    expect(screen.getByText('Could not inspect lookup table')).toBeTruthy()
+    expect((screen.getByRole('button', { name: /use/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
   it('staged models outside the catalog get the full action set', async () => {
     vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({
       ...BASE_STATUS,

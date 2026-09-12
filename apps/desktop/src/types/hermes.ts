@@ -1279,10 +1279,29 @@ export interface LocalModelLoadProgress {
   percent: number
 }
 
+/** Header-derived lookup-table placement, available before the model is loaded. */
+export type LocalLookupPlacement = 'disk-backed' | 'none' | 'requires-engine-update' | 'resident' | 'unknown'
+
+export interface LocalStagedModel {
+  id: string
+  size_bytes: number
+  size_label: string
+  /** Exact result from the complete GGUF header, rather than a filename or download-size guess. */
+  lookup_placement?: LocalLookupPlacement
+  lookup_table_bytes?: number
+  lookup_table_label?: string
+  /** Present only when an oversized table needs b10679+ for automatic mmap placement. */
+  required_engine?: string
+  disk_backed_lookup_bytes?: number
+  disk_backed_lookup_label?: string
+}
+
 export interface LocalModelsStatus {
   enabled: boolean
   tag: string
   configured_tag: string
+  /** Exact running build when the managed server state proves it. */
+  serving_tag?: string | null
   update_available: boolean
   runtime_installed: boolean
   runtime_backend: string | null
@@ -1293,7 +1312,7 @@ export interface LocalModelsStatus {
   /** Models loading into memory right now: real per-tensor load percent. */
   loading?: Record<string, LocalModelLoadProgress>
   placement?: Record<string, LocalModelPlacement>
-  models: { id: string; size_bytes: number; size_label: string }[]
+  models: LocalStagedModel[]
   models_dir: string
 }
 
@@ -1325,6 +1344,9 @@ export interface LocalCatalogModel {
   downloaded: boolean
   downloaded_model_id?: string | null
   downloaded_quant?: string | null
+  /** The selected engine is too old for this architecture; update before download or use. */
+  needs_engine?: boolean
+  min_engine?: string | null
   mtp: boolean
   vision?: boolean
   fits: boolean

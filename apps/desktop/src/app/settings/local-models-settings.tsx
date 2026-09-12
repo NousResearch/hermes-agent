@@ -116,6 +116,13 @@ export function LocalModelsSettings() {
   // Jobs live in the app-level store (they must survive this pane
   // unmounting); the pane just renders the slice it cares about.
   const jobs = useStore($localRuntimeJobs)
+  // A large lookup table must never be selected through an alternate surface
+  // (advanced presets or a gateway route) while the engine cannot keep it
+  // disk-backed. The server enforces this too; filtering here keeps the
+  // available choices honest and actionable.
+  const servableModels = (status?.models ?? []).filter(
+    model => model.lookup_placement !== 'requires-engine-update' && model.lookup_placement !== 'unknown'
+  )
 
   const refresh = useCallback(() => {
     void getLocalModelsStatus()
@@ -138,10 +145,20 @@ export function LocalModelsSettings() {
   }, [refresh])
 
   useEffect(() => {
-    if (!advancedModelId && status?.models[0]?.id) {
-      setAdvancedModelId(status.active_model_id ?? status.models[0].id)
+    if (!servableModels.length) {
+      if (advancedModelId) {
+        setAdvancedModelId('')
+      }
+
+      return
     }
-  }, [advancedModelId, status])
+
+    if (!servableModels.some(model => model.id === advancedModelId)) {
+      const active = servableModels.find(model => model.id === status?.active_model_id)
+
+      setAdvancedModelId(active?.id ?? servableModels[0].id)
+    }
+  }, [advancedModelId, servableModels, status?.active_model_id])
 
   const refreshGatewayRoutes = useCallback(() => {
     void getLocalGatewayRoutes()
@@ -196,9 +213,9 @@ export function LocalModelsSettings() {
     refresh()
   }, [refresh, runningCount])
 
-  async function handleInstallRuntime() {
+  async function handleInstallRuntime(tag?: string) {
     try {
-      await installLocalRuntime()
+      await installLocalRuntime(undefined, tag)
       watchLocalRuntimeJobs()
     } catch (err) {
       notifyError(err, copy.installFailed)
@@ -666,7 +683,7 @@ export function LocalModelsSettings() {
         )}
       </SettingsSection>
 
-      {status.runtime_installed && status.models.length > 0 && (
+      {status.runtime_installed && servableModels.length > 0 && (
         <SettingsSection icon={Zap} title="Advanced local runtime">
           <div className="grid gap-3 py-1 text-[0.8rem]">
             <p className="text-muted-foreground">
@@ -684,7 +701,7 @@ export function LocalModelsSettings() {
                   }}
                   value={advancedModelId}
                 >
-                  {status.models.map(model => (
+                  {servableModels.map(model => (
                     <option key={model.id} value={model.id}>
                       {model.id}
                     </option>
@@ -774,7 +791,7 @@ export function LocalModelsSettings() {
         </SettingsSection>
       )}
 
-      {status.runtime_installed && status.models.length > 0 && (
+      {status.runtime_installed && servableModels.length > 0 && (
         <SettingsSection icon={Package} title="Gateway endpoints">
           <div className="grid gap-3 py-1 text-[0.8rem]">
             <p className="text-muted-foreground">
@@ -849,6 +866,54 @@ export function LocalModelsSettings() {
             const isLoaded = residency === 'loaded' || residency === 'ready'
             const isLoadingNow = residency === 'loading'
             const livePlacement = activateTarget ? status.placement?.[activateTarget] : undefined
+            // Catalog estimates are useful before a download. Once it exists, the header-derived
+            // inspection wins: it is the only source that knows what this particular quant did to
+            // an Engram/PLE lookup table.
+            const stagedModel = activateTarget ? status.models.find(staged => staged.id === activateTarget) : undefined
+            const stagedLookupPlacement = stagedModel?.lookup_placement
+            // Header inspection decides placement for this exact quant. The catalog's engine
+            // requirement remains an independent compatibility gate: a table can be resident
+            // while the rest of the model still needs a newer llama.cpp build to load at all.
+            const lookupNeedsEngineUpdate =
+              stagedLookupPlacement === 'requires-engine-update' || Boolean(model.needs_engine)
+            const lookupIsUnknown = stagedLookupPlacement === 'unknown'
+            const lookupRequiredEngine = stagedModel?.required_engine ?? model.min_engine ?? 'the required build'
+            const hasResidentLookup = stagedLookupPlacement === 'resident'
+            // A completed header is the authority for this exact file. A catalog card can only be
+            // an estimate, so never retain its optimistic fit, spill, or context claims after the
+            // header says the table is resident, uninspectable, or still needs a newer engine.
+            const headerOverridesCatalogPlan =
+              stagedLookupPlacement === 'resident' ||
+              stagedLookupPlacement === 'unknown' ||
+              stagedLookupPlacement === 'requires-engine-update' ||
+              (stagedLookupPlacement === 'none' && Boolean(model.disk_backed_lookup_bytes))
+            const hasDiskBackedLookup = stagedModel
+              ? stagedLookupPlacement === 'disk-backed'
+              : (model.disk_backed_lookup_bytes ?? 0) > 0
+            const diskBackedLookupBytes = stagedModel
+              ? (stagedModel.disk_backed_lookup_bytes ?? stagedModel.lookup_table_bytes ?? 0)
+              : (model.disk_backed_lookup_bytes ?? 0)
+            const stagedLookupLabel = lookupNeedsEngineUpdate
+              ? copy.lookupUpdateRequired
+              : stagedLookupPlacement === 'resident'
+                ? copy.lookupResident
+                : stagedLookupPlacement === 'unknown'
+                  ? copy.lookupUnknown
+                  : stagedLookupPlacement === 'disk-backed'
+                    ? copy.pillDiskBacked
+                    : null
+            const stagedLookupTip = lookupNeedsEngineUpdate
+              ? copy.lookupUpdateRequiredTip(lookupRequiredEngine)
+              : stagedLookupPlacement === 'resident'
+                ? copy.lookupResidentTip(gbLabel(stagedModel?.lookup_table_bytes))
+                : stagedLookupPlacement === 'unknown'
+                  ? copy.lookupUnknownTip
+                  : stagedLookupPlacement === 'disk-backed'
+                    ? copy.pillDiskBackedTip(
+                        gbLabel(stagedModel?.disk_backed_lookup_bytes ?? stagedModel?.lookup_table_bytes)
+                      )
+                    : ''
+            const stagedLookupTone = lookupNeedsEngineUpdate || lookupIsUnknown ? 'warn' : 'muted'
             const diskBackedLookup = livePlacement?.disk_backed_lookup_bytes ?? 0
             const placementIsDiskBacked = diskBackedLookup > 0
             const placementLabel = [
@@ -866,7 +931,6 @@ export function LocalModelsSettings() {
               .filter(Boolean)
               .join(' ')
             const placementTone = livePlacement?.spilled ? 'warn' : placementIsDiskBacked ? 'muted' : 'success'
-            const hasDiskBackedLookup = (model.disk_backed_lookup_bytes ?? 0) > 0
 
             const aJob = jobs.find(
               j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === activateTarget
@@ -898,6 +962,27 @@ export function LocalModelsSettings() {
                         </Pill>
                       )}
 
+                      {stagedLookupLabel &&
+                        (!isLoaded || hasResidentLookup || lookupNeedsEngineUpdate || lookupIsUnknown) && (
+                          <Tip label={stagedLookupTip}>
+                            <Pill tone={stagedLookupTone}>
+                              <Cpu className="mr-1 size-3" />
+                              {stagedLookupLabel}
+                            </Pill>
+                          </Tip>
+                        )}
+
+                      {lookupNeedsEngineUpdate && !rJob && (
+                        <Button
+                          onClick={() => void handleInstallRuntime(lookupRequiredEngine)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          <Download />
+                          {copy.updateAction}
+                        </Button>
+                      )}
+
                       {isActive ? (
                         <Tip label={copy.activeDetail}>
                           <Pill tone="primary">
@@ -908,7 +993,7 @@ export function LocalModelsSettings() {
                       ) : (
                         <Button
                           className={cn(aJob && '[&_svg]:animate-spin')}
-                          disabled={anyActivateRunning}
+                          disabled={anyActivateRunning || lookupNeedsEngineUpdate || lookupIsUnknown}
                           onClick={() => void handleActivate(activateTarget ?? null, model.display_name)}
                           size="sm"
                         >
@@ -940,7 +1025,12 @@ export function LocalModelsSettings() {
                         </Button>
                       </Tip>
                     </div>
-                  ) : dJob ? undefined : (
+                  ) : dJob ? undefined : lookupNeedsEngineUpdate ? (
+                    <Button onClick={() => void handleInstallRuntime(lookupRequiredEngine)} size="sm" variant="outline">
+                      <Download />
+                      {copy.updateAction}
+                    </Button>
+                  ) : (
                     <Button
                       disabled={!model.fits || anyDownloadRunning || !status.runtime_installed}
                       onClick={() => void handleDownload(model)}
@@ -974,7 +1064,14 @@ export function LocalModelsSettings() {
                           a muted disk pill = mmap-backed lookup table; red = no viable fit.
                           The disk-backed path is deliberately not presented as either full GPU
                           residency or system-RAM spill. */}
-                      {!model.fits ? (
+                      {lookupNeedsEngineUpdate ? (
+                        <Tip label={copy.lookupUpdateRequiredTip(lookupRequiredEngine)}>
+                          <Pill tone="warn">
+                            <Cpu className="mr-1 size-3" />
+                            {copy.lookupUpdateRequired}
+                          </Pill>
+                        </Tip>
+                      ) : headerOverridesCatalogPlan ? null : !model.fits ? (
                         <Tip label={model.fit_detail ?? model.fit_summary}>
                           <Pill tone="destructive">
                             <Cpu className="mr-1 size-3" />
@@ -997,11 +1094,29 @@ export function LocalModelsSettings() {
                         </Tip>
                       ) : null}
 
-                      {model.fits && hasDiskBackedLookup && (
-                        <Tip label={copy.pillDiskBackedTip(gbLabel(model.disk_backed_lookup_bytes))}>
+                      {!headerOverridesCatalogPlan && model.fits && hasDiskBackedLookup && (
+                        <Tip label={copy.pillDiskBackedTip(gbLabel(diskBackedLookupBytes))}>
                           <Pill tone="muted">
                             <Cpu className="mr-1 size-3" />
                             {copy.pillDiskBacked}
+                          </Pill>
+                        </Tip>
+                      )}
+
+                      {hasResidentLookup && (
+                        <Tip label={copy.lookupResidentTip(gbLabel(stagedModel?.lookup_table_bytes))}>
+                          <Pill tone="muted">
+                            <Cpu className="mr-1 size-3" />
+                            {copy.lookupResident}
+                          </Pill>
+                        </Tip>
+                      )}
+
+                      {lookupIsUnknown && (
+                        <Tip label={copy.lookupUnknownTip}>
+                          <Pill tone="warn">
+                            <Cpu className="mr-1 size-3" />
+                            {copy.lookupUnknown}
                           </Pill>
                         </Tip>
                       )}
@@ -1010,7 +1125,8 @@ export function LocalModelsSettings() {
                           all placement is ordinary GPU residency. A RAM spill
                           or disk-backed lookup table gets a muted full-window
                           pill instead of claiming full GPU residency. */}
-                      {model.fits &&
+                      {!headerOverridesCatalogPlan &&
+                        model.fits &&
                         model.start_window_label &&
                         (model.start_window && model.start_window >= model.native_context ? (
                           <Tip label={copy.pillFullContextTip}>
@@ -1024,7 +1140,9 @@ export function LocalModelsSettings() {
                           </Tip>
                         ))}
 
-                      {!model.fits && <Pill>{copy.pillUpTo(model.native_context_label)}</Pill>}
+                      {!headerOverridesCatalogPlan && !model.fits && (
+                        <Pill>{copy.pillUpTo(model.native_context_label)}</Pill>
+                      )}
 
                       {model.vision && <Pill>{copy.pillVision}</Pill>}
                     </span>
@@ -1081,6 +1199,33 @@ export function LocalModelsSettings() {
                 .filter(Boolean)
                 .join(' ')
               const placementTone = livePlacement?.spilled ? 'warn' : placementIsDiskBacked ? 'muted' : 'success'
+              const lookupPlacement = m.lookup_placement
+              const stagedLookupLabel =
+                lookupPlacement === 'disk-backed'
+                  ? copy.pillDiskBacked
+                  : lookupPlacement === 'resident'
+                    ? copy.lookupResident
+                    : lookupPlacement === 'requires-engine-update'
+                      ? copy.lookupUpdateRequired
+                      : lookupPlacement === 'unknown'
+                        ? copy.lookupUnknown
+                        : null
+              const stagedLookupTip =
+                lookupPlacement === 'disk-backed'
+                  ? copy.pillDiskBackedTip(gbLabel(m.disk_backed_lookup_bytes ?? m.lookup_table_bytes))
+                  : lookupPlacement === 'resident'
+                    ? copy.lookupResidentTip(gbLabel(m.lookup_table_bytes))
+                    : lookupPlacement === 'requires-engine-update'
+                      ? copy.lookupUpdateRequiredTip(m.required_engine ?? 'the required build')
+                      : lookupPlacement === 'unknown'
+                        ? copy.lookupUnknownTip
+                        : ''
+              const stagedLookupTone =
+                lookupPlacement === 'requires-engine-update' || lookupPlacement === 'unknown'
+                  ? 'warn'
+                  : lookupPlacement === 'disk-backed'
+                    ? 'muted'
+                    : 'muted'
 
               const aJob = jobs.find(j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === m.id)
 
@@ -1109,6 +1254,30 @@ export function LocalModelsSettings() {
                         </Pill>
                       )}
 
+                      {stagedLookupLabel &&
+                        (!isLoaded ||
+                          lookupPlacement === 'resident' ||
+                          lookupPlacement === 'requires-engine-update' ||
+                          lookupPlacement === 'unknown') && (
+                          <Tip label={stagedLookupTip}>
+                            <Pill tone={stagedLookupTone}>
+                              <Cpu className="mr-1 size-3" />
+                              {stagedLookupLabel}
+                            </Pill>
+                          </Tip>
+                        )}
+
+                      {lookupPlacement === 'requires-engine-update' && !rJob && (
+                        <Button
+                          onClick={() => void handleInstallRuntime(m.required_engine)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          <Download />
+                          {copy.updateAction}
+                        </Button>
+                      )}
+
                       {isActive ? (
                         <Pill tone="primary">
                           <CheckCircle2 className="mr-1 size-3" />
@@ -1117,7 +1286,11 @@ export function LocalModelsSettings() {
                       ) : (
                         <Button
                           className={cn(aJob && '[&_svg]:animate-spin')}
-                          disabled={anyActivateRunning}
+                          disabled={
+                            anyActivateRunning ||
+                            lookupPlacement === 'requires-engine-update' ||
+                            lookupPlacement === 'unknown'
+                          }
                           onClick={() => void handleActivate(m.id, m.id)}
                           size="sm"
                         >
@@ -1185,8 +1358,14 @@ function fitTone(fit: HFFileGroup['fit']): 'destructive' | 'muted' | 'success' |
 }
 
 function browsedModelId(group: HFFileGroup): string {
-  // Mirrors the backend's derivation: first file's name, split-part
-  // suffix stripped — the id the download job carries.
+  // New servers supply the collision-proof ID derived from the whole
+  // repository-relative source path. Retain the filename fallback for a
+  // rolling desktop/backend update where the older server has not sent it.
+  if (group.download_model_id) {
+    return group.download_model_id
+  }
+
+  // Older backend fallback: first file's name, split-part suffix stripped.
   const first = group.paths[0].split('/').pop() ?? group.paths[0]
 
   return first.replace(/-\d{5}-of-\d{5}\.gguf$/i, '').replace(/\.gguf$/i, '')
@@ -1206,18 +1385,23 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
   // Guard against the past: a stale search result must never overwrite a
   // newer query's hits (the desktop guide's out-of-order rule).
   const searchSeq = useRef(0)
+  // File listings are independently asynchronous.  Without their own token,
+  // a slow Repo A reply can render under Repo B and make its download button
+  // submit B with A's paths.
+  const filesSeq = useRef(0)
 
   useEffect(() => {
     const q = query.trim()
+    const seq = ++searchSeq.current
 
     if (q.length < 2) {
       setHits([])
       setSearching(false)
+      setError(null)
 
       return
     }
 
-    const seq = ++searchSeq.current
     setSearching(true)
 
     const handle = setTimeout(() => {
@@ -1244,17 +1428,39 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
   }, [query])
 
   const openFiles = useCallback((repo: string) => {
+    const seq = ++filesSeq.current
     setOpenRepo(repo)
     setFiles([])
     setListing(true)
     listHFRepoFiles(repo)
-      .then(r => setFiles(r.files))
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setListing(false))
+      .then(r => {
+        if (filesSeq.current === seq) {
+          setFiles(r.files)
+          setError(null)
+        }
+      })
+      .catch((e: Error) => {
+        if (filesSeq.current === seq) {
+          setError(e.message)
+        }
+      })
+      .finally(() => {
+        if (filesSeq.current === seq) {
+          setListing(false)
+        }
+      })
   }, [])
 
   const startBrowsedDownload = useCallback(
     (repo: string, group: HFFileGroup) => {
+      // Header inspection may reveal a disk-backed lookup table that makes a
+      // large download usable. Keep that option, but require a deliberate
+      // confirmation before committing disk and bandwidth to an estimate that
+      // currently says it is too large for this machine.
+      if (group.fit === 'too-big' && !window.confirm(copy.browseDownloadConfirm(gbLabel(group.total_bytes)))) {
+        return
+      }
+
       downloadBrowsedModel(repo, group.paths)
         .then(r => {
           if (r.already_downloaded) {
@@ -1276,7 +1482,7 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
         })
         .catch((e: Error) => notifyError(e, copy.browseTitle))
     },
-    [copy.browseAlreadyDownloaded, copy.browseDownloadStarted, copy.browseTitle, onChanged]
+    [copy.browseAlreadyDownloaded, copy.browseDownloadConfirm, copy.browseDownloadStarted, copy.browseTitle, onChanged]
   )
 
   const sideload = useCallback(() => {
@@ -1367,12 +1573,20 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
 
                 {files.map(group => {
                   const dJob = runningDownloadFor(jobs, browsedModelId(group))
+                  const fitLabel =
+                    group.fit === 'fits-gpu'
+                      ? copy.pillFitsGpu
+                      : group.fit === 'needs-ram'
+                        ? copy.pillUsesRam
+                        : group.fit === 'too-big'
+                          ? copy.pillTooBig
+                          : copy.browseFitUnknown
 
                   return (
                     <div
                       className={cn(
                         'flex flex-col gap-1 rounded-md border border-(--ui-border) px-2.5 py-1.5',
-                        group.fit === 'too-big' && 'opacity-45'
+                        group.fit === 'too-big' && 'border-destructive/40'
                       )}
                       key={group.label}
                     >
@@ -1385,7 +1599,7 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
                         <Button
                           aria-label={copy.browseDownloadAria.replace('{name}', group.label)}
                           className="h-6 shrink-0 px-2"
-                          disabled={group.fit === 'too-big' || Boolean(dJob)}
+                          disabled={Boolean(dJob)}
                           onClick={() => startBrowsedDownload(hit.repo, group)}
                           size="sm"
                           variant="ghost"
@@ -1406,16 +1620,12 @@ function BrowseSection({ onChanged }: { onChanged: () => void }) {
                         </>
                       ) : (
                         <span className="flex items-center justify-between gap-2">
-                          <Pill tone={fitTone(group.fit)}>
-                            <Cpu className="mr-1 size-3" />
-                            {group.fit === 'fits-gpu'
-                              ? copy.pillFitsGpu
-                              : group.fit === 'needs-ram'
-                                ? copy.pillUsesRam
-                                : group.fit === 'too-big'
-                                  ? copy.pillTooBig
-                                  : copy.browseFitUnknown}
-                          </Pill>
+                          <Tip label={copy.browseEstimateTip}>
+                            <Pill tone={fitTone(group.fit)}>
+                              <Cpu className="mr-1 size-3" />
+                              {copy.browseFitEstimate(fitLabel)}
+                            </Pill>
+                          </Tip>
 
                           <span className="shrink-0 text-[0.7rem] text-muted-foreground">
                             {gbLabel(group.total_bytes)}

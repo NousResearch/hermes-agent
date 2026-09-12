@@ -666,12 +666,17 @@ def test_split_gguf_reader_aggregates_ple_outside_first_shard(tmp_path):
     assert header.n_tensors == 2
     assert header.tensor_bytes == 32 + lazy
     assert header.embd_table_bytes == 32
+    assert header.lookup_table_bytes == lazy
     assert header.lazy_table_bytes == lazy
     # Continuation paths receive the same aggregate, not just their local table.
     assert read_gguf_header(second).tensor_bytes == header.tensor_bytes
 
     assert supports_automatic_lazy_lookup("b10678") is False
     assert supports_automatic_lazy_lookup("b10679") is True
+    assert supports_automatic_lazy_lookup("b10679-old") is False
+    assert supports_automatic_lazy_lookup("not-a-build-10679") is False
+    assert supports_automatic_lazy_lookup(None) is False
+    assert supports_automatic_lazy_lookup("b" + "9" * 10_000) is False
     old = profile_from_gguf(header, engine_tag="b10678")
     new = profile_from_gguf(header, engine_tag="b10679")
     assert old.lazy_table_bytes == 0
@@ -687,7 +692,239 @@ def test_automatic_lazy_ple_threshold_is_strict(tmp_path):
     _write_binary_gguf(path, tensors=[
         ("per_layer_token_embd.weight", [AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES], 24),
     ])
-    assert read_gguf_header(path).lazy_table_bytes == 0
+    header = read_gguf_header(path)
+    assert header.lookup_table_bytes == AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES
+    assert header.lazy_table_bytes == 0
+
+
+def test_gguf_reader_bounds_malicious_header_dimensions(tmp_path):
+    """Status inspection must reject a tiny hostile header before it can build a giant struct format."""
+    from hermes_cli.local_runtime.gguf import read_gguf_header
+
+    path = tmp_path / "Hostile.gguf"
+    path.write_bytes(b"".join((
+        b"GGUF", struct.pack("<IQQ", 3, 1, 0), _gguf_string("bad"), struct.pack("<I", 999_999),
+    )))
+
+    with pytest.raises(ValueError, match="too many dimensions"):
+        read_gguf_header(path)
+
+
+def test_bootstrap_refuses_eligible_ple_on_an_old_engine(tmp_path, monkeypatch):
+    """The router autoloads its whole directory, so startup itself—not just the API—must gate PLE.
+
+    The tiny fixture has a tensor table describing more than 4 GiB without allocating its tensor
+    payload.  It models the Qwen split/header fact closely enough to prove b10678 never reaches
+    llama-server installation/spawn, while b10679 does proceed through the normal boot ladder.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import binaries, bootstrap
+    from hermes_cli.local_runtime.gguf import AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES
+
+    mdir = bootstrap.models_dir()
+    _write_binary_gguf(mdir / "Engram-Q4.gguf", tensors=[
+        ("per_layer_token_embd.weight", [AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES + 1], 24),
+    ])
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    monkeypatch.setattr(binaries, "active_tag", lambda section: "b10678")
+    reached: list[str] = []
+    monkeypatch.setattr(
+        binaries, "ensure_runtime_installed",
+        lambda tag, backend, **kwargs: reached.append(tag) or (_ for _ in ()).throw(
+            AssertionError("old engine must not reach installation/spawn")))
+
+    assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "tag": "b10678"}}) is None
+    assert reached == []
+
+    # The same file is safe with the first lazy-lookup-capable build; reaching the installer is
+    # sufficient here because its deliberate assertion is swallowed by the session-safe boot API.
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10679"])
+    monkeypatch.setattr(binaries, "active_tag", lambda section: "b10679")
+    assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "tag": "b10679"}}) is None
+    assert reached == ["b10679"]
+
+
+def test_bootstrap_refuses_catalog_architecture_floor_without_a_ple_tensor(tmp_path, monkeypatch):
+    """Catalog min_engine protects known architectures even when their parsed header has no PLE table."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import binaries, bootstrap, catalog
+
+    _write_binary_gguf(bootstrap.models_dir() / "Catalog-Only-Engine-Gate.gguf")
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(catalog, "entry_for_model", lambda model_id: SimpleNamespace(min_engine="b10679"))
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    monkeypatch.setattr(binaries, "active_tag", lambda section: "b10678")
+    reached: list[str] = []
+    monkeypatch.setattr(binaries, "ensure_runtime_installed", lambda *args, **kwargs: reached.append("spawn"))
+
+    assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "tag": "b10678"}}) is None
+    assert reached == []
+
+
+def test_bootstrap_stops_legacy_incumbent_before_ple_can_autoload(tmp_path, monkeypatch):
+    """An adopted old server is just as unsafe as a new b10678 boot."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import binaries, bootstrap, endpoint
+    from hermes_cli.local_runtime.gguf import AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES
+
+    _write_binary_gguf(bootstrap.models_dir() / "Engram-Q4.gguf", tensors=[
+        ("per_layer_token_embd.weight", [AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES + 1], 24),
+    ])
+    incumbent = {"base_url": "http://127.0.0.1:18434/v1", "api_key": "k", "pid": 4321}
+    stopped: list[int] = []
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(endpoint, "_managed_state", lambda: incumbent)
+    monkeypatch.setattr(bootstrap, "_stop_state_server", lambda state: stopped.append(state["pid"]))
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    monkeypatch.setattr(binaries, "active_tag", lambda section: "b10678")
+    monkeypatch.setattr(
+        binaries, "ensure_runtime_installed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("old engine must not reach installation/spawn")))
+
+    assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "tag": "b10678"}}) is None
+    assert stopped == [4321]
+
+
+def test_refresh_stops_an_adopted_server_using_private_pid_state(tmp_path, monkeypatch):
+    """Refresh must retain the ownership PID; provider routing intentionally does not expose it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap, endpoint
+
+    incumbent = {"base_url": "http://127.0.0.1:18434/v1", "api_key": "k", "pid": 4321}
+    stopped: list[int] = []
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(endpoint, "_managed_state", lambda: incumbent)
+    monkeypatch.setattr(bootstrap, "_stop_state_server", lambda state: stopped.append(state["pid"]))
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"local_runtime": {"enabled": True}})
+    monkeypatch.setattr(bootstrap, "ensure_local_runtime", lambda config, force=False: object())
+
+    assert bootstrap.refresh_local_runtime() is True
+    assert stopped == [4321]
+
+
+def test_bootstrap_fails_closed_for_uninspectable_sideload_on_an_old_engine(tmp_path, monkeypatch):
+    """An old llama.cpp may parse a future GGUF layout that Hermes cannot inspect yet."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import binaries, bootstrap
+
+    path = bootstrap.models_dir() / "Future-Layout.gguf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"GGUF")
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    monkeypatch.setattr(binaries, "active_tag", lambda section: "b10678")
+    reached: list[str] = []
+    monkeypatch.setattr(binaries, "ensure_runtime_installed", lambda *args, **kwargs: reached.append("spawn"))
+
+    assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "tag": "b10678"}}) is None
+    assert reached == []
+
+
+def test_supervisor_persists_and_endpoint_proves_serving_engine_tag(tmp_path, monkeypatch):
+    """A pending configured update must not masquerade as the engine actually serving requests."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import endpoint
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor, state_path
+
+    sup = LlamaServerSupervisor(tmp_path / "install", tmp_path / "models", engine_tag="b10679")
+    sup.proc = SimpleNamespace(pid=4321)
+    monkeypatch.setattr(endpoint, "_pid_alive", lambda pid: pid == 4321)
+    sup._write_state()
+
+    state = endpoint._managed_state()
+    assert state is not None and state["engine_tag"] == "b10679"
+    assert state["pid"] == 4321
+    # Provider routing deliberately receives no process-management PID.
+    assert endpoint._state_endpoint() == {
+        "base_url": sup.base_url, "api_key": sup.api_key, "engine_tag": "b10679"}
+    assert not list(state_path().parent.glob("*.tmp"))
+    assert endpoint.managed_engine_tag() == "b10679"
+
+    # Old state files intentionally yield no guess.  A caller must use the safe resident/update
+    # path rather than infer support from config or an installed-but-not-running build.
+    state_path().write_text(json.dumps({
+        "base_url": sup.base_url, "api_key": sup.api_key, "pid": 4321,
+    }), encoding="utf-8")
+    assert endpoint.managed_engine_tag() is None
+
+
+def test_endpoint_refuses_an_old_persisted_router_before_async_boot(tmp_path, monkeypatch):
+    """A provider request racing session boot must not get an old router even once."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap, endpoint
+    from hermes_cli.local_runtime.gguf import AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    _write_binary_gguf(bootstrap.models_dir() / "Engram-Q4.gguf", tensors=[
+        ("per_layer_token_embd.weight", [AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES + 1], 24),
+    ])
+    state_path().parent.mkdir(parents=True, exist_ok=True)
+    state_path().write_text(json.dumps({
+        "base_url": "http://127.0.0.1:18434/v1", "api_key": "k", "pid": 4321,
+        "engine_tag": "b10678",
+    }), encoding="utf-8")
+    monkeypatch.setattr(endpoint, "_pid_alive", lambda pid: pid == 4321)
+    kicked: list[object] = []
+    monkeypatch.setattr(endpoint, "_kick_managed_boot", lambda config: kicked.append(config))
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.detect.detect_server",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("unsafe managed port must not be rediscovered")),
+    )
+
+    assert endpoint.resolve_llamacpp_endpoint(wait_for_boot_s=0) is None
+    assert kicked == [None]
+
+
+def test_endpoint_refuses_old_persisted_router_for_catalog_engine_floor(tmp_path, monkeypatch):
+    """The last resolver boundary also honors non-PLE catalog engine requirements."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap, catalog, endpoint
+    from hermes_cli.local_runtime.supervisor import state_path
+
+    _write_binary_gguf(bootstrap.models_dir() / "Catalog-Only-Engine-Gate.gguf")
+    monkeypatch.setattr(catalog, "entry_for_model", lambda model_id: SimpleNamespace(min_engine="b10679"))
+    state_path().parent.mkdir(parents=True, exist_ok=True)
+    state_path().write_text(json.dumps({
+        "base_url": "http://127.0.0.1:18434/v1", "api_key": "k", "pid": 4321,
+        "engine_tag": "b10678",
+    }), encoding="utf-8")
+    monkeypatch.setattr(endpoint, "_pid_alive", lambda pid: pid == 4321)
+    kicked: list[object] = []
+    monkeypatch.setattr(endpoint, "_kick_managed_boot", lambda config: kicked.append(config))
+
+    assert endpoint.resolve_llamacpp_endpoint(wait_for_boot_s=0) is None
+    assert kicked == [None]
+
+
+def test_supervisor_spawn_guard_and_watchdog_stop_prevent_unsafe_restart(tmp_path, monkeypatch):
+    """The watchdog cannot bypass bootstrap policy or revive after shutdown during backoff."""
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import supervisor as sup_mod
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    blocked = LlamaServerSupervisor(tmp_path / "install", tmp_path / "models", can_spawn=lambda: False)
+    binaries: list[object] = []
+    monkeypatch.setattr(sup_mod, "server_binary", lambda install: binaries.append(install))
+    with pytest.raises(RuntimeError, match="placement policy"):
+        blocked._spawn()
+    assert binaries == []
+
+    stopping = LlamaServerSupervisor(tmp_path / "install", tmp_path / "models")
+    stopping.proc = SimpleNamespace(poll=lambda: 1)
+    monkeypatch.setattr(sup_mod, "_RESTART_BACKOFF_S", (0,))
+    monkeypatch.setattr(sup_mod.time, "sleep", lambda seconds: setattr(stopping, "_stopping", True))
+    monkeypatch.setattr(stopping, "_spawn", lambda: pytest.fail("watchdog spawned after stop"))
+    stopping._watch()
+    assert stopping._stopping is True
 
 
 def test_only_the_named_oversized_ple_tensor_is_lazy(tmp_path):
@@ -699,6 +936,7 @@ def test_only_the_named_oversized_ple_tensor_is_lazy(tmp_path):
     _write_binary_gguf(path, tensors=[("some_other_lookup.weight", [oversized], 24)])
     header = read_gguf_header(path)
     assert header.tensor_bytes == oversized
+    assert header.lookup_table_bytes == 0
     assert header.lazy_table_bytes == 0
 
 

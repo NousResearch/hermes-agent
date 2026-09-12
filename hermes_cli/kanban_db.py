@@ -715,12 +715,15 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    tags: Optional[list] = None              # classification tags (JSON in DB); None = untagged
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        parsed_tags = _json_or(g("tags"))
+        tags_value = [str(t) for t in parsed_tags if t] if isinstance(parsed_tags, list) else None
         return cls(
             **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -730,6 +733,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            tags=tags_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -941,7 +945,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Free-form classification tags, stored as a JSON array of strings
+    -- (same shape as ``skills``). Tags cut across boards: boards separate
+    -- streams of work (one per project), tags group tasks by the *nature*
+    -- of the work (writing / experiments / chores) so a parked batch can
+    -- resurface as one filterable group via ``kanban list --tag`` no
+    -- matter which board it lives on. NULL = untagged.
+    tags                 TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1218,6 +1229,32 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+def _normalize_task_tags(tags: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Strip/dedupe a tags list. Commas are refused so a comma-joined ``--tag
+    a,b`` never silently becomes one label — pass ``--tag a --tag b`` instead.
+    Unlike skills, tags are free-form: no toolset-name confusion to guard."""
+    if tags is None:
+        return None
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for t in tags:
+        if not t:
+            continue
+        name = str(t).strip()
+        if not name:
+            continue
+        if "," in name:
+            raise ValueError(
+                f"tag cannot contain comma: {name!r} "
+                f"(pass --tag a --tag b instead of a comma-joined string)"
+            )
+        if name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    return cleaned or None
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1225,6 +1262,7 @@ def create_task(
     branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
     parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
+    tags: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
@@ -1243,6 +1281,8 @@ def create_task(
     worker model (provider requires model); ``reasoning_effort`` is independent.
     ``creator_task_id``: inherit durable session/subscriptions independently of
     dependency edges; an explicit ``session_id`` still wins.
+    ``tags``: free-form classification labels (cross-board filter dimension —
+    see ``list_tasks(tag=...)``); stored as a JSON array, NULL when omitted.
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
@@ -1285,6 +1325,7 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+    tags_list = _normalize_task_tags(tags)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
@@ -1331,8 +1372,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract, tags
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1342,6 +1383,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        json.dumps(tags_list) if tags_list is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -1361,6 +1403,7 @@ def create_task(
                         "branch_name": branch_name,
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
+                        "tags": list(tags_list) if tags_list else None,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
@@ -1469,6 +1512,7 @@ def list_tasks(
     tenant: Optional[str] = None, session_id: Optional[str] = None, include_archived: bool = False,
     limit: Optional[int] = None, order_by: Optional[str] = None,
     workflow_template_id: Optional[str] = None, current_step_key: Optional[str] = None,
+    tag: Optional[str] = None,
 ) -> list[Task]:
     if status is not None and status not in VALID_STATUSES:
         raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
@@ -1482,6 +1526,13 @@ def list_tasks(
         if val is not None:
             query += f" AND {col} = ?"
             params.append(val)
+    if tag is not None:
+        # Exact match inside the JSON array (tags column). json_each needs
+        # SQLite with JSON1 — built in by default since 3.38, and every
+        # CPython wheel this project supports (requires-python >=3.11)
+        # bundles it. A LIKE '%"tag"%' would mis-match substrings.
+        query += " AND EXISTS (SELECT 1 FROM json_each(tasks.tags) je WHERE je.value = ?)"
+        params.append(tag)
     if not include_archived and status != "archived":
         query += " AND status != 'archived'"
     if order_by is not None:

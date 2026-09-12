@@ -2839,6 +2839,11 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)
             return None
 
+    def format_tool_preview(self, preview) -> str:
+        """Keep compact tool arguments out of mrkdwn emphasis conversion."""
+        # Substitute embedded delimiters in the display text only.
+        return f"`{preview.text.replace('`', 'ˋ')}`"
+
     def format_message(self, content: str) -> str:
         """Convert standard markdown to Slack mrkdwn.
         Tables are fenced first; code is protected from later passes; broadcast mentions are escaped

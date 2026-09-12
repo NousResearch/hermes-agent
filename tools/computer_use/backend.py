@@ -77,6 +77,10 @@ class CaptureResult:
     # part). None → consumers fall back to base64-prefix sniffing (older drivers).
     # See #1961, #47072.
     image_mime_type: Optional[str] = None
+    # Snapshot handle (`s` + 8 hex) this capture's element indices are scoped to; newer cua-driver
+    # builds refuse a bare element_index and want this handle (or the per-element token) alongside it.
+    # None on pre-snapshot drivers — indices from those builds are standalone.
+    snapshot_id: Optional[str] = None
     # Guidance appended to the summary by capture lanes that intentionally return no elements (e.g.
     # full-screen composited grabs) to point the model at an interactive lane.
     note: str = ""

@@ -3215,7 +3215,46 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             telemetry["fallback_used"] = True
             telemetry["failure_class"] = telemetry.get("failure_class") or "aux_model_fallback"
         self.summary_model = ""  # empty = use main model
+        # The aux failure that triggered this fallback must not survive into the
+        # main-model retry: a terminal access/quota class error recorded here
+        # would make compress() abort even when the main model summarises fine.
+        # A genuine main-model access/quota failure re-sets it in the retry.
+        self._last_summary_auth_failure = False
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
+
+    def _apply_summary_route(self, call_kwargs: dict) -> None:
+        """Pin the auxiliary-summary wire route onto ``call_kwargs``.
+
+        Both compression entry points (``_call_summary_llm`` and
+        ``MicroCompactionMixin._micro_summarize_one``) call
+        ``call_llm(task="compression", ...)``.
+        When a distinct ``summary_model`` is configured, naming it is enough.
+
+        After :meth:`_fallback_to_main_for_compression` clears
+        ``summary_model``, however, omitting the route is NOT equivalent to
+        "use the main model": ``call_llm`` resolves an unspecified route from
+        ``auxiliary.compression`` in the config, which is the very model that
+        just failed. The fallback then re-calls it, fails identically, and —
+        because ``_summary_model_fallen_back`` is already set — no second
+        fallback is allowed, so the summary aborts and compression is skipped.
+
+        Naming the main runtime explicitly makes the fallback actually reach
+        the main model.
+        """
+        if self.summary_model:
+            call_kwargs["model"] = self.summary_model
+            return
+        if not getattr(self, "_summary_model_fallen_back", False):
+            return
+        for key, value in (
+            ("provider", self.provider),
+            ("model", self.model),
+            ("base_url", self.base_url),
+            ("api_key", self.api_key),
+            ("api_mode", getattr(self, "api_mode", "")),
+        ):
+            if value:
+                call_kwargs[key] = value
 
     def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
         """Issue the single aux summary call; return validated content text.
@@ -3233,8 +3272,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.
         }
-        if self.summary_model:
-            call_kwargs["model"] = self.summary_model
+        self._apply_summary_route(call_kwargs)
         # Pinned route (stall fallback) overrides task routing so the retry leaves the stalled backend.
         call_kwargs.update(_pinned_summary_call_kwargs())
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.

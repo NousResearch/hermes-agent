@@ -345,7 +345,8 @@ def _csv_set(value: str) -> Set[str]:
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
+    # Scoped read: under multiplex os.environ is the DEFAULT profile's allow-all flag.
+    v = _get_scoped_secret(name)
     return default if v is None else v.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -388,10 +389,11 @@ class LineAdapter(BasePlatformAdapter):
         extra = getattr(config, "extra", {}) or {}
 
         def env_or(env: str, key: str, default: Any = "") -> Any:
-            return os.getenv(env) or extra.get(key, default)
+            return _get_scoped_secret(env) or extra.get(key, default)
 
         def allowlist(env: str, key: str) -> Set[str]:
-            return _csv_set(os.getenv(env, "")) | set(extra.get(key, []))
+            # Scoped read: under multiplex os.environ is the DEFAULT profile's allowlist.
+            return _csv_set(_get_scoped_secret(env, "")) | set(extra.get(key, []))
 
         self.channel_access_token, self.channel_secret = _credentials(config)
         # Host ``None`` → dual-stack bind (see DEFAULT_HOST); empty string collapses to None.
@@ -934,10 +936,10 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     if not _env_credentials_present():
         return None
     seeded: Dict[str, Any] = {}
-    if os.getenv("LINE_PORT"):
+    if _get_scoped_secret("LINE_PORT"):
         with contextlib.suppress(ValueError):
-            seeded["port"] = int(os.environ["LINE_PORT"])
-    seeded.update({key: os.environ[env] for env, key in _ENV_SEED_KEYS if os.getenv(env)})
+            seeded["port"] = int(_get_scoped_secret("LINE_PORT"))
+    seeded.update({key: _get_scoped_secret(env) for env, key in _ENV_SEED_KEYS if _get_scoped_secret(env)})
     return seeded
 
 

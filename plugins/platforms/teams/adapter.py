@@ -179,7 +179,7 @@ def _env_enablement() -> dict | None:
     if not (client_id and client_secret and tenant_id):
         return None
     seed: dict = {"client_id": client_id, "client_secret": client_secret, "tenant_id": tenant_id}
-    port = coerce_port(os.getenv("TEAMS_PORT", "").strip(), None)
+    port = coerce_port(_get_scoped_secret("TEAMS_PORT", "").strip(), None)
     if port is not None:
         seed["port"] = port
     if service_url := _get_scoped_secret("TEAMS_SERVICE_URL", "").strip():
@@ -353,8 +353,8 @@ class TeamsAdapter(BasePlatformAdapter):
         # _bf_token_lock so concurrent attachments can't stampede the STS.
         self._bf_token_cache: Optional[tuple] = None
         self._bf_token_lock: Optional[asyncio.Lock] = None
-        self._port = coerce_port(extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
-        _raw_host = extra.get("host") or os.getenv("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
+        self._port = coerce_port(extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
+        _raw_host = extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -605,9 +605,10 @@ class TeamsAdapter(BasePlatformAdapter):
         """Default-deny gate for approval clicks: require TEAMS_ALLOWED_USERS or an explicit
         TEAMS_ALLOW_ALL_USERS=true opt-in, else anyone who can message the bot could approve.
         Returns the user-facing denial text, or ``None`` when allowed."""
-        if os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
+        # Scoped reads: under multiplex os.environ is the DEFAULT profile's allow-all/allowlist.
+        if _get_scoped_secret("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
             return None
-        allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
+        allowed_csv = _get_scoped_secret("TEAMS_ALLOWED_USERS", "").strip()
         if not allowed_csv:
             logger.warning(
                 "[teams] card action rejected: TEAMS_ALLOWED_USERS not configured "

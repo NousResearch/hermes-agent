@@ -11,6 +11,7 @@ import contextlib
 import logging
 import os
 import threading
+from pathlib import Path
 from typing import Optional
 
 from gateway.bot_loop_guard import BotLoopGuard
@@ -238,13 +239,38 @@ class GatewayAuthorizationMixin:
             return self._primary_adapters()
         profile_adapters = self._profile_adapters_map()
         if profile_name in profile_adapters:
-            return profile_adapters[profile_name]
+            adapters = profile_adapters[profile_name]
+            if adapters or not self._is_shared_bot_satellite(profile_name):
+                return adapters
+            return self._primary_adapters()
         # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:
             with contextlib.suppress(Exception):
                 primary_profile = self._active_profile_name()
         return self._primary_adapters() if profile_name == primary_profile else {}
+
+    def _is_shared_bot_satellite(self, profile_name: str) -> bool:
+        """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
+        default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
+        ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
+        platform is its own credential boundary and never borrows the primary. Restored/cached sources
+        carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
+        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return False
+        # A bot that failed to connect is queued for reconnect: that profile owns a credential.
+        if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
+            return False
+        routes = getattr(config, "profile_routes", None) or []
+        if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
+            return False
+        from gateway.run import _multiplex_profile_homes
+        try:
+            return profile_name in {name for name, _home in _multiplex_profile_homes(config)}
+        except Exception:
+            return False
 
     def _adapter_for_source(self, source: Optional[SessionSource]):
         """Resolve the live adapter for an inbound ``SessionSource``."""
@@ -284,6 +310,29 @@ class GatewayAuthorizationMixin:
             return None
         registered, profile = self._owning_profile(adapter, platform)
         return (adapter, profile) if registered else None
+
+    def _authorization_home_for_source(self, source: SessionSource):
+        """HERMES_HOME whose allowlist admits *source*: the ingress-stamped transport home, else the home of
+        the profile owning the adapter that delivers it. ``None`` = authorize in the ambient scope
+        (multiplex off, or no live adapter — the check then fails closed on its own).
+
+        Inside a routed satellite's turn the ambient scope is the satellite's, whose ``.env`` has no
+        token/allowlist; every authorization decision made mid-turn (``/topic``, sibling ``/stop``, plugin
+        injection, voice, auto-resume) must read the admitting bot's allowlist instead."""
+        stamped = getattr(source, "_authorization_profile_home", None)
+        if stamped is not None:
+            return Path(stamped)
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return None
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return None
+        _registered, profile = self._owning_profile(adapter, getattr(source, "platform", None))
+        if profile is None:
+            from hermes_constants import get_process_hermes_home
+            return get_process_hermes_home()  # the primary bot's home, never the per-turn override
+        from hermes_cli.profiles import get_profile_dir
+        return get_profile_dir(profile)
 
     def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the transport-owning profile for adapter policy lookups."""

@@ -42,37 +42,6 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
-def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
-    """Normalize the optional named-profile allowlist: ``None`` = serve all; a malformed
-    outer value fails safe to ``[]`` (default profile only); bad entries are skipped."""
-    if value is None:
-        return None
-    if not isinstance(value, list):
-        logger.warning(
-            "Invalid gateway.multiplex_profile_allowlist (expected a list, got %s); "
-            "serving only the default profile",
-            type(value).__name__,
-        )
-        return []
-
-    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
-
-    normalized: List[str] = []
-    for entry in value:
-        if not isinstance(entry, str):
-            logger.warning("Skipping invalid gateway.multiplex_profile_allowlist entry %r (expected a profile name)", entry)
-            continue
-        try:
-            name = normalize_profile_name(entry)
-            validate_profile_name(name)
-        except ValueError:
-            logger.warning("Skipping invalid gateway.multiplex_profile_allowlist entry %r", entry)
-            continue
-        if name != "default" and name not in normalized:
-            normalized.append(name)
-    return normalized
-
-
 def _env_multiplex_profiles_override() -> "bool | None":
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
@@ -557,9 +526,8 @@ class GatewayConfig:
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
     # Opt-in: the default profile's gateway serves every profile on the host (profiles stamped into
-    # session keys, per-profile adapters/credentials). Allowlist None = serve all; [] = default only.
+    # session keys, per-profile adapters/credentials).
     multiplex_profiles: bool = False
-    multiplex_profile_allowlist: Optional[List[str]] = None
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -588,14 +556,13 @@ class GatewayConfig:
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
-        "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
+        "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
     )
 
     def __post_init__(self) -> None:
-        self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(self.multiplex_profile_allowlist)
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
     def get_connected_platforms(self) -> List[Platform]:
@@ -731,7 +698,6 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            multiplex_profile_allowlist=pick("multiplex_profile_allowlist"),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),

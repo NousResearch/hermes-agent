@@ -11,6 +11,7 @@ import threading
 import time
 
 from hermes_cli import mcp_startup
+from hermes_constants import hermes_home_key
 from tui_gateway import entry
 
 
@@ -31,7 +32,7 @@ def test_wait_falls_through_to_shared_owner(monkeypatch):
     )
     thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
     thread.start()
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", thread)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {hermes_home_key(): thread})
 
     start = time.monotonic()
     entry.wait_for_mcp_discovery(timeout=2.0)
@@ -43,7 +44,7 @@ def test_wait_falls_through_to_shared_owner(monkeypatch):
 
 def test_wait_noop_when_no_owner_has_a_thread(monkeypatch):
     monkeypatch.setattr(entry, "_mcp_discovery_thread", None)
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
 
     start = time.monotonic()
     entry.wait_for_mcp_discovery(timeout=2.0)
@@ -78,7 +79,7 @@ def test_wait_reinvokes_shared_spawn_when_discovery_enabled(monkeypatch):
         calls.append(thread_name)
 
     monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", _fake_start)
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
 
     entry.wait_for_mcp_discovery(timeout=0.1)
 
@@ -96,7 +97,7 @@ def test_wait_skips_spawn_when_discovery_not_enabled(monkeypatch):
         calls.append(thread_name)
 
     monkeypatch.setattr(mcp_startup, "start_background_mcp_discovery", _fake_start)
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
 
     entry.wait_for_mcp_discovery(timeout=0.1)
 

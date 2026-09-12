@@ -70,19 +70,31 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
     assert builtin.start_kwargs["profile_homes"] == homes
 
 
-def test_single_profile_keeps_legacy_path(monkeypatch, _providers, tmp_path):
-    _sp, builtin = _providers
+@pytest.mark.parametrize("gateway_running", [True, False])
+def test_single_profile_ticks_only_without_gateway(monkeypatch, tmp_path, gateway_running):
+    """Exercise Desktop startup through the real built-in scheduler loop."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
     import hermes_cli.profiles as profiles_mod
 
+    home = tmp_path / "root"
+    home.mkdir()
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda **_kw: [("default", home)])
+    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda _home: gateway_running)
     monkeypatch.setattr(
-        profiles_mod,
-        "profiles_to_serve",
-        lambda **_kw: [("default", tmp_path / "root")],
+        "cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler
     )
+    ticked = []
+    monkeypatch.setattr(
+        "cron.scheduler.tick", lambda **_kw: ticked.append(get_hermes_home())
+    )
+    stop = threading.Event()
+    # One real scheduler cycle, with no wall-clock wait or job dispatch.
+    monkeypatch.setattr(stop, "wait", lambda _timeout: stop.set())
 
-    ws._start_desktop_cron_ticker(threading.Event(), interval=9)
+    ws._start_desktop_cron_ticker(stop, interval=0)
 
-    assert builtin.start_kwargs == {"interval": 9}
+    assert ticked == ([] if gateway_running else [home])
 
 
 def test_enumeration_failure_fails_open(monkeypatch, _providers):
@@ -118,3 +130,35 @@ def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):
     ws._start_desktop_cron_ticker(threading.Event(), interval=13)
 
     assert external.start_kwargs == {"interval": 13}
+
+
+def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkeypatch, _providers, tmp_path):
+    """The Desktop ticker mirrors the multiplexer's served set (default + every live profile dir)
+    and stands down, per tick, for a profile already owned by a gateway: its own running gateway,
+    or the live default multiplexer that already ticks it — such a satellite has no gateway.pid
+    of its own, so the per-home liveness check alone lets both tickers race for its fires
+    (#107485, #108428)."""
+    import hermes_cli.profiles as profiles_mod
+    import yaml
+
+    _sp, builtin = _providers
+    root = tmp_path / ".hermes"
+    for name in ("worker", "guest", "solo"):
+        (root / "profiles" / name).mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {"multiplex_profiles": True}}))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: root / "profiles")
+    monkeypatch.setattr(
+        profiles_mod, "_check_gateway_running", lambda home: home == root / "profiles" / "solo")
+    monkeypatch.setattr(profiles_mod, "_served_by_running_multiplexer", lambda name: name == "worker")
+
+    ws._start_desktop_cron_ticker(threading.Event(), interval=0)
+
+    assert [name for name, _ in builtin.start_kwargs["profile_homes"]] == [
+        "default", "guest", "solo", "worker"]
+    gate = builtin.start_kwargs["profile_gate"]
+    assert gate("default", root) is True
+    assert gate("guest", root / "profiles" / "guest") is True
+    assert gate("worker", root / "profiles" / "worker") is False
+    assert gate("solo", root / "profiles" / "solo") is False

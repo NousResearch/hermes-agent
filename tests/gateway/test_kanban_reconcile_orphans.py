@@ -153,14 +153,30 @@ class TestReconcileOrphanedRunning:
 
 
 class TestDispatchOnceReconciles:
+    """The reconciliation pass is part of a REAL tick.
+
+    These used to drive ``dispatch_once(dry_run=True)`` to keep the spawn path
+    out of the way, which only worked because the reclaim phase ran before
+    ``dispatch_once`` looked at the flag — the defect fixed in this change.
+    ``assignee="w"`` is not a real profile, so the reconciled card is reported
+    as ``skipped_nonspawnable`` and no worker is spawned either way. The
+    dry-run side of the contract (an orphan is left alone) lives with the
+    other sweeps in tests/hermes_cli/test_kanban_dispatch_dry_run_readonly.py.
+    """
+
     def test_dispatch_once_reconciles_orphans(self, conn):
         tid = kb.create_task(conn, title="zombie", assignee="w")
         _orphan_running(conn, tid)
 
         result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (True, ""),
-                                  dry_run=True)
+                                  dry_run=False)
 
         assert tid in result.reconciled_orphans
+        # Pin the assumption this class relies on: "w" resolves to no spawnable
+        # profile, so the reconciled card is reported, not spawned. If a profile
+        # named "w" ever exists, fail here rather than deep in the spawn path.
+        assert tid in result.skipped_nonspawnable
+        assert result.spawned == []
         assert conn.execute(
             "SELECT status FROM tasks WHERE id=?", (tid,)
         ).fetchone()["status"] == "ready"
@@ -172,7 +188,7 @@ class TestDispatchOnceReconciles:
         _orphan_running(conn, tid)
 
         result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (True, ""),
-                                  dry_run=True, reconcile_orphans=False)
+                                  dry_run=False, reconcile_orphans=False)
 
         assert result.reconciled_orphans == []
         assert conn.execute(

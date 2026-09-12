@@ -129,6 +129,12 @@ class DispatchResult:
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
+    dry_run: bool = False
+    """True when this tick was a read-only preview: the reclaim/promotion sweeps
+    did not run, so their counters are empty rather than measured, and the
+    spawn preview was computed on the un-reclaimed board. Carried in the CLI
+    ``--json`` output and the dashboard's ``POST /dispatch`` response so a
+    script cannot mistake a preview's zeros for a healthy board."""
     memory_pressure: Optional[str] = None
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
@@ -1437,6 +1443,16 @@ def dispatch_once(
     frames. The loser returns an empty ``DispatchResult`` with
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
+
+    ``dry_run=True`` is read-only: it reports what WOULD spawn and writes no
+    board state (:func:`_dispatch_once_locked` says which sweeps are skipped
+    and why the preview can under-report). Two non-board writes still happen
+    on a dry-run tick, deliberately: the periodic PASSIVE
+    WAL checkpoint below (it moves committed frames, never rows) and
+    :func:`_kb._fire_dispatch_tick_hook`, which fires with ``dry_run=True`` so
+    observers can see the preview. The tick lock is still taken — a dry-run
+    that loses it truthfully reports ``skipped_locked=True`` rather than
+    reading a board mid-write.
     """
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
@@ -1463,7 +1479,7 @@ def dispatch_once(
         return result
     with _kbc._dispatch_tick_lock(db_path) as held:
         if not held:
-            result = DispatchResult(skipped_locked=True)
+            result = DispatchResult(skipped_locked=True, dry_run=dry_run)
         else:
             result = _locked_tick()
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
@@ -1632,7 +1648,15 @@ def _run_reclaim_phase(
     failure_limit: int,
     reconcile_orphans: bool,
 ) -> None:
-    """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
+    """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote.
+
+    Every sweep here except ``reap_worker_zombies`` (``waitpid`` plus an
+    in-memory exit registry, no DB) writes ``tasks`` / ``task_runs`` /
+    ``task_events``, and three of them (``release_stale_claims``,
+    ``detect_stale_running``, ``enforce_max_runtime``) signal worker PIDs, so
+    this phase runs only on a real tick — ``_dispatch_once_locked`` skips it
+    when ``dry_run`` is set rather than passing a flag down.
+    """
     reap_worker_zombies()
     result.reclaimed = _kb.release_stale_claims(conn)
     if reconcile_orphans:
@@ -1687,8 +1711,9 @@ def _tick_spawn_budget(
 
     # Memory-pressure guard: a static cap can't see the host's actual state.
     # critical -> spawn nothing this tick; elevated -> at most one new worker.
-    # Reclaim/promotion already ran, so bookkeeping stays live; deferred tasks
-    # wait for a later tick. "unknown" imposes no restriction.
+    # Reclaim/promotion already ran (real ticks only; a dry run skips both), so
+    # bookkeeping stays live; deferred tasks wait for a later tick. "unknown"
+    # imposes no restriction.
     pressure = _memory_pressure_level()
     if pressure == "critical":
         result.memory_pressure = pressure
@@ -1766,12 +1791,24 @@ def _dispatch_once_locked(
     todo -> ready, then atomically claim each spawnable ready/review row and
     call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
     the PID so later ticks catch crashes before the TTL. Cap semantics:
-    :func:`_tick_spawn_budget`."""
-    result = DispatchResult()
-    _run_reclaim_phase(
-        conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
-    )
+    :func:`_tick_spawn_budget`.
+
+    ``dry_run=True`` skips :func:`_run_reclaim_phase` entirely: every sweep in
+    it writes, and three of them signal worker PIDs, so a "just print what
+    would happen" pass cannot run them. The spawn path below already honours
+    the flag. The preview can therefore UNDER-report relative to a real tick:
+    :func:`_tick_spawn_budget` counts ``running`` rows, so dead claims that a
+    real tick would reclaim first still occupy the budget here, and a ``todo``
+    card ``recompute_ready`` would have promoted never reaches the ``ready``
+    lane. A read-only preview cannot show the consequences of writes it
+    refuses to make; performing them to report them is the data-loss bug this
+    gate closes."""
+    result = DispatchResult(dry_run=dry_run)
+    if not dry_run:
+        _run_reclaim_phase(
+            conn, result, stale_timeout_seconds=stale_timeout_seconds,
+            failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )

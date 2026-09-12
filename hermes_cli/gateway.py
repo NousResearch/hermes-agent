@@ -5819,9 +5819,50 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
         return False
     try:
         getattr(mgr, action)(f"gateway-{profile}")
-    except (GatewayNotRegisteredError, S6CommandError) as exc:
+    except GatewayNotRegisteredError as exc:
+        # A profile directory can exist without a slot: it was created against a bind-mounted
+        # HERMES_HOME from outside the container, where `profile create` cannot reach
+        # /run/service. Register it here instead of making the operator restart the container
+        # to let the boot reconciler notice — which is what profiles._maybe_register_gateway_service
+        # already promises. Anything else stays an actionable error.
+        if action != "start" or not _register_missing_gateway_slot(mgr, profile):
+            print(f"✗ {exc}")
+            sys.exit(1)
+    except S6CommandError as exc:
         print(f"✗ {exc}")
         sys.exit(1)
+    return True
+
+
+def _register_missing_gateway_slot(mgr, profile: str) -> bool:
+    """Register and start an s6 slot for an existing-but-unregistered profile.
+
+    Returns False when ``profile`` is not a real profile, leaving the caller's "not registered"
+    error intact: the guard is the boot reconciler's own marker (``SOUL.md``, seeded by
+    ``profile create``), so a mistyped ``-p`` name or a stray directory cannot mint a phantom
+    slot for a profile that does not exist.
+
+    Registers with ``start_now=False`` and then goes through the ordinary ``start`` path, so the
+    ``desired_state`` write that lets boot reconciliation restore want-up keeps a single owner.
+    """
+    from hermes_cli.service_manager import (
+        GatewayNotRegisteredError, S6CommandError, _profile_dir_for_gateway_service,
+    )
+
+    service_name = f"gateway-{profile}"
+    try:
+        profile_dir = _profile_dir_for_gateway_service(service_name)
+    except Exception:
+        return False
+    if not (profile_dir / "SOUL.md").exists():
+        return False
+    try:
+        mgr.register_profile_gateway(profile, start_now=False)
+        mgr.start(service_name)
+    except (ValueError, RuntimeError, GatewayNotRegisteredError, S6CommandError, OSError) as exc:
+        print(f"✗ could not register the gateway slot for profile {profile!r}: {exc}")
+        sys.exit(1)
+    print(f"✓ registered the s6 gateway slot for profile {profile!r}")
     return True
 
 

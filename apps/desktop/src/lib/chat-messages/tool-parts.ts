@@ -1,5 +1,6 @@
 import { firstStringField, normalize } from '@/lib/text'
 import { isTodoToolName, parseTodos } from '@/lib/todos'
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
@@ -184,7 +185,18 @@ function findToolPartIndex(
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index]
 
-    if (part.type === 'tool-call' && part.toolName === name && part.result === undefined) {
+    if (
+      part.type === 'tool-call' &&
+      part.toolName === name &&
+      part.result === undefined &&
+      part.completedAt === undefined
+    ) {
+      // Interactive request IDs differ from provider call IDs and correlate by identifying arguments.
+      const requestBacked = name === 'clarify' || name === 'setup_mcp'
+      if (!requestBacked && stableId && phase === 'running' && part.toolCallId && !part.toolCallId.startsWith('live-tool:')) {
+        continue
+      }
+
       pendingIndices.push(index)
     }
   }
@@ -264,22 +276,21 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
   }
 }
 
-function toolResult(
+function toolResultMetadata(
   payload: GatewayEventPayload | undefined,
+  previous: ToolResultMetadata | undefined,
   prevResult?: unknown,
   prevArgs?: unknown
-): Record<string, unknown> {
-  const parsedResult = parseMaybeJsonObject(payload?.result)
-
+): ToolResultMetadata {
   return {
-    ...parsedResult,
-    ...(payload?.inline_diff ? { inline_diff: payload.inline_diff } : {}),
-    ...(payload?.summary ? { summary: payload.summary } : {}),
-    ...(payload?.message ? { message: payload.message } : {}),
-    ...(payload?.preview ? { preview: payload.preview } : {}),
+    ...previous,
+    ...(payload?.inline_diff !== undefined ? { inline_diff: payload.inline_diff } : {}),
+    ...(payload?.summary !== undefined ? { summary: payload.summary } : {}),
+    ...(payload?.message !== undefined ? { message: payload.message } : {}),
+    ...(payload?.preview !== undefined ? { preview: payload.preview } : {}),
     ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
     ...carryTodos(payload, prevResult, prevArgs),
-    ...(payload?.error ? { error: payload.error } : {})
+    ...(payload?.error !== undefined ? { error: payload.error } : {})
   }
 }
 
@@ -330,8 +341,10 @@ export function upsertToolPart(
     timestamp: prev?.timestamp ?? occurredAt,
     ...(phase === 'complete' && {
       completedAt: occurredAt,
-      result: toolResult(payload, prevResult, prevArgs),
-      isError: Boolean(payload?.error)
+      result: payload?.result !== undefined ? payload.result : prevResult,
+      toolResultMetadata: toolResultMetadata(payload, prev?.toolResultMetadata, prevResult, prevArgs),
+      isError:
+        payload?.error !== undefined ? Boolean(payload.error) : Boolean(prev && 'isError' in prev && prev.isError)
     })
   } satisfies ChatMessagePart
 
@@ -579,13 +592,13 @@ export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
     let partChanged = false
 
     const parts = message.parts.map(part => {
-      if (part.type !== 'tool-call' || Object.hasOwn(part, 'result')) {
+      if (part.type !== 'tool-call' || part.completedAt !== undefined || Object.hasOwn(part, 'result')) {
         return part
       }
 
       partChanged = true
 
-      return { ...part, result: {} }
+      return { ...part, completedAt: part.timestamp ?? 0 }
     })
 
     if (!partChanged) {

@@ -3921,6 +3921,19 @@ export const en: Translations = {
       copyQuery: 'Copy query',
       copyFile: 'Copy file',
       copyPath: 'Copy path',
+      failedCalls: (count: number) => `${count} tool call${count === 1 ? '' : 's'} failed`,
+      skillActivity: {
+        loading: 'Loading skill',
+        loaded: 'Loaded skill',
+        loadFailed: 'Failed to load skill',
+        readingResource: 'Reading skill resource',
+        readResource: 'Read skill resource',
+        resourceFailed: 'Failed to read skill resource',
+        listing: 'Listing skills',
+        listed: 'Listed skills',
+        listFailed: 'Failed to list skills',
+        unavailable: 'Skill result unavailable'
+      },
       outputAlt: 'Tool output',
       rawResponse: 'Raw response',
       copyActivity: 'Copy activity',
@@ -3932,6 +3945,7 @@ export const en: Translations = {
       statusError: 'Error',
       statusRecovered: 'Recovered',
       statusDone: 'Done',
+      resultUnavailable: 'Result unavailable',
       memoryWriteNoted: 'Memory write noted',
       actions: {
         read: 'Read',

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
 import {
@@ -111,10 +112,20 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     rehydrateLiveSessionStatuses({ sessions: [] })
 
     const state = $sessionStates.get()['runtime-tools']
+    const part = state.messages[0].parts[0]
 
     expect(state.busy).toBe(false)
     expect(state.awaitingResponse).toBe(false)
-    expect((state.messages[0].parts[0] as { result?: unknown }).result).toBeDefined()
+    expect(part.type).toBe('tool-call')
+
+    if (part.type !== 'tool-call') {
+      throw new Error('Missing tool call')
+    }
+
+    // Reaping ends liveness without inventing evidence of a successful result.
+    expect(part.completedAt).toBeDefined()
+    expect(part.result).toBeUndefined()
+    expect(buildToolView(part, '').status).toBe('warning')
   })
 
   it('clears a session stuck awaiting a response without the busy flag', () => {

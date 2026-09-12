@@ -3,7 +3,10 @@ import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
 import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
+import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
+
+import { skillActivityTitle } from '../skill-activity'
 
 import {
   browserExecStepLabel,
@@ -696,7 +699,7 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
 
 function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): ToolStatus {
   if (part.result === undefined) {
-    return 'running'
+    return part.completedAt === undefined ? 'running' : part.isError ? 'error' : 'warning'
   }
 
   // Explicit success wins over isError / nested-error heuristics. Memory writes
@@ -1302,6 +1305,12 @@ function dynamicTitle(
   result: Record<string, unknown>,
   fallback: ToolTitleParts
 ): ToolTitleParts {
+  const skillTitle = skillActivityTitle(part)
+
+  if (skillTitle) {
+    return { title: skillTitle }
+  }
+
   const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
 
   const titledAction = (action: string, title: string): ToolTitleParts =>
@@ -1411,7 +1420,7 @@ function dynamicTitle(
 
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const argsRecord = parseMaybeObject(part.args)
-  const resultRecord = parseMaybeObject(part.result)
+  const resultRecord = toolResultRecord(part)
   const meta = toolMeta(part.toolName)
   const status = toolStatus(part, resultRecord)
   // Skip residual error-heuristic text once status is success (stale isError
@@ -1434,7 +1443,8 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     titlePartsFromAction(baseTitle, part.result === undefined ? meta.pendingAction : undefined)
   )
 
-  const title = titleParts.title
+  const unavailable = part.result === undefined && part.completedAt !== undefined
+  const title = unavailable ? translateNow('assistant.tool.resultUnavailable') : titleParts.title
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
 
@@ -1496,7 +1506,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     status,
     subtitle,
     title,
-    titleAction: titleParts.action,
+    titleAction: unavailable ? undefined : titleParts.action,
     tone: meta.tone
   }
 }

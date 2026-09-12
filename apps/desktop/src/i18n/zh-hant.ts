@@ -3229,6 +3229,19 @@ export const zhHant = defineLocale({
       copyQuery: '複製查詢',
       copyFile: '複製檔案',
       copyPath: '複製路徑',
+      failedCalls: (count: number) => `${count} 次工具呼叫失敗`,
+      skillActivity: {
+        loading: '正在載入技能',
+        loaded: '已載入技能',
+        loadFailed: '技能載入失敗',
+        readingResource: '正在讀取技能資源',
+        readResource: '已讀取技能資源',
+        resourceFailed: '技能資源讀取失敗',
+        listing: '正在列出技能',
+        listed: '已列出技能',
+        listFailed: '技能清單取得失敗',
+        unavailable: '技能結果無法使用'
+      },
       outputAlt: '工具輸出',
       rawResponse: '原始回應',
       copyActivity: '複製活動',
@@ -3240,6 +3253,7 @@ export const zhHant = defineLocale({
       statusError: '錯誤',
       statusRecovered: '已復原',
       statusDone: '完成',
+      resultUnavailable: '結果無法使用',
       memoryWriteNoted: '已記下記憶寫入',
       actions: {
         read: '已讀取',

@@ -4046,6 +4046,19 @@ export const zh = defineLocale({
       copyQuery: '复制查询',
       copyFile: '复制文件',
       copyPath: '复制路径',
+      failedCalls: (count: number) => `${count} 次工具调用失败`,
+      skillActivity: {
+        loading: '正在加载技能',
+        loaded: '已加载技能',
+        loadFailed: '技能加载失败',
+        readingResource: '正在读取技能资源',
+        readResource: '已读取技能资源',
+        resourceFailed: '技能资源读取失败',
+        listing: '正在列出技能',
+        listed: '已列出技能',
+        listFailed: '技能列表获取失败',
+        unavailable: '技能结果不可用'
+      },
       outputAlt: '工具输出',
       rawResponse: '原始响应',
       copyActivity: '复制活动',
@@ -4057,6 +4070,7 @@ export const zh = defineLocale({
       statusError: '错误',
       statusRecovered: '已恢复',
       statusDone: '完成',
+      resultUnavailable: '结果不可用',
       memoryWriteNoted: '已记下记忆写入',
       actions: {
         read: '已读取',

@@ -6,9 +6,10 @@ and tool deregistration. Origin state and patchable helpers are read through ``_
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Optional
-from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
+from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _parse_boolish, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
@@ -191,6 +192,45 @@ class MCPServerRunMixin:
         self._error = exc
         self._ready.set()
 
+    def _retire_if_removed_from_owner_config(self) -> bool:
+        """Retire this task when its owning profile definitively removed or disabled it.
+
+        Read the task-local profile config afresh before every retry. Any uncertainty keeps
+        the existing fail-open reconnect behaviour so a partial edit cannot kill a server.
+        """
+        from hermes_constants import get_config_path
+        from utils import fast_safe_load
+
+        try:
+            fresh = fast_safe_load(get_config_path().read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        if not isinstance(fresh, Mapping):
+            return False
+        if "mcp_servers" not in fresh:
+            retire = True
+        else:
+            servers = fresh["mcp_servers"]
+            if not isinstance(servers, Mapping):
+                return False
+            if self.name not in servers:
+                retire = True
+            else:
+                server_config = servers[self.name]
+                if not isinstance(server_config, Mapping):
+                    return False
+                retire = not _parse_boolish(server_config.get("enabled", True), default=True)
+        if not retire:
+            return False
+
+        self._deregister_tools()
+        with _core._lock:
+            if _core._servers.get(self.name) is self:
+                _core._servers.pop(self.name, None)
+                _core._server_scope_keys.pop(self.name, None)
+                _core._server_tool_scopes.pop(self.name, None)
+        return True
+
     async def run(self, config: dict):
         """Long-lived: connecting -> connected -> (degraded -> parked -> revived)*. Unproven drops
         and transport errors charge a rapid-drop budget with jittered backoff; exhausting it (or
@@ -200,7 +240,11 @@ class MCPServerRunMixin:
             return
         self._reconnect_retries = 0
         budget = _RetryBudget()
+        first_attempt = True
         while True:
+            if not first_attempt and self._retire_if_removed_from_owner_config():
+                break
+            first_attempt = False
             try:
                 run_transport = self._run_http if self._is_http() else self._run_stdio
                 if not await self._on_clean_return(await run_transport(config), budget):

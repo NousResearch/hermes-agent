@@ -1,17 +1,15 @@
-// Two contracts with no coverage before the invalidation-scoping work split
-// AssistantMessage into InterAgentAssistantMessage + AssistantMessageBody:
+// Two contracts for the split of AssistantMessage into
+// InterAgentAssistantMessage + AssistantMessageBody:
 //
 // 1. The collapse gate. A reply to an inter-agent delivery renders collapsed
-//    ("Replied to <sender>", expandable) ONLY once it settles — never while it
-//    streams, because the user should see progress. That gate is the sole
-//    remaining root-level `isRunning` subscription, so it is the thing most
-//    likely to break if the split is revisited.
-// 2. The streaming marker. `data-message-streaming` moved off the message root
-//    onto a permanently-mounted hidden leaf, and
-//    scripts/run-short-session-hang-repro.mjs derives its settled-row count by
-//    subtracting `[data-message-streaming="true"]` markers from message roots.
-//    Nothing in the app itself reads it, so without this test a delete would
-//    look free and would silently regress that repro's response gate.
+//    ("Replied to <sender>", expandable) ONLY when the thread opts in via
+//    `message.metadata.custom.interAgentCollapse === true` AND the turn has
+//    settled. Direct bot-to-bot DMs (no opt-in) render the reply expanded and
+//    visible — the receiving bot's activity is the whole point of the chat.
+//    The streaming marker (`data-message-streaming`) stays on a
+//    permanently-mounted hidden leaf regardless, so a delete looks free and
+//    would silently regress scripts/run-short-session-hang-repro.mjs, which
+//    derives settled-row count by subtracting those markers from roots.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -42,7 +40,9 @@ afterEach(() => {
   cleanup()
 })
 
-const assistantMetadata = { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
+function baseCustom(): Record<string, unknown> {
+  return {}
+}
 
 function user(id: string, text: string): ThreadMessage {
   return {
@@ -51,18 +51,18 @@ function user(id: string, text: string): ThreadMessage {
     content: [{ type: 'text', text }],
     attachments: [],
     createdAt,
-    metadata: { custom: {} }
+    metadata: { custom: baseCustom() }
   } as ThreadMessage
 }
 
-function assistant(id: string, text: string, running: boolean): ThreadMessage {
+function assistant(id: string, text: string, running: boolean, custom: Record<string, unknown> = baseCustom()): ThreadMessage {
   return {
     id,
     role: 'assistant',
     content: text ? [{ type: 'text', text }] : [],
     status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     createdAt,
-    metadata: assistantMetadata
+    metadata: { custom }
   } as ThreadMessage
 }
 
@@ -83,20 +83,37 @@ function Harness({ messages }: { messages: ThreadMessage[] }) {
 const DELIVERY = 'Message from 🤖 Hermes (@hermes): please check the build'
 
 describe('inter-agent collapse gate', () => {
-  it('collapses a settled reply to an inter-agent delivery', async () => {
-    render(<Harness messages={[user('u1', DELIVERY), assistant('a1', 'build is green', false)]} />)
+  it('shows a settled direct-DM reply inline (not collapsed/hidden)', async () => {
+    render(<Harness messages={[user('u1', DELIVERY), assistant('a1', 'the build is green', false)]} />)
 
-    expect(await screen.findByText(/Replied to/)).toBeTruthy()
-    expect(screen.getByText('show reply')).toBeTruthy()
+    await screen.findByText('the build is green')
+    expect(screen.queryByText(/Replied to/)).toBeNull()
+    expect(screen.queryByText('show reply')).toBeNull()
   })
 
   it('does NOT collapse while that reply is still streaming', async () => {
     const { container } = render(<Harness messages={[user('u1', DELIVERY), assistant('a1', 'working on it', true)]} />)
 
     await screen.findByText('working on it')
+    expect(screen.queryByText(/Replied to/)).toBeNull()
     expect(screen.queryByText('show reply')).toBeNull()
     // Expanded => the full body root, which carries the streaming marker.
     expect(container.querySelector('[data-message-streaming="true"]')).toBeTruthy()
+  })
+
+  it('collapses a settled reply ONLY when the thread opts in', async () => {
+    render(
+      <Harness
+        messages={[user('u1', DELIVERY), assistant('a1', 'build is green', false, { interAgentCollapse: true })]}
+      />
+    )
+
+    expect(await screen.findByText(/Replied to/)).toBeTruthy()
+    expect(screen.getByText('show reply')).toBeTruthy()
+    // A closed <details> keeps its content in the DOM (hidden, not removed).
+    const summary = screen.getByText('show reply').closest('details')
+    expect(summary).toBeTruthy()
+    expect(summary?.hasAttribute('open')).toBe(false)
   })
 
   it('leaves an ordinary reply expanded', async () => {

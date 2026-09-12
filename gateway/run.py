@@ -670,7 +670,13 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
-    return redacted
+    # Messaging surfaces get the neutral-register verifier notice, not the full
+    # developer footer (no paths/tool names/shell commands — #97109). Raw-text
+    # surfaces returned above, so reaching here means a chat surface. The
+    # neutral line carries no file paths, so the #35584 bare-path extractor
+    # structurally cannot fire on it.
+    from tools.tts_text_normalize import downgrade_verifier_footer_for_messaging
+    return downgrade_verifier_footer_for_messaging(redacted)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:

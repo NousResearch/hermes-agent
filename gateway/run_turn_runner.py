@@ -1556,6 +1556,19 @@ class TurnRunner:
                 result["final_response"], result.get("messages", []), history_offset=len(agent_history),
             )
         ctx.result_holder[0] = result
+        # Messaging surfaces must never stream-finalize the full developer footer:
+        # ``finish(_final_for_stream)`` below delivers verbatim, and the reconcile
+        # basis (``_run_agent_mark_streamed_delivery``) must agree with the ledger
+        # or its stale-edit would re-leak the raw text. Downgrade the result copy
+        # (agent-side session persistence already ran inside the run) — #97109.
+        try:
+            from gateway.run import _gateway_surface_passes_raw_text
+            from tools.tts_text_normalize import downgrade_verifier_footer_for_messaging
+            if (isinstance(result, dict) and isinstance(result.get("final_response"), str)
+                    and not _gateway_surface_passes_raw_text(getattr(ctx.source, "platform", None))):
+                result["final_response"] = downgrade_verifier_footer_for_messaging(result["final_response"])
+        except Exception:
+            logger.debug("verifier footer downgrade failed", exc_info=True)
         if stream_consumer is None:
             return
         # Pass final_response as the authoritative finalize payload: it includes post-stream

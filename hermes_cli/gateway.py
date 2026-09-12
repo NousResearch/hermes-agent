@@ -2841,7 +2841,64 @@ def _service_venv_dir() -> str:
     return str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
 
-def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+def _load_env_vars_for_systemd_unit() -> dict[str, str]:
+    """Load environment variables to inject into systemd units.
+
+    Reads from:
+    - ~/.hermes/.env file (for secrets like MNEMOSYNE_EMBEDDING_MODEL)
+    - config.yaml's env_passthrough list (for explicitly configured passthrough vars)
+
+    Returns a dict of var_name -> value for all vars that should be passed to
+    systemd units (gateway, dashboard, serve).
+    """
+    env_vars: dict[str, str] = {}
+
+    # Load from ~/.hermes/.env file
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv()
+    except Exception:
+        pass
+
+    # Get vars from .env file that are in os.environ now
+    hermes_home = get_hermes_home()
+    env_file = hermes_home / ".env"
+    if env_file.exists():
+        try:
+            from dotenv import dotenv_values
+            dotenv_vars = dotenv_values(env_file)
+            for k, v in dotenv_vars.items():
+                if v is not None and k not in env_vars:
+                    env_vars[k] = v
+        except Exception:
+            pass
+
+    # Also include any vars already in os.environ that look like Hermes config vars
+    # (e.g. MNEMOSYNE_*, HERMES_*, etc.) - these may have been set by the shell
+    for k, v in os.environ.items():
+        if v and (
+            k.startswith("MNEMOSYNE_")
+            or k.startswith("HERMES_")
+            or k.startswith("HINDSIGHT_")
+        ):
+            if k not in env_vars:
+                env_vars[k] = v
+
+    # Add vars from config's env_passthrough
+    try:
+        cfg = load_config() or {}
+        passthrough = cfg.get("env_passthrough", [])
+        if isinstance(passthrough, list):
+            for var in passthrough:
+                if isinstance(var, str) and var in os.environ:
+                    env_vars[var] = os.environ[var]
+    except Exception:
+        pass
+
+    return env_vars
+
+
+def generate_systemd_unit(system: bool = False, run_as_user: str | None = None, extra_env: dict[str, str] | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     venv_dir = _service_venv_dir()
@@ -2853,6 +2910,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     # TimeoutStopSec must cover the full stop budget (cron drain + cleanup) or systemd SIGKILLs mid-drain.
     restart_timeout = resolve_systemd_timeout_stop_sec(_get_restart_drain_timeout(), _get_cron_drain_timeout())
+
+    # Load extra environment variables for the systemd unit
+    if extra_env is None:
+        extra_env = _load_env_vars_for_systemd_unit()
+    extra_env_lines = "\n".join(f'Environment="{k}={v}"' for k, v in sorted(extra_env.items()))
 
     if system:
         username, group_name, home_dir, uid = _system_service_identity(run_as_user)
@@ -2897,9 +2959,49 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if watchdog_seconds > 0:
         systemd_type, systemd_watchdog_directives = "notify", f"NotifyAccess=main\nWatchdogSec={watchdog_seconds}s\n"
     path_entries.extend(_build_user_local_paths(user_home, path_entries))
+    extra_env_block = f"\n{extra_env_lines}" if extra_env_lines else ""
+StartLimitIntervalSec=0
+
+[Service]
+Type={systemd_type}
+{systemd_watchdog_directives}User={username}
+Group={group_name}
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+WorkingDirectory={working_dir}
+Environment="HOME={home_dir}"
+Environment="USER={username}"
+Environment="LOGNAME={username}"
+Environment="PATH={sane_path}"
+Environment="VIRTUAL_ENV={venv_dir}"
+Environment="HERMES_HOME={hermes_home}"
+Environment="HERMES_SUPERVISED_CHILD=1"{extra_env_block}
+Restart=always
+RestartSec=5
+RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
+KillMode=mixed
+KillSignal=SIGTERM
+ExecReload=/bin/kill -USR1 $MAINPID
+ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
+TimeoutStopSec={restart_timeout}
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    hermes_home = str(get_hermes_home().resolve())
+    systemd_type, systemd_watchdog_directives = _systemd_watchdog_service_fields(
+        hermes_home
+    )
+    profile_arg = _profile_arg(hermes_home)
+    path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
+>>>>>>> 040889a8d9 (gateway: propagate env vars to systemd units for dashboard/serve)
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
     sane_path = ":".join(path_entries)
+    extra_env_block = f"\n{extra_env_lines}" if extra_env_lines else ""
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2913,7 +3015,7 @@ WorkingDirectory={working_dir}
 {env_lines}Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Environment="HERMES_SUPERVISED_CHILD=1"
+Environment="HERMES_SUPERVISED_CHILD=1"{extra_env_block}
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}

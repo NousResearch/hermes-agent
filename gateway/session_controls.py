@@ -64,12 +64,18 @@ class AuthorityConnection:
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
         try:
             from gateway.session_group_controls import GROUP_METHODS, dispatch_group_control
-            if method in GROUP_METHODS or method == 'profiles.list':
-                result = await dispatch_group_control(self, method, params)
-                return {'jsonrpc': '2.0', 'id': rid, 'result': result}
-            if method not in handlers:
-                raise RuntimeStoreError('invalid_params')
-            result = await handlers[method](ref, params)
+            # Every handler reads config/jobs/policy for the OWNING profile: enter its home so
+            # ``_load_gateway_config`` / ``build_policy(get_hermes_home())`` never snapshot the
+            # launch profile's config into a served secondary's session. Under a single profile
+            # the scope is that profile's own home, so behaviour is unchanged.
+            from gateway.session_authorities import owner_scope
+            with owner_scope(self.authority):
+                if method in GROUP_METHODS or method == 'profiles.list':
+                    result = await dispatch_group_control(self, method, params)
+                    return {'jsonrpc': '2.0', 'id': rid, 'result': result}
+                if method not in handlers:
+                    raise RuntimeStoreError('invalid_params')
+                result = await handlers[method](ref, params)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {

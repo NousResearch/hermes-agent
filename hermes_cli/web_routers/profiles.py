@@ -113,6 +113,8 @@ def _profile_copy_template(value: Any) -> bool:
 
 def _sanitize_profile_provider_entry(entry: dict) -> dict:
     """Copy canonical routing metadata without carrying profile-local literal credentials."""
+    from urllib.parse import urlsplit
+
     from hermes_cli.config_providers import _CAMEL_ALIASES
 
     clean = {
@@ -126,6 +128,14 @@ def _sanitize_profile_provider_entry(entry: dict) -> dict:
             continue
         if alias in entry:
             clean[canonical] = copy.deepcopy(entry[alias])
+    # Endpoint fields are routing metadata only when they do not embed profile-local credentials.
+    # Reject rather than redact so an invalid copied route cannot be persisted to the target.
+    for key in ("api", "url", "base_url"):
+        value = clean.get(key)
+        if isinstance(value, str):
+            parsed = urlsplit(value)
+            if parsed.username is not None or parsed.password is not None:
+                raise ValueError(f"Provider {key} URL contains embedded credentials")
     for key in _PROFILE_PROVIDER_TEMPLATE_KEY_FIELDS:
         if _profile_copy_template(entry.get(key)):
             clean["api_key"] = entry[key].strip()

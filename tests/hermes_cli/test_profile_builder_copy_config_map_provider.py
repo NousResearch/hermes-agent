@@ -181,6 +181,46 @@ def test_write_profile_model_does_not_copy_inline_provider_secrets(tmp_path):
     assert entry["api_mode"] == "openai_chat"
 
 
+@pytest.mark.parametrize("field", ["api", "url", "base_url", "baseUrl"])
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://user:password@gateway.example/v1",
+        "https://user@gateway.example/v1",
+        "https://:password@gateway.example/v1",
+    ],
+)
+def test_write_profile_model_rejects_provider_url_credentials_before_target_write(
+    tmp_path, field, endpoint
+):
+    """URL userinfo is an inline credential and must not cross the profile boundary."""
+    from hermes_cli.config import save_config
+    from hermes_cli.web_routers import profiles as profiles_mod
+    from hermes_cli.web_server_profiles import _hermes_home_scope
+
+    dashboard_home = tmp_path / "dashboard"
+    dashboard_home.mkdir()
+    with _hermes_home_scope(dashboard_home):
+        save_config({
+            "providers": {
+                "scnet": {
+                    "name": "scnet",
+                    field: endpoint,
+                    "model": "GLM-5.3-Flash",
+                    "key_env": "HERMES_CUSTOM_SCNET_API_KEY",
+                },
+            },
+        })
+
+    target_profile = tmp_path / "profiles" / "procure_helper"
+    target_profile.mkdir(parents=True)
+    with _hermes_home_scope(dashboard_home):
+        with pytest.raises(ValueError, match="embedded credentials"):
+            profiles_mod._write_profile_model(target_profile, "scnet", "GLM-5.3-Flash")
+
+    assert not (target_profile / "config.yaml").exists()
+
+
 def test_write_profile_model_preserves_existing_target_provider_entry(tmp_path):
     """A target profile's explicit customization wins over the source definition."""
     from hermes_cli.config import read_user_config_raw, save_config

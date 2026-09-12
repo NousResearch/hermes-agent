@@ -25,6 +25,7 @@ vi.mock('@/hermes', () => ({
   listHFRepoFiles: vi.fn(),
   quickstartLocalModels: vi.fn(),
   searchHFModels: vi.fn(),
+  setLocalUnloadAfterIdle: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
 
@@ -43,6 +44,7 @@ const BASE_STATUS: LocalModelsStatus = {
   server_base_url: null,
   active_model_id: null,
   loaded_models: {},
+  unload_after_idle_seconds: 900,
   models: [],
   models_dir: 'C:/somewhere/models'
 }
@@ -544,6 +546,47 @@ describe('added-by-you rows', () => {
     expect(screen.getByText(/96K/)).toBeTruthy()
     const buttons = screen.getAllByRole('button')
     expect(buttons.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('auto-eject TTL', () => {
+  const READY_STATUS: LocalModelsStatus = {
+    ...BASE_STATUS,
+    models: [{ id: 'Hermes-4.3-36B-Q5_K_M', size_bytes: 25 * 2 ** 30, size_label: '25.0 GB' }],
+    runtime_backend: 'cuda',
+    runtime_installed: true,
+    server_running: true
+  }
+
+  it('sends an edited TTL and shows what the backend will actually enforce, not the typed draft', async () => {
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue({ ...READY_STATUS, unload_after_idle_seconds: 900 })
+    // Below the floor: the backend clamps, and the field must adopt that answer — a box
+    // reading '5' while 30 is enforced is the bug this asserts against.
+    vi.mocked(hermes.setLocalUnloadAfterIdle).mockResolvedValue({ unload_after_idle_seconds: 30, ok: true })
+
+    renderPane()
+
+    const field = (await screen.findByLabelText(/auto-eject/i)) as HTMLInputElement
+
+    expect(field.value).toBe('900')
+
+    fireEvent.change(field, { target: { value: '5' } })
+    fireEvent.blur(field)
+
+    await waitFor(() => expect(hermes.setLocalUnloadAfterIdle).toHaveBeenCalledWith(5))
+    await waitFor(() => expect(field.value).toBe('30'))
+  })
+
+  it('never writes when the value did not change (a blur is not an edit)', async () => {
+    vi.mocked(hermes.getLocalModelsStatus).mockResolvedValue(READY_STATUS)
+
+    renderPane()
+
+    const field = await screen.findByLabelText(/auto-eject/i)
+
+    fireEvent.blur(field)
+
+    expect(hermes.setLocalUnloadAfterIdle).not.toHaveBeenCalled()
   })
 })
 

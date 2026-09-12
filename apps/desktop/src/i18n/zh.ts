@@ -1547,6 +1547,12 @@ export const zh = defineLocale({
       ejectTip: '释放显存（需要时重新加载）',
       ejected: '模型已卸载——显存已释放。',
       ejectFailed: '无法卸载模型',
+      autoEjectTitle: '空闲自动卸载',
+      autoEjectDetail:
+        '已加载的模型闲置这么久后会释放显存；您的下一条消息会重新加载它。设为 0 则一直驻留，直到您手动卸载。最少 30 秒。',
+      autoEjectOffDetail: '已关闭：模型会一直占用显存，直到您手动卸载或关闭服务器。设置秒数可自动释放（最少 30 秒）。',
+      autoEjectUnit: '秒',
+      autoEjectFailed: '无法保存自动卸载时间',
       stopServer: '关闭',
       startServer: '开启',
       runtimeRunningDetail: '本地服务器正在运行。关闭后将释放全部显存，新对话将不再使用本地模型，直到您重新开启。',

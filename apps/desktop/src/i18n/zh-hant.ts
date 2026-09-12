@@ -1169,6 +1169,12 @@ export const zhHant = defineLocale({
       ejectTip: '釋放顯示記憶體（需要時重新載入）',
       ejected: '模型已卸載——顯示記憶體已釋放。',
       ejectFailed: '無法卸載模型',
+      autoEjectTitle: '閒置自動卸載',
+      autoEjectDetail:
+        '已載入的模型閒置這麼久後會釋放顯示記憶體；您的下一則訊息會重新載入它。設為 0 則會一直常駐，直到您手動卸載。最少 30 秒。',
+      autoEjectOffDetail: '已關閉：模型會一直佔用顯示記憶體，直到您手動卸載或關閉伺服器。設定秒數可自動釋放（最少 30 秒）。',
+      autoEjectUnit: '秒',
+      autoEjectFailed: '無法儲存自動卸載時間',
       stopServer: '關閉',
       startServer: '開啟',
       runtimeRunningDetail: '本地伺服器執行中。關閉後將釋放全部顯示記憶體，新對話將不再使用本地模型，直到您重新開啟。',

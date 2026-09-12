@@ -1373,6 +1373,8 @@ export interface LocalModelsStatus {
   server_base_url: string | null
   active_model_id: string | null
   loaded_models: Record<string, string>
+  /** Idle seconds before a loaded model is auto-ejected; 0 = never. As enforced, not as typed. */
+  unload_after_idle_seconds: number
   /** Models loading into memory right now: real per-tensor load percent. */
   loading?: Record<string, LocalModelLoadProgress>
   placement?: Record<string, LocalModelPlacement>

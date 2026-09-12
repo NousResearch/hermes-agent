@@ -6157,9 +6157,16 @@ def _build_call_kwargs(
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)
     # OpenCode relay session affinity — same key as the main turn so compression/title/vision
-    # calls stay on the conversation's warm backend.
+    # calls stay on the conversation's warm backend. Stateless one-shots (commit messages
+    # fired from the review panel between turns) carry no conversation identity at all, but
+    # the relay requires the header for routing too (Console Go 400 MissingSessionID) — fall
+    # back to a stable per-task key so those calls land on one warm backend instead of being
+    # rejected (#105841).
     from agent.opencode_affinity import merge_opencode_session_headers
-    return merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    session_key = _runtime_main_value("session_id") or None
+    if not session_key:
+        session_key = f"oneshot:{task}" if task else "oneshot"
+    return merge_opencode_session_headers(kwargs, provider, base_url, session_key)
 
 
 def _validate_llm_response(

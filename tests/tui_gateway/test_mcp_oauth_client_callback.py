@@ -186,7 +186,26 @@ def test_deliver_callback_accepts_matching_state():
     flow = _make_session()
     out = deliver_callback_flow("sess-relay-1", "hosp", code="abc", state="s3cr3tstate")
     assert out == {"ok": True, "session_id": "sess-relay-1"}
-    assert flow._callback == ("abc", "s3cr3tstate")
+    assert (flow._callback.code, flow._callback.state, flow._callback.iss) == ("abc", "s3cr3tstate", None)
+
+
+def test_deliver_callback_preserves_iss():
+    """RFC 9207: a relayed authorization response must keep its ``iss``.
+
+    Authorization servers that advertise
+    ``authorization_response_iss_parameter_supported`` (e.g. Clerk) send
+    ``iss`` on the redirect; the strict SDK client rejects the code grant
+    when a client-relayed callback drops it. The relay must forward what
+    the provider sent, unchanged — no synthesis, no stripping.
+    """
+    flow = _make_session()
+    out = deliver_callback_flow(
+        "sess-relay-1", "hosp",
+        code="abc", state="s3cr3tstate", iss="https://as.example.com",
+    )
+    assert out == {"ok": True, "session_id": "sess-relay-1"}
+    assert flow._callback is not None
+    assert flow._callback.iss == "https://as.example.com"
 
 
 def test_deliver_callback_rejects_state_mismatch():

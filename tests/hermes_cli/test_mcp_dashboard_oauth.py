@@ -85,7 +85,7 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert flow._callback == ("abc", "expected")
+    assert (flow._callback.code, flow._callback.state, flow._callback.iss) == ("abc", "expected", None)
 
 
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):

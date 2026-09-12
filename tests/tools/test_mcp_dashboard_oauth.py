@@ -27,7 +27,31 @@ def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
     }
 
     flow.deliver_callback(code="code-1", state="s1", error=None)
-    assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1")
+    callback = asyncio.run(flow.wait_for_callback())
+    assert (callback.code, callback.state, callback.iss) == ("code-1", "s1", None)
+
+
+def test_dashboard_flow_preserves_iss_parameter():
+    """RFC 9207: the dashboard bridge must hand the SDK the provider's ``iss``.
+
+    Authorization servers that advertise ``authorization_response_iss_parameter_supported``
+    send ``iss`` on the redirect; the MCP SDK client rejects the authorization response
+    when a bridge drops it. The callback dataclass must carry it end to end.
+    """
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-iss",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-iss",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=s9"))
+
+    flow.deliver_callback(code="code-9", state="s9", error=None, iss="https://idp.example")
+    callback = asyncio.run(flow.wait_for_callback())
+    assert callback.iss == "https://idp.example"
 
 
 def test_dashboard_flow_accepts_only_one_concurrent_callback():
@@ -96,6 +120,7 @@ def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
         # AuthorizationCodeResult, not the legacy (code, state) tuple.
         result = asyncio.run(_make_callback_waiter(0)())
         assert (result.code, result.state) == ("code-4", "state-4")
+        assert result.iss is None
 
     assert flow.authorization_url == "https://idp.example/authorize?state=state-4"
 

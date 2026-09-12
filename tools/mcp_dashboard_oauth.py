@@ -29,6 +29,16 @@ def _event_field():
     return field(default_factory=threading.Event, init=False, repr=False)
 
 
+@dataclass(frozen=True)
+class DashboardOAuthCallback:
+    """Authorization response fields required by the MCP OAuth client."""
+
+    code: str
+    state: str | None
+    error: str | None
+    iss: str | None = None
+
+
 @dataclass
 class DashboardOAuthFlow:
     flow_id: str
@@ -43,7 +53,7 @@ class DashboardOAuthFlow:
     error: str | None = None
     tools: list[dict] = field(default_factory=list)
     expected_state: str | None = field(default=None, init=False)
-    _callback: tuple[str, str | None] | None = field(default=None, init=False, repr=False)
+    _callback: DashboardOAuthCallback | None = field(default=None, init=False, repr=False)
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = _event_field()
     _callback_ready: threading.Event = _event_field()
@@ -70,7 +80,7 @@ class DashboardOAuthFlow:
             raise RuntimeError(self.error or "MCP OAuth flow ended before authorization")
         return self.authorization_url
 
-    def deliver_callback(self, *, code: str | None, state: str | None, error: str | None) -> None:
+    def deliver_callback(self, *, code: str | None, state: str | None, error: str | None, iss: str | None = None) -> None:
         """Hand the browser redirect to the waiting flow; ``state`` must match exactly."""
         with self._lock:
             if self._callback_ready.is_set():
@@ -80,12 +90,12 @@ class DashboardOAuthFlow:
             if error:
                 self._callback_error = error
             elif code:
-                self._callback = (code, state)
+                self._callback = DashboardOAuthCallback(code=code, state=state, error=None, iss=iss)
             else:
                 self._callback_error = "OAuth callback did not include code or error"
             self._callback_ready.set()
 
-    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None]:
+    async def wait_for_callback(self, timeout: float = 300.0) -> DashboardOAuthCallback:
         if not await asyncio.to_thread(self._callback_ready.wait, timeout):
             raise TimeoutError("Timed out waiting for MCP OAuth callback")
         if self._callback_error:

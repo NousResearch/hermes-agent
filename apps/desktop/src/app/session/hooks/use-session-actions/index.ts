@@ -128,7 +128,8 @@ import {
   dropTranscriptTail,
   dropTranscriptTailEverywhere,
   loadTranscriptTail,
-  saveTranscriptTail
+  saveTranscriptTail,
+  type TranscriptTailScope
 } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -275,6 +276,17 @@ function reconcileAuthoritativeMessages(
   liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
   return reconcileAuthoritativeChatMessages(toChatMessages(authoritativeMessages), previousMessages, liveProjection)
+}
+
+function transcriptRestScope(
+  ownerRoute: SessionProfileRoute | undefined,
+  stored: { connection_id?: null | string; profile?: null | string } | undefined,
+  ambientConnectionId: string
+): TranscriptTailScope | undefined {
+  const connectionId = ownerRoute?.connectionId || stored?.connection_id || ambientConnectionId
+  const profile = ownerRoute?.targetProfile || ownerRoute?.profile || stored?.profile || 'default'
+
+  return connectionId ? { connectionId, profile } : ownerRoute?.profile || stored?.profile || undefined
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -933,6 +945,38 @@ export function useSessionActions({
       // chat view drops the error state and shows the loader again.
       setResumeExhaustedSessionId(current => (current === storedSessionId ? null : current))
 
+      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
+      // A connection switch clears/reloads the session rows before this path
+      // runs, so an untagged row belongs to the connection that supplied the
+      // current list. Capture that source before the async metadata lookup. If
+      // we reduce it to the profile string `default`, requestForSessionProfile
+      // resolves the local default socket and sends an SSH session id to the
+      // wrong machine ("resume failed: session not found").
+      const ambientConnection = $connection.get()
+
+      const ambientConnectionId =
+        ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
+
+      const listedStoredSession = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
+      // A durable paint is provisional: the authoritative REST transcript
+      // replaces it below. Keep its exact array identity so reconciliation can
+      // distinguish it from live changes made after the paint.
+      let cachedTailPaint: ChatMessage[] | null = null
+
+      const paintCachedTail = (scope: TranscriptTailScope | undefined): void => {
+        if (resumedSameSelectedSession || cachedTailPaint !== null || $messages.get().length > 0) {
+          return
+        }
+
+        const cachedTail = loadTranscriptTail(storedSessionId, scope)
+
+        if (cachedTail && selectedStoredSessionIdRef.current === storedSessionId) {
+          cachedTailPaint = cachedTail
+          setMessages(cachedTail)
+        }
+      }
+
       // A warm cache entry is only trustworthy when it still BELONGS to the
       // session being resumed. A pooled profile backend that gets idle-reaped
       // and respawned (pruneSecondaryGateways) re-mints runtime ids, so a
@@ -974,22 +1018,15 @@ export function useSessionActions({
         }
       }
 
+      // Paint before metadata resolution or a backend/profile dial. Those
+      // awaits can take seconds on a cold or remote owner, while the durable
+      // cache is already scoped by the synchronous owner hint/list row.
+      paintCachedTail(transcriptRestScope(ownerRoute, listedStoredSession, ambientConnectionId))
+
       // Swap the single live gateway to this session's profile before any
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
-      // A connection switch clears/reloads the session rows before this path
-      // runs, so an untagged row belongs to the connection that supplied the
-      // current list. Capture that source before the async metadata lookup. If
-      // we reduce it to the profile string `default`, requestForSessionProfile
-      // resolves the local default socket and sends an SSH session id to the
-      // wrong machine ("resume failed: session not found").
-      const ambientConnection = $connection.get()
-
-      const ambientConnectionId =
-        ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
-
       const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
       const sessionProfile = storedForProfile?.profile
 
@@ -1044,17 +1081,7 @@ export function useSessionActions({
       const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
         requestForSessionProfile<T>(sessionOwner, requestGateway, method, params)
 
-      const sessionRestScope = resolvedConnectionId
-        ? {
-            connectionId: resolvedConnectionId,
-            profile: ownerRoute?.targetProfile || ownerRoute?.profile || sessionProfile || 'default'
-          }
-        : storedForProfile?.connection_id
-          ? {
-              connectionId: storedForProfile.connection_id,
-              profile: sessionProfile || 'default'
-            }
-          : sessionProfile
+      const sessionRestScope = transcriptRestScope(ownerRoute, storedForProfile, ambientConnectionId)
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
@@ -1481,32 +1508,29 @@ export function useSessionActions({
       // warm path can still bail down to here — an empty-transcript drop, or the
       // cache getting purged during the profile-swap await — so the PREVIOUS
       // session's transcript would leak into this cold resume ("switching
-      // sessions shows the same messages"). Clear it so the loader/prefetch
-      // paints fresh; guarded so the normal cold path (already cleared) no-ops.
-      if (!resumedSameSelectedSession && $messages.get().length > 0) {
+      // sessions shows the same messages"). Clear that foreign view, but keep
+      // this session's scoped provisional tail continuously visible until the
+      // authoritative prefetch replaces it.
+      const coldPathMessages = $messages.get()
+
+      if (
+        !resumedSameSelectedSession &&
+        coldPathMessages.length > 0 &&
+        (cachedTailPaint === null || coldPathMessages !== cachedTailPaint)
+      ) {
         setMessages([])
       }
 
-      // Instant paint from the durable tail cache: a cold resume (fresh app
-      // launch, reaped/respawned backend) otherwise shows a loader until the
-      // REST prefetch lands — which on a cold multi-profile boot waits behind
-      // a backend spawn. Painting the persisted tail here makes the wake
-      // visually complete at ~0ms (and satisfies the paint-first hydration
-      // wait). The paint is DISPLAY-ONLY: reconciliation below must treat the
-      // view as empty (see cachedTailPaint), because grafting the REST tail
+      // The durable tail normally painted before owner resolution. If metadata
+      // supplied a previously unknown owner, retry its authoritative scope here.
+      // The paint is DISPLAY-ONLY: reconciliation below must treat the view as
+      // empty (see cachedTailPaint), because grafting the REST tail
       // onto a stale cached tail would duplicate or misorder rows — the
       // authoritative transcript REPLACES the cached paint when it lands.
       // Same-selected re-resumes skip it — their transcript is already live.
-      let cachedTailPaint: ChatMessage[] | null = null
-
-      if (!resumedSameSelectedSession && $messages.get().length === 0) {
-        const cachedTail = loadTranscriptTail(storedSessionId, sessionRestScope)
-
-        if (cachedTail && selectedStoredSessionIdRef.current === storedSessionId) {
-          cachedTailPaint = cachedTail
-          setMessages(cachedTail)
-        }
-      }
+      // Metadata may have supplied an owner absent from the synchronous list;
+      // retry with the authoritative scope when the instant lookup missed.
+      paintCachedTail(sessionRestScope)
 
       // The reconciler's notion of "what was already on screen": a durable
       // cached paint is provisional, not history — report empty so the

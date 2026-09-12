@@ -69,6 +69,7 @@ import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-r
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
 import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
+import { saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -1068,8 +1069,10 @@ function ResumeTimerHarness({
 describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
+    window.localStorage.clear()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
+    setSelectedStoredSessionId(null)
     setMessages([])
     setSessions([])
     $removedSessionIds.set(new Set())
@@ -1090,6 +1093,76 @@ describe('resumeSession failure recovery', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-1', true)
   }
+
+  it('paints a durable tail before stored-session resolution settles', async () => {
+    const storedLookup = deferred<SessionInfo>()
+    const persistedLookup = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const resumeLookup = deferred<SessionResumeResponse>()
+
+    vi.mocked(getSession).mockReturnValue(storedLookup.promise)
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persistedLookup.promise)
+    saveTranscriptTail(
+      'stored-1',
+      [
+        {
+          id: 'cached-assistant',
+          parts: [{ text: 'cached history paints immediately', type: 'text' }],
+          role: 'assistant'
+        }
+      ] as never,
+      'work'
+    )
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return resumeLookup.promise as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>) | null =
+      null
+
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    let settled = false
+    const pending = resume!('stored-1', true, { connectionId: '', profile: 'work' }).finally(() => (settled = true))
+
+    expect(JSON.stringify($messages.get())).toContain('cached history paints immediately')
+    expect(settled).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
+
+    storedLookup.resolve(storedSession({ id: 'stored-1', message_count: 1, profile: 'work' }))
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+
+    // Metadata and gateway readiness have settled and REST is now pending. The
+    // provisional tail must remain continuously visible rather than flickering
+    // back to the loader between the early paint and authoritative hydration.
+    expect(JSON.stringify($messages.get())).toContain('cached history paints immediately')
+    expect(settled).toBe(false)
+
+    persistedLookup.resolve({
+      messages: [{ content: 'authoritative history replaces cache', role: 'assistant', timestamp: 1 }],
+      session_id: 'stored-1'
+    })
+    resumeLookup.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'stored-1',
+      running: false,
+      session_id: 'runtime-1',
+      session_key: 'stored-1'
+    })
+    await pending
+
+    expect(JSON.stringify($messages.get())).toContain('authoritative history replaces cache')
+    expect(JSON.stringify($messages.get())).not.toContain('cached history paints immediately')
+    vi.mocked(getSession).mockReset()
+  })
 
   it('does not resume a tombstoned session after delete', async () => {
     $removedSessionIds.set(new Set(['stored-1']))

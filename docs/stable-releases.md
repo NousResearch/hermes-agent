@@ -92,6 +92,14 @@ update requests. They direct the recipient to ask the developer for a new
 build. Source checkout channels are separate: `hermes update --set-channel`
 remains available there and selects the published release's source commit.
 
+`--build-commit` prints its deterministic downloads-page URL before dispatch,
+including in dry runs:
+`https://hermes-assets.nousresearch.com/releases/commit/<full-sha>/index.html`.
+`CLOUDFLARE_R2_PUBLIC_URL` overrides the public origin. After admission, the
+commit summary runs even when a build or assembly job fails; it lists only
+receipt-backed existing downloads and marks missing binaries as not built.
+Page publication still requires working R2 access.
+
 Store submission retains its fixed official stable identity. Nonstable
 packages must not be submitted under that identity.
 

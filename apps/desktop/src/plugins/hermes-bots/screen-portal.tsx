@@ -17,7 +17,7 @@ import { useEffect } from 'react'
 import { $lastRoster } from './data'
 import { useBots } from './i18n'
 import { resolveBotConnectionRoute } from './routing'
-import { type DisplayLease, displayRequest, type DisplayStatus, VIEWER_ID } from './screen-connection'
+import { type DisplayLease, displayRequest, type DisplayStatus, isEventForBotScreen, VIEWER_ID } from './screen-connection'
 import { openBotScreen } from './screen-open'
 import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
 import type { BotMeta, RosterRow } from './types'
@@ -102,7 +102,7 @@ export function useScreenPortalState(bot: RosterRow) {
       host.onEvent('display.lease', (event: RpcEvent) => {
         const payload = event.payload as { profile_key?: string; lease?: DisplayLease } | undefined
 
-        if (payload?.lease && payload.profile_key && payload.profile_key === profileKey) {
+        if (payload?.lease && isEventForBotScreen(bot, event, profileKey)) {
           setScreenLease(bot, payload.lease)
         }
       }),
@@ -163,7 +163,7 @@ export function ProfileGroupScreenPortal({ route }: { route: ProfileGroupRoute }
       const resolved = resolveBotConnectionRoute(row)
 
       return resolved.route
-        ? resolved.route.profile === route.profile && (route.connectionId === null || resolved.route.connectionId === route.connectionId)
+        ? resolved.route.profile === route.profile && resolved.route.connectionId === (route.connectionId ?? 'local')
         : row.name === route.profile && route.connectionId === null
     }) ??
     (route.connectionId

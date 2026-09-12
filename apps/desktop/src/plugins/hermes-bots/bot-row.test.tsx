@@ -19,10 +19,15 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BotRow } from './bot-row'
+import { BotRow, GroupRow } from './bot-row'
 import { $groupChats } from './group-chat'
-import { translateBots } from './i18n-test-helper'
-import type { RosterRow } from './types'
+import { translateBotsIn } from './i18n-test-helper'
+import type { GroupMember, RosterRow } from './types'
+
+// Which shipped bundle the rendered rows resolve their strings against. `en`
+// matches the literals this file once carried, so a case that has to prove a
+// string comes from the catalog reads the same row under `ja`.
+const locale = vi.hoisted(() => ({ current: 'en' as 'en' | 'ja' }))
 
 const { ensureAgent, ensureBotMetadata, notifyError, openRosterBot, requestProfile, warmAgent, warmProfile } =
   vi.hoisted(() => ({
@@ -43,7 +48,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     host: { ...sdk.host, ensureAgent, notifyError, requestProfile, warmAgent, warmProfile },
     // The plugin bundle normally lands via `ctx.i18n.register` at load, so
     // without this every localized label in the row renders empty.
-    usePluginI18n: () => translateBots
+    usePluginI18n: () => translateBotsIn(locale.current)
   }
 })
 
@@ -197,5 +202,28 @@ describe('context-menu mutations hydrate the alias first', () => {
 
     expect(route.profile).toBe('worker')
     expect(params).toMatchObject({ name: 'backend-worker', ui_meta: { 'hermes-bots': { pinned: false } } })
+  })
+})
+
+describe('a group row', () => {
+  const members = [{ name: 'alpha' }, { name: 'beta' }, { name: 'gamma' }] as GroupMember[]
+  const row = <GroupRow active={false} group="crew" members={members} needsYou={false} onDisband={noop} onOpen={noop} />
+
+  beforeEach(() => {
+    locale.current = 'en'
+  })
+
+  it('previews an empty room and describes it to assistive tech in the active language', () => {
+    const english = render(row)
+
+    expect(english.getByText('3 bots')).toBeTruthy()
+    expect(english.getByRole('button', { name: 'crew, 3 bots, 3 of 3 available' })).toBeTruthy()
+    english.unmount()
+
+    locale.current = 'ja'
+    const japanese = render(row)
+
+    expect(japanese.getByText('ボット3体')).toBeTruthy()
+    expect(japanese.getByRole('button', { name: 'crew, ボット3体, 3体中3体が利用可能' })).toBeTruthy()
   })
 })

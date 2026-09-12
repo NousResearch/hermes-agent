@@ -7,6 +7,7 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 import logging
 import contextlib
 import argparse
+import errno
 import os
 import re
 import shlex
@@ -191,7 +192,30 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
     return unpacked
 
 
-def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+def _is_sharing_or_lock_oserror(exc: OSError) -> bool:
+    """True for Windows sharing/lock contention (and POSIX equivalents). Not EXDEV/ENOENT."""
+    if getattr(exc, "winerror", None) in (5, 32, 33):
+        return True
+    return exc.errno in (errno.EACCES, errno.EPERM, errno.EBUSY)
+
+
+def _rename_retrying_share_violation(src, dst) -> None:
+    """``os.rename`` with a short retry on sharing/lock codes only."""
+    attempts = 4
+    delay = 0.15
+    for attempt in range(attempts):
+        try:
+            os.rename(src, dst)
+            return
+        except OSError as exc:
+            if not _is_sharing_or_lock_oserror(exc) or attempt >= attempts - 1:
+                raise
+            _time_mod.sleep(delay)
+
+
+def _swap_staged_desktop_app(
+    desktop_dir: Path, staging_dir: Path, error_sink: Optional[list] = None,
+) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
     staged_exe = _desktop_packaged_executable_in(staging_dir)
@@ -211,9 +235,9 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             stopped = _stop_desktop_processes_locking_build(desktop_dir)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
-            os.rename(live_root, previous)
+            _rename_retrying_share_violation(live_root, previous)
         try:
-            os.rename(staged_root, live_root)
+            _rename_retrying_share_violation(staged_root, live_root)
         except OSError:
             if moved_aside:
                 os.rename(previous, live_root)  # restore; live app back as it was
@@ -222,6 +246,8 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             shutil.rmtree(previous, ignore_errors=True)
     except (OSError, ValueError) as exc:
         logger.warning("desktop stage-and-swap failed, live app kept: %s", exc)
+        if error_sink is not None:
+            error_sink.append(exc)
         return None
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -630,9 +656,10 @@ def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
 
 
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
-    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree (Windows
-    only — its lock makes the pack die with ``Access is denied``; POSIX can unlink a running
-    binary). Never raises; returns the PIDs asked to stop."""
+    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree, or
+    (Windows) whose CWD is that ``release`` tree / under it (Windows only — a CWD handle blocks
+    ``os.rename`` with WinError 32; POSIX can unlink a running binary). Never raises; returns
+    the PIDs asked to stop."""
     if sys.platform != "win32":
         return []
     try:
@@ -645,6 +672,7 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
 
     me = os.getpid()
     victims = []
+    seen_pids: set[int] = set()
     try:
         proc_iter = psutil.process_iter(["pid", "exe"])
     except Exception:
@@ -653,14 +681,31 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
         try:
             info = proc.info
             pid = info.get("pid")
-            exe = info.get("exe")
-            if not exe or pid is None or pid == me:
+            if pid is None or pid == me:
                 continue
-            exe_path = Path(exe).resolve()
+            selected = False
+            exe = info.get("exe")
+            if exe:
+                try:
+                    if release_dir in Path(exe).resolve().parents:
+                        selected = True
+                except Exception:
+                    pass
+            if not selected:
+                try:
+                    cwd = proc.cwd()
+                    if not cwd:
+                        continue
+                    cwd_path = Path(cwd).resolve()
+                except Exception:
+                    continue
+                if cwd_path == release_dir or release_dir in cwd_path.parents:
+                    selected = True
+            if selected and pid not in seen_pids:
+                seen_pids.add(pid)
+                victims.append(proc)
         except Exception:
             continue
-        if release_dir in exe_path.parents:
-            victims.append(proc)
 
     stopped: list[int] = []
     for proc in victims:
@@ -1342,9 +1387,15 @@ def _promote_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Path:
             print(f"✗ Desktop build produced no launchable app in {staging_dir}")
         print(_PREVIOUS_APP_KEPT)
         sys.exit(1)
-    packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+    swap_errors: list = []
+    packaged_executable = _swap_staged_desktop_app(
+        desktop_dir, staging_dir, error_sink=swap_errors)
     if packaged_executable is None:
-        print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
+        release = desktop_dir / "release"
+        if swap_errors:
+            print(f"✗ Could not install the rebuilt desktop app into {release} ({swap_errors[0]})")
+        else:
+            print(f"✗ Could not install the rebuilt desktop app into {release}")
         print(_PREVIOUS_APP_KEPT)
         sys.exit(1)
     return packaged_executable

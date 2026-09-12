@@ -952,6 +952,8 @@ class SlackAdapter(BasePlatformAdapter):
         # never reached the session. Keys follow the thread session-key scoping. See #63530.
         self._thread_rehydration_checked: set = set()
         self._reacting_message_ids: set = set()
+        # A startup acknowledgement is an intro for each conversation, not a per-turn status.
+        self._startup_ack_sent_for: set[Tuple[str, str]] = set()
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -2954,12 +2956,30 @@ class SlackAdapter(BasePlatformAdapter):
         return (ts, team_id, marker) if ts and marker in self._reacting_message_ids else None
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Send one startup intro, then add the per-turn in-progress reaction."""
+        channel_id = getattr(event.source, "chat_id", None)
+        thread_id = getattr(event.source, "thread_id", None)
+        own_message_id = getattr(event, "message_id", None)
+        # In Slack's Agent messaging view (flat DM, no real threads), thread_id is set to
+        # the message's OWN ts for every top-level message (see _resolve_thread_ts comment
+        # above) — i.e. it's synthetic and unique per message, not per conversation. Using
+        # it verbatim in the dedup key made "Getting started…" fire on every single turn
+        # instead of once. Normalize: a synthetic thread_id collapses to "no thread" so the
+        # dedup key is per-channel, matching a real conversation.
+        is_synthetic_thread = bool(thread_id) and own_message_id and str(thread_id) == str(own_message_id)
+        effective_thread_id = None if is_synthetic_thread else thread_id
+        conversation_key = (str(channel_id), str(effective_thread_id or ""))
+        if channel_id and conversation_key not in self._startup_ack_sent_for:
+            # Claim before awaiting network I/O so concurrent first turns cannot each send it.
+            self._startup_ack_sent_for.add(conversation_key)
+            metadata: Dict[str, Any] = {"_interim_send": True}
+            if thread_id:
+                metadata["thread_id"] = str(thread_id)
+            await self.send(channel_id, "Getting started…", metadata=metadata)
         target = self._reacting_target(event)
         if target is None:
             return
         ts, team_id, _marker = target
-        channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
             await self._react(channel_id, ts, "eyes", team_id, remove=False)
 

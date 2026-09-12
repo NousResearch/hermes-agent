@@ -42,6 +42,11 @@ class HostedRoomAuthorityRPC:
         return future.result(self.timeout)
 
     async def _dispatch(self, operation, params):
+        from gateway.session_authorities import owner_scope
+        with owner_scope(self.authority):
+            return await self._dispatch_owned(operation, params)
+
+    async def _dispatch_owned(self, operation, params):
         if (params.get('profile', self.profile) != self.profile
                 or self.principal.profile_id != self.authority.profile_id):
             raise RuntimeStoreError('profile_mismatch')

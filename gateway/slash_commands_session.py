@@ -214,7 +214,7 @@ class GatewaySessionCommandsMixin:
             pass
         try:
             from hermes_cli.tips import get_random_tip
-            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+            _tip_line = t("gateway.reset.tip", tip=get_random_tip(surface="gateway"))
         except Exception:
             _tip_line = ""
         body = f"{header}\n\n{session_info}" if session_info else header

@@ -95,9 +95,45 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   // the sub actually opens — eagerly running the body's hooks/JSX for every
   // row made opening the menu itself lag on large catalogs.
   return (
-    <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
+    <DropdownMenuSubContent
+      className="w-52 p-0"
+      // Reaching this panel means stepping OFF the row that opened it, and the
+      // rows below are drop targets: Radix moves DOM focus to whatever row the
+      // pointer crosses on the way. It then reads that focus hop as
+      // `onFocusOutside` and unmounts the panel mid-transit, so the options are
+      // gone before the pointer ever lands on them (#107116). A row that really
+      // IS hovered asks for its own submenu a moment later, and that is what
+      // takes this one down — see the single-open row in the catalog menu.
+      onFocusOutside={event => {
+        if (landedInMenu(event.target)) {
+          event.preventDefault()
+        }
+      }}
+      sideOffset={4}
+    >
       <ModelEditSubmenuBody {...props} />
     </DropdownMenuSubContent>
+  )
+}
+
+/** Whether the focus that left this panel landed on the menu the panel hangs
+ *  off, rather than somewhere the pointer actually went.
+ *
+ *  Two hops read as "left the panel" while the pointer is only on its way to
+ *  the options:
+ *  - the menu's own layer, which Radix focuses the instant the pointer is over
+ *    no row at all (`onItemLeave`). That is the hop that unmounts the panel
+ *    mid-transit, and it fires for no other reason.
+ *  - a sibling ROW, which is what the pointer crosses on the way. Only a row
+ *    that owns a submenu counts: it claims the panel a moment later if the
+ *    pointer settles there (see the single-open row in the catalog menu),
+ *    whereas a plain row — an MoA preset, the footer, a download — never will,
+ *    so hovering one still means the user is done with the options. */
+function landedInMenu(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    (target.matches('[data-slot="dropdown-menu-content"]') ||
+      target.closest('[data-slot="dropdown-menu-sub-trigger"]') !== null)
   )
 }
 

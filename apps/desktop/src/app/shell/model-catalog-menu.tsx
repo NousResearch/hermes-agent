@@ -337,6 +337,12 @@ export function ModelCatalogMenu({
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
+  // Which row's options submenu is open. Radix opens on hover but closes on
+  // "someone else took focus", which is how the row under a travelling pointer
+  // used to dismiss the panel it was on its way to. The panel now survives that
+  // hop (see ModelEditSubmenu), so the catalog has to say which row owns the
+  // open panel — otherwise a row that really is hovered adds a second one.
+  const [openRowKey, setOpenRowKey] = useState<string | null>(null)
   // A parked cursor is not a cursor in use: until the mouse actually moves,
   // hover can't take rows out from under the keyboard.
   const pointerQuiet = usePointerQuiet()
@@ -529,8 +535,14 @@ export function ModelCatalogMenu({
                       closeMenu()
                     }
 
+                    const rowKey = `${group.provider.slug}:${family.id}`
+
                     return (
-                      <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
+                      <DropdownMenuSub
+                        key={rowKey}
+                        onOpenChange={next => setOpenRowKey(next ? rowKey : null)}
+                        open={openRowKey === rowKey}
+                      >
                         <DropdownMenuSubTrigger
                           hideChevron
                           onClick={activate}

@@ -1171,6 +1171,8 @@ class TestValueAwareGatingCorpus:
         ("SESSION_TOKEN=shrt", "shrt"),
         ("client_secret=abc", "abc"),
         ("spring.datasource.password=fakePass123", "fakePass123"),
+        ("provider error: token=A9f3kZq7Lm2Xw8Rt4Yv6", "A9f3kZq7"),
+        ("metadata; password=hunter2hunter2", "hunter2hunter2"),
     ]
 
     def test_technical_prose_survives_intact(self):

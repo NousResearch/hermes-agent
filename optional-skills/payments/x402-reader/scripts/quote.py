@@ -9,8 +9,31 @@ import sys
 USDC_DECIMALS = 6
 
 
+def extract_json_object(raw: str) -> str:
+    """Return the first JSON object, stripping curl -D - header blocks."""
+    text = raw.strip()
+    if not text:
+        raise ValueError("empty stdin")
+    if text.startswith("{") or text.startswith("["):
+        return text
+    sep = "\r\n\r\n" if "\r\n\r\n" in text else "\n\n"
+    rest = text
+    while True:
+        if sep not in rest:
+            break
+        rest = rest.split(sep, 1)[1].lstrip()
+        if rest.startswith("{") or rest.startswith("["):
+            return rest
+        if not rest.startswith("HTTP/"):
+            break
+    start = rest.find("{")
+    if start < 0:
+        raise ValueError("no JSON object in stdin")
+    return rest[start:]
+
+
 def load_body(raw: str) -> dict:
-    data = json.loads(raw)
+    data = json.loads(extract_json_object(raw))
     if not isinstance(data, dict):
         raise ValueError("402 body must be a JSON object")
     return data

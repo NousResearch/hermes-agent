@@ -16,7 +16,7 @@ Pay x402 to read a public URL as markdown.
 |---|---|
 | Source | Optional — install with `hermes skills install official/payments/x402-reader` |
 | Path | `optional-skills/payments/x402-reader` |
-| Version | `0.1.0` |
+| Version | `0.1.1` |
 | Author | twzrd (twzrd-sol), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
@@ -31,10 +31,10 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # X402 Reader Skill
 
-Turns a public URL into markdown by paying the live x402 reader
-(`https://reader.outbid.sh`). Quote is free. Live spend is opt-in and
-capped before sign. This is the Solana/Base USDC x402 path; MPP 402s
-belong to `mpp-agent`.
+Turns a public URL into markdown by paying an x402 reader
+(`https://reader.outbid.sh` by default). Quote is free. Live spend is
+opt-in and capped before sign. This is the Solana/Base USDC x402 path;
+MPP 402s belong to `mpp-agent`.
 
 Gated `[linux, macos]` while the npm client matures on Windows.
 
@@ -51,13 +51,12 @@ checkout (use `stripe-link-cli`), or adding 402 to your own API.
 
 - Node.js 20+ on `PATH` (`node --version` via `terminal`)
 - For live pay only: a funded Solana or Base USDC wallet file, plus
-  `X402_READER_PAYMENTS_ENABLED=1`
+  `X402_READER_PAYMENTS_ENABLED=1` in the MCP **server env**
 - No wallet is required to quote
 
 ## How to Run
 
-Install the official optional skill, then either add the MCP or quote
-with `terminal`:
+Install the official optional skill, then add the MCP:
 
 ```
 hermes skills install official/payments/x402-reader
@@ -66,7 +65,8 @@ hermes mcp install x402-reader
 
 `hermes mcp install` writes a stdio server (`npx -y x402-reader-mcp@0.1.2`)
 that exposes `scrape` ($0.005) and `browse` ($0.05). Unarmed, both tools
-return a free 422 miss or a visible 402 quote.
+return a free 422 miss or a visible 402 quote. Shell exports do **not**
+reach the MCP — put payment env in `mcp_servers.x402-reader.env`.
 
 ## Quick Reference
 
@@ -81,35 +81,38 @@ return a free 422 miss or a visible 402 quote.
 
 ### 1. Quote (no wallet)
 
-```
-curl -sS -D - "https://reader.outbid.sh/scrape?url=https://example.com/"
-```
-
-Expect HTTP 402 and an `accepts` array. Parse the body with this skill's
-`scripts/quote.py` (no network; stdin is the JSON body):
+Write headers and body to separate files so `quote.py` sees JSON only:
 
 ```
-python3 scripts/quote.py
+curl -sS -o /tmp/x402-body.json -D /tmp/x402-headers.txt \
+  "https://reader.outbid.sh/scrape?url=https://example.com/"
+python3 scripts/quote.py < /tmp/x402-body.json
 ```
 
-Prefer the `solana` / `solana:` row. Amount `5000` is $0.005 USDC.
+Expect HTTP 402 and an `accepts` array. `scripts/quote.py` is display-only
+(no network, no keys). Prefer the `solana` / `solana:` row. Amount `5000`
+is $0.005 USDC. The paying MCP settles from the `PAYMENT-REQUIRED` header,
+not from this parsed body.
 
 ### 2. Pay under a ceiling
 
-Arm payments only when the user wants the page:
+Arm payments only when the user wants the page. Edit the installed MCP
+block, then start a **new session** and call the MCP `scrape` tool
+(not `npx` — that starts the stdio server and hangs):
 
-- `X402_READER_PAYMENTS_ENABLED=1`
-- `SVM_PRIVATE_KEY_FILE` (Solana JSON keypair) or `EVM_PRIVATE_KEY_FILE`
-- Caps default to $0.05 per call and $1.00 per process; refuse above that
-  **before** signing
-
-Then call the MCP `scrape` tool, or:
-
+```yaml
+mcp_servers:
+  x402-reader:
+    env:
+      X402_READER_PAYMENTS_ENABLED: "1"
+      SVM_PRIVATE_KEY_FILE: "${SVM_PRIVATE_KEY_FILE}"
+      X402_READER_MAX_USDC_PER_CALL: "0.05"
+      X402_READER_MAX_USDC_TOTAL: "1"
 ```
-npx -y x402-reader-mcp@0.1.2
-```
 
-Do not `read_file` the key. Do not paste key material into the transcript.
+Use `EVM_PRIVATE_KEY_FILE` instead of `SVM_PRIVATE_KEY_FILE` for Base.
+Caps refuse above the limit **before** signing. Do not `read_file` the
+key. Do not paste key material into the transcript.
 
 ### 3. Verify
 
@@ -125,11 +128,13 @@ is a failed pay, not a quote.
 - **Do not curl a 402 and stop** when the user asked for the page — quote,
   then pay under the cap, or report the price and stop.
 - **Wallet keys stay out of context.** Point at a file path; never dump it.
+- **npx is the MCP launcher, not a pay command.**
 
 ## Verification
 
 ```
 hermes skills install official/payments/x402-reader
+hermes mcp install x402-reader
 hermes mcp test x402-reader
 ```
 

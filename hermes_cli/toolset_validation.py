@@ -68,7 +68,13 @@ def validate_platform_toolsets(
         for name in raw:
             if not isinstance(name, str) or not name:
                 continue
-            if not is_valid_toolset(name):
+            if name == default and default_valid:
+                # A plugin platform's synthesized bundle (hermes-<platform>) is
+                # rejected by is_valid_toolset() yet resolves to a full toolset;
+                # default_valid already consulted the platform registry.
+                valid_count += 1
+                platform_valid_count += 1
+            elif not is_valid_toolset(name):
                 hint = f" — did you mean '{default}'?" if default_valid else ""
                 warnings.append(f"platform '{platform}' references unknown toolset '{name}'{hint}")
             elif is_allowed_for_platform(name, str(platform)):

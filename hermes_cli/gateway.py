@@ -2832,7 +2832,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     path_entries.extend(_build_user_local_paths(user_home, path_entries))
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
-    sane_path = ":".join(path_entries)
+    # Like launchd: append the invoking shell PATH (NixOS / Homebrew / Guix) after venv/node/FHS; first-seen wins.
+    sane_path = ":".join(dict.fromkeys(path_entries + [p for p in os.environ.get("PATH", "").split(":") if p.strip()]))
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target

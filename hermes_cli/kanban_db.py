@@ -92,8 +92,9 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
-# Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
-# Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
+# Same-reason block -> unblock -> re-block cycles before routing to ``triage``
+# (or, for ``transient``, to ``blocked``). Counts unblock recurrences, NOT
+# dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
@@ -1992,7 +1993,8 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     row = conn.execute(
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind IN ("
-        "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
+        "'blocked', 'block_loop_detected', 'dependency_wait', 'transient_wait', "
+        "'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
         "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
@@ -2214,6 +2216,11 @@ _RUN_OUTCOME_TERMINAL_STATUS = {
     "changes_requested": "changes_requested",
     "blocked": "blocked",
     "dependency_wait": "blocked",
+    # A transient park (``_route_block`` -> ``scheduled``) is a handoff too:
+    # the run ended and the goal loop must stop. The loop's terminal vocabulary
+    # has no separate "parked" value, and ``blocked`` is the one that means
+    # "stop, someone/something else owns this now".
+    "scheduled": "blocked",
 }
 
 
@@ -2907,9 +2914,10 @@ def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
 ) -> bool:
-    """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
-    :func:`_route_block`). ``transient`` still counts toward the loop breaker
-    so a forever-flaky task escalates. True on any transition."""
+    """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``scheduled`` /
+    ``triage``, see :func:`_route_block`). ``transient`` waits in ``scheduled``
+    but still counts toward the loop breaker, so a forever-flaky task
+    escalates — to a human, never into ``triage``. True on any transition."""
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
@@ -2939,8 +2947,11 @@ def block_task(
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
             return False
+        # A transient park is not a block: record the run as ``scheduled`` so
+        # attempt history says "waited", not "stopped for a human".
+        run_outcome = "scheduled" if new_status == "scheduled" else "blocked"
         run_id = _end_or_synthesize_run(
-            conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
+            conn, task_id, outcome=run_outcome, status=run_outcome, summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
@@ -2966,6 +2977,21 @@ def _route_block(
     incoming one means blocked -> unblocked -> re-block for the same cause
     (un-typed None compares equal to a prior un-typed block). At
     ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
+
+    ``transient`` is the one kind that never takes that door. It means "this
+    may clear on its own" — a wait on TIME, which is precisely what
+    ``scheduled`` is for; the human bucket is for questions only a human can
+    answer. It still counts recurrences, so a card that keeps parking this way
+    stops being believed, but its escalation target is ``blocked`` (a human,
+    who gets notified) rather than ``triage``. ``triage`` is the wrong
+    destination for a machine wait twice over: ``recompute_ready`` looks only
+    at ``todo``/``blocked``, so nothing promotes the card back on its own, and
+    the only thing that does read ``triage`` is the specify/decompose sweep —
+    which hands the card straight back to a worker that just said it is
+    waiting, or (where that sweep filters breaker escalations out) leaves it
+    sitting with no reader at all. Observed on a live board as a 7-hour stall
+    with 21 tasks queued behind one parked card whose background job had in
+    fact finished green ten minutes after the park.
     """
     payload = {"reason": reason, "kind": kind, "source_status": source_status}
     if kind == "dependency":
@@ -2973,6 +2999,12 @@ def _route_block(
     recurrences = prev_recurrences + 1 if prev_kind == kind else 1
     set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
     payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
+    if kind == "transient":
+        if recurrences < BLOCK_RECURRENCE_LIMIT:
+            return "scheduled", "transient_wait", set_sql, (kind, recurrences), payload
+        # Believed twice, flaky twice: hand it to a human, not to ``triage``.
+        payload["limit"] = BLOCK_RECURRENCE_LIMIT
+        return "blocked", "blocked", set_sql, (kind, recurrences), payload
     if recurrences >= BLOCK_RECURRENCE_LIMIT:
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload

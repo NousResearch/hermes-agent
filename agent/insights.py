@@ -9,6 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
+from agent.message_sanitization import safe_strftime
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
 from hermes_cli.timefmt import coerce_epoch
 
@@ -72,7 +73,7 @@ def _hour12(hr: int) -> str:
 
 
 def _day(ts: Any) -> str:
-    return datetime.fromtimestamp(ts).strftime("%b %d") if ts and (ts := coerce_epoch(ts)) else "?"
+    return safe_strftime(datetime.fromtimestamp(ts), "%b %d") if ts and (ts := coerce_epoch(ts)) else "?"
 
 
 def _scoped(before: str, after: str = "", *, src: str = " AND s.source = ?") -> tuple[str, str]:
@@ -488,8 +489,8 @@ class InsightsEngine:
             "",
         ]
         if (start := coerce_epoch(o.get("date_range_start"))) is not None and (end := coerce_epoch(o.get("date_range_end"))) is not None:
-            start_str = datetime.fromtimestamp(start).strftime("%b %d, %Y")
-            end_str = datetime.fromtimestamp(end).strftime("%b %d, %Y")
+            start_str = safe_strftime(datetime.fromtimestamp(start), "%b %d, %Y")
+            end_str = safe_strftime(datetime.fromtimestamp(end), "%b %d, %Y")
             lines += [f"  Period: {start_str} — {end_str}", ""]
         lines += self._section("📋 Overview") + [
             f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}",

@@ -165,6 +165,57 @@ class TestContracts:
                         calls.append(node.lineno)
             assert calls, f"{rel} has no arm_startup_watchdog call ({reason})"
 
+    def test_gateway_runner_disarms_once_loop_confirmed_live(self):
+        """The startup watchdog must be disarmed in the same branch that
+        confirms the event loop is live (right after
+        ``_start_loop_liveness_guards``), so it can never outlive the
+        pre-loop window and fire on a healthy gateway. Regression guard for
+        #102000: the disarm site once dropped out of a shipped build and the
+        watchdog killed a fully-operational gateway every ~25 min."""
+        import ast
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[2]
+        tree = ast.parse((repo_root / "gateway" / "run.py").read_text())
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            # Match `if self._gateway_loop is not None:` — the
+            # loop-confirmed-live branch in GatewayRunner.start().
+            test = node.test
+            if not (
+                isinstance(test, ast.Compare)
+                and isinstance(test.left, ast.Attribute)
+                and test.left.attr == "_gateway_loop"
+                and any(isinstance(op, ast.IsNot) for op in test.ops)
+            ):
+                continue
+            calls = set()
+            for call_node in ast.walk(node):
+                if not isinstance(call_node, ast.Call):
+                    continue
+                fn = call_node.func
+                if isinstance(fn, ast.Name):
+                    calls.add(fn.id)
+                elif isinstance(fn, ast.Attribute):
+                    calls.add(fn.attr)
+            # Only the branch that hands off to the loop-liveness watchdog
+            # is the loop-confirmed-live branch.
+            if "_start_loop_liveness_guards" not in calls:
+                continue
+            assert "disarm_startup_watchdog" in calls, (
+                "gateway/run.py: the loop-confirmed-live branch that calls "
+                "_start_loop_liveness_guards() must also call "
+                "disarm_startup_watchdog() so the startup watchdog cannot "
+                "fire on a healthy gateway (#102000)"
+            )
+            return
+        pytest.fail(
+            "gateway/run.py: loop-confirmed-live branch "
+            "(`if self._gateway_loop is not None:` calling "
+            "_start_loop_liveness_guards) not found"
+        )
 
 
 class TestConfigResolution:

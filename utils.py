@@ -217,10 +217,17 @@ def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "
                   mode=_mode_for_write(path, create_mode, preserve=preserve_mode), preserve_owner=preserve_mode)
 
 
-def atomic_json_write(path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None, **dump_kwargs: Any) -> None:
-    """Write JSON to *path* atomically (temp file + fsync + replace)."""
+def atomic_json_write(
+    path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
+    ensure_ascii: bool = False, **dump_kwargs: Any,
+) -> None:
+    """Write JSON to *path* atomically (temp file + fsync + replace).
+
+    ``ensure_ascii=True`` lets callers persist surrogate-escaped strings (non-UTF-8 argv/paths)
+    that a utf-8 text handle would otherwise reject with ``UnicodeEncodeError``.
+    """
     path = Path(path)
-    _atomic_write(path, lambda f: json.dump(data, f, indent=indent, ensure_ascii=False, **dump_kwargs),
+    _atomic_write(path, lambda f: json.dump(data, f, indent=indent, ensure_ascii=ensure_ascii, **dump_kwargs),
                   prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path))
 
 

@@ -375,7 +375,8 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
         )
         if _is_empty_terminal or _is_partial_fragment or str(_turn_exit_reason) == "partial_stream_recovery":
             _explanation = agent._format_turn_completion_explanation(
-                _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None)
+                _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
+                db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
             )
             if _explanation:
                 # Replace the bare sentinel; keep a partial fragment and append why.
@@ -415,18 +416,19 @@ def _apply_output_hooks(
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True
             break
-    # post_llm_call (e.g. sync conversation data to an external memory system).
-    _invoke_hook_safely(
-        "post_llm_call", logger,
-        session_id=agent.session_id,
-        task_id=effective_task_id,
-        turn_id=turn_id,
-        user_message=original_user_message,
-        assistant_response=final_response,
-        conversation_history=list(messages),
-        model=agent.model,
-        platform=platform,
-    )
+    # Detached forks are internal work and must not publish turns under the parent's session ID.
+    if not getattr(agent, "_persist_disabled", False):
+        _invoke_hook_safely(
+            "post_llm_call", logger,
+            session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=original_user_message,
+            assistant_response=final_response,
+            conversation_history=list(messages),
+            model=agent.model,
+            platform=platform,
+        )
     return final_response, transformed, pre_transform
 
 
@@ -629,18 +631,19 @@ def finalize_turn(
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
-    _invoke_hook_safely(
-        "on_session_end", logger,
-        session_id=agent.session_id,
-        task_id=effective_task_id,
-        turn_id=turn_id,
-        completed=completed,
-        failed=failed,
-        interrupted=interrupted,
-        turn_exit_reason=_turn_exit_reason,
-        model=agent.model,
-        platform=_platform,
-    )
+    if not getattr(agent, "_persist_disabled", False):
+        _invoke_hook_safely(
+            "on_session_end", logger,
+            session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            completed=completed,
+            failed=failed,
+            interrupted=interrupted,
+            turn_exit_reason=_turn_exit_reason,
+            model=agent.model,
+            platform=_platform,
+        )
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False

@@ -130,6 +130,13 @@ class MemoryStore:
             # Deduplicate (order-preserving, first occurrence wins).
             entries = list(dict.fromkeys(self._read_file(path)))
             self._set_entries(target, entries)
+            # External writers (MCP bridges, hand edits) can exceed the cap; the limit only fires on
+            # add/replace, so the oversized block would silently ride in the prompt while every later
+            # add is refused with no visible cause (#10877). Warn; never truncate a user's memories.
+            if (count := self._char_count(target)) > (limit := self._char_limit(target)):
+                logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
+                               "further additions are blocked until it is back under the limit.",
+                               path.name, count, limit)
             self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
 
     @staticmethod

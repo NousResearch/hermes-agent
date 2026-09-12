@@ -462,7 +462,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
         if not text and not media_urls:
             logger.info("[%s] Empty WeCom message skipped: is_group=%s chat=%s msgtype=%r", self.name, is_group, chat_id, body.get("msgtype"))
             return
-        source = self.build_source(chat_id=chat_id, chat_type="group" if is_group else "dm", user_id=sender_id or None, user_name=sender_id or None)
+        source = self.build_source(chat_id=chat_id, chat_type="group" if is_group else "dm", user_id=sender_id or None, user_name=sender_id or None,
+                                   message_id=msg_id)
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=payload, message_id=msg_id, media_urls=media_urls, media_types=media_types,
             reply_to_message_id=f"quote:{msg_id}" if has_reply_context else None, reply_to_text=reply_text if has_reply_context else None, timestamp=datetime.now(tz=timezone.utc),
@@ -754,11 +755,12 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Reuse the live gateway adapter in-process, else connect ephemerally (WeCom allows ONE
-    WebSocket per bot — a second connection kicks the first)."""
+    WebSocket per bot — a second connection kicks the first). The live adapter is the ACTIVE
+    PROFILE's (``_live_adapter``): a bare ``runner.adapters`` hit is the default profile's bot under
+    multiplex, so a secondary profile's send would leave with the wrong identity."""
     try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
-        adapter = runner.adapters.get(Platform.WECOM) if runner is not None else None
+        from tools.send_message_senders import _live_adapter
+        _, adapter = _live_adapter(Platform.WECOM)
     except Exception:
         adapter = None
     if adapter is not None:

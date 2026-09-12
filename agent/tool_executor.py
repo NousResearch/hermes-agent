@@ -221,9 +221,11 @@ def _flush_session_db_after_tool_progress(
     is enriched before the batch's first durable commit, so history remains
     append-only and every provider sees the ordinary assistant/tool role shape.
     """
+    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
     from agent.turn_iteration_prep import _maybe_inject_iteration_budget_warning
 
-    # Preserve main's checkpoint warning before sizing or stamping the tool result.
+    # Preserve main's checkpoint warnings before sizing or stamping the tool result.
+    _maybe_inject_run_budget_wrapup(agent, messages)
     _maybe_inject_iteration_budget_warning(agent, messages)
 
     # A known no-op persistence path cannot accept a durable carrier. Do not
@@ -497,6 +499,10 @@ def _unwrap_tool_search_call(
             return function_name, function_args, None
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
+            return function_name, function_args, None
+        if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
+            # Both executors retain the wrapper: scope/probe/hooks run per entry
+            # in the batch dispatcher, not against a synthetic registry name.
             return function_name, function_args, None
         if underlying not in _tool_search_scoped_names(agent):
             return function_name, function_args, (
@@ -1044,7 +1050,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         elif function_name == "terminal":
             command = function_args.get("command", "")
             if _is_destructive_command(command):
-                cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                from agent.runtime_cwd import scope_terminal_cwd
+                cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
                 agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 

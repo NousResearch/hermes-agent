@@ -663,8 +663,8 @@ the id plus a ready-to-paste `hermes --resume <id>` command.
 `--resume @claude` / `--resume @codex` show the same picker and drop you
 straight into the imported conversation.
 
-**Hermes Desktop** has the same importer under **Import session** in the
-sidebar (also in the command palette). It lists the logs on the machine the
+**Hermes Desktop** has the same importer in the command palette (**Import
+session**). It lists the logs on the machine the
 connected backend runs on — not the computer running the app — shows a
 read-only preview, and **Continue in Hermes** copies the conversation into the
 selected profile. Browsing never writes to your session store, importing never

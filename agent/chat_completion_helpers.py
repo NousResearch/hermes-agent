@@ -1731,6 +1731,10 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if not fb_provider or not fb_model:
         return True
+    from agent.fallback_cooldown import _is_entitlement_rejected
+    if _is_entitlement_rejected(agent, fb_provider, fb_model):
+        logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
+        return True
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
         unavailable.add(fb_key)
@@ -1868,7 +1872,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
             fb_base_url = str(fb_client.base_url)
-            if not fb_api_mode_explicit and fb_api_mode == "chat_completions":
+            from hermes_cli.providers import is_actual_route
+            if is_actual_route(fb_provider, fb_base_url):
+                fb_api_mode = "chat_completions"
+            elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
                 fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
@@ -2174,11 +2181,17 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None):
+    dropped_tool_names=None, overflow_terminal=False):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
-    truncated output as a complete turn (#32086)."""
+    truncated output as a complete turn (#32086).
+
+    ``overflow_terminal`` (``full_content=None``): the stream died on a
+    context-overflow error. Seeding the recovered text as a continuation stub
+    would grow every later request into the same overflow (#106260); the loop
+    treats the marker as terminal and ends the turn via the recovery contract.
+    """
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
         model=model_name,
@@ -2190,6 +2203,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
         )],
         usage=usage_obj,
         _dropped_tool_names=dropped_tool_names or None,
+        _overflow_terminal=overflow_terminal,
     )
 
 
@@ -2200,6 +2214,18 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
 _SSE_CONN_PHRASES = ("connection lost", "connection reset", "connection closed", "connection terminated",
     "network error", "network connection", "terminated", "peer closed", "broken pipe",
     "upstream connect error")
+
+
+def _rejects_stream_options(exc: BaseException) -> bool:
+    """A 400/422 whose body names ``stream_options`` as an unknown/extra field: strict
+    OpenAI-compatible endpoints (Azure AI Foundry MaaS, Pydantic ``extra_forbidden``) reject
+    the usage extension outright (#9705). Distinct from "stream not supported", which flips
+    the whole session to non-streaming."""
+    if getattr(exc, "status_code", None) not in (400, 422):
+        return False
+    body = f"{getattr(exc, 'body', '') or ''} {exc}".lower()
+    return "stream_options" in body and any(
+        k in body for k in ("extra", "not supported", "unrecognized", "unexpected", "unknown"))
 
 
 def _is_sse_connection_error(exc: BaseException) -> bool:
@@ -2680,8 +2706,9 @@ class _StreamingCall(StreamingWaitMonitor):
         return usage, finish_reason
 
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
-        # Native Gemini rejects OpenAI's usage-streaming extension.
-        if not is_native_gemini_base_url(self.agent.base_url):
+        # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
+        # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
+        if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
@@ -2693,6 +2720,7 @@ class _StreamingCall(StreamingWaitMonitor):
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
         self.agent._capture_rate_limits(response)
         self.agent._capture_credits(response)
+        self.agent._capture_nous_model_switch(response)
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)
@@ -3088,6 +3116,16 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
         _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
 
+        if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
+            # Nothing streamed yet: drop the usage extension for this session and re-open.
+            self.agent._stream_options_unsupported = True
+            self._compat_retries = 1
+            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it for this session.",
+                        getattr(e, "status_code", None))
+            self._cancel_current_stream_attempt("stream_options_rejected_retry")
+            self.clients.close_once("stream_options_rejected_retry")
+            return True
+
         if self.deltas_were_sent["yes"]:
             # Died AFTER tokens were delivered: normally no retry (would duplicate
             # text). Exception: a tool call in flight — aborting discards it, so
@@ -3139,8 +3177,14 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _call(self):
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+        # The one stream_options compatibility retry (#9705) is not a network retry and must not
+        # consume the transient budget: on the last attempt (or HERMES_STREAM_RETRIES=0) the
+        # handler returned True and the loop ended with neither a response nor an error set.
+        self._compat_retries = 0
+        _stream_attempt = -1
         try:
-            for _stream_attempt in range(_max_stream_retries + 1):
+            while _stream_attempt < _max_stream_retries + self._compat_retries:
+                _stream_attempt += 1
                 stream_attempt_id = self._start_stream_attempt()
                 # Otherwise /stop closes the connection and the retry opens a
                 # FRESH one, blocking up to a full read timeout per attempt.
@@ -3260,22 +3304,37 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
                 _partial_names, len(_partial_text or ""), error)
-        else:
-            logger.warning(
-                "Partial stream delivered before error; returning length-truncated stub with %s chars of "
-                "recovered content so the loop can continue from where the stream died: %s",
-                len(_partial_text or ""), error)
-        # Classify content filtering (MiniMax 1027, Azure content_filter, Anthropic refusal)
-        # before the error is swallowed into the stub: the loop reads the tag and falls back.
-        _stub = _build_partial_stream_stub("assistant", _partial_text, None,
-            getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names)
+        # Classify the error before it is swallowed into the stub: the loop reads the
+        # content-filter tag and falls back; a context overflow must not be continued at all.
+        _cls = None
         with contextlib.suppress(Exception):
             from agent.error_classifier import classify_api_error
             _cls = classify_api_error(
                 error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
-            if _cls.reason == FailoverReason.content_policy_blocked:
-                _stub._content_filter_terminated = True
         _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker
+        # #106260: continuing after a context-overflow error re-sends a larger request into the
+        # same overflow. Return an EMPTY stub marked terminal so the loop ends the turn instead.
+        # Scope is context_overflow ONLY: payload_too_large (413) has its own byte-scored recovery
+        # owner (turn_overflow._recover_payload_too_large, #88960/#47339) that must not be bypassed.
+        if _cls is not None and _cls.reason == FailoverReason.context_overflow:
+            logger.warning(
+                "Partial stream ended on a context-overflow error after %s chars; "
+                "NOT seeding a continuation stub (transcript is already over budget): %s",
+                len(_partial_text or ""), error,
+            )
+            return _build_partial_stream_stub(
+                "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
+                dropped_tool_names=_partial_names, overflow_terminal=True,
+            )
+        if not _partial_names:
+            logger.warning(
+                "Partial stream delivered before error; returning length-truncated stub with %s chars of "
+                "recovered content so the loop can continue from where the stream died: %s",
+                len(_partial_text or ""), error)
+        _stub = _build_partial_stream_stub("assistant", _partial_text, None,
+            getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names)
+        if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:
+            _stub._content_filter_terminated = True
         return _stub
 
     def run(self):

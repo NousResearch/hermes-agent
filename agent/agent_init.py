@@ -372,8 +372,11 @@ _EXPLICIT_API_MODES = {
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
+    from hermes_cli.providers import is_actual_route
     host, url = agent._base_url_hostname, agent._base_url_lower
-    if api_mode in _EXPLICIT_API_MODES:
+    if is_actual_route(agent.provider, base_url):
+        agent.api_mode = "chat_completions"
+    elif api_mode in _EXPLICIT_API_MODES:
         agent.api_mode = api_mode
     elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
         agent.api_mode = "codex_responses"
@@ -416,6 +419,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
 
 
 def _finalize_routing(agent, api_mode, credential_pool):
+    from hermes_cli.providers import is_actual_route
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
     # Regression from #63048 which placed this check before the URL-based auto-detection block above (fixed
@@ -453,6 +457,11 @@ def _finalize_routing(agent, api_mode, credential_pool):
         if agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
 
+    # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
+    # swap can change the route later, so ``_swap_credential`` applies the same helper again.
+    from hermes_cli.anon_auth import pin_model_for_route
+    agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
+
     # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
     # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
     # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
@@ -468,6 +477,7 @@ def _finalize_routing(agent, api_mode, credential_pool):
         # upgrade for Azure (openai.azure.com), even though it looks OpenAI-compatible.
         api_mode is None
         and agent.api_mode == "chat_completions"
+        and not is_actual_route(agent.provider, agent.base_url)
         and agent.provider != "copilot-acp"
         and not _base_lower.startswith(("acp://", "acp+tcp://"))
         and not agent._is_azure_openai_url()
@@ -595,8 +605,8 @@ _SESSION_STATE: Dict[str, Any] = {
     # False on helper agents (compression / hygiene / review forks) that hand the session to
     # a continuation row that must stay open.
     "_end_session_on_close": True,
-    # True on the background review fork: never persist, so its harness turn can't hijack
-    # the live session.
+    # True on the background review fork: never persist or publish session lifecycle hooks,
+    # so its harness turn can't hijack or appear under the live session.
     "_persist_disabled": False,
 }
 
@@ -617,6 +627,8 @@ _STREAM_STATE: Dict[str, Any] = {
     "_stream_writer_token": 0,
     "_stream_writer_tls": threading.local,
     "_stream_writer_dropped": 0,
+    # Set once a strict endpoint 400/422s on ``stream_options``; later streams omit it (#9705).
+    "_stream_options_unsupported": False,
     # API-facing user message override when it differs from the persisted transcript (voice).
     "_persist_user_message_idx": None,
     "_persist_user_message_override": None,
@@ -679,12 +691,6 @@ def _setup_logging(agent):
     # would starve the root file handlers. Noise reduction belongs in hermes_logging.
 
 
-def _bedrock_region_from_url(base_url) -> str:
-    """AWS region from a bedrock-runtime.<region>.amazonaws.com URL (default us-east-1)."""
-    m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-    return m.group(1) if m else "us-east-1"
-
-
 def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
     """Masked credential line. ``key`` may be a callable Entra ID bearer provider (Azure
     Foundry) — never invoke or inspect it. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
@@ -706,14 +712,10 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     agent._anthropic_base_url = base_url
     if agent.provider == "bedrock":
         # AnthropicBedrock SDK for full feature parity (prompt caching, thinking budgets).
-        from agent.anthropic_adapter import build_anthropic_bedrock_client
-        _br_region = agent._bedrock_region = _bedrock_region_from_url(base_url)
-        agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
-        agent._anthropic_api_key = "aws-sdk"
-        agent._is_anthropic_oauth = False
-        agent.api_key = "aws-sdk"
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, base_url, "anthropic_messages")
         if not agent.quiet_mode:
-            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+            print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {agent._bedrock_region})")
         return
     # ANTHROPIC_TOKEN fallback only for native Anthropic — other anthropic_messages providers
     # must use their own key or Anthropic credentials leak to third-party endpoints.
@@ -775,22 +777,8 @@ def _init_moa_client(agent, api_key):
 
 def _init_bedrock_client(agent, base_url):
     """bedrock_converse: boto3 directly, no OpenAI client."""
-    agent._bedrock_region = _bedrock_region_from_url(base_url)
-    # Guardrail config — read from config.yaml at init time.
-    agent._bedrock_guardrail_config = None
-    with suppress(Exception):
-        from hermes_cli.config import load_config_readonly as _load_br_cfg
-        _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
-        if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
-            agent._bedrock_guardrail_config = {
-                "guardrailIdentifier": _gr["guardrail_identifier"],
-                "guardrailVersion": _gr["guardrail_version"],
-            }
-            for _src, _dst in (("stream_processing_mode", "streamProcessingMode"), ("trace", "trace")):
-                if _gr.get(_src):
-                    agent._bedrock_guardrail_config[_dst] = _gr[_src]
-    agent.client = None
-    agent._client_kwargs = {}
+    from agent.bedrock_adapter import bind_bedrock_runtime
+    bind_bedrock_runtime(agent, base_url, "bedrock_converse")
     if not agent.quiet_mode:
         _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
         print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
@@ -840,6 +828,10 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
+        from hermes_cli.providers import is_actual_route, normalize_provider
+        effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
+        if is_actual_route(effective_provider):
+            agent.provider = normalize_provider(effective_provider)
         return _client_kwargs_from_routed(_routed_client, _provider_timeout)
     # No credentials: try the fallback chain BEFORE failing (an exhausted single-entry pool
     # must not die with a misleading "No LLM provider configured"); only explicitly named
@@ -924,6 +916,11 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
+    from hermes_cli.providers import is_actual_route
+    if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
+        agent.api_mode = "chat_completions"
+        if hasattr(agent, "_transport_cache"):
+            agent._transport_cache.clear()
     try:
         from agent.bedrock_adapter import configure_bedrock_openai_client_kwargs
         configure_bedrock_openai_client_kwargs(client_kwargs, timeout=_provider_timeout)
@@ -2113,7 +2110,8 @@ def _snapshot_primary_runtime(agent):
 
 def _init_usage_state(agent):
     from agent.runtime_cwd import scope_terminal_cwd
-    agent._subdirectory_hints = SubdirectoryHintTracker(working_dir=scope_terminal_cwd() or None)
+    agent._subdirectory_hints = SubdirectoryHintTracker(
+        working_dir=scope_terminal_cwd() or None, enabled=not agent.skip_context_files)
     _set_defaults(agent, _USAGE_STATE)
 
 
@@ -2241,6 +2239,10 @@ def init_agent(
     agent.skip_background_review = bool(skip_background_review)
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Effective base URL for feature detection (prompt caching, reasoning, etc.)
+    from hermes_cli.providers import is_actual_route
+    if is_actual_route(provider, base_url):
+        from hermes_cli.auth import normalize_actual_base_url
+        base_url = normalize_actual_base_url(base_url)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
     agent.provider = provider_name or ""

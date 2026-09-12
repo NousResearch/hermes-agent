@@ -27,7 +27,7 @@ import * as path from 'node:path'
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
 import { resolveElectronBinary } from './electron-binary'
-import { startMockServer, type MockServerOptions } from './mock-server'
+import { startMockServer, type MockServerOptions } from '../../../tests-js/scripts/mock-server'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -205,7 +205,7 @@ ${modelContextLength ? `  context_length: ${modelContextLength}\n` : ''}provider
     key_env: MOCK_API_KEY
     models:
       mock-model: {}
-    context_length: 4096
+    context_length: 64000
 ${autoTitleDefault}${approvalsDefault}${displaySection}${extraConfig ? `\n${extraConfig.trim()}\n` : ''}`
 
   fs.writeFileSync(configPath, config, 'utf8')
@@ -492,7 +492,7 @@ providers:
     key_env: MOCK_API_KEY
     models:
       mock-model: {}
-    context_length: 4096
+    context_length: 64000
 `,
     'utf8',
   )

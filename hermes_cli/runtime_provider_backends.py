@@ -131,6 +131,8 @@ def _resolve_openrouter_runtime(
     use_config_base_url = bool(cfg_base_url.strip()) and not explicit_base_url and (
         (requested_norm == "auto" and cfg_provider in ("", "auto"))
         or (requested_norm == "custom" and rp._config_base_url_trustworthy_for_bare_custom(cfg_base_url, cfg_provider))
+        # provider: openrouter + base_url in config.yaml is a deliberate mirror/proxy (#10622).
+        or (requested_norm == "openrouter" and cfg_provider == "openrouter")
     )
     base_url = ((explicit_base_url or "").strip() or env_custom_base_url or (cfg_base_url.strip() if use_config_base_url else "")
                 or env_openrouter_base_url or OPENROUTER_BASE_URL).rstrip("/")
@@ -138,11 +140,16 @@ def _resolve_openrouter_runtime(
     # prefer OPENROUTER_API_KEY (issue #289). When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
     # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated provider (issues #420, #560).
     is_openrouter_url = base_url_host_matches(base_url, "openrouter.ai")
-    # Explicitly-configured OpenRouter mirrors (OPENROUTER_BASE_URL + provider=openrouter) still
-    # count as OpenRouter for key selection.
+    # Explicitly-configured OpenRouter mirrors (OPENROUTER_BASE_URL, or a config.yaml base_url under
+    # provider: openrouter) still count as OpenRouter for key selection — otherwise the mirror's host
+    # fails the openrouter.ai match and the generic custom-endpoint branch never selects
+    # OPENROUTER_API_KEY for it (#10622).
     is_openrouter_context = is_openrouter_url or (
-        requested_norm == "openrouter" and (env_openrouter_base_url or base_url == env_openrouter_base_url)
-        and base_url == (env_openrouter_base_url or "").rstrip("/")
+        requested_norm == "openrouter" and (
+            (use_config_base_url and cfg_provider == "openrouter" and base_url == cfg_base_url.strip().rstrip("/"))
+            or ((env_openrouter_base_url or base_url == env_openrouter_base_url)
+                and base_url == (env_openrouter_base_url or "").rstrip("/"))
+        )
     )
     if is_openrouter_context:
         candidates = [explicit_api_key, rp._getenv("OPENROUTER_API_KEY"), rp._getenv("OPENAI_API_KEY")]
@@ -169,17 +176,6 @@ def _resolve_openrouter_runtime(
 # ── AWS Bedrock ────────────────────────────────────────────────────────────────────────────
 
 
-def _bedrock_guardrail_config(bedrock_cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    gr = bedrock_cfg.get("guardrail", {})
-    if not (gr.get("guardrail_identifier") and gr.get("guardrail_version")):
-        return None
-    config = {"guardrailIdentifier": gr["guardrail_identifier"], "guardrailVersion": gr["guardrail_version"]}
-    for src_key, dst_key in (("stream_processing_mode", "streamProcessingMode"), ("trace", "trace")):
-        if gr.get(src_key):
-            config[dst_key] = gr[src_key]
-    return config
-
-
 def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: Optional[str]) -> Dict[str, Any]:
     """AWS Bedrock with triple-path routing: OpenAI models → Bedrock Mantle's Responses endpoint;
     Claude → AnthropicBedrock SDK (prompt caching, thinking budgets); others → Converse API.
@@ -187,7 +183,7 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any],
     go through Converse regardless of model."""
     from agent.bedrock_adapter import (bedrock_openai_base_url, has_aws_credentials, is_anthropic_bedrock_model,
                                        is_openai_bedrock_model, resolve_aws_auth_env_var, resolve_bedrock_bearer_token,
-                                       resolve_bedrock_runtime_region)
+                                       resolve_bedrock_runtime_region, bedrock_guardrail_config)
     from hermes_cli.config import load_config  # direct (not the origin delegate), as before
     rp = _rp()
     # Explicitly selected bedrock trusts boto3's credential chain (IMDS, ECS/Lambda roles, SSO)
@@ -206,7 +202,7 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any],
     # Region priority (config.yaml bedrock.region → env → us-east-1) lives in the adapter.
     region = resolve_bedrock_runtime_region({"bedrock": bedrock_cfg})
     auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
-    guardrail_config = _bedrock_guardrail_config(bedrock_cfg)
+    guardrail_config = bedrock_guardrail_config({"bedrock": bedrock_cfg})
     current_model = str(target_model or model_cfg.get("default") or "").strip()
     has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
     runtime = rp._runtime("bedrock", "bedrock_converse", f"https://bedrock-runtime.{region}.amazonaws.com", "aws-sdk",

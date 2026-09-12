@@ -92,7 +92,13 @@ _UNCACHED = object()  # compute() result that must not be memoized
 
 
 def _memo(cache_name: str, compute):
-    """Return the cached value under module global ``cache_name``, computing (and storing) it once."""
+    """Return the cached value under module global ``cache_name``, computing (and storing) it once.
+
+    Not consulted under a routed profile (HERMES_HOME override): every memo here is derived from the
+    launch home (its skills tree, its checkout), and the TUI gateway calls these per profile."""
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is not None:
+        return compute()
     cached = globals()[cache_name]
     if cached is not None:
         return cached[0]
@@ -126,7 +132,12 @@ def get_available_skills() -> Dict[str, List[str]]:
 
 # === Update check ===
 
-_UPDATE_CHECK_CACHE_SECONDS = 6 * 3600  # avoid repeated git fetches
+# Passive checks hit GitHub at most once a day per install; a failed check retries after an hour
+# so a flaky line can't turn every startup into a request (nor stay wrong for a day).
+_UPDATE_CHECK_CACHE_SECONDS = 24 * 3600
+_UPDATE_CHECK_FAILURE_CACHE_SECONDS = 3600
+# Upstream tip seen by the most recent check; recorded in the cache file for the changelog.
+_last_target_rev: Optional[str] = None
 
 # Returned when an update is known to exist but commits can't be counted (e.g. nix builds).
 UPDATE_AVAILABLE_NO_COUNT = -1
@@ -197,10 +208,7 @@ def _git_ok(args: list[str], **kw) -> bool:
 
 
 def _git_count(args: list[str], *, cwd: Path) -> Optional[int]:
-    """``int`` of a successful ``git rev-list --count``-style command, else None.
-
-    Deliberately bypasses ``_git_stdout`` so tests can stub the two layers independently.
-    """
+    """``int`` of a successful ``git rev-list --count``-style command, else None."""
     result = _git_run(args, cwd=cwd)
     if result is not None and result.returncode == 0:
         return _quiet(lambda: int(result.stdout.strip()))
@@ -211,14 +219,21 @@ def _is_full_sha(value: Optional[str]) -> bool:
     return isinstance(value, str) and len(value) == 40 and all(c in "0123456789abcdefABCDEF" for c in value)
 
 
-def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
-    """Exact behind-count via the GitHub compare API for uncountable graphs.
+_compare_payload_cache: Dict[tuple, dict] = {}
 
-    Shallow installer clones and ls-remote-only probes know the two tip SHAs but have no local
-    history to run ``rev-list --count`` across.
+
+def _github_compare(current_rev: str, target_rev: str) -> Optional[dict]:
+    """Compare payload for ``current...target`` from the GitHub API; memoized per process.
+
+    Shallow installer clones and API-only probes know the two tip SHAs but have no local history
+    to run ``rev-list --count`` or ``git log`` across; the payload carries both the count
+    (``ahead_by``) and the commit list the dashboard/desktop render as "what's changed".
     """
     if not (_is_full_sha(current_rev) and _is_full_sha(target_rev)):
         return None
+    key = (current_rev, target_rev)
+    if key in _compare_payload_cache:
+        return _compare_payload_cache[key]
     url = f"https://api.github.com/repos/nousresearch/hermes-agent/compare/{current_rev}...{target_rev}"
 
     def _fetch():
@@ -229,8 +244,47 @@ def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
     payload = _quiet(_fetch)
-    ahead = payload.get("ahead_by") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    _compare_payload_cache[key] = payload
+    return payload
+
+
+def _github_compare_behind(current_rev: str, target_rev: str) -> Optional[int]:
+    """Exact behind-count via the GitHub compare API for uncountable graphs."""
+    payload = _github_compare(current_rev, target_rev)
+    ahead = payload.get("ahead_by") if payload else None
     return ahead if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0 else None
+
+
+def upstream_commits_behind(n: int = 20) -> List[Dict[str, Any]]:
+    """Commits between the last checked HEAD and upstream tip, newest first; [] when unknown.
+
+    Reads the tips recorded by ``check_for_updates`` so it costs no extra request when the
+    compare payload is already memoized for this process.
+    """
+    cached = _read_json(get_hermes_home() / ".update_check") or {}
+    head_rev, target_rev = cached.get("head"), cached.get("target")
+    if not head_rev or not target_rev or head_rev == target_rev:
+        return []
+    payload = _github_compare(head_rev, target_rev)
+    rows: List[Dict[str, Any]] = []
+    for entry in (payload or {}).get("commits", []) if isinstance(payload, dict) else []:
+        commit = entry.get("commit") or {}
+        when = ((commit.get("committer") or {}).get("date") or "")
+        try:
+            from datetime import datetime
+            at = int(datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp()) if when else 0
+        except ValueError:
+            at = 0
+        rows.append({
+            "sha": str(entry.get("sha", ""))[:7],
+            "summary": str(commit.get("message", "")).split("\n", 1)[0],
+            "author": str((commit.get("author") or {}).get("name", "")),
+            "at": at,
+        })
+    rows.reverse()  # compare returns oldest first
+    return rows[:n]
 
 
 def _tips_behind(head_rev: Optional[str], target_rev: Optional[str], repo_dir: Optional[Path] = None) -> Optional[int]:
@@ -250,8 +304,27 @@ def _tips_behind(head_rev: Optional[str], target_rev: Optional[str], repo_dir: O
     return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _github_branch_tip(repo_slug: str, branch: str) -> Optional[str]:
+    """Tip SHA of ``branch`` on GitHub via the REST API (40-byte body, no git, no auth)."""
+    from urllib.parse import quote
+
+    url = f"https://api.github.com/repos/{repo_slug}/commits/{quote(branch, safe='')}"
+
+    def _fetch():
+        import urllib.request
+        req = urllib.request.Request(
+            url, headers={"Accept": "application/vnd.github.sha", "User-Agent": "hermes-cli-update-check"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.read().decode("utf-8").strip()
+    sha = _quiet(_fetch)
+    return sha if _is_full_sha(sha) else None
+
+
 def _upstream_main_sha() -> Optional[str]:
-    """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
+    """Tip SHA of upstream main; API first, HTTPS ``ls-remote`` (no auth, no prompts) as fallback."""
+    sha = _github_branch_tip(_OFFICIAL_REPO_CANONICAL.removeprefix("github.com/"), "main")
+    if sha:
+        return sha
     result = _git_run(["ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"], timeout=10, network=True)
     if result is None or result.returncode != 0 or not result.stdout:
         return None
@@ -259,68 +332,40 @@ def _upstream_main_sha() -> Optional[str]:
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
-    """Compare an embedded git revision to upstream main via ls-remote (see ``_tips_behind``)."""
-    return _tips_behind(local_rev, _upstream_main_sha())
+    """Compare an embedded git revision to upstream main via the API (see ``_tips_behind``)."""
+    global _last_target_rev
+    _last_target_rev = _upstream_main_sha()
+    return _tips_behind(local_rev, _last_target_rev)
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
-    # Probe the origin URL under the same config-isolated env as the fetch below. A plain
-    # get-url applies a global url.<https>.insteadOf rewrite, so an SSH origin masquerades as
-    # HTTPS, the SSH-avoiding fast path is skipped — and the fetch, whose env drops global
-    # config (GIT_CONFIG_GLOBAL=/dev/null), dials the raw SSH origin; its host-key prompt opens
-    # /dev/tty directly and steals the CLI's keystrokes (#104591).
+    """Count commits behind origin/main in a local checkout.
+
+    Passive checks never run ``git fetch``: every CLI/TUI/gateway start used to negotiate a pack
+    with GitHub, and across the install base that was tens of millions of fetch requests a day
+    (GitHub asked us to poll the API instead). Two tip SHAs are enough — the remote one from the
+    API, the local one from ``rev-parse`` — and ``_tips_behind`` recovers the exact count through
+    the compare API when they differ. ``git fetch`` happens only inside ``hermes update``.
+    """
+    # Probe the origin URL under the config-isolated env: a global url.<https>.insteadOf rewrite
+    # otherwise makes an SSH origin masquerade as HTTPS (#104591).
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir, network=True)
-    if _is_official_ssh_remote(origin_url):
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        if not head_rev:
-            return None
-        # Passive probe via HTTPS ls-remote (never SSH — no hardware-key prompts). Tip SHAs alone
-        # can't distinguish "behind" from a local commit AHEAD of origin/main, and misreporting an
-        # ahead checkout nudges the user into `hermes update`, which can wipe carried work — hence
-        # the ancestor check, against the FRESH upstream SHA (a stale tracking ref can't fake an
-        # up-to-date report).
-        return _tips_behind(head_rev, _upstream_main_sha(), repo_dir)
-
-    # Installer checkouts are shallow (`git clone --depth 1`): a plain `git fetch` would unshallow
-    # the repo and `rev-list --count HEAD..origin/main` would report a bogus "12492 commits
-    # behind". Fetch with --depth 1 to preserve the boundary and compare tip SHAs instead. Full
-    # clones keep the exact count path. Mirrors apps/desktop/electron/main.cjs.
-    is_shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir) == "true"
-
-    def _fetch() -> bool:
-        # Self-heal abandoned git lock files first. A stale .git/shallow.lock from a crashed fetch
-        # makes every fetch fail silently and stale refs get compared against HEAD until a human
-        # removes the lock. This passive check is also the main tmp_pack GENERATOR on flaky lines,
-        # so it must be the janitor too (#93732).
-        from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
-        clear_stale_git_locks(repo_dir)
-        clear_stale_tmp_packs(repo_dir)
-
-        # Scope the fetch to the one branch compared against: an unscoped ``git fetch origin``
-        # transfers ~1,400 remote heads (3.0 s vs 0.55 s measured) and can burn the full timeout.
-        # A scoped fetch still updates ``origin/main`` and FETCH_HEAD; ``--depth 1`` preserves
-        # the shallow boundary.
-        fetch_args = ["fetch", "origin", "main", *(["--depth", "1"] if is_shallow else []), "--quiet"]
-        return _git_ok(fetch_args, cwd=repo_dir, timeout=10, network=True)
-
-    fetch_ok = _quiet(_fetch, False)  # Offline or timeout — don't use stale refs
-    # When the fetch fails the local origin/main ref is stale: it cannot prove *currentness*, but
-    # if it already shows HEAD behind, that is sound evidence an update exists. Return the positive
-    # stale count; None (inconclusive) otherwise so the caller doesn't cache a false "up to date".
-    if is_shallow:
-        # (#82166, review #92578)
-        if not fetch_ok:
-            return None
-        # No history across the shallow boundary. `origin/main` may not be a tracking ref in a
-        # `clone --depth 1`, so prefer FETCH_HEAD (just updated) and fall back to origin/main.
-        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        target_rev = (
-            _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
-            or _git_stdout(["rev-parse", "origin/main"], cwd=repo_dir))
-        return _tips_behind(head_rev, target_rev)
-    behind = _git_count(["rev-list", "--count", "HEAD..origin/main"], cwd=repo_dir)
-    return behind if fetch_ok or (behind is not None and behind > 0) else None
+    head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+    if not head_rev:
+        return None
+    canonical = _canonical_github_remote(origin_url)
+    if canonical.startswith("github.com/"):
+        target_rev = _github_branch_tip(canonical.removeprefix("github.com/"), "main")
+    else:
+        # Non-GitHub origin: one ls-remote for the tip (ref advertisement only, no pack transfer).
+        result = _git_run(["ls-remote", "origin", "refs/heads/main"], cwd=repo_dir, timeout=10, network=True)
+        target_rev = result.stdout.split()[0] if result is not None and result.returncode == 0 and result.stdout else None
+    global _last_target_rev
+    _last_target_rev = target_rev
+    # Tip SHAs alone can't distinguish "behind" from a local commit AHEAD of origin/main, and
+    # misreporting an ahead checkout nudges the user into `hermes update`, which can wipe carried
+    # work — hence the ancestor check inside _tips_behind, against the FRESH upstream SHA.
+    return _tips_behind(head_rev, target_rev, repo_dir)
 
 
 def _read_json(path: Path) -> Optional[dict]:
@@ -332,8 +377,8 @@ def _read_json(path: Path) -> Optional[dict]:
 def check_for_updates(*, passive: bool = False) -> Optional[int]:
     """Check whether a Hermes update is available.
 
-    If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main via
-    ``git ls-remote``; otherwise count commits behind ``origin/main`` in the local checkout.
+    If ``HERMES_REVISION`` is set (nix builds embed it), compare it to upstream main; otherwise
+    compare the local checkout's HEAD. Both go through the GitHub API, never ``git fetch``.
     """
     def _read_config_opt_out():
         from hermes_cli.config import load_config
@@ -354,22 +399,26 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     if _quiet(_install_method) in {"docker", "apt"}:
         return None
     # Cache is invalidated when the embedded rev OR installed version changed since the last check.
+    # For a git checkout the local HEAD is part of the key too: `hermes update` moves HEAD, and a
+    # stale "3 behind" must not survive the update it just prompted.
     now = time.time()
+    repo_dir = None if embedded_rev else _resolve_repo_dir()
+    head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
     cached = _read_json(cache_file)
-    if (cached is not None and now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
-            and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION):
-        return cached.get("behind")
+    if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
+            and cached.get("head") == head_rev:
+        ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS
+        if now - cached.get("ts", 0) < ttl:
+            return cached.get("behind")
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
         # No checkout and no embedded revision — status can't be determined.
-        repo_dir = _resolve_repo_dir()
         behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
-    # Don't cache inconclusive results: None means the check could not run (typically a failed
-    # fetch), and caching it would suppress retries for the full 6-hour window (#82166).
-    if behind is not None:
-        _quiet(lambda: cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}), encoding="utf-8"))
+    _quiet(lambda: cache_file.write_text(
+        json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION,
+                    "head": head_rev or embedded_rev, "target": _last_target_rev}),
+        encoding="utf-8"))
     return behind
 
 
@@ -755,6 +804,16 @@ def _active_profile_name() -> Optional[str]:
     return get_active_profile_name()
 
 
+def _route_model_for_banner(provider: Any) -> str:
+    """The model the resolved route will actually serve when config names none: today only the Nous
+    free tier (welcome host -> ``nous/welcome``). Read from the boot record and local auth state;
+    no network. Empty when nothing resolves, so the caller keeps its "no model configured" line."""
+    if (provider or "auto").strip().lower() not in ("auto", "nous"):
+        return ""
+    from hermes_cli.anon_auth import GUEST_MODEL, guest_carries_inference
+    return GUEST_MODEL if guest_carries_inference() else ""
+
+
 def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str) -> list:
     """Model / cwd / session lines under the hero art."""
     def _dim_sep(label: str) -> str:
@@ -762,6 +821,10 @@ def _banner_left_lines(model: str, cwd: str, session_id, context_length, provide
     lines = []
     ctx_str = _dim_sep(f"{_format_context_length(context_length)} context") if context_length else ""
     nous_str = _dim_sep("Nous Research")
+    if not (model or "").strip():
+        # Credentials resolve lazily on the first message; the banner prints first. Ask the route
+        # the same question so a fresh free-tier install shows its model, not a red "unconfigured".
+        model = _quiet(lambda: _route_model_for_banner(provider), "") or model
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name; show it with its aggregator.
         agg_label = _quiet(lambda: _moa_aggregator_label(model), "")
@@ -901,7 +964,7 @@ def build_welcome_banner(
             right_lines.append(_format_update_notice(behind))
     _quiet(_update_line)  # Never break the banner over an update check
     layout_table = Table.grid(padding=(0, 2))
-    layout_table.add_column("left", justify="center")
+    layout_table.add_column("left", justify="left")
     layout_table.add_column("right", justify="left")
     layout_table.add_row("\n".join(left_lines), "\n".join(right_lines))
     version_label = format_banner_version_label()

@@ -160,6 +160,19 @@ class TestCodexVocabulary:
         assert clamp_effort("ultra", CODEX_LEGACY_EFFORTS) == "xhigh"
         assert clamp_effort("minimal", CODEX_LEGACY_EFFORTS) == "low"
 
+    @pytest.mark.parametrize(
+        "model",
+        ["gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"],
+    )
+    def test_daybreak_alias_uses_gpt56_max_support(self, model):
+        """Daybreak Blue is a GPT-5.6 Sol alias, so its base and 900k picker
+        slugs must preserve Sol's max reasoning level."""
+        from agent.reasoning_effort import codex_supported_efforts
+
+        supported = codex_supported_efforts(model)
+        assert clamp_effort("max", supported) == "max"
+        assert clamp_effort("ultra", supported) == "max"
+
 
 class TestRequestedEffort:
     def test_extracts_effort(self):

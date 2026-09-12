@@ -20,7 +20,7 @@ class TestFindMigrationScript:
 
     def test_finds_project_root_script(self, tmp_path):
         script = tmp_path / "openclaw_to_hermes.py"
-        script.write_text("# placeholder")
+        script.write_text("# placeholder", encoding="utf-8")
         with patch.object(claw_mod, "_OPENCLAW_SCRIPT", script):
             assert claw_mod._find_migration_script() == script
 
@@ -61,7 +61,7 @@ class TestScanWorkspaceState:
     """Test scanning for workspace state files."""
 
     def test_finds_root_state_files(self, tmp_path):
-        (tmp_path / "todo.json").write_text("{}")
+        (tmp_path / "todo.json").write_text("{}", encoding="utf-8")
         (tmp_path / "sessions").mkdir()
         findings = claw_mod._scan_workspace_state(tmp_path)
         descs = [desc for _, desc in findings]
@@ -74,7 +74,7 @@ class TestScanWorkspaceState:
         scan_dir.mkdir()
         hidden = scan_dir / ".git"
         hidden.mkdir()
-        (hidden / "todo.json").write_text("{}")
+        (hidden / "todo.json").write_text("{}", encoding="utf-8")
         findings = claw_mod._scan_workspace_state(scan_dir)
         assert len(findings) == 0
 
@@ -90,13 +90,13 @@ class TestArchiveDirectory:
     def test_renames_to_pre_migration(self, tmp_path):
         source = tmp_path / ".openclaw"
         source.mkdir()
-        (source / "test.txt").write_text("data")
+        (source / "test.txt").write_text("data", encoding="utf-8")
 
         archive_path = claw_mod._archive_directory(source)
         assert archive_path == tmp_path / ".openclaw.pre-migration"
         assert archive_path.is_dir()
         assert not source.exists()
-        assert (archive_path / "test.txt").read_text() == "data"
+        assert (archive_path / "test.txt").read_text(encoding="utf-8") == "data"
 
     def test_adds_timestamp_when_archive_exists(self, tmp_path):
         source = tmp_path / ".openclaw"
@@ -167,7 +167,7 @@ class TestCmdMigrate:
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("")
+        config_path.write_text("", encoding="utf-8")
 
         args = Namespace(
             source=str(openclaw_dir),
@@ -286,7 +286,7 @@ class TestCmdCleanup:
         openclaw.mkdir()
         ws = openclaw / "workspace"
         ws.mkdir()
-        (ws / "todo.json").write_text("{}")
+        (ws / "todo.json").write_text("{}", encoding="utf-8")
 
         args = Namespace(source=None, dry_run=True, yes=False)
         with patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]):
@@ -300,7 +300,7 @@ class TestCmdCleanup:
     def test_explicit_source(self, tmp_path, capsys):
         custom_dir = tmp_path / "my-openclaw"
         custom_dir.mkdir()
-        (custom_dir / "todo.json").write_text("{}")
+        (custom_dir / "todo.json").write_text("{}", encoding="utf-8")
 
         args = Namespace(source=str(custom_dir), dry_run=False, yes=True)
         claw_mod._cmd_cleanup(args)
@@ -350,17 +350,51 @@ class TestPrintMigrationReport:
 
 
 class TestDetectOpenclawProcesses:
-    def test_returns_match_when_pgrep_finds_openclaw(self):
+    def test_reports_union_of_exact_and_node_matches(self):
         with patch.object(claw_mod, "subprocess") as mock_subprocess:
-            # systemd check misses, pgrep finds openclaw
             mock_subprocess.run.side_effect = [
                 MagicMock(returncode=1, stdout=""),  # systemctl
-                MagicMock(returncode=0, stdout="1234\n"),  # pgrep
+                MagicMock(returncode=0, stdout="1234\n"),  # pgrep -x openclaw
+                MagicMock(returncode=1, stdout=""),  # pgrep -x openclaw-gatewa
+                MagicMock(returncode=1, stdout=""),  # pgrep -x clawd
+                MagicMock(returncode=0, stdout="1234\n5678\n"),  # node cmdline probe
             ]
             mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
             result = claw_mod._detect_openclaw_processes()
+        assert result == ["openclaw process(es) (PIDs: 1234, 5678)"]
+
+    @pytest.mark.linux_only
+    def test_live_pgrep_ignores_argv_mentions_but_finds_node_openclaw(self, tmp_path):
+        """A process that merely mentions "openclaw" in argv (the #12648 false positive) is not
+        OpenClaw; a node interpreter running an openclaw script is."""
+        import sys
+        import time
+
+        idle = f'{sys.executable} -c "import time; time.sleep(30)"'
+        # argv mentions openclaw but the binary is not one.
+        bystander = subprocess.Popen(["bash", "-c", f"exec {idle} {tmp_path}/openclaw-notes.txt"])
+        # argv[0] renamed to ``node`` running an openclaw script: the real launch shape.
+        node_like = subprocess.Popen(["bash", "-c", f"exec -a node {idle} {tmp_path}/openclaw/entry.js"])
+        # The gateway sets process.title="openclaw-gateway" (comm truncates to 15 chars); a
+        # copied interpreter with that file name yields the same comm.
+        import shutil
+        titled_bin = tmp_path / "openclaw-gateway"
+        shutil.copy2(sys.executable, titled_bin)
+        titled = subprocess.Popen([str(titled_bin), "-c", "import time; time.sleep(30)"])
+        try:
+            time.sleep(0.3)
+            with patch.object(claw_mod, "_posix_probe", wraps=claw_mod._posix_probe) as probe:
+                result = claw_mod._detect_openclaw_processes()
+            assert not any(a[0][:2] == ["pgrep", "-f"] and a[0][2] == "openclaw" for a, _ in probe.call_args_list)
             assert len(result) == 1
-            assert "1234" in result[0]
+            pids = result[0].split("PIDs: ")[1].rstrip(")").split(", ")
+            assert str(node_like.pid) in pids
+            assert str(titled.pid) in pids
+            assert str(bystander.pid) not in pids
+        finally:
+            for proc in (bystander, node_like, titled):
+                proc.kill()
+                proc.wait()
 
 
     @pytest.mark.windows_only

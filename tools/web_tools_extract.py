@@ -12,7 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
-from tools.url_safety import normalize_url_for_request, sensitive_query_param_name
+from tools.url_safety import normalize_url_for_request
 from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
 
 logger = logging.getLogger("tools.web_tools")
@@ -102,13 +102,6 @@ def _validate_extract_urls(urls: List[Any]):
             return _refuse_all(
                 "Blocked: URL contains what appears to be an API key or token. "
                 "Secrets must not be sent in URLs."
-            )
-        if sensitive_query_key := sensitive_query_param_name(normalized_url):
-            return _refuse_all(
-                "Blocked: URL contains a credential-like query parameter "
-                f"({sensitive_query_key}). Web extract backends are third-party "
-                "readers; remove the sensitive query parameter or use a local "
-                "browser session when this access is explicitly required."
             )
         normalized_urls.append(normalized_url)
         normalized_indices.append(index)

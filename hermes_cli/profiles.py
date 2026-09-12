@@ -22,7 +22,6 @@ from hermes_constants import clear_named_profile_deleted, mark_named_profile_del
 logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials
@@ -52,8 +51,12 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # (+wal/shm, can reach many GB), session dirs, `hermes backup` archives, quick-backup
 # snapshots, checkpoints. Inheriting them is never useful (restoring one inside the
 # clone would resurrect the SOURCE profile's state) and can balloon the copy by tens of GB.
+# ``cron`` is scheduled work bound to the source profile and its origin channel: a clone
+# that inherits jobs.json runs every job twice (two gateways, same job ids, double spend,
+# duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
+    "cron",
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -700,38 +703,19 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool, profile_allowlist: Optional[List[str]] = None) -> List[Tuple[str, Path]]:
+def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
-    ``multiplex=True``: default plus every live named profile, optionally filtered by
-    *profile_allowlist* (invalid entries skipped, missing ones warned once)."""
+    ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
+    profiles skipped). Pure directory read: never creates a profile dir (#94590)."""
     active = get_active_profile_name() or "default"
     if not multiplex:
         return [(active, get_profile_dir(active))]
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-    allowed: Optional[set[str]] = None
-    if profile_allowlist is not None:
-        allowed = set()
-        for entry in profile_allowlist:
-            if not isinstance(entry, str):
-                continue
-            try:
-                name = _canon_valid(entry)
-            except ValueError:
-                continue
-            if name != "default":
-                allowed.add(name)
-    for entry in _iter_named_profile_dirs():
-        if allowed is None or entry.name in allowed:
-            serve.append((entry.name, entry))
-    if allowed is not None:
-        missing = tuple(sorted(allowed - {name for name, _ in serve}))
-        if missing and missing not in _WARNED_MISSING_ALLOWLIST_ENTRIES:
-            _WARNED_MISSING_ALLOWLIST_ENTRIES.add(missing)
-            logger.warning("Skipping missing gateway.multiplex_profile_allowlist profile(s): %s", ", ".join(missing))
+    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs())
     return serve
 
 
@@ -776,6 +760,9 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
+    # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
+    for subdir in _PROFILE_DIRS:
+        (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
     for stale in _CLONE_ALL_STRIP:
         (profile_dir / stale).unlink(missing_ok=True)
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
@@ -881,7 +868,15 @@ def create_profile(
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
     # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
     _maybe_register_gateway_service(canon)
+    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
+    # rescans periodically, so a missed signal only delays serving).
+    _notify_multiplexer(canon)
     return profile_dir
+
+
+def _notify_multiplexer(canon: str) -> None:
+    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    notify_multiplexer_profiles_changed(canon)
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
@@ -1166,6 +1161,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
+    # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
+    # into the directory before we remove it.
+    _notify_multiplexer(canon)
 
     # Release this process's holographic memory-store connections into the profile. The
     # Desktop's main serve process opens memory_store.db for every profile and is
@@ -1177,6 +1175,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         _released = _MemoryStore.release_all_under(profile_dir)
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
+    with contextlib.suppress(Exception):
+        from hermes_state_registry import close_all_under as _close_session_dbs_under
+        _closed = _close_session_dbs_under(profile_dir)
+        if _closed:
+            print(f"✓ Released {_closed} session database connection(s) held by this process")
 
     # 3. Remove wrapper script
     if has_wrapper and remove_wrapper_script(canon):

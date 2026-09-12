@@ -51,6 +51,21 @@ def test_result_auth_reasons_map_to_auth_layer():
     assert surface["retryable"] is False
 
 
+def test_auth_surface_names_oauth_vs_api_key_recovery():
+    """The desktop's one-click fix differs by credential kind: an OAuth provider
+    (Accounts tab) needs a re-login, an API-key provider a new key. The descriptor
+    carries the kind + display label so the client never guesses from the slug."""
+    oauth = build_error_surface_from_result(_failed_result("auth"), provider="nous")
+    assert oauth["auth_kind"] == "oauth"
+    assert oauth["provider_label"] == "Nous Portal"
+
+    key = build_error_surface_from_result(_failed_result("auth"), provider="openrouter")
+    assert key["auth_kind"] == "api_key"
+
+    # Non-auth layers never carry the field (clients gate the button on it).
+    assert "auth_kind" not in build_error_surface_from_result(_failed_result("rate_limit"), provider="nous")
+
+
 def test_result_billing_block_wins():
     surface = build_error_surface_from_result(
         _failed_result("rate_limit", billing_block={"provider": "nous"})

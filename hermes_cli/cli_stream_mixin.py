@@ -250,6 +250,25 @@ class CLIStreamMixin:
             _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
             self._reasoning_buf = ""
 
+    def _agent_status_print(self, *args, **kwargs) -> None:
+        """``agent._print_fn`` for the interactive CLI: agent status lines (subagent completion ``✓ [set n · i/N]``,
+        background-process notices, spinner ``print_above`` text) arrive from other threads at any moment. While
+        a response or reasoning box is being streamed they are HELD and released at the box footer, so a line
+        never lands between two paragraphs of the reply. Outside a box they print immediately."""
+        from cli import _cprint
+        text = kwargs.get("sep", " ").join(str(a) for a in args)
+        if getattr(self, "_stream_box_live", False) or getattr(self, "_reasoning_box_opened", False):
+            self._held_status_lines = getattr(self, "_held_status_lines", []) + [text]
+            return
+        _cprint(text)
+
+    def _release_held_status_lines(self) -> None:
+        """Print status lines held while a box was open (called right after a box footer)."""
+        from cli import _cprint
+        held, self._held_status_lines = getattr(self, "_held_status_lines", []), []
+        for line in held:
+            _cprint(line)
+
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open, then flush deferred content."""
         from cli import _DIM, _RST, _cprint
@@ -262,6 +281,8 @@ class CLIStreamMixin:
         w = self._scrollback_box_width()
         _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
         self._reasoning_box_opened = False
+        if not getattr(self, "_stream_box_live", False):
+            self._release_held_status_lines()
         deferred = getattr(self, "_deferred_content", "")
         if deferred:
             self._deferred_content = ""
@@ -398,13 +419,14 @@ class CLIStreamMixin:
             if not text:
                 return
             self._stream_box_opened = True
+            self._stream_box_live = True  # header drawn; cleared at the footer
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "⚕ Hermes")
+                label = _skin.get_branding("response_label", "☤ Hermes")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
-                label = "⚕ Hermes"
+                label = "☤ Hermes"
                 _text_hex = "#FFF8DC"
             try:  # true-color escape so streamed text matches the Rich Panel appearance
                 _r, _g, _b = (int(_text_hex[i:i + 2], 16) for i in (1, 3, 5))
@@ -478,9 +500,11 @@ class CLIStreamMixin:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
             self._emit_stream_line(line)
             self._stream_buf = ""
-        if self._stream_box_opened:
+        if self._stream_box_opened and getattr(self, "_stream_box_live", False):
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+        self._stream_box_live = False
+        self._release_held_status_lines()
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -495,8 +519,11 @@ class CLIStreamMixin:
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
+        # A batch cancelled/errored before any tool.started would otherwise mute the next turn's line.
+        self.__dict__.pop("_tool_gen_announced", None)
         self._stream_table_buf = []
         self._in_stream_table = False
+        self._stream_box_live = False
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -596,12 +623,20 @@ class CLIStreamMixin:
 
     def _on_tool_gen_start(self, tool_name: str) -> None:
         """Model began generating tool-call arguments: close open boxes once, then print a status
-        line so a large payload (e.g. 45 KB write_file) doesn't look like a frozen screen."""
+        line so a large payload (e.g. 45 KB write_file) doesn't look like a frozen screen.
+
+        Fires once per tool CALL, so a batch of parallel calls to the same tool printed the same
+        line N times (#10478); repeats within one generation batch are coalesced. The set is
+        cleared when a tool actually starts (``tool.started``), i.e. on the next batch."""
         from cli import _cprint
-        if getattr(self, "_stream_box_opened", False):
+        if getattr(self, '_stream_box_opened', False):
             self._flush_stream()
             self._stream_box_opened = False
         self._close_reasoning_box()
+        announced = self.__dict__.setdefault("_tool_gen_announced", set())
+        if tool_name in announced:
+            return
+        announced.add(tool_name)
         from agent.display import get_tool_emoji
         _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {tool_name}…")
 
@@ -653,6 +688,7 @@ class CLIStreamMixin:
         # Feed the pet: tools mean "running"; a failed tool latches the turn to end on a sulk.
         if event_type == "tool.started":
             self._pet_reasoning = False
+            self.__dict__.pop("_tool_gen_announced", None)
         elif event_type == "tool.completed" and kwargs.get("is_error"):
             self._pet_turn_error = True
         elif event_type and event_type.startswith("reasoning"):

@@ -1,8 +1,37 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import type { Translations } from './types'
+import { defineLocale } from './define-locale'
 
-export const zh: Translations = {
+export const zh = defineLocale({
+  connectors: {
+    title: '连接你的应用',
+    connect: '连接',
+    skip: '暂不连接',
+    cancel: '停止等待',
+    retry: '重试',
+    grant: '重新连接',
+    connected: '已连接',
+    skipped: '已跳过',
+    disabled: '不可用',
+    failed: '连接失败',
+    needsAuth: '授权已过期',
+    opening: '正在打开登录…',
+    waiting: '请在浏览器中完成连接…',
+    timeout: '仍在等待授权。',
+    keepWaiting: '继续等待',
+    refresh: '刷新状态',
+    statusError: '无法检查连接，请刷新重试。',
+    connectError: '无法开始授权，请重试。',
+    unavailable: '此会话暂时无法使用连接器。',
+    ownerMissing: '请重新打开此对话以管理连接。',
+    search: '查找应用',
+    empty: '没有匹配的应用',
+    disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
+    connectTitle: app => `连接 ${app}？`,
+    describe: app => `Hermes 会在浏览器中登录 ${app}，读取任何内容前都会先询问。`,
+    execution: '连接器工具'
+  },
+
   sessionImport: {
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',
@@ -210,7 +239,11 @@ export const zh: Translations = {
       transcriptionFailed: '语音转写失败',
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
-      unavailable: '语音不可用'
+      unavailable: '语音不可用',
+      liveEnded: '实时语音会话已结束',
+      liveError: '实时语音',
+      liveDelegationFailed: '无法将请求交给 Hermes',
+      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
     },
     native: {
       approvalTitle: '需要批准',
@@ -426,7 +459,79 @@ export const zh: Translations = {
       about: '关于',
       billing: '账单',
       notifications: '通知',
-      plugins: '插件'
+      vault: '密码与登录'
+    },
+    vault: {
+      title: '密码与登录',
+      blurb:
+        '说一句“登录 GitHub”，智能体就会代你登录。第一次遇到登录页时它会当场向你要登录信息，之后就自动完成。密码在本机加密保存并直接填入页面——模型永远看不到。',
+      count: n => `已保存 ${n} 项`,
+      loadFailed: '无法加载保险库条目',
+      empty: '尚未保存任何内容',
+      emptyDesc: '这里不必手动添加。让智能体登录某个网站时，它会当场向你询问一次登录信息。若想提前录入，可点“添加”。',
+      add: '添加',
+      addTitle: '添加登录信息、银行卡或地址',
+      addDescription: '加密保存在本机。代理永远不会看到密码。',
+      added: '已保存。',
+      adding: '保存中…',
+      addConfirm: '保存',
+      kindField: '类型',
+      kinds: { login: '登录', payment: '支付卡', address: '地址' },
+      labelField: '标签',
+      labelPlaceholder: '例如：GitHub 工作账号',
+      labelRequired: '标签为必填项。',
+      originField: '站点来源',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
+      originInvalid: '请输入有效的 URL，例如 https://example.com。',
+      identifierTypeField: '标识符类型',
+      identifierTypes: { email: '邮箱', phone: '电话', username: '用户名' },
+      identifierField: '标识符',
+      identifierShown: identifier => identifier,
+      passwordField: '密码',
+      loginFieldsRequired: '标识符和密码为必填项。',
+      cardNumberField: '卡号',
+      cardNameField: '持卡人姓名',
+      expMonthField: '到期月份',
+      expYearField: '到期年份',
+      cvcField: 'CVC',
+      postalField: '邮政编码',
+      addressLine1Field: '地址第 1 行',
+      addressLine2Field: '地址第 2 行',
+      cityField: '城市',
+      stateField: '省 / 州',
+      countryField: '国家/地区',
+      optional: '（可选）',
+      createdOn: date => `添加于 ${date}`,
+      deleteAction: '移除已保存项',
+      otpField: '验证器密钥',
+      otpPlaceholder: 'Base32 密钥或 otpauth:// 链接',
+      otpHint: '启用两步验证时网站显示的“设置密钥”。保存后 Hermes 会自动生成验证码。',
+      twoFactorBadge: '自动 2FA',
+      deleteTitle: '删除此项？',
+      deleteDescription: label => `“${label}”将从加密保险库中移除。此操作无法撤销。`,
+      deleteConfirm: '删除',
+      sources: {
+        title: '密码管理器',
+        blurb:
+          '已安装的密码管理器会被自动识别。智能体第一次需要其中的登录信息时会请你解锁（每个会话一次）；内存中只保留会话令牌，智能体永远看不到你的主密码或任何登录信息。',
+        toggleFailed: '无法更新密码管理器',
+        notInstalled: name => `未检测到。安装 ${name} 命令行工具并登录后，Hermes 会自动识别。`,
+        disabledDesc: '已检测到，但已为 Hermes 关闭。',
+        lockedDesc: '已检测到。智能体需要登录信息时会请你解锁，也可立即解锁。',
+        unlockedDesc: '本会话已解锁。闲置 30 分钟或关闭 Hermes 后会自动锁定。',
+        statusLocked: '已锁定',
+        statusNotDetected: '未检测到',
+        statusOff: '已关闭',
+        statusUnlocked: '已解锁',
+        unlock: '解锁',
+        unlocking: '解锁中…',
+        lock: '锁定',
+        unlocked: name => `${name} 已在本会话中解锁。`,
+        unlockTitle: name => `解锁 ${name}`,
+        unlockDescription: '输入主密码。它会交给本机的密码管理器后立即丢弃，不会被存储、记录或展示给智能体。',
+        masterPasswordPlaceholder: '主密码'
+      }
     },
     plugins: {
       title: '桌面插件',
@@ -441,20 +546,9 @@ export const zh: Translations = {
       failed: '失败',
       empty: '尚未安装桌面插件。',
       kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
-      agent: {
-        title: '智能体插件',
-        blurb:
-          '你安装到 Hermes 后端的插件——工具、技能、MCP 服务器、钩子和斜杠命令。「便携」插件是 Agent Plugins 标准包（技能 + MCP 组合，也可在其他智能体中使用）。开关在新会话中生效。',
-        appliesTo: '应用于：',
-        empty: '尚未安装智能体插件。',
-        loadFailed: '无法加载智能体插件',
-        portable: '便携',
-        search: '搜索插件…',
-        noMatches: '没有匹配的插件。',
-        toggleFailed: (name: string) => `无法切换 ${name}`,
-        updateBackendToManage: '请更新 Hermes 后端以便在桌面端管理此插件。',
-        sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
-      },
+      agentHalfMissing: '此处缺少 agent 部分',
+      agentHalfMissingTip:
+        '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
       installModal: {
         installFromGit: '从 Git 安装',
         reviewRepository: '检查仓库',
@@ -465,9 +559,18 @@ export const zh: Translations = {
         includesHeading: '此包包含',
         agentLabel: '智能体插件',
         desktopLabel: '桌面 UI',
-        agentTargetLocal: profile => `安装到 ${profile} 后端（~/.hermes/plugins/）`,
+        agentTargetLocal: (profile, dir) => `安装到 ${profile} 后端（${dir}）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
+        catalogPinned: (name, sha) =>
+          `Hermes 目录条目「${name}」— agent 部分将安装在经过审核的固定提交${sha ? ` ${sha}` : ''}，而不是分支最新代码。`,
+        reviewedHeading: '经过审核的目录条目',
+        reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
+        restartToApply: '重启网关后插件才会生效。',
+        restartNow: '重启网关',
+        missingEnvAction: '去设置',
+        alreadyInstalled: (name: string) => `${name} 已安装。`,
         desktopTarget: '安装到此应用的本地 desktop-plugins 文件夹',
+        desktopTargetFromPackage: '从上方的包加载到本应用 — 所有配置相同',
         desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
         insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
         securityHeading: '安装前须知',
@@ -478,6 +581,11 @@ export const zh: Translations = {
         gitCloneLabel: 'Git 克隆地址',
         enableAgent: '安装后启用智能体插件',
         forceReinstall: '强制重装（替换已存在的安装）',
+        pinToCommit: '固定到提交（可选）',
+        pinToCommitPlaceholder: '完整的 40 位提交 SHA',
+        pinToCommitHint:
+          '安装同一 SHA 的所有人都会得到相同的代码；固定后插件将拒绝更新，直到重新固定。留空则安装最新提交。',
+        pinToCommitInvalid: '必须是完整的 40 位提交 SHA（不接受分支和标签）。',
         install: '安装',
         installing: '正在安装…',
         probing: '正在检查仓库…',
@@ -581,6 +689,10 @@ export const zh: Translations = {
       tabStripAuto: '自动',
       tabStripAlways: '始终',
       tabStripNever: '从不',
+      appActionsTitle: '应用操作',
+      appActionsDesc: '设置、布局和 HUD 放在标题栏左侧还是右侧。选右侧可给标签留出左边空间。',
+      appActionsLeft: '左侧',
+      appActionsRight: '右侧',
       terminalFontTitle: '终端字体',
       terminalFontDesc:
         '选择已安装的字体用于桌面端终端。Nerd Font 可正确显示 Powerlevel10k 和 Shell 图标；留空则使用内置的 JetBrains Mono。',
@@ -615,10 +727,10 @@ export const zh: Translations = {
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       tipsTitle: '应用内提示',
-      tipsDesc: '指向应用某处的小气泡：空闲时偶尔出现，需要时 Hermes 也会给你一条。关掉一条就不再出现。',
-      tipsReset: (count: number) => `恢复 ${count} 条已关闭的提示`,
+      tipsDesc: '偶尔显示来自应用和 Hermes 的提示，每条提示只出现一次。开始使用满30天后自动关闭，你可以重新开启。',
+      tipsReset: (count: number) => `再次显示 ${count} 条提示`,
       toursTitle: '引导导览',
-      toursDesc: '让 Hermes 带你熟悉应用：调暗界面并逐步高亮每个位置。',
+      toursDesc: '让 Hermes 逐步高亮每个位置，带你熟悉应用。开始使用满30天后自动关闭，你可以重新开启。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
       vibeHeartsTitle: '心情爱心',
@@ -750,7 +862,12 @@ export const zh: Translations = {
       voice: {
         recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
-        autoTts: '朗读回复'
+        autoTts: '朗读回复',
+        voiceChatMode: '语音聊天模式',
+        gptLive: {
+          voice: 'GPT-Live 音色',
+          instructions: 'GPT-Live 人设'
+        }
       },
       stt: {
         enabled: '语音转文字',
@@ -897,7 +1014,13 @@ export const zh: Translations = {
         enabled: '当对话变大时对较早的上下文进行摘要。'
       },
       voice: {
-        autoTts: '自动朗读助手回复。'
+        autoTts: '自动朗读助手回复。',
+        voiceChatMode:
+          'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工的 OpenAI 语音模型（gpt-live-1）负责听和说，并把每个实际请求交给 Hermes——由你选择的任意模型带着完整工具集作答。需要 OpenAI API 密钥；语音层按每分钟 $0.05 计费。',
+        gptLive: {
+          voice: 'GPT-Live 模式使用的音色，可填写自定义音色 ID。',
+          instructions: '附加到实时语音人设的句子（语气、语速、语言）。Hermes 保留自己的系统提示词。'
+        }
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',
@@ -1117,6 +1240,10 @@ export const zh: Translations = {
       },
       cloudRefresh: '刷新',
       cloudConnect: '连接',
+      cloudSavedTitle: '已保存的云网关',
+      cloudSavedDesc: '使用已保存的网关，不更改默认网关。在下方登录以添加实例。在已保存的连接列表中管理名称和登录。',
+      cloudUseSaved: '使用网关',
+      cloudActive: '当前窗口正在使用',
       cloudConnecting: '正在连接…',
       cloudDiscoverFailed: '无法加载你的 Hermes Cloud 智能体',
       cloudConnectFailed: '无法连接到该智能体',
@@ -1372,7 +1499,7 @@ export const zh: Translations = {
         `一键完成所有设置：本地引擎、${model}（需下载 ${size}），并设为新会话的默认模型。数据不会离开这台电脑。`,
       quickstartDetailReady: model => `一键将 ${model} 设为新会话的默认模型。所有内容都在本机运行。`,
       quickstartAction: '为我设置',
-      quickstartConfigure: '自定义…',
+      quickstartConfigure: '让我选择',
       quickstartDoneToast: model => `${model} 已就绪——新会话将在本机运行。`,
       quickstartFailed: '本地模型设置失败',
       quickstartStageEngine: '引擎',
@@ -1388,9 +1515,12 @@ export const zh: Translations = {
       recommendedReason: {
         'best-quality-resident': '在完全驻留 GPU 且保持全速的模型中质量最高。推荐会在质量与该硬件的预计速度之间权衡。',
         'speed-gated-quality': '有更高质量的模型可以装入这台机器，但受内存带宽限制响应会太慢——这是保持流畅的最佳模型。',
-        'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。',
-        'least-painful-spilled': '没有模型能完全装入 GPU 内存——这是从系统内存运行表现最好的一个。'
+        'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。'
       } as Record<string, string>,
+      noRecommendationTitle: '此设备暂无自动推荐模型',
+      noRecommendationDetail:
+        '自动设置需要一个可完全放入显存或统一内存的精选模型。你仍可在下方自行选择，或浏览更多模型。',
+      noRecommendationAction: '浏览模型',
       downloaded: '已下载',
       downloadAction: size => `下载 · ${size}`,
       downloadProgress: (done, total) => `正在下载 ${done} / ${total}`,
@@ -1673,6 +1803,48 @@ export const zh: Translations = {
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
+    tabPlugins: '插件',
+    plugins: {
+      agentTitle: 'Agent 插件',
+      agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
+      pageBlurb: '每个插件一行。插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
+      halfDesktop: '桌面',
+      halfDesktopHint: '本应用，所有配置相同',
+      halfAgent: 'Agent',
+      halfAgentIn: (profile: string) => `${profile} 中的 Agent`,
+      defaultProfile: 'Hermes（默认）',
+      kindAgent: 'Agent',
+      kindDesktop: '桌面',
+      kindBoth: 'Agent + 桌面',
+      installAgentHere: '在此安装',
+      installAgentHereTip: (profile: string) =>
+        `桌面部分已加载到本应用，但 agent 部分尚未安装到 ${profile}。在那里安装它。`,
+      installAgentHereNoOrigin:
+        '此配置未安装 agent 部分，且该包是手动复制的（无目录条目或 git 远程），无法从此处安装。请将其文件夹复制到该配置或从 Git 重新安装。',
+      desktopHalfPending: '复制中…',
+      desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
+      emptyAll: '还没有插件。',
+      empty: '此配置尚未安装任何 agent 插件。',
+      emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
+      loadFailed: '无法加载 agent 插件',
+      toggleFailed: (name: string) => `无法切换 ${name}`,
+      legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
+      portableBadge: '便携',
+      catalogTitle: '插件目录',
+      catalogBrowse: '浏览',
+      catalogHide: '隐藏目录浏览器',
+      catalogHint:
+        '点击任意插件上的「+ Add to this Agent」— 经过审核的条目会以其固定提交安装到所选配置。捆绑的 agent+桌面插件会同时提供两部分。',
+      alreadyInstalled: (name: string) => `${name} 已安装在此配置中。`,
+      catalogProvenance: (sha: string) => `从 Hermes 目录安装${sha ? `，固定提交 ${sha}` : ''}。`,
+      pinnedProvenance: (sha: string) => `已固定到提交 ${sha}。重新固定前将拒绝更新。`,
+      pinnedBadge: (sha: string) => `固定 @ ${sha}`,
+      tierOfficial: '官方',
+      tierCommunity: '社区',
+      updateToPin: (sha: string) => `更新到 ${sha}`,
+      updateFailed: (name: string) => `无法更新 ${name}`,
+      updated: (name: string) => `${name} 已更新到当前目录固定提交。重启网关后生效。`
+    },
     officialCatalog: '可安装',
     officialPill: '官方',
     hub: {
@@ -2031,6 +2203,8 @@ export const zh: Translations = {
     restartToApply: '此更改将在网关重启后生效。',
     setupSaved: name => `${name} 设置已保存`,
     restartToReconnect: '新凭据将在网关重启后生效。',
+    appliedLive: '已应用到正在运行的网关。',
+    connectingLive: '正在运行的网关正在使用新凭据连接。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 设置已更新。`,
     failedUpdate: name => `更新 ${name} 失败`,
@@ -2053,6 +2227,38 @@ export const zh: Translations = {
     failedRevoke: name => `撤销 ${name} 失败`,
     pairingLockedOut: '批准失败次数过多，该平台已被暂时锁定，请稍后再试。',
     waitingSince: minutes => (minutes < 1 ? '刚刚' : `${minutes} 分钟前`),
+    restartNeeded: '已保存。请重启消息网关以应用新设置。',
+    restartNow: '立即重启',
+    restarting: '正在重启…',
+    restartFailedManual: '网关重启失败 — 请手动重启并检查网关日志。',
+    telegramQr: {
+      title: '选择连接 Telegram 机器人的方式',
+      subtitle: '两种方式都会连接一个由你控制的机器人，凭据仅保存在此 Hermes 安装中。',
+      quickSetup: '快速设置',
+      recommended: '推荐',
+      quickHelp: '扫描二维码并在 Telegram 中确认。Hermes 会自动创建机器人并识别你的 Telegram 用户 ID。',
+      createWithQr: '通过二维码创建',
+      starting: '正在启动…',
+      replaceWarning: 'Telegram 凭据已配置。保存后，新的二维码设置或机器人令牌将替换当前机器人。',
+      scanHint: '用手机上的 Telegram 应用扫描，或在这台电脑上打开链接。',
+      waiting: '等待 Telegram 确认…',
+      expiresIn: remaining => `${remaining} 后过期`,
+      expired: '已过期',
+      openTelegram: '打开 Telegram',
+      ready: '机器人已创建',
+      allowedUsers: '允许的用户',
+      ownerDetected: '已识别所有者',
+      addAtLeastOne: '请至少添加一个 Telegram 用户 ID。',
+      userIdPlaceholder: 'Telegram 用户 ID',
+      add: '添加',
+      numericOnly: '允许的 Telegram 用户 ID 必须是数字。',
+      saveAndRestart: '保存并重启',
+      applying: '正在保存…',
+      pairingExpired: 'Telegram 配对已过期。请重新开始二维码设置。',
+      stillWaiting: detail => `仍在等待 Telegram。出错后重试：${detail}`,
+      savedRestarting: 'Telegram 已保存；网关正在重启…',
+      savedRestartFailed: detail => `Telegram 已保存；网关重启失败${detail}`
+    },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Bot 令牌',
@@ -2336,8 +2542,8 @@ export const zh: Translations = {
     title: '定时任务',
     count: count => `${count} 个任务`,
     modelImpact: {
-      title: '定时任务需要检查',
-      message: count => `在您检查模型设置之前，${count} 个定时任务将被跳过。`,
+      title: '定时任务将继续使用原模型',
+      message: count => `${count} 个未固定的定时任务将继续使用创建时的模型运行。固定它们或设置 cron.model 以迁移。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
       review: '检查定时任务',
       saveFailed: 'Hermes 未保存该模型更改。',
@@ -2533,13 +2739,23 @@ export const zh: Translations = {
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: '网关与配置',
+      rename: '重命名分组',
+      aliasLabel: '显示名称',
+      aliasHint: '仅更改显示名称；网关和配置档名称保持不变。',
+      resetName: '重置名称',
+      moveUp: '上移',
+      moveDown: '下移',
+      reorder: '调整分组顺序',
+      actions: '分组操作'
+    },
     nav: {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      cron: '定时任务',
-      'session-import': '导入会话'
+      cron: '定时任务'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
@@ -2563,8 +2779,10 @@ export const zh: Translations = {
     noSessions: '暂无会话',
     noFilterMatches: '没有会话符合这些筛选条件',
     projects: {
+      showAllSessions: '显示所有会话',
       sectionLabel: '项目',
       home: '主页',
+      autoDiscovered: '自动发现',
       newButton: '新建项目',
       createTitle: '新建项目',
       createDesc: '为工作区命名并添加一个或多个文件夹。',
@@ -2743,6 +2961,13 @@ export const zh: Translations = {
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
     voiceControls: '语音',
+    voiceEngine: '语音聊天引擎',
+    voiceEngineChained: '语音转文字 + Hermes 语音',
+    voiceEngineLive: 'GPT-Live（全双工，委托给 Hermes）',
+    voiceEngineLiveNeedsKey: '需要 OpenAI API 密钥',
+    voiceEngineChangeFailed: '无法更改语音聊天引擎',
+    voiceEngineChainedShort: '语音转文字',
+    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
@@ -3102,6 +3327,10 @@ export const zh: Translations = {
     }
   },
 
+  guidedGreeting: {
+    line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
+    nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
+  },
   install: {
     stageStates: {
       pending: '等待中',
@@ -3246,6 +3475,51 @@ export const zh: Translations = {
     docs: provider => `${provider} 文档`
   },
 
+  // Not yet translated — English fallbacks so the free-tier surfaces stay
+  // readable until a zh pass lands.
+  freeTier: {
+    providerRowTitle: 'Nous · 免费层',
+    providerRowPitch: '登录 Nous 账户以解锁更多模型和工具。',
+    readyTitle: 'Hermes 已就绪。',
+    readyCaption: '免费 · 含连接器',
+    begin: '开始',
+    signInInstead: '改为登录 Nous 账户',
+    otherProviders: '其他提供方',
+    stripTitle: '免费的 Nous 推理和连接器现已可用。',
+    stripBody: '打开模型选择器试用，或登录 Nous 账户。',
+    openModelPicker: '打开模型选择器',
+    dismiss: '关闭',
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
+    signIn: '登录',
+    signInHeading: '登录 Nous 账户以解锁更多模型和工具。',
+    settingUp: '正在设置免费推理…',
+    codeBody: '在浏览器中输入此代码以完成登录。',
+    copyLink: '复制链接',
+    doNotShare: '请勿分享此代码。',
+    waiting: '等待登录…',
+    finishingHeading: '正在完成登录…',
+    finishingBody: '已在浏览器中批准。正在获取账户令牌。',
+    signedInAs: email => `已登录为 ${email}`,
+    signedIn: '已登录。',
+    completedBody: '现在由你的账户提供推理和工具。',
+    defaultModel: '默认模型',
+    change: '更改',
+    done: '完成',
+    notNow: '暂不',
+    tryAgain: '重试',
+    startAgain: '重新开始',
+    didNotComplete: '登录未完成',
+    rejectedBody: '登录在浏览器中被拒绝。你仍在免费层。',
+    supersededBody: '一个更新的登录代码替换了此代码。',
+    timedOutHeading: '登录超时',
+    timedOutBody: '代码未在有效期内使用。你仍在免费层。',
+    retiredBody: '此免费层身份已被使用或已过期；下次启动时会重新设置。',
+    errorBody: '登录未完成；请重试。',
+    alreadySignedInHeading: '已登录。',
+    alreadySignedInBody: '此 Hermes 已登录 Nous 账户。'
+  },
+
   modelPicker: {
     title: '切换模型',
     current: '当前：',
@@ -3370,6 +3644,7 @@ export const zh: Translations = {
       toggleTerminal: '终端',
       toggleTokensPerSecond: '每秒 token 数',
       toggleVersion: '版本与更新',
+      toggleFreeTier: 'Free tier',
       toggleWorkspace: '工作区',
       cacheHitRateTitle: '本会话的提示缓存命中率 — 缓存 token 更便宜，越高越省',
       tokensPerSecondTitle: '每秒输出 token 数，取最近 10 次模型调用的平均值',
@@ -3592,7 +3867,7 @@ export const zh: Translations = {
     newSessionTab: '新建会话标签',
     newTab: '新建标签页',
     pluginDisabled: pluginId => `插件“${pluginId}”已禁用`,
-    pluginDisabledBody: '在 设置 → 插件 中重新启用即可恢复面板。',
+    pluginDisabledBody: '在 技能与工具 → 插件 中重新启用即可恢复面板。',
     missingPane: paneId => `缺少面板：${paneId}`,
     editTitle: '布局',
     editHint: '选择一个布局，或在区域之间拖动面板。',
@@ -3678,7 +3953,10 @@ export const zh: Translations = {
         streaming: '流式连接错误'
       },
       errorRetry: '重试',
+      errorStartNewSession: '开始新会话',
       errorSwitchProvider: '切换服务商',
+      errorSignInAgain: provider => `重新登录 ${provider}`,
+      errorOauthExpired: provider => `您的 ${provider} 登录已过期或被撤销。请重新登录以继续对话。`,
       errorOpenLogs: '打开日志',
       errorOpenLogsFailed: '无法打开日志文件夹',
       errorOpenDesktopLogs: '打开桌面端日志',
@@ -3844,7 +4122,32 @@ export const zh: Translations = {
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',
-    secretPlaceholder: '密钥值'
+    secretPlaceholder: '密钥值',
+    vaultUnlockSendFailed: '无法发送主密码',
+    vaultUnlockTitle: name => `解锁 ${name}`,
+    vaultUnlockDesc: name =>
+      `智能体想使用保存在 ${name} 中的登录信息登录网站。输入主密码以在本会话中解锁——它会直接交给本机的 ${name}，不会被存储或展示给智能体。`,
+    vaultUnlockPlaceholder: '主密码',
+    vaultUnlockKeepLocked: '保持锁定',
+    vaultUnlockConfirm: '解锁',
+    vaultSaveSendFailed: '无法保存登录信息',
+    vaultSaveTitle: site => `保存 ${site} 的登录信息？`,
+    vaultSaveDesc: origin =>
+      `Hermes 到达了 ${origin} 的登录页，但没有为它保存的登录信息。在此输入一次；它将在本机加密保存并直接填入页面，模型永远看不到密码。`,
+    vaultSaveIdentifierLabel: '邮箱或用户名',
+    vaultSaveIdentifierPlaceholder: 'you@example.com',
+    vaultSavePasswordPlaceholder: '密码',
+    vaultSaveFootnote: '在“设置 → 密码与登录”中管理已保存的登录信息。',
+    vaultSaveDecline: '不保存',
+    vaultSaveConfirm: '保存并登录',
+    vaultCodeSendFailed: '无法发送验证码',
+    vaultCodeTitle: site => `${site} 的验证码`,
+    vaultCodeDesc: site =>
+      `${site} 要求输入一次性验证码（短信、邮件或验证器应用）。在此输入，Hermes 会将其填入页面；模型永远看不到它。`,
+    vaultCodeLabel: '验证码',
+    vaultCodeFootnote: '提示：在“设置 → 密码与登录”中为该登录保存验证器密钥后，Hermes 会自动填写验证码。',
+    vaultCodeSkip: '跳过',
+    vaultCodeConfirm: '输入验证码'
   },
 
   desktop: {
@@ -3879,6 +4182,9 @@ export const zh: Translations = {
     readOnlyTranscriptSendBlocked: '该会话目前以只读记录方式打开——发送已禁用。',
     resumeStrandedTitle: '无法加载此会话',
     resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',
+    poolSlotTimeoutBody:
+      '所有本地配置后端槽位都在使用中。请在“设置”→“高级”中增加 Warm Bot Backends，或等待空闲后端被驱逐后重试。',
+    poolSlotTimeoutOpenSettings: '打开高级设置',
     resumeRetry: '重试',
     nothingToBranch: '没有可分支的内容',
     branchNeedsChat: '分支前请先开始或恢复一个对话。',
@@ -3909,6 +4215,8 @@ export const zh: Translations = {
     imageAttach: '附加图片',
     imageWriteFailed: '无法将图片写入磁盘。',
     imageAttachFailed: '附加图片失败',
+    pastedContent: '粘贴内容',
+    pasteAttachFailed: '无法附加粘贴的文本',
     attachImages: '附加图片',
     clipboard: '剪贴板',
     noClipboardImage: '剪贴板中没有图片',
@@ -3995,4 +4303,4 @@ export const zh: Translations = {
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
   }
-}
+})

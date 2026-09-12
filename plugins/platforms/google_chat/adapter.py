@@ -920,7 +920,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Email is the canonical id (allowlists use emails); the ``users/{id}``
             # resource name moves to user_id_alt.
             user_id=(sender_email or sender_name), user_name=sender.get("displayName") or sender_email or sender_name,
-            thread_id=session_thread_id, user_id_alt=(sender_name or None),
+            thread_id=session_thread_id, user_id_alt=(sender_name or None), message_id=msg.get("name") or None,
         )
         return MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=msg, message_id=msg.get("name") or None,

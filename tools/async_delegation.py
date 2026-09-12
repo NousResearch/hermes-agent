@@ -97,37 +97,18 @@ def _connect() -> sqlite3.Connection:
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_state_repair import apply_durability_barriers
+    from hermes_state_schema import reconcile_state_schema
     # Preserve the journal mode SessionDB configured on state.db: forcing WAL from
     # every short-lived connection collides with live transcript/FTS writers.
     apply_durability_barriers(conn)
-    conn.execute("""CREATE TABLE IF NOT EXISTS async_delegations (
-            delegation_id TEXT PRIMARY KEY,
-            origin_session TEXT NOT NULL,
-            origin_ui_session_id TEXT NOT NULL DEFAULT '',
-            parent_session_id TEXT,
-            state TEXT NOT NULL,
-            dispatched_at REAL NOT NULL,
-            completed_at REAL,
-            updated_at REAL NOT NULL,
-            event_json TEXT,
-            result_json TEXT,
-            delivery_state TEXT NOT NULL DEFAULT 'pending',
-            delivery_attempts INTEGER NOT NULL DEFAULT 0,
-            delivered_at REAL,
-            owner_pid INTEGER,
-            owner_started_at INTEGER,
-            task_json TEXT,
-            delivery_claim TEXT,
-            delivery_claimed_at REAL,
-            origin_session_id TEXT NOT NULL DEFAULT ''
-        )""")
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
-    # origin_session_id: raw api_server session id of the ORIGINATING request
-    # (wake target); without it restart-recovered completions are unroutable there.
-    for name, sql_type in (("owner_pid", "INTEGER"), ("owner_started_at", "INTEGER"), ("task_json", "TEXT"),
-                           ("delivery_claim", "TEXT"), ("delivery_claimed_at", "REAL"), ("origin_session_id", "TEXT")):
-        if name not in columns:
-            conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    # Single durable-shape authority: the canonical SCHEMA_SQL drives both
+    # table creation and column backfill (reconcile_state_schema replays the
+    # canonical DDL and reuses SessionDB's declarative reconciliation). This
+    # module previously carried its own CREATE TABLE + ALTER column list,
+    # which drifted from SCHEMA_SQL — same-name columns with different
+    # nullability/defaults depending on which authority touched the database
+    # first (#94691).
+    reconcile_state_schema(conn)
 
 
 @contextmanager

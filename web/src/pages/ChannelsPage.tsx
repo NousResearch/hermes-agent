@@ -215,11 +215,17 @@ export default function ChannelsPage() {
     setSaving(true);
     try {
       const body: MessagingPlatformUpdate = { env, enabled: true };
-      await api.updateMessagingPlatform(editing.id, body);
-      showToast(`${editing.name} saved`, "success");
+      const result = await api.updateMessagingPlatform(editing.id, body);
+      showToast(
+        result.hot_served
+          ? `${editing.name} saved; the running gateway is connecting`
+          : `${editing.name} saved`,
+        "success",
+      );
       setEditing(null);
-      setRestartNeeded(true);
+      if (!result.hot_served) setRestartNeeded(true);
       await load();
+      if (result.hot_served) setTimeout(() => void load(), 4000);
     } catch (e) {
       showToast(`Failed to save: ${e}`, "error");
     } finally {
@@ -231,7 +237,7 @@ export default function ChannelsPage() {
     const next = !platform.enabled;
     setTogglingId(platform.id);
     try {
-      await api.updateMessagingPlatform(platform.id, { enabled: next });
+      const result = await api.updateMessagingPlatform(platform.id, { enabled: next });
       setPlatforms((prev) =>
         prev.map((p) =>
           p.id === platform.id
@@ -239,7 +245,8 @@ export default function ChannelsPage() {
             : p,
         ),
       );
-      setRestartNeeded(true);
+      if (result.hot_served) setTimeout(() => void load(), 4000);
+      else setRestartNeeded(true);
     } catch (e) {
       showToast(`Error: ${e}`, "error");
     } finally {
@@ -565,6 +572,12 @@ export default function ChannelsPage() {
                       {platform.error_message && (
                         <span className="text-xs text-destructive">
                           {platform.error_message}
+                        </span>
+                      )}
+                      {platform.ingress_url && (
+                        <span className="text-xs text-muted-foreground break-all">
+                          Callback URL (shared listener):{" "}
+                          <code className="font-mono">{platform.ingress_url}</code>
                         </span>
                       )}
                     </div>

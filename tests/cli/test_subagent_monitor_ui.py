@@ -27,7 +27,7 @@ def test_monitor_keys_pin_controls_across_roster_changes(monkeypatch):
             output.get_size = lambda: Size(rows=14, columns=32)
             app = build_monitor_application(dock, input=pipe, output=output)
             footer = app.layout.container.children[-1].content.text()
-            assert 'F6' in footer and len(footer) <= 32
+            assert 'Ctrl+T' in footer and len(footer) <= 32
             rendered = asyncio.Event()
             app.after_render += lambda app: rendered.set()
             task = asyncio.create_task(app.run_async())
@@ -44,7 +44,7 @@ def test_monitor_keys_pin_controls_across_roster_changes(monkeypatch):
             dock.refresh()
             await send('y')
             await send('\x1b')
-            pipe.send_text('q')
+            pipe.send_text('\x14')
             await asyncio.wait_for(task, 3)
     asyncio.run(run())
     assert dock.selected_id == 'first'

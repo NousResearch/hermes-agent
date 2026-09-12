@@ -4,6 +4,9 @@ import type {
   MessagingPlatformUpdate,
   PairingResponse,
   PairingUser,
+  TelegramOnboardingApplyResponse,
+  TelegramOnboardingStartResponse,
+  TelegramOnboardingStatusResponse,
   WebhookCreatePayload,
   WebhookCreateResponse,
   WebhookEnableResponse,
@@ -19,12 +22,20 @@ export function getMessagingPlatforms(profile?: null | string): Promise<Messagin
   })
 }
 
+/** `hot_served`: a live multiplexer serving this named profile rebuilt its adapters from the new
+ *  credentials right away — no gateway restart is needed for the change to take effect. */
+export interface MessagingPlatformUpdateResponse {
+  hot_served?: boolean
+  ok: boolean
+  platform: string
+}
+
 export function updateMessagingPlatform(
   platformId: string,
   body: MessagingPlatformUpdate,
   profile?: null | string
-): Promise<{ ok: boolean; platform: string }> {
-  return hermesApi<{ ok: boolean; platform: string }>({
+): Promise<MessagingPlatformUpdateResponse> {
+  return hermesApi<MessagingPlatformUpdateResponse>({
     ...profileScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',
@@ -40,6 +51,54 @@ export function testMessagingPlatform(
     ...profileScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
+  })
+}
+
+// -- Telegram QR onboarding ---------------------------------------------------
+// Pairing state lives in the memory of the backend process that started it, so
+// every call in one flow carries the SAME profile scope — the Electron router
+// picks the backend from it, and a mismatched apply would 404 the pairing.
+
+export function startTelegramOnboarding(
+  botName?: string,
+  profile?: null | string
+): Promise<TelegramOnboardingStartResponse> {
+  return hermesApi<TelegramOnboardingStartResponse>({
+    ...profileScoped(profile),
+    path: '/api/messaging/telegram/onboarding/start',
+    method: 'POST',
+    body: botName ? { bot_name: botName } : {}
+  })
+}
+
+export function getTelegramOnboardingStatus(
+  pairingId: string,
+  profile?: null | string
+): Promise<TelegramOnboardingStatusResponse> {
+  return hermesApi<TelegramOnboardingStatusResponse>({
+    ...profileScoped(profile),
+    path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`
+  })
+}
+
+export function applyTelegramOnboarding(
+  pairingId: string,
+  allowedUserIds: string[],
+  profile?: null | string
+): Promise<TelegramOnboardingApplyResponse> {
+  return hermesApi<TelegramOnboardingApplyResponse>({
+    ...profileScoped(profile),
+    path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
+    method: 'POST',
+    body: { allowed_user_ids: allowedUserIds, ...profileScoped(profile) }
+  })
+}
+
+export function cancelTelegramOnboarding(pairingId: string, profile?: null | string): Promise<{ ok: boolean }> {
+  return hermesApi<{ ok: boolean }>({
+    ...profileScoped(profile),
+    path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
+    method: 'DELETE'
   })
 }
 

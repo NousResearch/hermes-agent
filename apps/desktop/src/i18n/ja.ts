@@ -328,7 +328,84 @@ export const ja = defineLocale({
       archivedChats: 'アーカイブ済みチャット',
       about: '情報',
       billing: '請求',
-      notifications: '通知'
+      notifications: '通知',
+      vault: 'パスワードとログイン'
+    },
+    vault: {
+      title: 'パスワードとログイン',
+      blurb:
+        '「GitHub にログインして」と言えば、エージェントが代わりにサインインします。初めてサインインページに出会ったときにその場でログイン情報を尋ね、以降は自動で処理します。パスワードはこのマシン上で暗号化され、ページに直接入力されます。モデルは一切見ません。',
+      count: n => `${n} 件保存済み`,
+      loadFailed: 'ボールト項目を読み込めませんでした',
+      empty: 'まだ何も保存されていません',
+      emptyDesc:
+        'ここで何かを追加する必要はありません。エージェントにサイトへのサインインを頼むと、その場で一度だけログイン情報を尋ねます。事前に登録したい場合は「追加」を使ってください。',
+      add: '追加',
+      addTitle: 'ログイン情報・カード・住所を追加',
+      addDescription: 'このマシン上に暗号化して保存されます。エージェントがパスワードを見ることはありません。',
+      added: '保存しました。',
+      adding: '保存中…',
+      addConfirm: '保存',
+      kindField: '種類',
+      kinds: { login: 'ログイン', payment: '支払いカード', address: '住所' },
+      labelField: 'ラベル',
+      labelPlaceholder: '例: GitHub 仕事用アカウント',
+      labelRequired: 'ラベルは必須です。',
+      originField: 'サイトのオリジン',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
+      originInvalid: 'https://example.com のような有効な URL を入力してください。',
+      identifierTypeField: '識別子の種類',
+      identifierTypes: { email: 'メール', phone: '電話番号', username: 'ユーザー名' },
+      identifierField: '識別子',
+      identifierShown: identifier => identifier,
+      passwordField: 'パスワード',
+      loginFieldsRequired: '識別子とパスワードは必須です。',
+      cardNumberField: 'カード番号',
+      cardNameField: 'カード名義',
+      expMonthField: '有効期限（月）',
+      expYearField: '有効期限（年）',
+      cvcField: 'CVC',
+      postalField: '郵便番号',
+      addressLine1Field: '住所 1 行目',
+      addressLine2Field: '住所 2 行目',
+      cityField: '市区町村',
+      stateField: '都道府県 / 地域',
+      countryField: '国',
+      optional: '（任意）',
+      createdOn: date => `追加日 ${date}`,
+      deleteAction: '保存済み項目を削除',
+      otpField: '認証キー',
+      otpPlaceholder: 'Base32 シークレットまたは otpauth:// リンク',
+      otpHint: '2FA を有効にするときにサイトが表示する「セットアップキー」。保存すると Hermes がコードを生成します。',
+      twoFactorBadge: '2FA 自動',
+      deleteTitle: 'この項目を削除しますか？',
+      deleteDescription: label => `「${label}」は暗号化ボールトから削除されます。元に戻せません。`,
+      deleteConfirm: '削除',
+      sources: {
+        title: 'パスワードマネージャー',
+        blurb:
+          'インストール済みのパスワードマネージャーは自動的に検出されます。エージェントがそこからログイン情報を初めて必要とするときにロック解除を求めます（セッションごとに一度）。メモリに残るのはセッショントークンのみで、エージェントはマスターパスワードやログイン情報を一切見ません。',
+        toggleFailed: 'パスワードマネージャーの設定を更新できませんでした',
+        notInstalled: name =>
+          `未検出です。${name} のコマンドラインツールをインストールしてサインインすると、Hermes が自動的に検出します。`,
+        disabledDesc: '検出済みですが、Hermes では無効になっています。',
+        lockedDesc:
+          '検出済み。エージェントがログイン情報を必要とするときにロック解除を求めます。今すぐ解除することもできます。',
+        unlockedDesc: 'このセッションでロック解除済み。30分間操作がないか Hermes を閉じると自動的にロックされます。',
+        statusLocked: 'ロック中',
+        statusNotDetected: '未検出',
+        statusOff: 'オフ',
+        statusUnlocked: 'ロック解除済み',
+        unlock: 'ロック解除',
+        unlocking: 'ロック解除中…',
+        lock: 'ロック',
+        unlocked: name => `${name} をこのセッションでロック解除しました。`,
+        unlockTitle: name => `${name} のロックを解除`,
+        unlockDescription:
+          'マスターパスワードを入力してください。このマシン上のパスワードマネージャーに渡された後に破棄され、保存・記録されることも、エージェントに表示されることもありません。',
+        masterPasswordPlaceholder: 'マスターパスワード'
+      }
     },
     notifications: {
       title: '通知',
@@ -422,6 +499,11 @@ export const ja = defineLocale({
       tabStripAuto: '自動',
       tabStripAlways: '常に表示',
       tabStripNever: '表示しない',
+      appActionsTitle: 'アプリ操作',
+      appActionsDesc:
+        '設定・レイアウト・HUD をタイトルバーの左右どちらに置くか。右にするとタブ用のスペースが左に残ります。',
+      appActionsLeft: '左',
+      appActionsRight: '右',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',
@@ -458,10 +540,11 @@ export const ja = defineLocale({
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
       tipsTitle: 'アプリ内ヒント',
       tipsDesc:
-        'アプリの一部を指す小さな吹き出し。待機中にときどき、また役に立つときは Hermes からも表示します。閉じたヒントは二度と表示されません。',
-      tipsReset: (count: number) => `閉じた${count}件のヒントを元に戻す`,
+        'アプリや Hermes からのヒントをときどき表示します。各ヒントは一度だけ表示されます。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
+      tipsReset: (count: number) => `${count}件のヒントをもう一度表示`,
       toursTitle: 'ガイドツアー',
-      toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
+      toursDesc:
+        '各ステップを強調しながら、Hermes がアプリを案内します。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
       vibeHeartsTitle: 'バイブハート',
@@ -1100,10 +1183,13 @@ export const ja = defineLocale({
         'speed-gated-quality':
           'より高品質なモデルもこのマシンに載りますが、メモリ帯域の制約で応答が遅くなります — これは速度を保てる最良のモデルです。',
         'fastest-resident':
-          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。',
-        'least-painful-spilled':
-          'GPU メモリに完全に収まるモデルはありません — システム RAM からの実行で最も快適なモデルです。'
+          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。'
       } as Record<string, string>,
+      noRecommendationTitle: 'このマシン向けの自動推奨モデルはありません',
+      noRecommendationDetail:
+        '自動セットアップには、GPU メモリまたはユニファイドメモリに完全に収まる厳選モデルが必要です。下の一覧から選ぶか、ほかのモデルを探すこともできます。',
+      noRecommendationAction: 'モデルを探す',
+      quickstartConfigure: '自分で選ぶ',
       downloaded: 'ダウンロード済み',
       downloadAction: size => `ダウンロード · ${size}`,
       downloadProgress: (done, total) => `ダウンロード中 ${done} / ${total}`,
@@ -1598,6 +1684,40 @@ export const ja = defineLocale({
     unknown: '不明',
     hintPendingRestart: 'この変更を適用するにはステータスバーからゲートウェイを再起動してください。',
     hintGatewayStopped: 'ステータスバーからゲートウェイを起動して接続してください。',
+    restartNeeded: '保存しました。新しい設定を反映するにはメッセージングゲートウェイを再起動してください。',
+    restartNow: '今すぐ再起動',
+    restarting: '再起動中…',
+    restartFailedManual: 'ゲートウェイの再起動に失敗しました。手動で再起動し、ゲートウェイのログを確認してください。',
+    telegramQr: {
+      title: 'Telegram ボットの接続方法を選択',
+      subtitle: 'どちらの方法でも、あなたが管理するボットを接続し、資格情報はこの Hermes にのみ保存されます。',
+      quickSetup: 'クイックセットアップ',
+      recommended: '推奨',
+      quickHelp:
+        'QR コードをスキャンして Telegram で確認します。Hermes がボットを作成し、あなたの Telegram ユーザー ID を自動検出します。',
+      createWithQr: 'QR で作成',
+      starting: '開始中…',
+      replaceWarning:
+        'Telegram の資格情報はすでに設定されています。保存すると新しい QR セットアップまたはトークンが現在のボットを置き換えます。',
+      scanHint: 'スマートフォンの Telegram アプリでスキャンするか、このコンピューターでリンクを開いてください。',
+      waiting: 'Telegram を待機中…',
+      expiresIn: remaining => `有効期限: ${remaining}`,
+      expired: '期限切れ',
+      openTelegram: 'Telegram を開く',
+      ready: 'ボットを作成しました',
+      allowedUsers: '許可ユーザー',
+      ownerDetected: '所有者を検出',
+      addAtLeastOne: 'Telegram ユーザー ID を 1 つ以上追加してください。',
+      userIdPlaceholder: 'Telegram ユーザー ID',
+      add: '追加',
+      numericOnly: 'Telegram ユーザー ID は数字で入力してください。',
+      saveAndRestart: '保存して再起動',
+      applying: '保存中…',
+      pairingExpired: 'Telegram のペアリングが期限切れです。新しい QR セットアップを開始してください。',
+      stillWaiting: detail => `Telegram を待機中。エラー後に再試行: ${detail}`,
+      savedRestarting: 'Telegram を保存しました。ゲートウェイを再起動中…',
+      savedRestartFailed: detail => `Telegram を保存しましたが、ゲートウェイの再起動に失敗しました${detail}`
+    },
     credentialsSet: '認証情報を設定しました',
     needsSetup: '設定が必要',
     gatewayStopped: 'メッセージングゲートウェイが停止中',
@@ -1624,6 +1744,8 @@ export const ja = defineLocale({
     restartToApply: 'この変更はゲートウェイの再起動後に有効になります。',
     setupSaved: name => `${name} の設定を保存しました`,
     restartToReconnect: '新しい認証情報はゲートウェイの再起動後に有効になります。',
+    appliedLive: '実行中のゲートウェイに適用されました。',
+    connectingLive: '実行中のゲートウェイが新しい認証情報で接続しています。',
     keyCleared: key => `${key} をクリアしました`,
     setupUpdated: name => `${name} の設定が更新されました。`,
     failedUpdate: name => `${name} の更新に失敗しました`,
@@ -1846,8 +1968,9 @@ export const ja = defineLocale({
     title: 'スケジュール済みジョブ',
     count: count => `${count} 件のジョブ`,
     modelImpact: {
-      title: 'スケジュール済みジョブの確認が必要です',
-      message: count => `モデル設定を確認するまで、${count} 件のスケジュール済みジョブがスキップされます。`,
+      title: 'スケジュール済みジョブは元のモデルで実行されます',
+      message: count =>
+        `ピン留めされていない ${count} 件のスケジュール済みジョブは、作成時のモデルで引き続き実行されます。移行するにはピン留めするか cron.model を設定してください。`,
       detailMore: (names, remaining) => `${names}、ほか ${remaining} 件`,
       review: 'スケジュール済みジョブを確認',
       saveFailed: 'Hermes はモデルの変更を保存しませんでした。',
@@ -2045,13 +2168,23 @@ export const ja = defineLocale({
   },
 
   sidebar: {
+    gatewayGroups: {
+      grouping: 'ゲートウェイとプロファイル',
+      rename: 'グループ名を変更',
+      aliasLabel: '表示名',
+      aliasHint: '表示名のみ変更します。ゲートウェイ名とプロファイル名は変わりません。',
+      resetName: '名前をリセット',
+      moveUp: '上に移動',
+      moveDown: '下に移動',
+      reorder: 'グループを並べ替え',
+      actions: 'グループの操作'
+    },
     nav: {
       'new-session': '新しいセッション',
       skills: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ',
-      'session-import': 'セッションを取り込む'
+      cron: 'スケジュール済みジョブ'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',
@@ -2075,8 +2208,10 @@ export const ja = defineLocale({
     noSessions: 'セッションはまだありません',
     noFilterMatches: 'このフィルターに一致するセッションはありません',
     projects: {
+      showAllSessions: 'すべてのセッションを表示',
       sectionLabel: 'プロジェクト',
       home: 'ホーム',
+      autoDiscovered: '自動検出',
       newButton: '新規プロジェクト',
       createTitle: '新規プロジェクト',
       createDesc: 'ワークスペースに名前を付け、1つ以上のフォルダを追加します。',
@@ -2575,6 +2710,10 @@ export const ja = defineLocale({
     }
   },
 
+  guidedGreeting: {
+    line: 'やあ、どうぞ。Hermes です。二分だけください、あなたに合わせて整えます。それから、本当にやりたいことに取りかかりましょう。\n\nまずは、何とお呼びすればいいですか。',
+    nameSuggestion: (name: string) => `（よければ、${name} さんとお呼びします。）`
+  },
   install: {
     stageStates: {
       pending: '待機中',
@@ -3050,7 +3189,7 @@ export const ja = defineLocale({
     newSessionTab: '新しいセッションタブ',
     newTab: '新しいタブ',
     pluginDisabled: pluginId => `プラグイン「${pluginId}」を無効化しました`,
-    pluginDisabledBody: '設定 → プラグイン で再有効化するとペインが戻ります。',
+    pluginDisabledBody: 'スキルとツール → プラグイン で再有効化するとペインが戻ります。',
     missingPane: paneId => `ペインが見つかりません: ${paneId}`,
     editTitle: 'レイアウト',
     editHint: 'レイアウトを選ぶか、ペインをゾーン間へドラッグ。',
@@ -3136,7 +3275,11 @@ export const ja = defineLocale({
         streaming: 'ストリーミング接続のエラー'
       },
       errorRetry: '再試行',
+      errorStartNewSession: '新しいセッションを開始',
       errorSwitchProvider: 'プロバイダーを切り替え',
+      errorSignInAgain: provider => `${provider} に再度サインイン`,
+      errorOauthExpired: provider =>
+        `${provider} のサインインが期限切れか取り消されました。続けるには再度サインインしてください。`,
       errorOpenLogs: 'ログを開く',
       errorOpenLogsFailed: 'ログフォルダを開けませんでした',
       errorOpenDesktopLogs: 'デスクトップのログを開く',
@@ -3311,7 +3454,33 @@ export const ja = defineLocale({
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
-    secretPlaceholder: 'シークレット値'
+    secretPlaceholder: 'シークレット値',
+    vaultUnlockSendFailed: 'マスターパスワードを送信できませんでした',
+    vaultUnlockTitle: name => `${name} のロックを解除`,
+    vaultUnlockDesc: name =>
+      `エージェントが ${name} に保存されたログインでサイトにサインインしようとしています。このセッションでロック解除するにはマスターパスワードを入力してください。パスワードはこのマシン上の ${name} に直接渡され、保存されることもエージェントに表示されることもありません。`,
+    vaultUnlockPlaceholder: 'マスターパスワード',
+    vaultUnlockKeepLocked: 'ロックしたまま',
+    vaultUnlockConfirm: 'ロック解除',
+    vaultSaveSendFailed: 'ログイン情報を保存できませんでした',
+    vaultSaveTitle: site => `${site} のログイン情報を保存しますか？`,
+    vaultSaveDesc: origin =>
+      `Hermes は ${origin} のサインインページに到達しましたが、保存されたログイン情報がありません。ここで一度入力すると、このマシン上で暗号化して保存され、ページに直接入力されます。モデルはパスワードを一切見ません。`,
+    vaultSaveIdentifierLabel: 'メールアドレスまたはユーザー名',
+    vaultSaveIdentifierPlaceholder: 'you@example.com',
+    vaultSavePasswordPlaceholder: 'パスワード',
+    vaultSaveFootnote: '保存したログイン情報は「設定 → パスワードとログイン」で管理できます。',
+    vaultSaveDecline: '保存しない',
+    vaultSaveConfirm: '保存してサインイン',
+    vaultCodeSendFailed: 'コードを送信できませんでした',
+    vaultCodeTitle: site => `${site} の確認コード`,
+    vaultCodeDesc: site =>
+      `${site} がワンタイムコード（SMS、メール、または認証アプリ）を求めています。ここに入力すると Hermes がページに入力します。モデルはコードを一切見ません。`,
+    vaultCodeLabel: 'コード',
+    vaultCodeFootnote:
+      'ヒント：「設定 → パスワードとログイン」でこのログインに認証キーを保存すると、Hermes がコードを自動入力します。',
+    vaultCodeSkip: 'スキップ',
+    vaultCodeConfirm: 'コードを入力'
   },
 
   desktop: {
@@ -3348,6 +3517,9 @@ export const ja = defineLocale({
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
     resumeStrandedBody:
       'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
+    poolSlotTimeoutBody:
+      'すべてのローカルプロファイルバックエンドスロットが使用中です。「設定」→「詳細設定」で「Warm Bot Backends」を増やすか、アイドル状態のバックエンドが解放された後に再試行してください。',
+    poolSlotTimeoutOpenSettings: '詳細設定を開く',
     resumeRetry: '再試行',
     nothingToBranch: 'ブランチするものがありません',
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',
@@ -3379,6 +3551,8 @@ export const ja = defineLocale({
     imageAttach: '画像を添付',
     imageWriteFailed: '画像のディスクへの書き込みに失敗しました。',
     imageAttachFailed: '画像の添付に失敗しました',
+    pastedContent: '貼り付けた内容',
+    pasteAttachFailed: '貼り付けたテキストを添付できませんでした',
     attachImages: '画像を添付',
     clipboard: 'クリップボード',
     noClipboardImage: 'クリップボードに画像が見つかりません',

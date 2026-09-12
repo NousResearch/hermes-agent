@@ -110,7 +110,7 @@ async function renderMessaging() {
 }
 
 describe('MessagingView profile scope', () => {
-  it('follows the active profile instead of targeting primary when there is no override', async () => {
+  it('sends the concrete active profile when there is no override', async () => {
     const { $settingsScopeOverride } = await import('@/store/settings-scope')
 
     $settingsScopeOverride.set(null)
@@ -118,8 +118,8 @@ describe('MessagingView profile scope', () => {
 
     await renderMessaging()
 
-    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(undefined))
-    expect(getPairing).toHaveBeenCalledWith(undefined)
+    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith('default'))
+    expect(getPairing).toHaveBeenCalledWith('default')
   })
 })
 
@@ -176,7 +176,7 @@ describe('MessagingView pairing', () => {
       fireEvent.click(approve)
     })
 
-    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718', undefined))
+    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718', 'default'))
   })
 
   it('restores the pending row when approval fails', async () => {

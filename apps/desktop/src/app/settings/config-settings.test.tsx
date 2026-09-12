@@ -9,12 +9,15 @@ const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
 const getElevenLabsVoices = vi.fn()
+const scanAndRecordRepos = vi.hoisted(() => vi.fn())
 
 vi.mock('@/hermes', () => ({
   getHermesConfigRecord: () => getHermesConfigRecord(),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  getProfiles: async () => ({ profiles: [] }),
+  profileScopeKey: (profile: string) => profile,
   setApiRequestProfile: () => {}
 }))
 
@@ -26,17 +29,19 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 // backend connection. This page only reads the "applies to" scope override
 // and the repo-discovery signature, neither of which this test touches.
 vi.mock('@/store/settings-scope', () => ({
-  $settingsRequestProfile: atom<string | undefined>(undefined),
+  $settingsRequestProfile: atom('default'),
   $settingsScopeOverride: atom<null | string>(null)
 }))
 
 vi.mock('@/store/projects', () => ({
-  repoDiscoveryPolicyFromConfig: () => ({ enabled: true, roots: [], exclude_paths: [] }),
+  repoDiscoveryPolicyFromConfig: (config: unknown) => config,
   repoDiscoveryPolicySignature: (policy: unknown) => JSON.stringify(policy),
-  scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)
+  scanAndRecordRepos
 }))
 
-beforeEach(() => {
+beforeEach(async () => {
+  const { $settingsScopeOverride } = await import('@/store/settings-scope')
+  $settingsScopeOverride.set(null)
   getElevenLabsVoices.mockResolvedValue({ available: false })
   getHermesConfigSchema.mockResolvedValue({ fields: {} })
   saveHermesConfig.mockResolvedValue({ ok: true })
@@ -91,6 +96,26 @@ describe('ConfigSettings autosave', () => {
       // (the field is back to its original value) and leave disk stuck at
       // `enabled: true` from the first save.
       expect(saveHermesConfig.mock.calls[1][0]).toEqual({ checkpoints: { enabled: false } })
+      expect(scanAndRecordRepos).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not rescan active-profile repositories while editing another profile', async () => {
+    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    $settingsScopeOverride.set('profile-b')
+    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await renderConfigSettings()
+      const toggle = await screen.findByRole('switch')
+      toggle.click()
+      await vi.advanceTimersByTimeAsync(700)
+
+      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledOnce())
+      expect(scanAndRecordRepos).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }

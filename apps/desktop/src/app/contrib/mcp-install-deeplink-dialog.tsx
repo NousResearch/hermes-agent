@@ -20,7 +20,7 @@ import { getServers } from '@/lib/mcp-servers'
 import { $mcpInstallRequest } from '@/store/mcp-deeplink-install'
 import { notify, readableError } from '@/store/notifications'
 
-import { setHermesConfigCache } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter } from '../hooks/use-config-record'
 
 /**
  * Explicit-confirm gate for `hermes://mcp/install` deep links. The payload is
@@ -84,6 +84,7 @@ export function McpInstallDeepLinkDialog() {
   const nameValid = MCP_DEEPLINK_NAME_RE.test(trimmedName)
   const nameConflict = existingNames?.includes(trimmedName) ?? false
   const checkingConflicts = existingNames === null
+  const writeConfigCache = hermesConfigCacheWriter()
 
   const close = () => {
     if (!saving) {
@@ -114,7 +115,7 @@ export function McpInstallDeepLinkDialog() {
 
       const nextServers = { ...current, [trimmedName]: request.config }
       await saveMcpServers(nextServers)
-      setHermesConfigCache(previous => (previous ? { ...previous, mcp_servers: nextServers } : previous))
+      writeConfigCache(previous => (previous ? { ...previous, mcp_servers: nextServers } : previous))
       notify({ kind: 'success', title: m.savedTitle, message: m.savedMessage(trimmedName) })
       $mcpInstallRequest.set(null)
       navigate(`/skills?tab=mcp&server=${encodeURIComponent(trimmedName)}`)

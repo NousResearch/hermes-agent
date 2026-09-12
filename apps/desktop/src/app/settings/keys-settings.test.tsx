@@ -13,6 +13,7 @@ stubResizeObserver()
 vi.mock('@/hermes', () => ({
   deleteEnvVar: vi.fn(),
   getEnvVars: (profile?: null | string) => getEnvVars(profile),
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
   revealEnvVar: vi.fn(),
   setApiRequestProfile: () => undefined,
   setEnvVar: vi.fn()
@@ -54,13 +55,10 @@ function DeepLinkButton({ target }: { target: string }) {
 }
 
 describe('KeysSettings', () => {
-  it('fetches env vars for the active profile (undefined, never null) when unscoped', async () => {
-    // #90549 class: getEnvVars(null) targets the primary profile's env store,
-    // so a non-default profile's Keys page would read (and edit) the wrong
-    // profile. Unscoped must send undefined so the active profile applies.
+  it('fetches env vars with the concrete selected profile when unscoped', async () => {
     await renderKeysSettings('tools')
 
-    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith(undefined))
+    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('default'))
   })
 
   it('lists tools and excludes settings / channel-managed credentials', async () => {

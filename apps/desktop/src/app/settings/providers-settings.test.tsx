@@ -70,7 +70,10 @@ function keyVar(patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
+  $activeGatewayProfile.set('default')
+  $profiles.set([])
   onboarding.set({ manual: false })
   getEnvVars.mockResolvedValue({})
   disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'nous' })
@@ -134,7 +137,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', 'profile-b'))
       fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
-      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith(undefined))
+      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith('profile-a'))
     } finally {
       cleanup()
       $settingsScopeOverride.set(null)
@@ -177,7 +180,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
     })
 
-    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', undefined))
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', 'default'))
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
   })
 
@@ -202,7 +205,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(await screen.findByText('Nous Portal'))
     })
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', undefined)
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', 'default')
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 

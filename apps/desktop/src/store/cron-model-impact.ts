@@ -148,13 +148,13 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
 export async function setMainModelAssignment(
   request: Omit<ModelAssignmentRequest, 'scope'>,
   scopeProfile?: null | string,
-  options?: { skipConfirmPrompt?: boolean }
+  options?: { skipConfirmPrompt?: boolean; targetIsActiveProfile?: boolean }
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()
   const profile = profileIdentity()
 
-  // Only pass the extra arg when a scope override exists, so unscoped callers
-  // keep the exact legacy call shape.
+  // Preserve the legacy one-argument shape only when no concrete target was
+  // supplied; Settings supplies its active profile explicitly.
   const assign = (body: Omit<ModelAssignmentRequest, 'scope'>) =>
     scopeProfile == null
       ? setModelAssignment({ ...body, scope: 'main' })
@@ -188,10 +188,13 @@ export async function setMainModelAssignment(
     throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
   }
 
-  // A scoped assignment targets ANOTHER profile's backend: its cron impact
-  // belongs to that profile, and the review action would open the ACTIVE
-  // profile's cron view — skip the warning rather than mis-route it.
-  if (scopeProfile != null) {
+  // A concrete profile may still be the active one. Only suppress impact UI
+  // when the caller explicitly says the Settings selector targets another
+  // profile; its review action would otherwise open the active profile's cron.
+  const targetIsActiveProfile =
+    options?.targetIsActiveProfile ?? (scopeProfile == null || scopeProfile.trim() === profile)
+
+  if (!targetIsActiveProfile) {
     return result
   }
 

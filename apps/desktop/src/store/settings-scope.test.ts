@@ -46,8 +46,8 @@ describe('settings scope store', () => {
     setSettingsScope('research')
     setSettingsScope('default')
 
-    // No override → requests keep their unscoped shape and the scope keeps
-    // following the app on future profile switches.
+    // No override keeps the selector following future app-wide profile
+    // switches; requests still resolve to the concrete active profile.
     expect($settingsScopeOverride.get()).toBeNull()
     expect($settingsScopeProfile.get()).toBe('default')
   })
@@ -60,16 +60,17 @@ describe('settings scope store', () => {
     expect($settingsScopeProfile.get()).toBe('default')
   })
 
-  it('exposes a request-shaped scope: undefined (never null) without an override', () => {
-    // api/client.ts profileScoped() treats null as "target primary/default" —
-    // the #90549 bug class. The request form must therefore never be null.
-    expect($settingsRequestProfile.get()).toBeUndefined()
+  it('exposes the concrete selected profile for every settings request', () => {
+    expect($settingsRequestProfile.get()).toBe('default')
 
     setSettingsScope('research')
     expect($settingsRequestProfile.get()).toBe('research')
 
     setSettingsScope('default')
-    expect($settingsRequestProfile.get()).toBeUndefined()
+    expect($settingsRequestProfile.get()).toBe('default')
+
+    $activeGatewayProfile.set('coder')
+    expect($settingsRequestProfile.get()).toBe('coder')
   })
 
   it('drops the override on an app-wide profile switch', () => {

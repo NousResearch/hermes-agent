@@ -131,8 +131,8 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
-  // Shared settings "Applies to" scope, request-shaped (undefined → follow
-  // the active profile; the API helpers treat null as "target primary").
+  // Shared settings "Applies to" scope, resolved to the concrete selected
+  // profile so requests and their caches stay partitioned by profile.
   const scopeProfile = useStore($settingsRequestProfile)
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a

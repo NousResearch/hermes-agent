@@ -159,15 +159,24 @@ def _tool_def_names(tool_defs: Iterable[Dict[str, Any]]) -> Iterable[str]:
     return (_fn(td).get("name", "") for td in tool_defs)
 
 
+def _is_server_only(td: Dict[str, Any]) -> bool:
+    """A provider-executed def (``_hermes_server_tool`` binding, e.g. native Anthropic web
+    search) has no local handler, so it never defers — even when ``defer`` names it. It must
+    reach the transport, which either runs it natively or drops it; behind the bridge it
+    would vanish from the request and ``tool_call`` would land on the local stub."""
+    return "_hermes_server_tool" in _fn(td)
+
+
 def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: Optional[frozenset] = None,
                    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
-    after classification)."""
+    after classification) and server-only defs stay visible."""
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):
         if name not in BRIDGE_TOOL_NAMES:
-            (deferrable if is_deferrable_tool_name(name, defer_tools) else visible).append(td)
+            deferred = is_deferrable_tool_name(name, defer_tools) and not _is_server_only(td)
+            (deferrable if deferred else visible).append(td)
     return visible, deferrable
 
 
@@ -526,8 +535,8 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     universe ``tool_call`` may reach. Gates bridge dispatch AND the executor unwrap so a
     restricted session cannot invoke an out-of-scope tool via the bridge."""
     defer_tools = load_config_readonly().effective_defer_tools
-    return frozenset(n for n in _tool_def_names(tool_defs)
-                     if n and is_deferrable_tool_name(n, defer_tools))
+    return frozenset(n for td, n in zip(tool_defs, _tool_def_names(tool_defs))
+                     if n and not _is_server_only(td) and is_deferrable_tool_name(n, defer_tools))
 
 
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:

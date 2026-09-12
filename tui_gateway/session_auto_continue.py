@@ -54,28 +54,30 @@ def _auto_continue_note(prompt: str) -> str:
             f"finish the task. The interrupted request was:]\n\n{prompt}")
 
 
-def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
-    """Kick off a continuation turn for a crash-interrupted session (session.resume cold paths). Returns a descriptor
-    for the resume payload when scheduled, else None. The turn runs on a background thread after the deferred agent
-    build via _run_prompt_submit, so the client that just resumed streams it."""
-    # Hosted room turns are recovered by their durable task/lease state machine; generic auto-continue would bypass
-    # its execution generation and duplicate work.
-    if session.get("source") == "bot_room":
+def _goal_auto_resume_enabled() -> bool:
+    """``goals.auto_resume_on_reconnect`` — opt in to re-entering an active goal after a crash."""
+    goals_cfg = _load_cfg().get("goals")
+    return is_truthy_value((goals_cfg if isinstance(goals_cfg, dict) else {}).get("auto_resume_on_reconnect"),
+                           default=False)
+
+
+def _active_goal_manager_for_session(session: dict, session_key: str):
+    """The session's ``GoalManager`` when its goal is still active, else None (never raises)."""
+    from hermes_cli.goals import GoalManager
+    try:
+        max_turns = _coerce_int_config_value((_load_cfg().get("goals") or {}).get("max_turns"), 20, min_value=1)
+        with _session_profile_runtime_scope(session):
+            manager = GoalManager(session_id=session_key, default_max_turns=max_turns)
+            return manager if manager.is_active() else None
+    except Exception:
+        logger.debug("auto-continue goal lookup failed for %s", session_key, exc_info=True)
         return None
-    home = _session_home(session)
-    if (marker := read_turn_marker(home, session_key)) is None:
-        return None
-    if not marker.get("auto_continue", True):
-        return None  # The mailbox owns recovery and receipt identity for imported turns.
-    enabled, freshness_secs, max_attempts = _auto_continue_config()
-    age = time.time() - marker["started_at"]
-    if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
-        clear_turn_marker(home, session_key)  # stale/disabled/crash-looping: a manual message continues
-        return None
-    if session.get("_auto_continue_scheduled"):
-        return None
-    session["_auto_continue_scheduled"] = True
-    attempt, text = marker["attempts"] + 1, _auto_continue_note(marker["prompt"])
+
+
+def _schedule_auto_continue_turn(
+    sid: str, session: dict, *, text: str, marker_prompt: str, attempt: int, status: dict) -> None:
+    """Run the continuation on a background thread after the deferred agent build, so the client that
+    just resumed streams it. ``status`` is the status.update payload announcing the continuation."""
 
     def kickoff() -> None:
         rid = f"__auto_continue__{int(time.time() * 1000)}"
@@ -99,7 +101,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         # Running the continuation anyway would be the double-writer this fence exists to prevent. See
         # #94778.
         if _ensure_active_session_slot(sid, session) is not None:
-            logger.info("auto-continue for %s refused: session has another live owner", session_key)
+            logger.info("auto-continue for %s refused: session has another live owner", sid)
             with session["history_lock"]:
                 session["running"] = False
                 session["_auto_continue_scheduled"] = False
@@ -107,15 +109,80 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         with session["history_lock"]:
             # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker) and the ORIGINAL prompt (no
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
-            session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
+            session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker_prompt
         try:
-            _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
+            _emit("status.update", sid, status)
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
             _notif_release_turn(session)  # rebound from session_notifications
     threading.Thread(target=kickoff, daemon=True).start()
+
+
+def _goal_auto_continue(
+    sid: str, session: dict, session_key: str, marker: dict, goal_mgr, *,
+    enabled: bool, max_attempts: int) -> dict | None:
+    """Recover a crash-interrupted turn of an ACTIVE goal.
+
+    An active goal is a standing intent, so the freshness window that retires ordinary markers must
+    not silently drop it. Opting into ``goals.auto_resume_on_reconnect`` re-enters the goal with its
+    own structured continuation prompt; by default the goal records the interruption and the resume
+    payload reports it, so the Desktop can offer ``goal.continue`` instead.
+    """
+    home = _session_home(session)
+    title = str(getattr(goal_mgr.state, "goal", "") or "")
+    attempt = marker["attempts"] + 1
+    auto = enabled and _goal_auto_resume_enabled() and marker["attempts"] < max_attempts
+    text = ""
+    if auto and not session.get("_auto_continue_scheduled"):
+        with _session_profile_runtime_scope(session):
+            text = goal_mgr.continue_after_interruption() or ""
+    if not text:
+        # The goal state now carries the interruption; the marker would only re-trigger this branch.
+        with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+            goal_mgr.mark_interrupted(marker["started_at"])
+        clear_turn_marker(home, session_key)
+        return {"goal_interrupted": True, "goal_title": title, "interrupted_at": marker["started_at"]}
+    session["_auto_continue_scheduled"] = True
+    _schedule_auto_continue_turn(
+        sid, session, text=text, marker_prompt=marker["prompt"], attempt=attempt,
+        status={"kind": "goal", "text": f"▶ Goal continuing after restart: {title}"})
+    logger.info("goal auto-continue scheduled for session %s (attempt %d)", session_key, attempt)
+    # Same shape as the plain scheduled continuation: the turn is already streaming, so the client
+    # needs no goal detail here (the status.update carries the title).
+    return {"attempt": attempt, "interrupted_at": marker["started_at"]}
+
+
+def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
+    """Kick off a continuation turn for a crash-interrupted session (session.resume cold paths). Returns a descriptor
+    for the resume payload when scheduled, else None. The turn runs on a background thread after the deferred agent
+    build via _run_prompt_submit, so the client that just resumed streams it."""
+    # Hosted room turns are recovered by their durable task/lease state machine; generic auto-continue would bypass
+    # its execution generation and duplicate work.
+    if session.get("source") == "bot_room":
+        return None
+    home = _session_home(session)
+    if (marker := read_turn_marker(home, session_key)) is None:
+        return None
+    if not marker.get("auto_continue", True):
+        return None  # The mailbox owns recovery and receipt identity for imported turns.
+    enabled, freshness_secs, max_attempts = _auto_continue_config()
+    # An active goal outranks the freshness heuristic: it is durable intent, not one stale prompt.
+    if (goal_mgr := _active_goal_manager_for_session(session, session_key)) is not None:
+        return _goal_auto_continue(sid, session, session_key, marker, goal_mgr,
+                                   enabled=enabled, max_attempts=max_attempts)
+    age = time.time() - marker["started_at"]
+    if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
+        clear_turn_marker(home, session_key)  # stale/disabled/crash-looping: a manual message continues
+        return None
+    if session.get("_auto_continue_scheduled"):
+        return None
+    session["_auto_continue_scheduled"] = True
+    attempt = marker["attempts"] + 1
+    _schedule_auto_continue_turn(
+        sid, session, text=_auto_continue_note(marker["prompt"]), marker_prompt=marker["prompt"], attempt=attempt,
+        status={"kind": "process", "text": "Resuming interrupted turn…"})
     logger.info("auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago)", session_key, attempt, age)
     return {"attempt": attempt, "interrupted_at": marker["started_at"]}
 

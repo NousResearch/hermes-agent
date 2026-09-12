@@ -1203,9 +1203,10 @@ When a standing goal is active, Hermes judges whether each assistant response sa
 ```yaml
 goals:
   max_turns: 20   # Max continuation turns before Hermes auto-pauses the goal (default: 20)
+  auto_resume_on_reconnect: false   # Continue an interrupted goal automatically on Desktop reconnect (default: false)
 ```
 
-`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. See [Goals](/user-guide/features/goals) for the full feature.
+`max_turns` caps how many continuation turns a goal can drive before Hermes auto-pauses it and asks the user to `/goal resume`. It protects against judge false negatives (goal actually done but judge says continue) and unbounded model spend on fuzzy or unachievable goals. `auto_resume_on_reconnect` decides what happens to a goal whose turn was killed by a crash or app quit: off (default) the Desktop shows the goal as Interrupted and waits for the **Resume goal** action; on, the continuation is dispatched as soon as the app reconnects, bounded by `desktop.auto_continue.max_attempts`. Either way the turn budget is not reset. See [Goals](/user-guide/features/goals) for the full feature.
 
 ### API Timeouts
 

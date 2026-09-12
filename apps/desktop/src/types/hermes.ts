@@ -715,11 +715,21 @@ export interface SessionMessagesResponse {
 export interface SessionResumeResponse {
   /** Present when the backend found a fresh crash-interrupted turn and
    *  scheduled its automatic continuation; the turn arrives as a normal
-   *  message.start stream right after this resume. */
-  auto_continue?: {
-    attempt: number
-    interrupted_at: number
-  }
+   *  message.start stream right after this resume.
+   *
+   *  The `goal_interrupted` shape is the opposite report: an ACTIVE goal's turn
+   *  died with the process and nothing was auto-continued, so the goal card
+   *  must offer the resume itself. */
+  auto_continue?:
+    | {
+        attempt: number
+        interrupted_at: number
+      }
+    | {
+        goal_interrupted: true
+        goal_title: string
+        interrupted_at: number
+      }
   hydrating?: boolean
   inflight?: null | {
     assistant?: string

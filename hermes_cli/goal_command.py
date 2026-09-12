@@ -52,6 +52,15 @@ def _resume(mgr, arg, render):
                              prompt=mgr.next_continuation_prompt())
 
 
+def _continue(mgr, arg, render):
+    """Crash recovery: pick the active goal back up without spending the resume budget reset."""
+    prompt = mgr.continue_after_interruption()
+    if prompt is None:
+        return GoalCommandResult(render("gateway.no_active_goal", "No active goal to continue."))
+    return GoalCommandResult(render("gateway.goal.continuing", "▶ Goal continuing: {goal}", goal=mgr.state.goal),
+                             prompt=prompt)
+
+
 def _clear(mgr, arg, render):
     had = mgr.has_goal()
     mgr.clear()
@@ -97,7 +106,7 @@ def _gate_clear(mgr, arg):
 _GATE_HANDLERS = {"add": _gate_add, "remove": _gate_remove, "rm": _gate_remove, "clear": _gate_clear}
 _EXACT_HANDLERS = {
     "": _status, "status": _status, "show": _show, "pause": _pause,
-    "resume": _resume, "clear": _clear, "stop": _clear, "done": _clear, "unwait": _unwait,
+    "resume": _resume, "continue": _continue, "clear": _clear, "stop": _clear, "done": _clear, "unwait": _unwait,
 }
 
 
@@ -151,7 +160,8 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         against = " against the contract above" if state.has_contract() else ""
         output += (f"\nAfter each turn, a judge model checks if the goal is done{against}. "
                    "Hermes keeps working until it is, you pause/clear it, or the budget is "
-                   "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.")
+                   "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, "
+                   "/goal continue (pick up after a crash), /goal clear.")
     return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
 
 

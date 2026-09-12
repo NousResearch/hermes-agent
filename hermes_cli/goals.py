@@ -445,6 +445,10 @@ class GoalState:
     waiting_on_delegations: int = 0
     waiting_reason: Optional[str] = None
     waiting_since: float = 0.0
+    # When a turn of this goal died with the backend (Desktop quit, crash): the interrupted turn's
+    # start time, so the surface can offer a continuation the freshness heuristic would have dropped.
+    # Cleared by continue/resume/pause/clear and by the next successful post-turn evaluation.
+    interrupted_at: Optional[float] = None
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
@@ -469,6 +473,7 @@ class GoalState:
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_reason=data.get("waiting_reason"),
+            interrupted_at=(float(data["interrupted_at"]) if data.get("interrupted_at") else None),
             contract=GoalContract.from_dict(data.get("contract")),
             gates=[
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
@@ -1165,6 +1170,7 @@ class GoalManager:
         self._state.status = "paused"
         self._state.paused_reason = reason
         self._state.clear_wait()   # a wait barrier is meaningless once paused
+        self._state.interrupted_at = None
         return self._save()
 
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
@@ -1173,14 +1179,39 @@ class GoalManager:
         self._state.status = "active"
         self._state.paused_reason = None
         self._state.clear_wait()   # resuming starts fresh
+        self._state.interrupted_at = None
         if reset_budget:
             self._state.turns_used = 0
+        return self._save()
+
+    def continue_after_interruption(self) -> Optional[str]:
+        """Continuation prompt for an ACTIVE goal whose turn died with the backend.
+
+        Unlike ``resume`` (the budget-reset verb) this spends no budget and changes no
+        status: the goal was never paused, only its turn was killed. Returns None when
+        there is nothing active to continue.
+        """
+        state = self._state
+        if state is None or not self.is_active():
+            return None
+        if state.interrupted_at is not None:
+            state.interrupted_at = None
+            self._save()
+        return self.next_continuation_prompt()
+
+    def mark_interrupted(self, interrupted_at: float) -> Optional[GoalState]:
+        """Record that a turn of this active goal died with the backend."""
+        state = self._state
+        if state is None or not self.is_active():
+            return None
+        state.interrupted_at = float(interrupted_at)
         return self._save()
 
     def clear(self) -> None:
         if self._state is None:
             return
         self._state.status = "cleared"
+        self._state.interrupted_at = None
         self._save()
         self._state = None
 
@@ -1458,6 +1489,8 @@ class GoalManager:
 
         state.turns_used += 1
         state.last_turn_at = time.time()
+        # A turn ran to completion: whatever the last crash interrupted is now superseded.
+        state.interrupted_at = None
 
         # Gates run BEFORE the judge: a failing gate is deterministic evidence the goal is not done,
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).

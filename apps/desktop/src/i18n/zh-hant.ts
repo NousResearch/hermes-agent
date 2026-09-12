@@ -2392,6 +2392,7 @@ export const zhHant = defineLocale({
     goalActive: '目標進行中',
     goalBlocked: '目標受阻',
     goalDone: '目標已完成',
+    goalInterrupted: '已中斷',
     goalPaused: '目標已暫停',
     goalWaiting: '目標等待中',
     subagents: count => `${count} 個子代理`,

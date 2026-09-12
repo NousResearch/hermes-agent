@@ -75,6 +75,7 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     setSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
       branchSession: vi.fn(async () => undefined),
+      branchSessionAtMessage: vi.fn(async () => true),
       deleteSession: vi.fn(async () => undefined),
       executeSlash: vi.fn(async () => undefined),
       interruptSession: vi.fn(async () => undefined),

@@ -1684,7 +1684,17 @@ def run_kanban_goal_loop(
             last_response = run_turn(prompt) or ""
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
-            return _result("stopped", f"run_turn error: {type(exc).__name__}")
+            reason = (
+                "Kanban goal worker turn failed before it could complete the task: "
+                f"{type(exc).__name__}: {_truncate(str(exc), 400)}"
+            )
+            # This crosses the durable Kanban/user-facing boundary.  Keep the actionable
+            # exception type/context, but never persist or display secret-shaped details.
+            from agent.redact import redact_sensitive_text
+
+            reason = redact_sensitive_text(reason, force=True, redact_url_credentials=True)
+            _block(reason)
+            return _result("blocked_turn_error", reason)
         turns_used += 1
 
 

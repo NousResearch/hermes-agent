@@ -863,7 +863,259 @@ class TestMattermostMentionBehavior:
 # File upload (send_image)
 # ---------------------------------------------------------------------------
 
+class TestMattermostAuthoritativeFallback:
+    def transport(self, outcomes):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
+        adapter._session = MagicMock()
+        adapter._api_get = AsyncMock(return_value={"root_id": "root"})
+        adapter._upload_file = AsyncMock(side_effect=[f"file-{i}" for i in range(20)])
+        posts, events = [], []
+
+        def post(url, **kwargs):
+            import aiohttp
+            payload = kwargs["json"]
+            posts.append(payload)
+            events.append(("post", payload.get("file_ids")))
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 201
+            response.text.return_value = "invalid message"
+            outcome = outcomes[len(posts) - 1] if len(posts) <= len(outcomes) else "ok"
+            response.json.return_value = {"id": f"post-{len(posts)}"}
+            if isinstance(outcome, int):
+                response.status = outcome
+            elif outcome == "empty":
+                response.json.return_value = {}
+            elif outcome == "invalid":
+                response.json.side_effect = ValueError("invalid JSON")
+            elif outcome == "invalid_body":
+                response.json.return_value = []
+            elif outcome == "body_claims_rejection":
+                response.json.return_value = {"_post_rejection_status": 413}
+            elif outcome == "timeout":
+                response.json.side_effect = TimeoutError()
+            elif outcome == "disconnect":
+                response.json.side_effect = aiohttp.ServerDisconnectedError()
+            elif outcome == "cancelled":
+                import asyncio
+                response.json.side_effect = asyncio.CancelledError()
+            elif outcome == "broken_root":
+                response.status = 400
+                response.text.return_value = "invalid root_id"
+            elif outcome == "rejection_body_timeout":
+                response.status = 413
+                response.text.side_effect = TimeoutError()
+            return response
+
+        adapter._session.post.side_effect = post
+        return adapter, posts, events
+
+    def images(self, tmp_path, count=2):
+        paths = [tmp_path / f"image-{i}.png" for i in range(count)]
+        for path in paths:
+            path.write_bytes(b"image")
+        return [(str(path), "") for path in paths]
+
+    @pytest.mark.parametrize("status", [400, 403, 404, 413, 422])
+    @pytest.mark.asyncio
+    async def test_batch_fallback_requires_authoritative_rejection(self, tmp_path, status):
+        adapter, posts, events = self.transport([status])
+        result = await adapter.send_multiple_images(
+            "channel", self.images(tmp_path), caption="  caption @here\n",
+            metadata={"thread_id": "root", "mattermost_explicit_thread": True})
+        assert result.success
+        assert result.raw_response["delivered_media"] == 2
+        assert result.raw_response["failed_media"] == 0
+        assert result.raw_response["message_ids"] == ["post-2", "post-3"]
+        assert [p.get("file_ids") for p in posts] == [["file-0", "file-1"], ["file-0"], ["file-1"]]
+        assert sum(p["message"] == "  caption @here\n" for p in posts[1:]) == 1
+        assert all(p["root_id"] == "root" and p["props"]["disable_mentions"] for p in posts)
+        assert adapter._upload_file.await_count == 2
+
+    @pytest.mark.parametrize("outcome", [401, 429, 500, 503, "empty", "timeout", "disconnect",
+                                          "invalid", "invalid_body", "rejection_body_timeout", "body_claims_rejection"])
+    @pytest.mark.asyncio
+    async def test_batch_never_replays_without_authoritative_rejection(self, tmp_path, outcome):
+        adapter, posts, events = self.transport([outcome])
+        adapter._last_post_status = 413
+        result = await adapter.send_multiple_images("channel", self.images(tmp_path), caption="caption")
+        assert not result.success
+        assert result.raw_response["delivered_media"] == 0
+        assert result.raw_response["message_ids"] == []
+        assert len(posts) == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_result_cannot_borrow_stale_rejection(self, tmp_path):
+        adapter, posts, events = self.transport([])
+        adapter._last_post_status = 413
+        adapter._api_post = AsyncMock(return_value={})
+        result = await adapter.send_multiple_images("channel", self.images(tmp_path), caption="caption")
+        assert not result.success
+        assert adapter._api_post.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_batch_fallback_waits_before_each_single_file_send(self, tmp_path, monkeypatch):
+        adapter, posts, events = self.transport([413])
+        async def delay(seconds):
+            events.append(("delay", seconds))
+        monkeypatch.setattr("plugins.platforms.mattermost.adapter.asyncio.sleep", delay)
+        result = await adapter.send_multiple_images("channel", self.images(tmp_path), human_delay=0.25)
+        assert result.success
+        assert events == [("post", ["file-0", "file-1"]), ("delay", 0.25),
+                          ("post", ["file-0"]), ("delay", 0.25), ("post", ["file-1"])]
+
+    @pytest.mark.parametrize("outcome", [413, "empty", "timeout", "disconnect"])
+    @pytest.mark.asyncio
+    async def test_fallback_stops_at_first_failed_single_with_prior_receipts(self, tmp_path, outcome):
+        adapter, posts, events = self.transport([413, "ok", outcome])
+        result = await adapter.send_multiple_images("channel", self.images(tmp_path, 6), caption="caption")
+        assert result.success  # Gateway means any-media success, public receipt means all requested.
+        assert not result.raw_response["success"]
+        assert result.raw_response["delivered_media"] == 1
+        assert result.raw_response["failed_media"] == 5
+        assert result.raw_response["message_ids"] == ["post-2"]
+        assert len(posts) == 3
+        assert adapter._upload_file.await_count == 5
+
+    @pytest.mark.parametrize("warning", [False, True])
+    @pytest.mark.asyncio
+    async def test_acknowledged_caption_or_warning_prevents_single_replay(self, tmp_path, warning):
+        adapter, posts, events = self.transport(["broken_root", "ok", 413] if warning else ["ok", 413])
+        result = await adapter.send_multiple_images(
+            "channel", self.images(tmp_path), caption="x" * (500 if warning else 700),
+            metadata={"notify": warning, "thread_id": "root", "mattermost_explicit_thread": True})
+        assert not result.success
+        assert result.raw_response["delivered_media"] == 0
+        assert result.raw_response["message_ids"] == ["post-2" if warning else "post-1"]
+        assert len(posts) == (3 if warning else 2)
+        assert all(len(p["message"]) <= 500 for p in posts)
+
+    @pytest.mark.asyncio
+    async def test_shared_caption_survives_unposted_single_fallbacks(self, tmp_path):
+        adapter, posts, events = self.transport([413, 413])
+        caption = "  explicit @here\n"
+        result = await adapter.send_multiple_images("channel", self.images(tmp_path), caption=caption)
+        assert not result.success
+        assert result.raw_response["delivered_media"] == 0
+        assert result.raw_response["message_ids"] == ["post-3"]
+        assert len(posts) == 3
+        assert posts[-1]["message"] == caption and "file_ids" not in posts[-1]
+
+    @pytest.mark.parametrize("all_missing", [False, True])
+    @pytest.mark.asyncio
+    async def test_tuple_caption_survives_an_entire_missing_batch(self, tmp_path, all_missing):
+        adapter, posts, events = self.transport([])
+        images = [(str(tmp_path / f"missing-{i}.png"), "  tuple caption\n" if i == 0 else "") for i in range(5)]
+        if not all_missing:
+            images += self.images(tmp_path, 1)
+        result = await adapter.send_multiple_images("channel", images)
+        assert result.success is (not all_missing)
+        assert posts[0]["message"] == "  tuple caption\n"
+        assert result.raw_response["delivered_media"] == (0 if all_missing else 1)
+
+    @pytest.mark.asyncio
+    async def test_fallback_cancellation_propagates_without_another_post(self, tmp_path):
+        import asyncio
+        adapter, posts, events = self.transport([413, "cancelled"])
+        with pytest.raises(asyncio.CancelledError):
+            await adapter.send_multiple_images("channel", self.images(tmp_path), caption="caption")
+        assert len(posts) == 2
+
+
 class TestMattermostFileUpload:
+    @pytest.mark.parametrize("content_ok", [False, True])
+    @pytest.mark.parametrize("missing", [False, True])
+    @pytest.mark.asyncio
+    async def test_batch_retains_prior_post_acknowledgements(self, tmp_path, content_ok, missing):
+        path = tmp_path / "image.png"
+        if not missing:
+            path.write_bytes(b"image")
+        self.adapter._upload_file = AsyncMock(return_value="file")
+        # The optional length feature can emit an acknowledged warning before this post.
+        ids = ["notice", "content"] if content_ok else ["notice"]
+        data = {"message_ids": ids, **({"id": "content"} if content_ok else {})}
+        self.adapter._post_message = AsyncMock(return_value=data)
+        result = await self.adapter.send_multiple_images(
+            "channel", [(path.as_uri(), "")], caption="caption")
+        assert result.raw_response["message_ids"] == ids
+        assert result.message_id == ids[-1]
+        assert result.continuation_message_ids == tuple(ids[:-1])
+        delivered = int(content_ok and not missing)
+        assert result.raw_response["delivered_media"] == delivered
+        assert result.raw_response["media_delivered"] is bool(delivered)
+        assert result.raw_response["partial_failure"] is (not bool(delivered))
+        assert result.success is bool(delivered)
+        self.adapter._post_message.assert_awaited_once()
+
+    @pytest.mark.parametrize("caption", ["  caption\n", " \t "])
+    @pytest.mark.asyncio
+    async def test_missing_first_image_keeps_tuple_caption(self, tmp_path, caption):
+        missing = tmp_path / "missing.png"
+        valid = tmp_path / "valid.png"
+        valid.write_bytes(b"image")
+        self.adapter._upload_file = AsyncMock(return_value="file")
+        self.adapter._api_post = AsyncMock(return_value={"id": "ack"})
+        result = await self.adapter.send_multiple_images(
+            "channel", [(missing.as_uri(), caption), (valid.as_uri(), "")])
+        assert result.success
+        assert result.raw_response["delivered_media"] == 1
+        assert self.adapter._api_post.await_args.args[1]["message"] == caption
+
+    @pytest.mark.parametrize("caption", [None, "  explicit @here\n", " \t "])
+    @pytest.mark.asyncio
+    async def test_file_caption_preserved_or_safe_filename(self, tmp_path, caption):
+        path = tmp_path / ("  @channel\n" + "a" * 180 + ".png")
+        path.write_bytes(b"image")
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"root_id": "root"})
+        self.adapter._upload_file = AsyncMock(return_value="file")
+        self.adapter._api_post = AsyncMock(return_value={"id": "ack"})
+        result = await self.adapter.send_image_file("channel", str(path), caption=caption,
+                                                    metadata={"thread_id": "reply"})
+        payload = self.adapter._api_post.await_args.args[1]
+        assert result.success
+        assert payload["root_id"] == "root"
+        assert payload["file_ids"] == ["file"]
+        assert payload["props"]["disable_mentions"] is True
+        if caption is not None:
+            assert payload["message"] == caption
+        else:
+            assert payload["message"].startswith("📎 @\u200bchannel ")
+            assert len(payload["message"]) <= 162
+            assert "\n" not in payload["message"]
+
+    @pytest.mark.parametrize("failure", ["missing", "post_response_lost", "later_exception"])
+    @pytest.mark.asyncio
+    async def test_image_batch_partial_receipts_without_retry(self, tmp_path, failure):
+        count = 6 if failure == "later_exception" else 1
+        paths = [tmp_path / f"image-{i}.png" for i in range(count)]
+        for path in paths:
+            if failure != "missing":
+                path.write_bytes(b"image")
+        self.adapter._upload_file = AsyncMock(return_value="file")
+        self.adapter._api_post = AsyncMock(side_effect=(
+            [{"id": "ack"}, RuntimeError("lost response")] if failure == "later_exception" else [{}]
+        ))
+        self.adapter.send_image = AsyncMock(side_effect=AssertionError("must not retry a possibly accepted post"))
+        result = await self.adapter.send_multiple_images("channel", [(path.as_uri(), "") for path in paths])
+        assert result.success is (failure == "later_exception")
+        assert result.error
+        assert result.message_id == ("ack" if failure == "later_exception" else None)
+        assert result.raw_response["delivered_media"] == (5 if failure == "later_exception" else 0)
+        assert result.raw_response["total_media"] == count
+        assert result.raw_response["message_ids"] == (["ack"] if failure == "later_exception" else [])
+        assert self.adapter._api_post.await_count == {"missing": 0, "post_response_lost": 1, "later_exception": 2}[failure]
+        self.adapter.send_image.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_local_file_is_failure(self, tmp_path):
+        self.adapter._api_post = AsyncMock()
+        result = await self.adapter.send_document("channel", str(tmp_path / "missing.pdf"))
+        assert result.success is False
+        assert result.error
+        self.adapter._api_post.assert_not_awaited()
+
     def setup_method(self):
         self.adapter = _make_adapter()
         self.adapter._session = MagicMock()

@@ -165,6 +165,35 @@ def test_pending_response_does_not_mask_later_terminal_exit(
     assert agent._handle_max_iterations_called is False
 
 
+def test_strict_iteration_limit_never_makes_summary_call(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    agent.strict_iteration_limit = True
+
+    result = _finalize(agent, final_response=None, exit_reason="unknown")
+
+    assert result["completed"] is False
+    assert agent._handle_max_iterations_called is False
+
+
+def test_trusted_runtime_success_on_iteration_limit_completes(monkeypatch):
+    """A trusted stop on the last allowed call is a success, not a cap failure."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    agent._runtime_terminal_outcome = {
+        "reason": "max_items", "status": "success",
+        "policy": "fleet-runtime", "run_id": "run-1",
+    }
+
+    result = _finalize(
+        agent, final_response=None,
+        exit_reason="runtime_stop(max_items)", api_call_count=60,
+    )
+
+    assert result["completed"] is True
+    assert agent._handle_max_iterations_called is False
+
+
 def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
@@ -371,5 +400,4 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     )
 
     record.assert_not_called()
-
 

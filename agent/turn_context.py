@@ -467,7 +467,7 @@ def _bind_turn_identity(
     agent._persist_user_message_timestamp = persist_user_timestamp
     agent._persist_user_message_platform_id = persist_user_platform_id
     # Unique task_id when not provided isolates VMs between tasks.
-    effective_task_id = task_id or str(uuid.uuid4())
+    effective_task_id = task_id or getattr(agent, "runtime_task_id", None) or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
     agent._process_owner_task_ids = {*getattr(agent, "_process_owner_task_ids", ()), effective_task_id}
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "") or (

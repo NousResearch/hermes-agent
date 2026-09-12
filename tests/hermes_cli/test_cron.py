@@ -395,6 +395,16 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     assert "Nightly docs" in out
 
 
+def test_job_details_render_the_per_job_cap_and_policy(capsys):
+    """`cron create`/`cron edit` echo the operator-owned cap and policy back."""
+    cron_cli._print_job_details(
+        {"max_turns": 12, "runtime_policy": "fleet-runtime", "workdir": "/srv"})
+
+    out = capsys.readouterr().out
+    assert "Max turns: 12" in out
+    assert "Runtime policy: fleet-runtime" in out
+
+
 def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
     calls = []
     monkeypatch.setattr("cron.scheduler.tick", lambda verbose=False: calls.append(verbose))

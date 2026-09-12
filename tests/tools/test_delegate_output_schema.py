@@ -317,6 +317,7 @@ class TestRunSingleChildSchemaValidation:
 
 def _make_mock_parent():
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent._delegate_depth = 0
     parent._active_children = []
     parent._active_children_lock = threading.Lock()

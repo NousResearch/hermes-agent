@@ -166,6 +166,7 @@ class TestMissedSteerRetention:
         from tools.delegate_tool import delegate_task
 
         parent = MagicMock()
+        parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
         parent._delegate_depth = 0
         parent.model = "test-model"
         parent.interactive_mode = False
@@ -203,6 +204,7 @@ class TestMissedSteerRetention:
         from tools.delegate_tool import delegate_task
 
         parent = MagicMock()
+        parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
         parent._delegate_depth = 0
         parent.model = "test-model"
         parent.interactive_mode = False
@@ -272,6 +274,7 @@ class TestMissedSteerRetention:
         child.steer.side_effect = steer
         child._drain_pending_steer.side_effect = drain
         parent = MagicMock()
+        parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
 
         result_box: dict = {}
         runner = threading.Thread(

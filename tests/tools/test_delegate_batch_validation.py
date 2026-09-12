@@ -22,6 +22,10 @@ from tools.delegate_tool import delegate_task
 
 def _make_mock_parent(depth=0):
     parent = MagicMock()
+    # MagicMock auto-vivifies attributes, so an unpinned runtime_policy reads
+    # truthy and makes this plain CLI parent look like an authoritative
+    # scheduled run (which refuses to spawn). agent_init defaults it to None.
+    parent.runtime_policy = None
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key = "test-key"
     parent.provider = "openrouter"

@@ -23,6 +23,7 @@ from hermes_cli import plugins
 
 def _make_parent(depth: int = 0, session_id: str = "parent-1"):
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key = "***"
     parent.provider = "openrouter"

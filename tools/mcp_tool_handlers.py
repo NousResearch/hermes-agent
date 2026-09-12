@@ -38,6 +38,19 @@ _STDIO_OUTCOME_UNCERTAIN_MSG = (
     "Hermes did not replay it. Do NOT retry automatically; inspect the external state first.")
 
 
+_mcp_runtime_stop: contextvars.ContextVar[Optional[Dict[str, str]]] = (
+    contextvars.ContextVar("mcp_runtime_stop", default=None)
+)
+
+
+def consume_mcp_runtime_stop() -> Optional[Dict[str, str]]:
+    """Consume the trusted stop directive produced by the last MCP call."""
+    directive = _mcp_runtime_stop.get()
+    _mcp_runtime_stop.set(None)
+    return directive
+
+
+
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
@@ -308,7 +321,7 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str):
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, *, meta=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -322,7 +335,7 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
             f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched",
             in_flight=False,
         )
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    _call_coro = server.session.call_tool(tool_name, arguments=args, **({"meta": meta} if meta else {}))
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
@@ -469,6 +482,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> str:
+        _mcp_runtime_stop.set(None)
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
         if error is not None:
@@ -477,24 +491,151 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         if server is None:
             return error
 
+        from hermes_cli.plugins import invoke_hook
+        request_meta: Dict[str, Any] = {}
+        try:
+            from hermes_cli.plugins_authority import (
+                invoke_authoritative_run_hook,
+                resolve_authoritative_run,
+            )
+            _session_id = str(kwargs.get("session_id") or "")
+            _task_id = str(kwargs.get("task_id") or "")
+            # Resolve by the immutable run identity first; the session id is
+            # only the fallback, because compression rotates it mid-run.
+            _run_id = resolve_authoritative_run(
+                run_id=_task_id, session_id=_session_id,
+            )
+            if _run_id:
+                values = [invoke_authoritative_run_hook(
+                    _run_id, "mcp_request_metadata", session_id=_session_id,
+                    server_name=server_name, tool_name=tool_name,
+                    task_id=_task_id,
+                )]
+            else:
+                values = invoke_hook(
+                    "mcp_request_metadata", server_name=server_name,
+                    tool_name=tool_name, session_id=_session_id,
+                    task_id=_task_id,
+                )
+            for value in values:
+                supplied = value.get("meta") if isinstance(value, dict) else None
+                if not isinstance(supplied, dict):
+                    if _run_id:
+                        raise RuntimeError("authoritative metadata callback returned no meta")
+                    continue
+                overlap = request_meta.keys() & supplied.keys()
+                if overlap:
+                    return tool_error(
+                        "Conflicting trusted MCP metadata keys: "
+                        + ", ".join(sorted(overlap))
+                    )
+                request_meta.update(supplied)
+        except Exception as exc:
+            return tool_error(f"Trusted MCP metadata failed: {type(exc).__name__}")
+
+        response_meta: Any = None
+        response_is_error = False
+        response_received = False
+
         async def _call():
+            nonlocal response_meta, response_is_error, response_received
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args, meta=request_meta)
                 finally:
                     server._pending_call_context = None
+            response_received = True
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
+            response_meta = mcp_field(result, "meta", "meta")
+            response_is_error = bool(mcp_field(result, "is_error", "isError", False))
             return _render_call_tool_result(result, server_name)
+
+        def _record_runtime_stop(result: str) -> str:
+            _session_id = str(kwargs.get("session_id") or "")
+            _task_id = str(kwargs.get("task_id") or "")
+            _run_id = None
+            _policy_id = None
+            try:
+                from hermes_cli.plugins_authority import (
+                    authoritative_run_policy,
+                    invoke_authoritative_run_hook,
+                    resolve_authoritative_run,
+                )
+                _run_id = resolve_authoritative_run(
+                    run_id=_task_id, session_id=_session_id,
+                )
+                _policy_id = authoritative_run_policy(_run_id) if _run_id else None
+                if not response_received:
+                    if _run_id:
+                        _mcp_runtime_stop.set({
+                            "reason": "mcp_transport_error", "status": "failure",
+                            "policy": str(_policy_id or _run_id), "run_id": str(_run_id),
+                        })
+                    return result
+                if _run_id:
+                    decisions = [invoke_authoritative_run_hook(
+                        _run_id, "mcp_tool_result", session_id=_session_id,
+                        server_name=server_name, tool_name=tool_name,
+                        task_id=_task_id, meta=response_meta,
+                        is_error=response_is_error,
+                    )]
+                else:
+                    decisions = invoke_hook(
+                        "mcp_tool_result", server_name=server_name,
+                        tool_name=tool_name, session_id=_session_id,
+                        task_id=_task_id, meta=response_meta,
+                        is_error=response_is_error,
+                    )
+                for decision in decisions:
+                    if not isinstance(decision, dict):
+                        if _run_id:
+                            raise RuntimeError("authoritative result callback returned no decision")
+                        continue
+                    if decision.get("action") == "stop":
+                        reason = decision.get("reason")
+                        status = decision.get("status")
+                        if _run_id:
+                            if not isinstance(reason, str) or not reason.strip():
+                                raise RuntimeError("authoritative stop reason is invalid")
+                            if not isinstance(status, str) or status not in {"success", "failure"}:
+                                raise RuntimeError("authoritative stop status is invalid")
+                            if response_is_error and status == "success":
+                                # The RPC itself failed; a policy cannot settle it green.
+                                raise RuntimeError("authoritative stop claims success for an errored MCP result")
+                        else:
+                            reason = str(reason or "mcp_result")
+                        directive = {"reason": reason}
+                        if _run_id:
+                            directive.update(
+                                status=status,
+                                policy=str(_policy_id or _run_id),
+                                run_id=str(_run_id),
+                            )
+                        _mcp_runtime_stop.set(directive)
+                        break
+                    if _run_id and decision.get("action") != "continue":
+                        raise RuntimeError("authoritative result action is invalid")
+            except Exception as exc:
+                if _run_id:
+                    _mcp_runtime_stop.set({
+                        "reason": "policy_error", "status": "failure",
+                        "policy": str(_policy_id or _run_id), "run_id": str(_run_id),
+                    })
+                    return tool_error(
+                        f"Trusted MCP result policy failed: {type(exc).__name__}"
+                    )
+                logger.warning("MCP result hook failed", exc_info=True)
+            return result
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
-        return _dispatch(
+        return _record_runtime_stop(_dispatch(
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
-            _on_failure, record_outcome=True)
+            _on_failure, record_outcome=True))
     return _handler
 
 

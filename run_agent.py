@@ -1284,9 +1284,11 @@ class AIAgent(
                 return self._execute_tool_calls_sequential(*args)
 
             from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+            from agent.runtime_policy import is_authoritative
             active_env = get_active_env(effective_task_id)
             exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
-            segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
+            segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd,
+                                                mcp_barrier=is_authoritative(getattr(self, "runtime_policy", None)))
             if len(segments) == 1:
                 run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
                 return run(*args)

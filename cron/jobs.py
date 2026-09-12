@@ -1553,6 +1553,27 @@ def _normalize_failure_deliver(value: Any) -> Optional[str]:
     return _normalize_job_optional_text(value)
 
 
+def _normalize_max_turns(value: Any) -> Optional[int]:
+    """Return a positive per-job turn cap, or None when unset."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise ValueError("max_turns must be a positive integer")
+    if not isinstance(value, (int, str)) or not str(value).strip().isdigit():
+        raise ValueError("max_turns must be a positive integer")
+    turns = int(value)
+    if turns <= 0:
+        raise ValueError("max_turns must be a positive integer")
+    return turns
+
+def _normalize_runtime_policy(value: Any) -> Optional[str]:
+    """Return an operator-owned authoritative policy id, or None."""
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", value):
+        raise ValueError("runtime_policy must be a lowercase plugin policy id")
+    return value
+
 def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     """Spelling-only validation via the shared parser (cron knob never stricter/looser than
     config.yaml); model capability is deliberately NOT checked (model unknowable at create time,
@@ -1594,6 +1615,8 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "max_turns": _normalize_max_turns,
+    "runtime_policy": _normalize_runtime_policy,
 }
 
 
@@ -1704,6 +1727,8 @@ def create_job(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    max_turns: Optional[int] = None,
+    runtime_policy: Optional[str] = None,
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
@@ -1803,6 +1828,8 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]),
+        ("max_turns", _normalize_max_turns(max_turns)),
+        ("runtime_policy", _normalize_runtime_policy(runtime_policy)),
     ):
         if value is not None:
             job[key] = value

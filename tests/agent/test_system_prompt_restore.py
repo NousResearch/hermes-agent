@@ -37,6 +37,10 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     # reconstruction is gated on _use_prompt_caching, so default it off
     # for the legacy restore tests (the reconstruction tests enable it).
     agent._use_prompt_caching = False
+    # Same reason: a truthy MagicMock here would make the fresh-build path
+    # treat this CLI agent as an authoritative scheduled run and demand a
+    # required policy. Real agents default this to None (agent_init).
+    agent.runtime_policy = None
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
 

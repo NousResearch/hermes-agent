@@ -43,6 +43,7 @@ from hermes_cli.config import (
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
+from agent.runtime_policy import is_authoritative
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 
@@ -462,9 +463,9 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 
 from cron.jobs import (
-    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
-    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, use_cron_store)
+    _ensure_cron_dir, _normalize_runtime_policy, advance_next_runs, claim_dispatch,
+    claim_job_for_fire, fire_claim_fence, clear_run_claim, get_due_jobs, heartbeat_fire_claim,
+    heartbeat_run_claim, mark_job_run, save_job_output, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, create_execution, finish_execution, get_execution,
     mark_execution_handoff_pending, mark_execution_running, recover_interrupted_executions)
@@ -1825,15 +1826,17 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     return final_response
 
 
-def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str) -> None:
+def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str,
+                          final_session_id: Optional[str] = None) -> None:
     """Title, classify, end and release the cron session after the agent turn has returned."""
     # Bound every DB op so storage failure cannot hold the dispatch guard.
     _session_db = _BoundedCronSessionDB(session_db, job_id)
     # Compression may have rotated the run onto a continuation: finalize that, not the stale cron
     # id. SessionDB lineage is authoritative; agent.session_id is only a fail-safe.
-    _final_cron_session_id = cron_session_id
+    _final_cron_session_id = final_session_id or cron_session_id
     try:
-        _compression_tip = _session_db.get_compression_tip(cron_session_id)
+        # Settlement already resolved the tip for this run; one lineage read per fire.
+        _compression_tip = final_session_id or _session_db.get_compression_tip(cron_session_id)
         if _compression_tip:
             _final_cron_session_id = _compression_tip
     except (Exception, KeyboardInterrupt) as e:
@@ -1895,6 +1898,13 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
                 job_id, _lifecycle, _end_reason)
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': session lifecycle classification failed: %s", job_id, e)
+    if agent is not None and isinstance(getattr(agent, "_cron_job", None), dict):
+        from cron.scheduler_settlement import trusted_terminal_status
+        trusted = trusted_terminal_status(agent._cron_job, agent._cron_execution_id, _final_cron_session_id)
+        if trusted == "success":
+            _end_reason = "cron_complete"
+        elif trusted == "failure" or getattr(agent, "_cron_settlement_failed", False) is True:
+            _end_reason = "cron_incomplete_no_output"
     try:
         _session_db.end_session(_final_cron_session_id, _end_reason)
         # The scheduler owns cron-session finalization. AIAgent.close() also
@@ -2129,6 +2139,12 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     if _mt is None:
         _mt = _cfg.get("max_turns")
     setup.max_iterations = _resolve_turn_limit(_mt)
+    if job.get("max_turns") is not None:
+        from cron.jobs import _normalize_max_turns
+        cap = _normalize_max_turns(job["max_turns"])
+        if cap is None:
+            raise ValueError("max_turns must be a positive integer")
+        setup.max_iterations = min(setup.max_iterations, cap)
 
     # Runtime backstop (CWE-200/522): fail closed BEFORE resolution on a provider/base_url pair
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.
@@ -2242,6 +2258,7 @@ def run_job(
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
+    result = None
     model = ""
     _session_db = None
     _audit: Optional[_FireAudit] = None
@@ -2249,6 +2266,11 @@ def run_job(
     scope = _CronRunScope(job, job_id, execution_id)
     try:
         scope.enter()
+        # A persisted policy must clear the same validation the create/update paths
+        # apply. A malformed record that reached the store (hand edit, downgrade,
+        # external writer) is neither a real policy nor "no policy": running it
+        # would silently downgrade an authoritative fire to the observer path.
+        job["runtime_policy"] = _normalize_runtime_policy(job.get("runtime_policy"))
         if scope.workdir:
             logger.info("Job '%s': using task-scoped workdir %s", job_id, scope.workdir)
         _reload_dotenv_and_publish_delivery_target(job)
@@ -2266,6 +2288,14 @@ def run_job(
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
+        agent.strict_iteration_limit = job.get("max_turns") is not None
+        agent.cron_job_id = job_id
+        agent.cron_job_name = job_name
+        agent.cron_max_turns = job.get("max_turns")
+        agent.runtime_policy = job.get("runtime_policy")
+        agent.runtime_task_id = scope.task_id
+        agent._cron_execution_id = execution_id or job.get("execution_id")
+        agent._cron_job = job
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
@@ -2296,9 +2326,31 @@ def run_job(
         from cron.scheduler_detached_worker import defer_teardown_to_running_worker
         _worker_teardown_deferred = defer_teardown_to_running_worker(
             _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
+        settlement_error = None
+        if agent is not None and not _worker_teardown_deferred:
+            final_session_id = getattr(agent, "session_id", None) or _cron_session_id
+            if _session_db:
+                try:
+                    tip = _BoundedCronSessionDB(_session_db, job_id).get_compression_tip(_cron_session_id)
+                    if isinstance(tip, str) and tip:
+                        final_session_id = tip
+                except (Exception, KeyboardInterrupt):
+                    logger.debug("Job '%s': unable to resolve settlement session", job_id, exc_info=True)
+            agent._cron_final_session_id = final_session_id
+            try:
+                from cron.scheduler_settlement import settle_run
+                settle_run(agent, job, agent._cron_execution_id, final_session_id, result)
+            except (Exception, KeyboardInterrupt) as exc:
+                if is_authoritative(job.get("runtime_policy")):
+                    settlement_error = exc
+                else:
+                    logger.warning("Job '%s': session finalizer failed: %s", job_id, exc)
+        if agent is not None:
+            agent._cron_settlement_failed = settlement_error is not None
         scope.exit()
         if _session_db and not _worker_teardown_deferred:
-            _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id)
+            _finalize_cron_session(_session_db, agent, job_id, job_name, _cron_session_id,
+                                   final_session_id=getattr(agent, "_cron_final_session_id", None))
         # Tear down the ephemeral agent or the gateway leaks fds per tick (EMFILE). With deferred
         # teardown, hand the live agent back: delivery needs a live async client.
         # Release subprocesses, terminal sandboxes, browser daemons, and the main OpenAI/httpx client held
@@ -2312,6 +2364,9 @@ def run_job(
                     defer_agent_teardown.append(agent)
             else:
                 _teardown_cron_agent(agent, job_id)
+
+        if settlement_error is not None:
+            raise settlement_error
 
 
 def _teardown_cron_agent(
@@ -2904,10 +2959,14 @@ def _run_one_job_body(
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
 
-        # Empty final_response is a soft failure so last_status is not "ok".
-        if d.success and not final_response.strip():
-            d.success = False
-            d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+        # Empty final_response is a soft failure so last_status is not "ok" — unless the run's
+        # durable settlement proves a trusted terminal stop for this policy, fire and final
+        # session. That proof also downgrades a trusted failure the agent reported as success.
+        from cron.scheduler_settlement import classify_completion
+        d.success, d.error = classify_completion(
+            job, execution_id,
+            next((getattr(a, "_cron_final_session_id", None) for a in _deferred_agents), None),
+            d.success, d.error, final_response)
 
         if _consume_interrupted_flag(job["id"], execution_token):
             _finish_interrupted_run(job, execution_id, delivery_error)

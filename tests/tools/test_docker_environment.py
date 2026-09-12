@@ -427,6 +427,21 @@ def test_egress_node_options_overrides_conflicting_ca_flag(monkeypatch):
     assert "--max-old-space-size=8192" in node_opts
 
 
+def test_air_gapped_container_does_not_require_egress_proxy(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: pytest.fail("air-gapped containers must not use the egress proxy"),
+    )
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(network=False)
+
+    run_args = next(c[0] for c in calls if c[0][1] == "run")
+    assert "--network=none" in run_args
+
+
 def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     """docker_forward_env should override docker_env for the same key."""
     env = _make_execute_only_env(forward_env=["MY_KEY"])

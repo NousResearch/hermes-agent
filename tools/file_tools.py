@@ -256,9 +256,12 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
         _create_configured_env, _get_env_config, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
 
-    config = _get_env_config()
-    env_type = config["env_type"]
     overrides = resolve_task_overrides(raw_task_id)
+    env_config = _get_env_config()
+    # Overrides select the backend, but never the guard's fallback: config["cwd"] must stay the
+    # validated env cwd, or the sanitize below would "fix" a host path back to that same host path.
+    config = {**env_config, **overrides, "cwd": env_config["cwd"]}
+    env_type = config["env_type"]
     try:
         recorded_cwd = get_session_cwd(raw_task_id)
     except Exception:

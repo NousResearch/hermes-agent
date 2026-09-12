@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Uni
 from hermes_constants import get_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
+from hermes_cli.plugins_authority import AUTHORITATIVE_SCHEDULED_HOOKS
 from hermes_cli.config import load_config_readonly
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
@@ -105,6 +106,7 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 _install_plugin_debug_handler()
 
 VALID_HOOKS: Set[str] = {
+    "mcp_request_metadata", "mcp_tool_result",
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
@@ -195,7 +197,8 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "mcp_request_metadata", "mcp_tool_result","transform_api_error_classification"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
@@ -920,6 +923,29 @@ class PluginContext:
         logger.debug("Plugin %s registered %s: %s", self.manifest.name, kind, key)
         return handle
 
+    def register_authoritative_hook(
+        self, policy_id: str, hook_name: str, callback: Callable,
+    ) -> PluginRegistration:
+        """Register one fail-closed scheduled-run policy callback."""
+        policy_id = str(policy_id).strip()
+        if not policy_id or hook_name not in AUTHORITATIVE_SCHEDULED_HOOKS:
+            raise ValueError("invalid authoritative scheduled-run policy hook")
+        hooks = self._manager._authoritative_policies.setdefault(policy_id, {})
+        if hook_name in hooks:
+            raise ValueError(
+                f"authoritative policy {policy_id!r} already registered {hook_name!r}"
+            )
+        hooks[hook_name] = callback
+
+        def release() -> None:
+            current = self._manager._authoritative_policies.get(policy_id)
+            if current is not None and current.get(hook_name) is callback:
+                del current[hook_name]
+                if not current:
+                    del self._manager._authoritative_policies[policy_id]
+
+        return self._track("authoritative_hook", f"{policy_id}:{hook_name}", release)
+
     def register_system_prompt_section(
         self, id: str, content: Union[str, Callable[[Mapping[str, Any]], str]], *,
         position: str = "after_memory", max_chars: int = DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS,
@@ -1135,6 +1161,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._hooks: Dict[str, List[Callable]] = {}
         # Fallback hooks registered by a memory provider before general discovery.
         self._memory_hook_registrations: Dict[Tuple[str, str], List[PluginRegistration]] = {}
+        self._authoritative_policies: Dict[str, Dict[str, Callable]] = {}
+        self._authoritative_runs: Dict[str, Dict[str, Any]] = {}
+        self._authoritative_run_by_session: Dict[str, str] = {}
+        self._authoritative_lock = threading.RLock()
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()

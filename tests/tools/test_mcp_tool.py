@@ -1,3 +1,4 @@
+from tools import mcp_tool_handlers as mcp_handlers
 """Tests for the MCP (Model Context Protocol) client support.
 
 All tests use mocks -- no real MCP servers or subprocesses are started.
@@ -60,6 +61,61 @@ def _make_mock_server(name, session=None, tools=None):
     server.session = session
     server._tools = tools or []
     return server
+
+
+def test_trusted_metadata_and_result_stop_are_outside_model_args(monkeypatch):
+    import tools.mcp_tool as mcp_tool
+
+    observed = {}
+
+    class Session:
+        async def call_tool(self, name, **kwargs):
+            observed.update(kwargs)
+            return SimpleNamespace(
+                content=[SimpleNamespace(text="done")],
+                isError=False,
+                meta={"fleet.run_complete": "max_items"},
+            )
+
+    class Lock:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    server = SimpleNamespace(
+        session=Session(),
+        _rpc_lock=Lock(),
+        _pending_call_context=None,
+        _mark_session_proven=lambda: None,
+        mark_tool_call=lambda: None,
+    )
+    monkeypatch.setattr("tools.mcp_tool_discovery._get_connected_server_for_call", lambda _name: server)
+    monkeypatch.setattr(
+        "tools.mcp_tool_loop._run_on_mcp_loop",
+        lambda factory, timeout: asyncio.run(factory()),
+    )
+
+    def hooks(name, **kwargs):
+        if name == "mcp_request_metadata":
+            assert kwargs["session_id"] == "cron-session"
+            return [{"meta": {"fleet.run_id": "run-1"}}]
+        if name == "mcp_tool_result":
+            return [{"action": "stop", "reason": "max_items"}]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", hooks)
+    args = {"model_value": "unchanged", "fleet.run_id": "spoofed"}
+
+    result = mcp_handlers._make_tool_handler("fleet", "claim", 5)(
+        args, session_id="cron-session", task_id="task-1"
+    )
+
+    assert json.loads(result)["result"] == "done"
+    assert observed["arguments"] == args
+    assert observed["meta"] == {"fleet.run_id": "run-1"}
+    assert mcp_handlers.consume_mcp_runtime_stop() == {"reason": "max_items"}
 
 
 class TestFilterMCPChildren:

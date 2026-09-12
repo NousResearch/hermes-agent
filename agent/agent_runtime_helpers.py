@@ -2293,7 +2293,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             import model_tools
-            return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
+            result = model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
+            from agent.runtime_policy import apply_mcp_runtime_stop
+            apply_mcp_runtime_stop(agent)
+            return result
     if skip_tool_execution_middleware:
         return _execute(function_args)
     from hermes_cli.middleware import run_tool_execution_middleware

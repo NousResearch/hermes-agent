@@ -7,6 +7,7 @@ immutable.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -74,6 +75,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
         "ON executions(status, claimed_at DESC, id DESC)"
     )
+    add_column_if_missing(conn, "executions", "settlement", "settlement TEXT")
+    add_column_if_missing(conn, "executions", "settlement_session_id", "settlement_session_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_executions_settlement_session ON executions(settlement_session_id)")
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     conn.execute(
@@ -259,6 +263,73 @@ def finish_execution(
         record = _fetch(conn, execution_id)
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
     return record
+
+
+def record_execution_settlement(
+    execution_id: str, *, session_id: str, settlement: Dict[str, Any],
+) -> bool:
+    """Persist one fire's validated trusted terminal settlement.
+
+    This is the durable settlement contract cron completion classification
+    consumes. Without it the typed outcome exists only in the in-memory turn
+    result, so a trusted ``runtime_stop`` success — which deliberately writes
+    no closing assistant row — is indistinguishable from an incomplete run to
+    any classifier reading the persisted transcript tail.
+
+    Written once per attempt; a second write for the same attempt is ignored
+    so a terminal proof cannot be rewritten.
+    """
+    execution_id = str(execution_id or "")
+    session_id = str(session_id or "")
+    if not execution_id or not session_id or not isinstance(settlement, dict):
+        return False
+    payload = json.dumps(settlement, ensure_ascii=False, default=str)
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET settlement=?, settlement_session_id=?
+               WHERE id=? AND settlement IS NULL""",
+            (payload, session_id, execution_id),
+        )
+        if cur.rowcount == 1:
+            return True
+        # Not written now — report whether a terminal proof is already on the
+        # row (idempotent re-record) versus genuinely absent.
+        row = conn.execute(
+            "SELECT settlement FROM executions WHERE id=?", (execution_id,)
+        ).fetchone()
+        return bool(row is not None and row["settlement"] is not None)
+
+
+def get_settlement_for_session(session_id: str) -> Optional[Dict[str, Any]]:
+    """Return the trusted terminal settlement recorded for a final session id.
+
+    Returns ``None`` when the session carries no settlement proof — an absent
+    or unparseable receipt is never evidence of success.
+    """
+    session_id = str(session_id or "")
+    if not session_id:
+        return None
+    with _transaction() as conn:
+        row = conn.execute(
+            """SELECT id, job_id, settlement FROM executions
+               WHERE settlement_session_id=? AND settlement IS NOT NULL
+               ORDER BY claimed_at DESC, id DESC LIMIT 1""",
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        settlement = json.loads(row["settlement"])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(settlement, dict):
+        return None
+    return {
+        "execution_id": row["id"],
+        "job_id": row["job_id"],
+        "session_id": session_id,
+        "settlement": settlement,
+    }
 
 
 def recover_interrupted_executions() -> int:

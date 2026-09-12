@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
+from tools import mcp_tool_handlers as mcp_handlers
 
 
 def _make_tool_defs(*names: str) -> list[dict]:
@@ -405,6 +406,91 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
+def test_mcp_runtime_stop_prevents_another_model_call():
+    agent = _make_agent("mcp_fleet_claim", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("mcp_fleet_claim", "{}", "claim-1")],
+        ),
+        AssertionError("runtime stop must prevent another model call"),
+    ]
+
+    def dispatch(*_args, **_kwargs):
+        mcp_handlers._mcp_runtime_stop.set({"reason": "max_items"})
+        return '{"result": "done"}'
+
+    with (
+        patch("model_tools.handle_function_call", side_effect=dispatch),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("claim work")
+
+    assert agent.client.chat.completions.create.call_count == 1
+    assert result["turn_exit_reason"] == "runtime_stop(max_items)"
+
+
+def test_authoritative_result_failure_prevents_another_model_call():
+    agent = _make_agent("mcp_fleet_claim", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="", finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("mcp_fleet_claim", "{}", "claim-1")],
+        ),
+        AssertionError("policy failure must prevent another model call"),
+    ]
+
+    def dispatch(*_args, **_kwargs):
+        mcp_handlers._mcp_runtime_stop.set({
+            "reason": "policy_error", "status": "failure", "policy": "required",
+        })
+        return '{"error": "trusted policy failed"}'
+
+    with (
+        patch("model_tools.handle_function_call", side_effect=dispatch),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("claim work")
+
+    assert agent.client.chat.completions.create.call_count == 1
+    assert result["turn_exit_reason"] == "runtime_stop(policy_error)"
+    assert result["failed"] is True
+    assert result["completed"] is False
+
+
+def test_authoritative_success_is_typed_without_assistant_prose():
+    agent = _make_agent("mcp_fleet_claim", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [_mock_response(
+        content="", finish_reason="tool_calls",
+        tool_calls=[_mock_tool_call("mcp_fleet_claim", "{}", "claim-1")],
+    )]
+
+    def dispatch(*_args, **_kwargs):
+        mcp_handlers._mcp_runtime_stop.set({
+            "reason": "max_items", "status": "success", "policy": "fleet-runtime",
+        })
+        return '{"result": "done"}'
+
+    with (
+        patch("model_tools.handle_function_call", side_effect=dispatch),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("claim work")
+
+    assert result["completed"] is True
+    assert result["final_response"] is None
+    assert result["trusted_terminal_outcome"] == {
+        "reason": "max_items", "status": "success", "policy": "fleet-runtime",
+    }
+
+
 
 
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
@@ -454,3 +540,206 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def test_runtime_stop_halts_the_rest_of_the_assistant_batch():
+    """A trusted stop is authoritative for the WHOLE batch, not just the loop.
+
+    The conversation loop only suppresses the next MODEL request. Without a
+    per-call gate, an assistant batch of ``claim-1, claim-2`` could receive
+    ``runtime_stop(max_items)`` from the first result and still dispatch the
+    second — crossing the item boundary the policy just closed.
+    """
+    agent = _make_agent("mcp_fleet_claim", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                # Distinct arguments: identical calls are deduped upstream.
+                _mock_tool_call("mcp_fleet_claim", '{"item": 1}', "claim-1"),
+                _mock_tool_call("mcp_fleet_claim", '{"item": 2}', "claim-2"),
+            ],
+        ),
+        AssertionError("runtime stop must prevent another model call"),
+    ]
+
+    dispatched = []
+
+    def dispatch(*args, **kwargs):
+        dispatched.append(kwargs.get("tool_call_id"))
+        mcp_handlers._mcp_runtime_stop.set({
+            "reason": "max_items", "status": "success", "policy": "fleet-runtime",
+        })
+        return '{"result": "done"}'
+
+    with (
+        patch("model_tools.handle_function_call", side_effect=dispatch),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("claim work")
+
+    assert dispatched == ["claim-1"], "the second dispatcher must never be entered"
+    assert agent.client.chat.completions.create.call_count == 1
+    assert result["turn_exit_reason"] == "runtime_stop(max_items)"
+
+    # Every call still needs a paired tool result or the next provider request
+    # violates message-role alternation.
+    tool_rows = [m for m in result["messages"] if m.get("role") == "tool"]
+    assert [row["tool_call_id"] for row in tool_rows] == ["claim-1", "claim-2"]
+    assert "was not executed" in tool_rows[1]["content"]
+
+
+def test_malformed_stop_directive_under_policy_still_halts_the_batch():
+    """An unreadable directive must fail closed, not vanish.
+
+    The directive is trusted input from an MCP server, so it can arrive
+    malformed. Reading ``reason`` off it raised inside a bare ``except:
+    pass``, which dropped the stop entirely and let ``claim-2`` run after
+    the policy had already closed the item boundary — the fail-open path
+    this hook exists to prevent.
+    """
+    agent = _make_agent("mcp_fleet_claim", max_iterations=10)
+    agent.runtime_policy = "fleet-runtime"
+    agent.runtime_task_id = "fire-1"
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call("mcp_fleet_claim", '{"item": 1}', "claim-1"),
+                _mock_tool_call("mcp_fleet_claim", '{"item": 2}', "claim-2"),
+            ],
+        ),
+        AssertionError("an unreadable stop must prevent another model call"),
+    ]
+
+    dispatched = []
+
+    def dispatch(*args, **kwargs):
+        dispatched.append(kwargs.get("tool_call_id"))
+        # No "reason" key: indexing it raises inside the consumer.
+        mcp_handlers._mcp_runtime_stop.set({"status": "success", "policy": "fleet-runtime"})
+        return '{"result": "done"}'
+
+    with (
+        patch("model_tools.handle_function_call", side_effect=dispatch),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("claim work")
+
+    assert dispatched == ["claim-1"], "the second dispatcher must never be entered"
+    assert agent.client.chat.completions.create.call_count == 1
+    assert result["turn_exit_reason"] == "runtime_stop(invalid_stop_directive)"
+
+    # A directive that could not be validated must never book as success.
+    assert result["trusted_terminal_outcome"]["status"] == "failure"
+
+    tool_rows = [m for m in result["messages"] if m.get("role") == "tool"]
+    assert [row["tool_call_id"] for row in tool_rows] == ["claim-1", "claim-2"]
+    assert "was not executed" in tool_rows[1]["content"]
+
+
+@pytest.mark.parametrize("policy", [None, "observer"])
+def test_malformed_stop_directive_without_policy_does_not_halt_the_run(policy):
+    """With no policy there is no authority to enforce.
+
+    Observer-path directives are advisory, so a malformed one is logged and
+    dropped rather than terminating an ordinary interactive run.
+    """
+    agent = _make_agent("mcp_fleet_claim", max_iterations=10)
+    agent.runtime_policy = policy
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("mcp_fleet_claim", '{"item": 1}', "claim-1")],
+        ),
+        _mock_response(content="done", finish_reason="stop"),
+    ]
+
+    def dispatch(*args, **kwargs):
+        mcp_handlers._mcp_runtime_stop.set({"status": "success"})
+        return '{"result": "done"}'
+
+    with (
+        patch("model_tools.handle_function_call", side_effect=dispatch),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("claim work")
+
+    assert agent.client.chat.completions.create.call_count == 2
+    assert not str(result.get("turn_exit_reason") or "").startswith("runtime_stop")
+
+
+def test_runtime_stop_halts_later_segments_of_a_mixed_batch():
+    """A stop inside one segment must stop every later segment too."""
+    from agent import tool_executor
+
+    agent = _make_agent("mcp_fleet_claim", "web_search", max_iterations=10)
+    dispatched = []
+
+    def dispatch(function_name, *args, **kwargs):
+        dispatched.append(function_name)
+        if function_name == "mcp_fleet_claim":
+            mcp_handlers._mcp_runtime_stop.set({
+                "reason": "max_items", "status": "success",
+                "policy": "fleet-runtime",
+            })
+        return '{"result": "done"}'
+
+    assistant_message = SimpleNamespace(tool_calls=[
+        _mock_tool_call("mcp_fleet_claim", "{}", "claim-1"),
+        _mock_tool_call("web_search", "{}", "search-1"),
+    ])
+    messages: list = []
+
+    with patch("model_tools.handle_function_call", side_effect=dispatch):
+        tool_executor.execute_tool_calls_segmented(
+            agent, assistant_message, messages, "task-1",
+            segments=[
+                ("sequential", [assistant_message.tool_calls[0]]),
+                ("parallel", [assistant_message.tool_calls[1]]),
+            ],
+        )
+
+    assert dispatched == ["mcp_fleet_claim"], "a later segment was still dispatched"
+    assert [m["tool_call_id"] for m in messages] == ["claim-1", "search-1"]
+    assert "was not executed" in messages[1]["content"]
+
+
+@pytest.mark.parametrize("policy,expected", [(None, "parallel"), ("observer", "parallel"), ("fleet-runtime", "sequential")])
+@pytest.mark.parametrize("entry", ["facade", "segmented"])
+def test_authoritative_run_forces_mcp_calls_onto_the_barrier_path(policy, expected, entry):
+    """Parallel siblings cannot be un-executed, so policy runs never fan out."""
+    from agent import tool_executor
+
+    calls = [
+        _mock_tool_call("mcp__fleet__claim", "{}", "claim-1"),
+        _mock_tool_call("mcp__fleet__claim", "{}", "claim-2"),
+    ]
+    agent = _make_agent("mcp__fleet__claim")
+    agent.runtime_policy = policy
+    with (
+        patch("agent.tool_dispatch_helpers._is_mcp_tool_parallel_safe", return_value=True),
+        patch.object(agent, "_execute_tool_calls_concurrent") as facade_parallel,
+        patch.object(agent, "_execute_tool_calls_sequential") as facade_sequential,
+        patch.object(tool_executor, "execute_tool_calls_concurrent") as segmented_parallel,
+        patch.object(tool_executor, "execute_tool_calls_sequential") as segmented_sequential,
+        patch.object(tool_executor, "_finalize_tool_batch"),
+    ):
+        message = SimpleNamespace(tool_calls=calls)
+        if entry == "facade":
+            agent._execute_tool_calls(message, [], "task-1")
+            parallel, sequential = facade_parallel, facade_sequential
+        else:
+            tool_executor.execute_tool_calls_segmented(agent, message, [], "task-1")
+            parallel, sequential = segmented_parallel, segmented_sequential
+        assert parallel.call_count == (expected == "parallel")
+        assert sequential.call_count == (expected == "sequential")

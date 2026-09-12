@@ -109,6 +109,23 @@ class TestBridgePeelInPlanner:
         assert _kinds(segments) == ["parallel"]
         assert _flatten_ids(segments) == ["a", "b"]
 
+    def test_authoritative_barrier_applies_after_bridge_peel(self, mcp_pair):
+        """The authority barrier is decided on the PEELED name.
+
+        Cross-product of the two halves already covered separately: a
+        ``tool_call`` wrapper around a parallel-opted-in MCP tool, inside an
+        authoritative scheduled run. Evaluating ``mcp_barrier`` against the
+        literal wrapper name — before the peel — would miss ``mcp__...``,
+        readmit the batch to the parallel path, and reopen the race where a
+        sibling already in flight cannot be un-executed after a trusted
+        result ends the run.
+        """
+        alpha, beta = mcp_pair
+        calls = [_bridge_tc(alpha, call_id="a"), _bridge_tc(beta, call_id="b")]
+        segments = _plan_tool_batch_segments(calls, mcp_barrier=True)
+        assert _kinds(segments) == ["sequential"]
+        assert _flatten_ids(segments) == ["a", "b"]
+
     def test_bridged_call_to_non_opted_in_tool_stays_sequential(self, mcp_pair):
         from tools import mcp_tool
 

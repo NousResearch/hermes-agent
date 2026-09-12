@@ -388,6 +388,46 @@ def register(ctx):
 - Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
 - Runtime event-name validity comes from `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lists configured shell/outbound hooks, not every available event; `hermes hooks test <event>` reports the valid set only when an invalid event is supplied.
 
+### Authoritative scheduled-run policies
+
+`ctx.register_hook()` is always fail-open observer compatibility plumbing. Do
+not use it for scheduled-run admission or identity. An operator can pin an
+agent-backed job with `hermes cron create --runtime-policy <id>` and the plugin
+must register all four callbacks with
+`ctx.register_authoritative_hook(id, hook, callback)`:
+
+- `on_session_start` returns `{"action": "allow"}`;
+- `mcp_request_metadata` returns `{"meta": {...}}` before the RPC;
+- `mcp_tool_result` returns `{"action": "continue"}` or a typed stop with
+  an explicit non-blank string `reason` and `status` (`success` or `failure`).
+  Alongside the server's `meta` it receives `is_error` (the result's own
+  `isError`), so a policy never has to infer success from metadata alone;
+  a `success` directive for an errored result is itself rejected and settles
+  the run as a policy failure;
+- `on_session_finalize` durably settles the run and returns
+  `{"status": "finalized"}`.
+
+Missing, raising, or malformed required callbacks fail closed. Jobs without
+`runtime_policy`, or with `runtime_policy: observer`, retain the ordinary
+observer-hook behavior. Observer runs require no authority lease or settlement
+receipt and do not acquire authority-specific MCP barriers or delegation limits.
+
+Every required callback receives the run's identity: `run_id` (the run's
+immutable fire id), `session_id` (the transcript session the run is on right
+now), and `root_session_id` (the session it started on). The policy lease is
+keyed by `run_id`, so it survives the session rotation a context compression
+performs mid-run, and it outlives plugin unload — an unloaded policy makes
+in-flight authoritative calls fail closed instead of silently downgrading to
+the observer bus.
+
+A trusted stop is authoritative the moment its triggering result is persisted:
+no later call in the same assistant batch is dispatched, and MCP calls inside a
+policy-bound run are always ordered barriers rather than parallel siblings. The
+validated typed outcome is written to the cron execution ledger bound to both
+the fire and the session the run ended on — read it back with
+`cron.executions.get_settlement_for_session()`. A settlement failure fails the
+run, but never skips session teardown.
+
 ### Cache-safe system prompt sections
 
 Plugins that need durable, always-on guidance can register a bounded system
@@ -440,6 +480,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 |---|---|---|---|---|
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; first valid `block` or `approve` directive wins, and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
+| `mcp_request_metadata` | Transform | Immediately before an MCP tool RPC; `{"meta": {...}}` returns are merged and passed in the protocol metadata field, never model arguments. Duplicate keys fail the call. Python plugins only. | `server_name`, `tool_name`, `session_id`, `task_id` | In-process trust boundary: returned metadata is sent to the MCP server. |
+| `mcp_tool_result` | Directive/control | After an MCP RPC returns and before another model call; `{"action": "stop", "reason": "..."}` stops the current tool loop. Python plugins only. | `server_name`, `tool_name`, `session_id`, `task_id`, `meta`, `is_error` | `meta` is untrusted external server data; validate it before returning a directive. `is_error` is the result's own `isError` state — a policy must not infer success from metadata alone. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
@@ -455,7 +497,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full assembled response text; error text may include provider data. |
 | `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full interim assistant text. |
 | `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
-| `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
+| `on_session_start` | Directive/control | First turn of a new session; `{"action": "block", "reason": "..."}` aborts before the first model request. Cron adds its job identity and cap. | `session_id`, `model`, `platform`, `cron_job_id`, `cron_job_name`, `cron_max_turns` | Identifiers and routing metadata only. |
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
@@ -899,10 +941,13 @@ def my_callback(session_id: str, model: str, platform: str, **kwargs):
 | `session_id` | `str` | Unique identifier for the new session |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `cron_job_id` | `str \| None` | Stored cron job ID on scheduled runs |
+| `cron_job_name` | `str \| None` | Stored cron job name on scheduled runs |
+| `cron_max_turns` | `int \| None` | Stored per-job cap on scheduled runs |
 
 **Fires:** In `agent/conversation_loop.py`, inside `run_conversation()`, during the first turn of a new session — specifically after the system prompt is built but before the tool loop starts. The check is `if not conversation_history` (no prior messages = new session).
 
-**Return value:** Ignored.
+**Return value:** A Python plugin may return `{"action": "block", "reason": "..."}` to abort before the first model request. Other values are ignored; shell hooks remain observational.
 
 **Use cases:** Initializing session-scoped state, warming caches, registering the session with an external service, logging session starts.
 

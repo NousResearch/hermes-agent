@@ -66,6 +66,7 @@ def _drain_one(timeout=5.0):
 
 def _fake_parent():
     parent = MagicMock()
+    parent.runtime_policy = None  # agent_init's default; MagicMock auto-vivifies it truthy
     parent._delegate_depth = 0
     parent.session_id = "sess"
     parent._interrupt_requested = False

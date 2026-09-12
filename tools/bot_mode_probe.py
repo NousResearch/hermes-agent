@@ -63,9 +63,47 @@ def _profile_name(home: Path) -> str:
     return home.name if home.parent.name == "profiles" else "default"
 
 
-def _handle(name: str) -> str:
+# A display_name that slugs to one of these would collide with the mention middleware's own
+# aliases or its broadcast words, so those profiles keep their canonical handle.
+_RESERVED_HANDLES = frozenset({"all", "everyone", "user", "default", "hermes"})
+
+
+def _display_handle(profile_dir: Path) -> str:
+    """Slugged ``display_name`` of the profile at ``profile_dir``, or "" when unusable.
+
+    The slug charset matches the Desktop's mention charset, so the handle stamped into
+    attribution is the same one autocomplete inserts and the relay roster carries. Reserved
+    or empty slugs return "" and the caller keeps the canonical handle — fail-safe, never
+    fail-weird.
+    """
+    def _read() -> str:
+        from hermes_cli.profiles import read_profile_meta
+        return str(read_profile_meta(Path(profile_dir)).get("display_name") or "")
+
+    slug = re.sub(r"[^a-z0-9_-]+", "-", _swallow(_read, "").strip().lower()).strip("-")
+    return "" if not slug or slug in _RESERVED_HANDLES else slug
+
+
+def _handle(name: str, profile_dir: Path | None = None) -> str:
+    """The wire handle for the profile ``name``.
+
+    ``profile_dir`` is that profile's own directory, so a renamed agent is addressed by its
+    display_name — the identity the recipient sees and autocomplete inserts. It is a
+    parameter rather than a read of the running process's home precisely because most call
+    sites ask about a TEAMMATE, not about self; reading self there renamed every teammate to
+    the running profile.
+    """
+    if profile_dir is not None:
+        display = _display_handle(profile_dir)
+        if display:
+            return display
     # The mention middleware aliases the default profile as @hermes.
     return "hermes" if name == "default" else name
+
+
+def _profile_dir(root: Path, name: str) -> Path:
+    """The on-disk directory for profile ``name`` under ``root``."""
+    return root if name == "default" else root / "profiles" / name
 
 
 def _roster(root: Path) -> list[tuple[str, Path]]:
@@ -196,7 +234,7 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster_lines = [_bullet(f"@{_handle(name, d)}", _profile_role(d)) for name, d in _roster(root) if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (
@@ -220,7 +258,7 @@ def _build_section(home: Path) -> str:
         "concisely via message_agent to their handle, and if it is a pure FYI "
         "with nothing to add, staying silent is fine — never ping-pong "
         "acknowledgements.\n"
-        f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
+        f"You are `@{_handle(me, _profile_dir(root, me))}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
         + _remote_paragraph(root)

@@ -154,12 +154,24 @@ def ensure_message_agent_tool(agent: Any) -> bool:
         return False
 
 
-def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
-    """Map a target handle to a profile name ('hermes' → 'default')."""
+def _resolve_local_name(target: str, roster: list[str],
+                        roster_dirs: dict | None = None) -> Optional[str]:
+    """Map a target handle to a profile name ('hermes' → 'default').
+
+    Canonical names win, then display_name slugs: autocomplete inserts the display handle, so
+    a renamed agent must be addressable by it, while a profile literally named like another's
+    display_name keeps priority over that alias.
+    """
     want = target.strip().lower()
+    if not want:
+        return None
     if want == "hermes":
         return "default" if "default" in roster else None
-    return next((name for name in roster if name.lower() == want), None) if want else None
+    canonical = next((name for name in roster if name.lower() == want), None)
+    if canonical is not None or not roster_dirs:
+        return canonical
+    from tools.bot_mode_probe import _display_handle
+    return next((name for name in roster if _display_handle(roster_dirs[name]) == want), None)
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
@@ -179,8 +191,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
-            is_bot_mode_managed,
+            BOT_CHAT_TITLE, _handle, _hermes_root, _peers,
+            _profile_dir, _profile_name as _self_profile_name, _roster, is_bot_mode_managed,
         )
         from tools.bot_relay import BOT_CHAT_TURN_ARGS
 
@@ -197,7 +209,10 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     roster_homes = dict(_roster(root))
     roster = list(roster_homes)
     peers = _peers(root)
-    teammates = [_handle(n) for n in roster if n != me]
+    # Each teammate's handle comes from ITS OWN directory — a single read of this process's
+    # home would rename every teammate to the running profile.
+    teammates = [_handle(n, roster_homes[n]) for n in roster if n != me]
+    my_handle = _handle(me, _profile_dir(root, me))
 
     def _roster_err(msg: str) -> str:
         return _err(msg, roster=teammates, peers=peers)
@@ -212,7 +227,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     raw_target = str(target or "").strip().lstrip("@")
     if not raw_target:
         return _roster_err("target is required.")
-    content = f"Message from 🤖 {_handle(me)} (@{_handle(me)}): " + body
+    content = f"Message from 🤖 {my_handle} (@{my_handle}): " + body
     delivery = dict(task_id=task_id, agent=agent)
     # Attribution for the recipient's memory hooks; the text prefix above stays the human-facing signature.
     author = {"id": f"bot:{me}", "name": _handle(me), "is_bot": True}
@@ -238,12 +253,12 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
     if not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")
-    resolved = _resolve_local_name(raw_target, roster) if is_local_shape else None
+    resolved = _resolve_local_name(raw_target, roster, roster_homes) if is_local_shape else None
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
         # relay roster, so try that before reporting a resolution failure / self-message.
-        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
+        relayed = _try_relay_delivery(root, raw_target, content, me, my_handle, **delivery)
         if relayed is not None:
             return relayed
         if resolved == me:
@@ -251,11 +266,12 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
-    return _start_delivery(["hermes", "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
+    return _start_delivery(["hermes", "-p", resolved, *BOT_CHAT_TURN_ARGS], content,
+                           f"@{_handle(resolved, roster_homes[resolved])}",
                            stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
 
 
-def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
+def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, my_handle: str, *,
                         task_id: Optional[str], agent: Any) -> Optional[str]:
     """Cross-connection delivery via the Desktop relay; None when the target doesn't
     resolve against the relay roster. The envelope is queued on disk for the Desktop
@@ -276,7 +292,8 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
             forms = ", ".join(f"{r['handle']}@{r['connection_id']}" for r in roster if r["handle"].lower() == want)
             return _err(f"'{raw_target}' exists on several connected machines — disambiguate with one of: {forms}.")
         try:
-            envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me, sender_handle=_handle(me))
+            envelope = enqueue_envelope(root, target=match, message=content, sender_profile=me,
+                                        sender_handle=my_handle)
         except EnvelopeRefusedError as exc:
             # Fail fast: target definitively offline — nothing was queued.
             # Structured refusal so the agent can distinguish it from a resolution error ('runtime_offline'

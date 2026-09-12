@@ -413,8 +413,19 @@ def _connection_identity(config: dict) -> tuple:
             (config.get("auth") or "").lower().strip())
 
 
-def _same_server_route(server: Any, config: dict) -> bool:
-    return _connection_identity(getattr(server, "_config", {}) or {}) == _connection_identity(config)
+def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
+    """Whether *server* matches *config*, with OAuth connections never reusable across profiles.
+
+    OAuth credentials live in the owning profile's token storage rather than the static config,
+    so identical OAuth configs cannot prove that two profiles authenticate as the same account.
+    """
+    server_config = getattr(server, "_config", {}) or {}
+    if cross_profile and any(
+        (candidate.get("auth") or "").lower().strip() == "oauth"
+        for candidate in (server_config, config)
+    ):
+        return False
+    return _connection_identity(server_config) == _connection_identity(config)
 
 
 def register_connected_into_current_scope(servers: dict) -> int:
@@ -447,8 +458,10 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                 continue
             server = _core._servers.get(key)
             config = servers.get(_key_name(key))
+            cross_profile = key != _server_key(_key_name(key), scope, current=False)
             if (config is None or not _server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+                    or getattr(server, "session", None) is None
+                    or not _same_server_route(server, config, cross_profile=cross_profile)):
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
@@ -463,7 +476,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             # Any other profile's live connection with the same route AND credentials is shareable.
             shared = [(key, live) for key, live in _core._servers.items()
                       if _key_name(key) == name and getattr(live, "session", None) is not None
-                      and _same_server_route(live, config)]
+                      and _same_server_route(live, config, cross_profile=True)]
         if not shared:
             continue
         key, server = shared[0]

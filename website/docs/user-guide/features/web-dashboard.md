@@ -406,6 +406,43 @@ Creating a shell hook (note the consent checkbox and the run-arbitrary-commands 
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine, with no login required. Binding to any non-loopback address (including `0.0.0.0`) engages the [auth gate](#authentication-gated-mode): the server refuses to start until an auth provider (username/password or OAuth) is configured.
 :::
 
+## Installing to a home screen
+
+Served over HTTPS, the dashboard is a progressive web app. Browsers offer to
+install it, and the installed copy opens in its own window — no address bar,
+its own icon, its own entry in the task switcher. This is the practical way to
+use Hermes from a device that cannot host it: an iPhone, an iPad, a Chromebook,
+or a laptop with no disk to spare.
+
+- **iPhone / iPad** — Safari → Share → **Add to Home Screen**. iOS only offers
+  this from Safari itself.
+- **Android** — Chrome's **Install app** prompt, or ⋮ → **Add to Home screen**.
+  Long-pressing the installed icon gives shortcuts to **Chat** and **Sessions**.
+- **Desktop Chrome / Edge** — the install icon in the address bar.
+
+Installation needs a **secure origin**: HTTPS, or `localhost`. On a plain-HTTP
+LAN address the dashboard works normally in a tab but no install prompt
+appears, because browsers refuse to register a service worker there. Put the
+dashboard behind Tailscale Serve or a reverse proxy with a certificate to get
+the installable version. [Use Hermes from a
+browser](../../getting-started/browser-access.md) walks through that setup end
+to end.
+
+The service worker caches the bundle's content-hashed asset files so repeat
+loads over a phone network skip re-downloading them. It deliberately does not
+make the dashboard work offline:
+
+- `/api`, `/auth` and `/dashboard-plugins` are never cached, so no agent state,
+  session token, secret or operator script is written to browser storage.
+- Page loads always go to the network. The HTML carries a per-process session
+  token, so a cached copy would hold a dead credential.
+- With the host unreachable, a navigation shows a short "dashboard unreachable"
+  notice rather than a stale screen. Hermes is a live agent on the host; there
+  is nothing meaningful to serve without it.
+
+An upgraded Hermes serves a new bundle with new asset filenames, so a reopened
+app picks it up and the old files are dropped on the next worker activation.
+
 ## `/reload` Slash Command
 
 The dashboard PR also adds a `/reload` slash command to the interactive CLI. After changing API keys via the web dashboard (or by editing `.env` directly), use `/reload` in an active CLI session to pick up the changes without restarting:

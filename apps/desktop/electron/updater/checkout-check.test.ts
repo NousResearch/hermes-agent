@@ -43,6 +43,7 @@ function fixture(): CheckoutCheckDeps {
 
       throw new Error(`Unexpected git operation: ${key}`)
     }),
+    readSourceUpdate: async (): Promise<{ channel: 'main' }> => ({ channel: 'main' }),
     fetchGitHubApi: vi.fn(async (url: string): Promise<unknown> =>
       url.includes('/commits/') ? 'b'.repeat(40) : { ahead_by: 3, commits: [] }
     ),

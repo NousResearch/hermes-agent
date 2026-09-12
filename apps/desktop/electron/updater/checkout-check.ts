@@ -5,6 +5,8 @@ import type { InstallStamp } from '../install-stamp'
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from '../update-api-check'
 import { classifyUpdateRoot } from '../update-root-policy'
 
+import type { SourceUpdate } from './checkout-source'
+
 import type { UpdaterStatusWire } from './index'
 
 export interface CheckoutCheckDeps {
@@ -13,6 +15,7 @@ export interface CheckoutCheckDeps {
   isGitCheckout: (root: string) => boolean
   readCanonicalInstallStamp: () => { updateMechanism?: InstallStamp['updateMechanism'] } | null
   readDesktopUpdateConfig: () => { branch: string }
+  readSourceUpdate: (root: string) => Promise<SourceUpdate>
   resolveUpdateRoot: () => string
   resolveHealedBranch: (root: string, branch: string) => Promise<string>
   getOriginUrl: (root: string) => Promise<string>
@@ -105,8 +108,8 @@ export async function checkCheckoutUpdates(
   deps: CheckoutCheckDeps,
   { force = false }: { force?: boolean } = {}
 ): Promise<UpdaterStatusWire> {
-  const updateRoot = deps.resolveUpdateRoot()
-  let { branch } = deps.readDesktopUpdateConfig()
+  const updateRoot: string = deps.resolveUpdateRoot()
+  let { branch }: { branch: string } = deps.readDesktopUpdateConfig()
 
   const policy = classifyUpdateRoot({
     isGitTree: deps.isGitCheckout(updateRoot),
@@ -132,6 +135,24 @@ export async function checkCheckoutUpdates(
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
     deps.getOriginUrl(updateRoot)
   ])
+
+  const selection: SourceUpdate = await deps.readSourceUpdate(updateRoot)
+
+  if (selection.channel !== 'main') {
+    return {
+      supported: true,
+      ...selection,
+      channel: selection.channel,
+      currentSha,
+      currentBranch,
+      dirty: dirty.length > 0,
+      hermesRoot: updateRoot,
+      fetchedAt: Date.now(),
+      updateAvailable: !selection.error && selection.targetSha !== currentSha,
+      behind: selection.targetSha === currentSha ? 0 : null,
+      commits: []
+    }
+  }
 
   const cached = readCache(deps.updateCheckCachePath)
   const now = Date.now()

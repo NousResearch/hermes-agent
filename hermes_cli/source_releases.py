@@ -166,3 +166,34 @@ def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=N
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         logger.warning("Could not resolve the %s source release: %s", channel, exc)
         return None, None
+
+
+def main() -> None:
+    """Read-only JSON probe for the desktop, using the CLI's channel authority."""
+    import argparse
+    import contextlib
+    import sys
+    from pathlib import Path
+
+    from hermes_cli.config import load_config
+    from hermes_cli.update_channel import resolve_update_channel
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--install-root", type=Path, required=True)
+    parser.add_argument("--git", default="git")
+    args = parser.parse_args()
+    # Config diagnostics must not corrupt the JSON transport.
+    with contextlib.redirect_stdout(sys.stderr):
+        channel = resolve_update_channel(load_config(), args.install_root)
+    result = {"channel": channel}
+    if channel in ("stable", "canary"):
+        tag, sha = resolve_source_release(channel, [args.git], args.install_root)
+        if tag is None or sha is None:
+            result.update(error="release-unavailable", message=f"Could not resolve the {channel} release commit.")
+        else:
+            result.update(latestTag=tag, targetSha=sha)
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

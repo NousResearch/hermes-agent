@@ -29,7 +29,7 @@ import {
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
@@ -178,6 +178,7 @@ export function dismissSensitivePrompt(
     const requestId = overlay.vaultSaveLogin.requestId
 
     patchOverlayState({ vaultSaveLogin: null })
+    patchUiState({ status: getUiState().busy ? 'running…' : 'ready' })
     sys('login was not saved')
 
     return rpc<SecretRespondResponse>('vault.save_login.respond', { login: '', request_id: requestId })

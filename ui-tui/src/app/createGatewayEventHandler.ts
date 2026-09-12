@@ -1352,9 +1352,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'vault.save_login.expire':
-        patchOverlayState(prev =>
-          prev.vaultSaveLogin?.requestId === ev.payload.request_id ? { ...prev, vaultSaveLogin: null } : prev
-        )
+        if (getOverlayState().vaultSaveLogin?.requestId === ev.payload.request_id) {
+          patchOverlayState({ vaultSaveLogin: null })
+          setStatus(statusFromBusy())
+        }
 
         return
 

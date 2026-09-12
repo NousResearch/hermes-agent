@@ -92,6 +92,30 @@ def test_oauth_forcing_a_server_tool_keeps_its_canonical_name():
     }
 
 
+def test_server_only_tools_are_never_deferred_behind_tool_search(monkeypatch):
+    """``tools.tool_search.defer`` may name core tools, but a server-only def has no local
+    handler: deferred, it would vanish from the request and ``tool_call`` would reach the
+    local "cannot run" stub instead of the provider."""
+    import tools.tool_search as tool_search
+
+    server = _tool("web_search", {
+        "type": "web_search_20250305", "name": "web_search", "max_uses": 5,
+    })
+    plain = {"type": "function", "function": {
+        "name": "web_extract", "description": "web_extract",
+        "parameters": {"type": "object", "properties": {}},
+    }}
+    defer = frozenset({"web_search", "web_extract"})
+
+    assert tool_search.classify_tools([server, plain], defer) == ([server], [plain])
+
+    monkeypatch.setattr(
+        tool_search, "load_config_readonly",
+        lambda: SimpleNamespace(effective_defer_tools=defer),
+    )
+    assert tool_search.scoped_deferrable_names([server, plain]) == frozenset({"web_extract"})
+
+
 def test_anthropic_native_endpoint_detection_uses_hostname_boundaries():
     assert not _is_third_party_anthropic_endpoint("https://api.anthropic.com/v1")
     assert _is_third_party_anthropic_endpoint(

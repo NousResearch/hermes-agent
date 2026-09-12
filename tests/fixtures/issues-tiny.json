@@ -1,0 +1,10 @@
+[
+  {"number": 101, "title": "Retry after reasoning 400 resends user effort"},
+  {"number": 102, "title": "Retry after mandatory-reasoning 400 resends the user's own effort"},
+  {"number": 103, "title": "Windowed cloud sessions need terminal and WebVNC"},
+  {"number": 104, "title": "Headed cloud sessions: terminal + WebVNC + CUA"},
+  {"number": 105, "title": "Windows zip packaging for the stable channel"},
+  {"number": 106, "title": "Nix flake does not need a cargo hash bump"},
+  {"number": 107, "title": "Mandatory reasoning 400 retry sends user effort again"},
+  {"number": 108, "title": "Document the preview channel switch"}
+]

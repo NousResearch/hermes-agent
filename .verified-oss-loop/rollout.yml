@@ -1,0 +1,5 @@
+# Rollout scheme — Arch-style rolling by default.
+# rolling | staged | stable
+# See docs/rollout.md in kvnloo/verified-oss-loop. Not a second contribution loop.
+schema: verified-oss-loop.rollout.v1
+scheme: rolling

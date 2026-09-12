@@ -1391,7 +1391,9 @@ class GatewayNotificationsMixin:
                 f"\n- … and {omitted} more completion(s); inspect them with "
                 "the process tool if they affect the conclusion."
             )
-        lines.append("If a result does not change the current conclusion, absorb it silently.]")
+        from tools.process_registry_notifications import PROCESS_NOTIFICATION_NO_REPLY_CONTRACT
+
+        lines.append(PROCESS_NOTIFICATION_NO_REPLY_CONTRACT + "]")
         return "\n".join(lines)
 
     def _record_coalesced_completion_siblings(self, events: list[dict]) -> None:

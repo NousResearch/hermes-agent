@@ -339,24 +339,38 @@ def _completion_status(evt: dict) -> str:
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
 
 
-def format_process_notification(evt: dict) -> "str | None":
+PROCESS_NOTIFICATION_NO_REPLY_CONTRACT = (
+    "If this process event does not materially change or correct an answer "
+    "you have already delivered, respond exactly NO_REPLY so no redundant "
+    "follow-up is sent. Do not send a message merely to acknowledge receipt."
+)
+
+
+def format_process_notification(
+    evt: dict, *, include_no_reply_contract: bool = False, include_attribution: bool = True,
+) -> "str | None":
     """Format a completion_queue event into an ``[IMPORTANT: ...]`` message."""
+    def finalize(text: str) -> str:
+        if include_no_reply_contract:
+            return f"{text[:-1]}\n\n{PROCESS_NOTIFICATION_NO_REPLY_CONTRACT}]"
+        return text
+
     evt_type = evt.get("type", "completion")
     # watch_disabled and overflow events carry their own human-readable `message`;
     # otherwise overflow events would fall through to the completion formatter as a
     # phantom "process exited (exit code ?)".
     if evt_type in ("watch_disabled", "watch_overflow_tripped", "watch_overflow_released"):
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return finalize(f"[IMPORTANT: {evt.get('message', '')}]")
     if evt_type == "async_delegation":
         return _format_async_delegation(evt)
     _sid, _cmd = evt.get("session_id", "unknown"), evt.get("command", "unknown")
-    _attribution = _delegation_attribution_line(evt)
-    if evt.get("handoff_note"):
+    _attribution = _delegation_attribution_line(evt) if include_attribution else None
+    if include_attribution and evt.get("handoff_note"):
         _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
     attribution = f"{_attribution}\n" if _attribution else ""
     if evt_type == "watch_match":
         _sup = evt.get("suppressed", 0)
-        return (
+        return finalize(
             f"[IMPORTANT: Background process {_sid} matched watch pattern \"{evt.get('pattern', '?')}\".\n"
             f"{attribution}Command: {_cmd}\nMatched output:\n{evt.get('output', '')}"
             + (f"\n({_sup} earlier matches were suppressed by rate limit)" if _sup else "") + "]")
@@ -370,6 +384,6 @@ def format_process_notification(evt: dict) -> "str | None":
             "...(output trimmed — subagent-owned process; see the "
             "delegation's live transcript for full output)\n"
             + _out[-600:])
-    return (
+    return finalize(
         f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
         f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")

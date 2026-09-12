@@ -1203,7 +1203,17 @@ def _finish_already_up_to_date(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
         _windows_gateway_resume=_windows_gateway_resume)
-    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    # Soft-fail like the pull path's ``_resume_windows_gateways_and_merge_outcome``:
+    # Job Object teardown (#48820) can kill the relaunched gateway so liveness
+    # verification raises, but that must not abort a successful checkout repair
+    # (#106692). Clear resume_needed so the atexit handler registered in
+    # ``_cmd_update_impl`` does not retry and emit "Exception ignored in atexit".
+    try:
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    except Exception as _windows_resume_exc:
+        print(f"  ⚠ Windows gateway service restart incomplete: {_windows_resume_exc}")
+    if isinstance(_windows_gateway_resume, dict):
+        _windows_gateway_resume["resume_needed"] = False
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
     # gate so a partial outcome can't strand the fleet on stale code.
     # Catch up even on the "Already up to date" path — that early return is what left the gateway on stale

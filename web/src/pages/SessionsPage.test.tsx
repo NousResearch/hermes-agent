@@ -151,4 +151,37 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     await act(async () => click(confirm ?? null));
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-guanli", "guanli");
   });
+
+  it("routes a search result through the profile stamped on that result", async () => {
+    apiMocks.searchSessions.mockResolvedValue({
+      results: [
+        { id: "sid-worker", session_id: "sid-worker", profile: "worker", source: "cli", model: null,
+          title: "Search hit", started_at: 1, ended_at: null, last_active: 1, is_active: false,
+          message_count: 2, tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "found",
+          snippet: "found", role: "user", session_started: 1 },
+      ],
+    });
+    await renderSessionsPage([
+      { id: "sid-default", profile: "default", source: "cli", model: null, title: "Listed", started_at: 1,
+        ended_at: null, last_active: 1, is_active: false, message_count: 2, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "listed" },
+    ]);
+
+    const search = document.querySelector<HTMLInputElement>('input[placeholder]');
+    if (!search) throw new Error("search input not rendered");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "found");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await waitFor(() => document.body.textContent?.includes("Search hit") === true);
+
+    await act(async () => click(button("Delete session")));
+    await waitFor(() => Boolean(document.querySelector('[role="alertdialog"]')));
+    const confirm = Array.from(document.querySelectorAll('[role="alertdialog"] button')).find(
+      (b) => b.textContent?.trim() === "Delete",
+    );
+    await act(async () => click(confirm ?? null));
+
+    expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-worker", "worker");
+  });
 });

@@ -178,6 +178,39 @@ class GatewayAgentCacheMixin:
             session_key, override.get("model"), provider or "",
         )
 
+    def _refresh_override_credentials(self, session_key: str, override: dict) -> None:
+        """Re-resolve the override's credentials from the live provider runtime before each turn.
+
+        The ``api_key`` captured at /model time (or on rehydration) is a snapshot. For OAuth
+        providers it is a short-lived bearer (xai-oauth access tokens live ~6h): replaying the
+        snapshot forever eventually 403s, and the credential pool cannot match the dead key to
+        any entry, so the turn falls straight through to the fallback chain instead of the
+        refreshed token that is already sitting in auth.json. Resolution goes through the same
+        pool/OAuth ladder the non-override path uses every turn; on failure the snapshot is kept.
+        """
+        from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+        provider = override.get("provider")
+        if not provider or not str(provider).strip():
+            return
+        try:
+            runtime = _resolve_runtime_agent_kwargs_for_provider(str(provider).strip())
+        except Exception:
+            logger.debug(
+                "Credential re-resolution failed for session=%s provider=%s; keeping override snapshot",
+                session_key, provider, exc_info=True,
+            )
+            return
+        fresh_key = runtime.get("api_key")
+        if fresh_key and fresh_key != override.get("api_key"):
+            override["api_key"] = fresh_key
+            logger.info(
+                "Refreshed /model override credentials for session=%s provider=%s (rotated token adopted)",
+                session_key, provider,
+            )
+        pool = runtime.get("credential_pool")
+        if pool is not None:
+            override["credential_pool"] = pool
+
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:
         """Apply /model session overrides (precedence over config.yaml defaults; ``None`` fields skipped
         so partial overrides don't clobber defaults), returning (model, runtime_kwargs)."""
@@ -186,6 +219,7 @@ class GatewayAgentCacheMixin:
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
+        self._refresh_override_credentials(session_key, override)
         for key in _OVERRIDE_APPLY_KEYS:
             val = override.get(key)
             if val is not None:

@@ -150,3 +150,51 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+def test_override_re_resolves_stale_oauth_token_each_turn(store_factory):
+    """A /model override snapshots api_key once; OAuth bearers (xai-oauth ~6h) expire under a
+    long-lived gateway session. Each turn must adopt the rotated token from live resolution,
+    otherwise the dead key 403s, the pool cannot match it, and the turn falls to the fallback chain."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    runner = _make_runner(store)
+    runner._session_model_overrides[session_key] = {
+        "model": "grok-4.6", "provider": "xai-oauth", "api_key": "xai-token-stale-6h-old",
+        "base_url": "https://api.x.ai/v1", "api_mode": "codex_responses",
+    }
+    fresh_pool = object()
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={
+            "api_key": "xai-token-rotated-by-refresh", "base_url": "https://api.x.ai/v1",
+            "provider": "xai-oauth", "api_mode": "codex_responses", "credential_pool": fresh_pool,
+        },
+    ) as resolve:
+        model, runtime = runner._apply_session_model_override(
+            session_key, "global-model", {"api_key": "config-default-key"},
+        )
+    resolve.assert_called_once_with("xai-oauth")
+    assert model == "grok-4.6"
+    assert runtime["api_key"] == "xai-token-rotated-by-refresh"
+    assert runtime["credential_pool"] is fresh_pool
+    # The override itself is updated so the next turn compares against the adopted token.
+    assert runner._session_model_overrides[session_key]["api_key"] == "xai-token-rotated-by-refresh"
+
+
+def test_override_keeps_snapshot_when_re_resolution_fails(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    runner = _make_runner(store)
+    runner._session_model_overrides[session_key] = {
+        "model": "grok-4.6", "provider": "xai-oauth", "api_key": "xai-token-snapshot",
+        "base_url": "https://api.x.ai/v1", "api_mode": "codex_responses",
+    }
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider", side_effect=RuntimeError("creds gone"),
+    ), patch("gateway.run._credential_pool_for_provider", return_value=None):
+        model, runtime = runner._apply_session_model_override(session_key, "global-model", {})
+    assert model == "grok-4.6"
+    assert runtime["api_key"] == "xai-token-snapshot"

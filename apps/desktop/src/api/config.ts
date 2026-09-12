@@ -86,9 +86,13 @@ export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
   })
 }
 
-export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSchemaResponse> {
-  return hermesApi<ConfigSchemaResponse>({
-    ...profileScoped(profile),
+export type ConfigSchemaWithCapabilities = ConfigSchemaResponse & {
+  capabilities?: { delegation_fallbacks?: boolean }
+}
+
+export function getHermesConfigSchema(profile?: ProfileScope): Promise<ConfigSchemaWithCapabilities> {
+  return hermesApi<ConfigSchemaWithCapabilities>({
+    ...capabilityScoped(profile),
     path: '/api/config/schema'
   })
 }

@@ -31,7 +31,7 @@ export function getGlobalModelOptions(
     includeUnconfigured?: boolean
     explicitOnly?: boolean
   },
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<ModelOptionsResponse> {
   const params = new URLSearchParams()
 
@@ -48,7 +48,7 @@ export function getGlobalModelOptions(
   }
 
   return hermesApi<ModelOptionsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })

@@ -99,7 +99,12 @@ async def get_schema(profile: Optional[str] = None):
     # start still show up, scoped to the requested profile's config.
     with _config_profile_scope(profile):
         fields = _schema_with_dynamic_provider_options()
-    return {"fields": fields, "category_order": _CATEGORY_ORDER}
+    # Runtime support, not editable config: old backends also persist unknown
+    # keys, so presence of delegation.fallback_providers cannot prove support.
+    return {
+        "fields": fields, "category_order": _CATEGORY_ORDER,
+        "capabilities": {"delegation_fallbacks": True},
+    }
 
 
 @config_router.get("/api/egress/status")

@@ -20,6 +20,7 @@ from gateway.config import PlatformConfig, Platform
 from gateway.platforms.base import (
     SendResult,
     _reply_anchor_for_event,
+    _thread_metadata_for_event,
     _thread_metadata_for_source,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -227,6 +228,40 @@ def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     assert event.source.chat_id == "-100123"
     assert event.source.chat_type == "group"
     assert event.source.thread_id == "1"
+
+
+def test_direct_messages_topic_routes_session_and_reply_by_topic_id():
+    """New Chat shares expose direct_messages_topic, not message_thread_id."""
+    import plugins.platforms.telegram.adapter as telegram_mod
+
+    adapter = _make_adapter()
+    message = SimpleNamespace(
+        text="shared https://example.com",
+        caption=None,
+        chat=SimpleNamespace(
+            id=775566675,
+            type=telegram_mod.ChatType.PRIVATE,
+            is_forum=False,
+            title=None,
+            full_name="Alice",
+        ),
+        from_user=SimpleNamespace(id=775566675, full_name="Alice", is_bot=False),
+        message_thread_id=None,
+        direct_messages_topic=SimpleNamespace(topic_id=270453),
+        is_topic_message=False,
+        reply_to_message=None,
+        message_id=270454,
+        date=None,
+    )
+
+    event = adapter._build_message_event(message, msg_type=MessageType.TEXT)
+
+    assert event.source.thread_id == "270453"
+    assert event.source.thread_id_kind == "direct_messages_topic"
+    assert build_session_key(event.source) == "agent:main:telegram:dm:775566675:270453"
+    assert _thread_metadata_for_event(event) == {
+        "direct_messages_topic_id": "270453",
+    }
 
 
 @pytest.mark.asyncio

@@ -33,13 +33,15 @@ def session_context_engaged() -> bool:
 # * CRON_SESSION: tri-state — _UNSET = legacy env fallback; "1" = cron; "" = non-cron, masks env.
 _SESSION_VARS = (
     _SESSION_PLATFORM, _SESSION_SOURCE, _SESSION_CHAT_ID, _SESSION_CHAT_TYPE,
-    _SESSION_CHAT_NAME, _SESSION_THREAD_ID, _SESSION_USER_ID, _SESSION_USER_ID_ALT,
+    _SESSION_CHAT_NAME, _SESSION_THREAD_ID, _SESSION_THREAD_ID_KIND,
+    _SESSION_USER_ID, _SESSION_USER_ID_ALT,
     _SESSION_USER_NAME, _SESSION_SCOPE_ID, _SESSION_KEY, _SESSION_ID,
     _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE,
     _BROWSER_CONTROL_PRINCIPAL, _BROWSER_CONTROL_TRANSPORT_FAMILY, _CRON_SESSION, _SESSION_PARENT_CHAT_ID,
 ) = tuple(ContextVar(name, default=_UNSET) for name in (
     "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE", "HERMES_SESSION_CHAT_ID",
     "HERMES_SESSION_CHAT_TYPE", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID",
+    "HERMES_SESSION_THREAD_ID_KIND",
     "HERMES_SESSION_USER_ID", "HERMES_SESSION_USER_ID_ALT", "HERMES_SESSION_USER_NAME",
     "HERMES_SESSION_SCOPE_ID", "HERMES_SESSION_KEY", "HERMES_SESSION_ID",
     "HERMES_UI_SESSION_ID", "HERMES_SESSION_MESSAGE_ID", "HERMES_SESSION_PROFILE",
@@ -114,7 +116,8 @@ def source_route_metadata(source: Any, metadata: dict | None) -> dict | None:
 
 def set_session_vars(
     platform: str = "", source: str = "", chat_id: str = "", chat_type: str = "",
-    chat_name: str = "", thread_id: str = "", user_id: str = "", user_id_alt: str = "",
+    chat_name: str = "", thread_id: str = "", thread_id_kind: str = "",
+    user_id: str = "", user_id_alt: str = "",
     user_name: str = "", scope_id: str = "", session_key: str = "", session_id: str = "",
     message_id: str = "", profile: str = "", browser_control_principal: str = "",
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
@@ -133,7 +136,7 @@ def set_session_vars(
     global _session_context_engaged
     _session_context_engaged = True
     values = (
-        platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
+        platform, source, chat_id, chat_type, chat_name, thread_id, thread_id_kind, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
         browser_control_principal, browser_control_transport_family, cron_session, parent_chat_id,
     )

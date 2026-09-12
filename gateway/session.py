@@ -71,6 +71,8 @@ class SessionSource:
     user_id: Optional[str] = None
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # forum topics, Discord threads, etc.
+    # Distinguishes native routing primitives that share the generic thread_id session-key slot.
+    thread_id_kind: Optional[str] = None
     chat_topic: Optional[str] = None  # channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
@@ -122,7 +124,7 @@ class SessionSource:
     # Wire layout (order matters for byte-stable JSON): always-present, then truthy-only
     # optionals around the dual-written scope pair.
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
-    _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
+    _OPTIONAL_PRE_SCOPE = ("thread_id_kind", "user_id_alt", "chat_id_alt")
     _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
     _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
 

@@ -121,9 +121,15 @@ def _telegram_bot(token):
     return Bot(token=token)
 
 
-def _telegram_thread_kwargs(thread_id):
-    """Topic id -> ``message_thread_id`` kwargs. Forum "General" is thread "1" inbound but
-    the Bot API rejects message_thread_id=1, so it maps to no thread — same as the adapter."""
+def _telegram_thread_kwargs(thread_id, thread_id_kind=None):
+    """Topic routing kwargs for standalone Telegram sends.
+
+    Native direct-message topics use ``direct_messages_topic_id``; forum-style
+    topics use ``message_thread_id``. Keeping the routing kind explicit prevents
+    a native topic id from being sent through the forum-topic parameter.
+    """
+    if thread_id_kind == "direct_messages_topic":
+        return {"direct_messages_topic_id": int(thread_id)}
     if thread_id is None:
         return {}
     try:
@@ -236,7 +242,8 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
+                         force_document=False, thread_id_kind=None):
     """One-shot Telegram Bot API send; parse failures fall back to plain text."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
@@ -247,7 +254,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # See #13206.
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
-        thread_kwargs = _telegram_thread_kwargs(thread_id)
+        thread_kwargs = _telegram_thread_kwargs(thread_id, thread_id_kind)
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
         last_msg, warnings, _tg_caption = None, [], None

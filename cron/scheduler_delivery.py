@@ -1215,8 +1215,14 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         and looks_like_telegram_private_chat_id(str(t.chat_id))
         and _looks_like_int(str(thread_id))
     )
-    if is_ambiguous_telegram_topic and _is_channel_dm_topic(
-        t.runtime_adapter, t.chat_id, t.loop, job["id"]):
+    is_origin_direct_topic = (
+        t.origin_target
+        and t.origin.get("thread_id_kind") == "direct_messages_topic"
+    )
+    if is_origin_direct_topic or (
+        is_ambiguous_telegram_topic
+        and _is_channel_dm_topic(t.runtime_adapter, t.chat_id, t.loop, job["id"])
+    ):
         # Channel DM topic: direct_messages_topic_id, no bare thread_id; media mirrors text.
         # See #22773.
         route_thread_id = None
@@ -1465,10 +1471,12 @@ def _standalone_send(
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
+    thread_id_kind = t.origin.get("thread_id_kind") if t.origin_target else None
+
     def _send():
         return _send_to_platform(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+            thread_id_kind=thread_id_kind, media_files=media_files)
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)

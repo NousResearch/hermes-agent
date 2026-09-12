@@ -34,6 +34,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     return {
         "platform": origin_platform, "chat_id": origin_chat_id,
         "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None, "thread_id": thread_id,
+        "thread_id_kind": get_session_env("HERMES_SESSION_THREAD_ID_KIND") or None,
         # Lets a delivery mirror resolve the participant's session in per-user-isolated groups.
         "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         # Workspace/server scope (Slack team, Discord guild...): Slack session keys embed it,

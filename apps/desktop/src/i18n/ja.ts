@@ -2334,6 +2334,9 @@ export const ja = defineLocale({
     }
   },
 
+  intro: {
+    body: '質問やエラーを貼り付けるか、リポジトリの場所を教えてください。コードを読み、ツールを実行して作業を支援します。'
+  },
   composer: {
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,

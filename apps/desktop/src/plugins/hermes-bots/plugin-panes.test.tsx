@@ -171,6 +171,7 @@ describe('the Bots pane dock', () => {
     const data = harness.find('pane')!.data!
 
     expect(data.dock).toEqual({ enforce: true, pane: 'sessions', pos: 'center' })
+    expect((data.tabTitle as () => string)()).toBe('paneTitle')
     // A 'bottom' split was the old workaround for the lone-pane auto-hide trap.
     expect((data.dock as { pos: string }).pos).not.toBe('bottom')
     // No heal token: the invariant runs at every adoption, unconditionally.

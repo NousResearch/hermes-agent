@@ -166,6 +166,7 @@ registry.registerMany([
     // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
     // its default-ish spot beside main, not a random same-placement stack.
     data: {
+      tabTitle: () => translateNow('sidebar.sessions'),
       placement: 'left',
       collapsible: true,
       dock: { pane: 'workspace', pos: 'left' },

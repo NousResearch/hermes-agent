@@ -2758,6 +2758,9 @@ export const en: Translations = {
     markAllRead: 'Mark all as read'
   },
 
+  intro: {
+    body: 'Ask a question, paste an error, or point me at a repo. I can read code, run tools, and help you ship.'
+  },
   composer: {
     message: 'Message',
     wakingProfile: profile => `Waking up ${profile}…`,

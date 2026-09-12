@@ -2247,6 +2247,9 @@ export const zhHant = defineLocale({
     }
   },
 
+  intro: {
+    body: '提出問題、貼上錯誤訊息，或告訴我儲存庫位置。我可以讀取程式碼、執行工具，協助你完成工作。'
+  },
   composer: {
     message: '訊息',
     wakingProfile: profile => `正在喚醒 ${profile}…`,

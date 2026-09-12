@@ -2915,6 +2915,9 @@ export const zh = defineLocale({
     markAllRead: '全部标记为已读'
   },
 
+  intro: {
+    body: '提出问题、粘贴错误信息，或告诉我仓库位置。我可以读取代码、运行工具，协助你完成工作。'
+  },
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,

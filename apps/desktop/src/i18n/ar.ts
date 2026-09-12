@@ -2000,6 +2000,9 @@ export const ar = defineLocale({
       ageMin: 'دقيقة'
     }
   },
+  intro: {
+    body: 'اطرح سؤالاً أو ألصق خطأً أو دلّني على المستودع. يمكنني قراءة الشفرة وتشغيل الأدوات ومساعدتك على إنجاز العمل.'
+  },
   composer: {
     message: 'الرسالة',
     wakingProfile: profile => `جار إيقاظ ${profile}`,

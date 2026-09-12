@@ -6,6 +6,10 @@ import { voiceProviderKeys } from './voice-provider-fields'
 const voiceKeys = SECTIONS.find(s => s.id === 'voice')?.keys ?? []
 
 describe('voiceProviderKeys', () => {
+  it('does not expose the CLI-only recording shortcut in desktop settings', () => {
+    expect(voiceKeys).not.toContain('voice.record_key')
+  })
+
   it('derives per-provider field keys from the curated Voice section', () => {
     expect(voiceProviderKeys('tts', 'openai')).toEqual(['tts.openai.model', 'tts.openai.voice'])
     expect(voiceProviderKeys('tts', 'elevenlabs')).toEqual(['tts.elevenlabs.voice_id', 'tts.elevenlabs.model_id'])

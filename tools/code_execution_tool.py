@@ -437,7 +437,11 @@ def _get_or_create_env(task_id: str):
             cwd=overrides.get("cwd") or config["cwd"], timeout=config["timeout"],
             ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
             container_config=container_config,
-            local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
+            local_config={
+                "persistent": config.get("local_persistent", False),
+                "sandbox": config.get("local_sandbox", "none"),
+                "network": config.get("local_sandbox_network", "deny"),
+            } if env_type == "local" else None,
             task_id=effective_task_id, host_cwd=_resolve_task_host_cwd(config, task_id),
         )
         with _env_lock:
@@ -716,7 +720,10 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
-    if env_type != "local":
+    # Seatbelt confinement lives on LocalEnvironment._run_bash().  The normal
+    # local session kernel is a direct Popen, so route an opted-in local backend
+    # through the env-backed kernel transport just like other sandbox backends.
+    if env_type != "local" or _env_config.get("local_sandbox") == "seatbelt":
         return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above

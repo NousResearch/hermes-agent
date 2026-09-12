@@ -303,8 +303,24 @@ real_home = Path(os.environ.get("HERMES_REAL_HOME", os.environ["HOME"]))
 ```
 
 :::warning
-The agent has the same filesystem access as your user account. Use `hermes tools` to disable tools you don't want, or switch to Docker for sandboxing.
+By default, the agent has the same filesystem access as your user account. Use `hermes tools` to disable tools you don't want, enable the macOS Seatbelt option below, or switch to Docker for cross-platform sandboxing.
 :::
+
+### macOS Seatbelt for the Local Backend
+
+macOS users can opt into lightweight host-local confinement without changing the `local` backend:
+
+```yaml
+terminal:
+  backend: local
+  cwd: "/Users/me/project"
+  local_sandbox: seatbelt
+  local_sandbox_network: deny  # explicit policy: allow | deny (default: deny)
+```
+
+When enabled, every local terminal, file-tool, and `execute_code` child is launched through `/usr/bin/sandbox-exec` with a deny-by-default profile. The configured working directory and a private per-session temp directory are writable; required system and executable/runtime paths are read-only. To prevent a blanket writable home, Hermes refuses a `cwd` that is the OS-user home or one of its ancestors—configure a project subdirectory instead. `local_sandbox_network` explicitly allows or denies network access.
+
+This feature is macOS-only and opt-in because Apple has deprecated `sandbox-exec`. Hermes fails closed before launching the requested command if the host is not macOS, `/usr/bin/sandbox-exec` is missing or non-executable, the sandbox/network value is invalid, or the generated profile cannot be created or activated. It never falls back to unsandboxed local execution. The default `local_sandbox: none` retains the existing local subprocess behavior. These settings are ignored by remote and container backends.
 
 ### Docker Backend
 

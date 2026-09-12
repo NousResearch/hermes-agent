@@ -362,6 +362,9 @@ kanban:
 terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
+  # macOS-only, opt-in host confinement. "none" preserves direct local execution.
+  # local_sandbox: "seatbelt"
+  # local_sandbox_network: "deny"  # Explicit policy: allow | deny (default: deny)
   # Desktop xterm font. Install the font locally; Nerd Fonts render Powerlevel10k glyphs.
   # font_family: "MesloLGS NF"  # Also accepts a CSS stack; blank uses bundled JetBrains Mono.
   timeout: 180

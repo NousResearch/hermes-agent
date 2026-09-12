@@ -1934,6 +1934,8 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
     _terminal_env_map = {
         "backend": "TERMINAL_ENV",
         "degraded_mode": "TERMINAL_DEGRADED_MODE",
+        "local_sandbox": "TERMINAL_LOCAL_SANDBOX",
+        "local_sandbox_network": "TERMINAL_LOCAL_SANDBOX_NETWORK",
         "cwd": "TERMINAL_CWD",
         "timeout": "TERMINAL_TIMEOUT",
         "home_mode": "TERMINAL_HOME_MODE",

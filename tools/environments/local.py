@@ -727,9 +727,31 @@ class LocalEnvironment(BaseEnvironment):
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
+                 local_config: dict | None = None):
+        self._seatbelt_profile_path: str | None = None
+        self._seatbelt_session_temp_dir: str | None = None
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
-        self.init_session()
+        config = local_config or {}
+        from tools.environments.local_seatbelt import (
+            prepare_seatbelt_profile, validate_seatbelt_config,
+        )
+        mode, network = validate_seatbelt_config(
+            config.get("sandbox", "none"), config.get("network", "deny"))
+        if mode == "seatbelt":
+            shell = _find_bash()
+            run_env = _make_run_env(self.env)
+            self._seatbelt_profile_path, self._seatbelt_session_temp_dir = prepare_seatbelt_profile(
+                cwd=self.cwd, temp_root=self.get_temp_dir(), shell=shell, env=run_env,
+                network_policy=network, read_files=_resolve_shell_init_files())
+            self._snapshot_path = f"{self._seatbelt_session_temp_dir}/hermes-snap-{self._session_id}.sh"
+            self._cwd_file = f"{self._seatbelt_session_temp_dir}/hermes-cwd-{self._session_id}.txt"
+            self.env["TMPDIR"] = self._seatbelt_session_temp_dir
+        try:
+            self.init_session()
+        except Exception:
+            self.cleanup()
+            raise
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
@@ -738,6 +760,8 @@ class LocalEnvironment(BaseEnvironment):
         ``tempfile.gettempdir()``; backend env before process env so terminal.env
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
         so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
+        if session_temp := getattr(self, "_seatbelt_session_temp_dir", None):
+            return session_temp
         if _IS_WINDOWS:
             cache_dir = (_default_terminal_temp_dir()
                          or Path(tempfile.gettempdir()) / "hermes_terminal")
@@ -802,6 +826,8 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        from tools.environments.local_seatbelt import seatbelt_spawn_args
+        args = seatbelt_spawn_args(args, self._seatbelt_profile_path)
         self._recover_cwd()
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
@@ -853,3 +879,7 @@ class LocalEnvironment(BaseEnvironment):
         for f in (self._snapshot_path, self._cwd_file, *stale):
             with contextlib.suppress(OSError):
                 os.unlink(f)
+        if self._seatbelt_session_temp_dir:
+            shutil.rmtree(self._seatbelt_session_temp_dir, ignore_errors=True)
+            self._seatbelt_session_temp_dir = None
+            self._seatbelt_profile_path = None

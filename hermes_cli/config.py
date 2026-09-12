@@ -2004,6 +2004,7 @@ TERMINAL_CONFIG_ENV_MAP = {
         key: f"TERMINAL_{key.upper()}"
         for key in (
             "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
+            "local_sandbox", "local_sandbox_network",
             "docker_image", "docker_forward_env", "singularity_image", "modal_image",
             "daytona_image", "vercel_runtime", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
             "container_cpu", "container_memory", "container_disk", "container_persistent",

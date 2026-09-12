@@ -289,7 +289,8 @@ def _parse_service_tier_config(raw: str) -> str | None:
 _TERMINAL_ENV_MAPPINGS = {
     key: f"TERMINAL_{key.upper()}"
     for key in (
-        "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
+        "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds",
+        "local_sandbox", "local_sandbox_network", "docker_image",
         "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
         "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",

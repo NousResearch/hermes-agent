@@ -660,6 +660,9 @@ def _get_env_config() -> Dict[str, Any]:
             "TERMINAL_SSH_PERSISTENT", _tenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ),
         "local_persistent": _tenv_bool("TERMINAL_LOCAL_PERSISTENT", "false"),
+        "local_sandbox": _tenv("TERMINAL_LOCAL_SANDBOX", "none").strip().lower(),
+        "local_sandbox_network": _tenv(
+            "TERMINAL_LOCAL_SANDBOX_NETWORK", "deny").strip().lower(),
         # Container resources (MB); ignored for local/ssh.
         "container_cpu": container_cpu,
         "container_memory": container_memory,
@@ -1043,7 +1046,11 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
                 plan.config, env_type, image=plan.image, cwd=plan.cwd,
                 timeout=plan.effective_timeout, task_id=eff, host_cwd=plan.host_cwd,
                 local_config=(
-                    {"persistent": plan.config.get("local_persistent", False)}
+                    {
+                        "persistent": plan.config.get("local_persistent", False),
+                        "sandbox": plan.config.get("local_sandbox", "none"),
+                        "network": plan.config.get("local_sandbox_network", "deny"),
+                    }
                     if env_type == "local" else None
                 ),
             )

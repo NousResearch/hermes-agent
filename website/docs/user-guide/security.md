@@ -768,7 +768,7 @@ Blocked files show a warning:
 ### Gateway Deployment Checklist
 
 1. **Set explicit allowlists** — never use `GATEWAY_ALLOW_ALL_USERS=true` in production
-2. **Use container backend** — set `terminal.backend: docker` in config.yaml
+2. **Use an execution boundary** — on macOS, opt into `terminal.local_sandbox: seatbelt` with an explicit `terminal.local_sandbox_network: allow` or `deny`; otherwise set `terminal.backend: docker`
 3. **Restrict resource limits** — set appropriate CPU, memory, and disk limits
 4. **Store secrets securely** — keep API keys in `~/.hermes/.env` with proper file permissions
 5. **Enable DM pairing** — use pairing codes instead of hardcoding user IDs when possible
@@ -789,6 +789,18 @@ chmod 600 ~/.hermes/.env
 ```
 
 ### Network Isolation
+
+For a macOS local backend, Seatbelt can deny network access while limiting writes to the configured working directory and its private session temp directory:
+
+```yaml
+terminal:
+  backend: local
+  cwd: "/Users/me/project"
+  local_sandbox: seatbelt
+  local_sandbox_network: deny
+```
+
+Seatbelt is disabled by default. When requested, Hermes requires macOS and an executable `/usr/bin/sandbox-exec` and refuses the local environment if its profile cannot be created or activated; it does not silently run the command without confinement. Apple formally deprecates `sandbox-exec`, so use Docker, SSH, or a VM when you need a stronger or portable boundary.
 
 For maximum security, run the gateway on a separate machine or VM. Set `terminal.backend: ssh` in `config.yaml`, then provide host details via environment variables in `~/.hermes/.env`:
 

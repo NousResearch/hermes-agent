@@ -153,6 +153,39 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
 NETWORK_GIT_TIMEOUT_SECONDS = 300
 
 
+def _record_update_skip(step: str, reason: str) -> None:
+    """Best-effort ``update_receipt.record_skip``; the receipt must never break an update."""
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip(step, reason)
+
+
+def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
+    """Record the pre-update backup as a skip when it was disabled, else as a step.
+
+    ``snapshot_id`` is None both when the backup was deliberately turned off (config
+    ``updates.pre_update_backup: off``/``false``, or ``--no-backup``) and when a requested backup
+    produced nothing. Recording both as ``ok=false, "disabled or failed"`` made an opt-out
+    indistinguishable from a real failure in the receipt, so a disabled safety net read as a
+    broken one (#94944 is the shipped-opt-out case). A deliberate opt-out is a SKIP WITH its
+    reason; only a requested-but-empty backup is a failed step.
+    """
+    if snapshot_id:
+        _record_update_step("pre_update_backup", True, f"snapshot={snapshot_id}")
+        return
+    try:
+        mode = _resolve_pre_update_backup_mode(args)
+    except Exception:
+        mode = ""
+    if mode == "off":
+        reason = ("disabled by --no-backup" if getattr(args, "no_backup", False)
+                  else "disabled by updates.pre_update_backup (mode: off)")
+        _record_update_skip("pre_update_backup", reason)
+        return
+    _record_update_step("pre_update_backup", False, "no snapshot captured")
+
+
+
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
     terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait."""
@@ -1285,11 +1318,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     _pre_update_plan = _begin_update_receipt_and_plan(args)
 
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
-    # the post-update cron-jobs safety net.
+    # the post-update cron-jobs safety net. A deliberate opt-out is recorded as a skip with its
+    # reason, not as a failed step (see _record_pre_update_backup_outcome).
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
-    _record_update_step(
-        "pre_update_backup", pre_update_snapshot_id is not None,
-        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed")
+    _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:

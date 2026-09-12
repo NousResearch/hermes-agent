@@ -13,11 +13,12 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import hermes_cli.update_receipt as ur
-from hermes_cli import update_cmd
+from hermes_cli import update_cmd, update_cmd_maint
 
 
 @pytest.fixture()
@@ -401,3 +402,61 @@ class TestCodeIdentity:
         # returned dicts are copies, not the shared cache
         second["sha"] = "mutated"
         assert get_code_identity()["sha"] == first["sha"]
+
+
+class TestPreUpdateBackupStep:
+    """A deliberate pre-update-backup opt-out is a SKIP carrying its reason; only a backup that
+    was requested and captured nothing is a failed step.
+
+    Recording both as ``ok=false, "disabled or failed"`` made a disabled safety net read as a
+    broken one in the receipt — the shipped-opt-out case (#94944) looked like a failure for every
+    update on the affected machine.
+    """
+
+    @staticmethod
+    def _record(monkeypatch, *, args, snapshot_id, updates_cfg) -> dict:
+        """Run the receipt classifier and return the persisted receipt payload."""
+        monkeypatch.setattr(update_cmd_maint, "_load_updates_cfg", lambda: dict(updates_cfg))
+        ur.begin_update_receipt()
+        update_cmd._record_pre_update_backup_outcome(args, snapshot_id)
+        path = _finalize("success")
+        assert path is not None and path.is_file()
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @pytest.mark.parametrize(
+        "args, updates_cfg, expected_reason",
+        [
+            # The shipped-template case: legacy ``false`` resolves to mode "off" (see #94944).
+            (SimpleNamespace(no_backup=False, backup=False), {"pre_update_backup": False},
+             "updates.pre_update_backup"),
+            # An explicit flag is a different opt-out and must name itself.
+            (SimpleNamespace(no_backup=True, backup=False), {"pre_update_backup": "quick"},
+             "--no-backup"),
+        ],
+    )
+    def test_opt_out_records_a_skip_not_a_failed_step(
+        self, receipt_home, monkeypatch, args, updates_cfg, expected_reason
+    ):
+        payload = self._record(monkeypatch, args=args, snapshot_id=None, updates_cfg=updates_cfg)
+
+        step = "pre_update_backup"
+        assert [entry for entry in payload["steps"] if entry["name"] == step] == []
+        skip = [entry for entry in payload["skips"] if entry["name"] == step]
+        assert len(skip) == 1
+        assert expected_reason in skip[0]["reason"]
+
+    def test_only_an_opt_out_produces_a_skip(self, receipt_home, monkeypatch):
+        """A requested backup never lands in ``skips``: present means captured, absent means failed."""
+        args = SimpleNamespace(no_backup=False, backup=False)
+        updates_cfg = {"pre_update_backup": "quick"}
+
+        captured = self._record(
+            monkeypatch, args=args, snapshot_id="20260911-021847-pre-update", updates_cfg=updates_cfg
+        )
+        assert captured["skips"] == []
+        assert [step["ok"] for step in captured["steps"]] == [True]
+        assert captured["steps"][0]["detail"] == "snapshot=20260911-021847-pre-update"
+
+        empty = self._record(monkeypatch, args=args, snapshot_id=None, updates_cfg=updates_cfg)
+        assert empty["skips"] == []
+        assert [step["ok"] for step in empty["steps"]] == [False]

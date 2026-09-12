@@ -552,14 +552,25 @@ class TestBridgeDispatch:
             result = json.loads(handle_function_call("tool_call", {}))
         assert "requires 'calls'" in result["error"]
 
-    def test_tool_call_reports_registered_tool_disabled_for_session(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
-            result = json.loads(handle_function_call(
-                "tool_call", {"name": "terminal", "arguments": {"command": "true"}},
-            ))
+    def test_tool_call_distinguishes_disabled_direct_and_unknown_tools(self):
+        terminal_call = {
+            "name": "terminal", "arguments": {"command": "true"},
+        }
 
-        assert "not enabled for this session/platform" in result["error"]
-        assert "call it directly" not in result["error"]
+        disabled = json.loads(handle_function_call(
+            "tool_call", terminal_call, enabled_toolsets=["file"],
+        ))
+        direct = json.loads(handle_function_call(
+            "tool_call", terminal_call, enabled_toolsets=["terminal"],
+        ))
+        unknown = json.loads(handle_function_call(
+            "tool_call", {"name": "totally_fake_tool_xyz"}, enabled_toolsets=["file"],
+        ))
+
+        assert "not enabled for this session/platform" in disabled["error"]
+        assert "call it directly" not in disabled["error"]
+        assert "call it directly" in direct["error"]
+        assert "not available in this session" in unknown["error"]
 
     def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
         import tools.tool_search as ts

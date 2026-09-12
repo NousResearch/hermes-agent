@@ -104,7 +104,13 @@ model_catalog:
     - openai
 ```
 
-The exclusion is matched case-insensitively against every key a provider can surface under — the Hermes id and models.dev id (built-in mapped providers), the overlay pid and resolved Hermes slug (overlay providers), and the canonical slug (canonical providers) — so a single entry like `copilot` hides the provider regardless of which section emits it. It is honored by every `/model` picker surface: the gateway interactive/text pickers, the TUI picker, and the interactive `hermes model` CLI picker. An empty list (or omitting the key) has no effect.
+The exclusion is matched case-insensitively against every key a provider can surface under — the Hermes id and models.dev id (built-in mapped providers), the overlay pid and resolved Hermes slug (overlay providers), and the canonical slug (canonical providers) — so a single entry like `copilot` hides the provider regardless of which section emits it. It is honored by every `/model` picker surface: the gateway interactive/text pickers, the TUI picker, and the interactive `hermes model` CLI picker — plus the desktop **Settings → Providers** tabs and the dashboard **Env** page, where an excluded provider gets neither an **API keys** card nor an **Accounts** sign-in card. Two match rules are in play: the gateway/TUI picker rows match every key above, while `hermes model` and the GUI tabs share one predicate that matches the canonical slug and its aliases (`aws` hides `bedrock`), not a bare models.dev id. The **Accounts** tab's two fixed API-key shortcuts (OpenRouter, Fireworks) are drawn by the desktop app itself and are not filtered yet. An empty list (or omitting the key) has no effect.
+
+Hiding is not disabling, and it never strands a credential:
+
+- An excluded provider still resolves when it is named in `model.provider` or passed to `--provider`, and a key it already holds keeps working.
+- A key that is present in `~/.hermes/.env` keeps its card on the **API keys** tab, and a connected account keeps its card on **Accounts**, so both stay removable from the GUI. The card disappears again once the credential is cleared.
+- Exclusions are per profile: the tabs reflect the config of the profile you are viewing.
 
 ## Updating the manifest
 

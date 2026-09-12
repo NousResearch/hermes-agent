@@ -728,9 +728,17 @@ async def _run_analysis(
         logger.info("Analyzing %s: %s", kind, source[:60])
         logger.info("User prompt: %s", user_prompt[:100])
         analysis, scale_note = await stage(user_prompt, debug_call_data, temp_paths)
-        analysis_length = len(analysis) if analysis else 0
+        if not analysis:
+            error_msg = f"{tool_name} returned empty content after retry"
+            logger.error("%s", error_msg)
+            debug_call_data.update(success=False, analysis_length=0, error=error_msg)
+            return finish({
+                "success": False,
+                "error": error_msg,
+                "analysis": f"There was a problem with the request and the {kind} could not be analyzed.",
+            })
+        analysis_length = len(analysis)
         logger.info("%s analysis completed (%s characters)", kind.capitalize(), analysis_length)
-        analysis = analysis or f"There was a problem with the request and the {kind} could not be analyzed."
         result = {"success": True, "analysis": f"[{scale_note}] {analysis}" if scale_note else analysis}
         if scale_note:
             result["scale_note"] = scale_note

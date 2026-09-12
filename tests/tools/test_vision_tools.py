@@ -707,6 +707,21 @@ class TestErrorClassification:
         assert "rejected the image" in result["analysis"].lower()
         assert "smaller" in result["analysis"].lower()
 
+    @pytest.mark.asyncio
+    async def test_empty_after_retry_returns_failure(self, tmp_path):
+        """Empty vision content after retry must fail closed, not success-open (#6031)."""
+        img = tmp_path / "test.png"
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
+
+        with (
+            patch("tools.vision_tools.async_call_llm", new=AsyncMock(return_value=MagicMock())),
+            patch("tools.vision_tools.extract_content_or_reasoning", return_value=""),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is False
+        assert "empty content" in result["error"].lower()
+
 
 class TestVisionRegistration:
     def test_vision_analyze_registered_with_schema(self):

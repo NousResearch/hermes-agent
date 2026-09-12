@@ -14,30 +14,87 @@ DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 
 # Tighter per-result default for ``mcp_`` tools: MCP servers routinely return
 # un-paginated 20-50K payloads that sail under the generic 100K threshold; spillover
-# keeps the full payload on disk. Config: ``tool_budget.mcp_result_size_chars``.
+# keeps the full payload on disk. Config: ``tool_output.mcp_result_size_chars``.
 DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
 # Same prefix the untrusted-content wrapper keys on (agent/tool_dispatch_helpers.py).
 MCP_TOOL_PREFIX: str = "mcp_"
 
 
-def _configured_mcp_result_size() -> int:
-    """Read ``tool_budget.mcp_result_size_chars`` via ``load_config_readonly`` (the
-    sanctioned path; raw config.yaml parsing outside owner modules is test-guarded).
-    Any error, missing key or non-positive value returns the built-in default.
+def _configured_budget_block() -> dict:
+    """Return the spillover config block, preferring the recognized ``tool_output`` key.
 
-    The ``tool_budget:`` block name is shared with the wider configurable-caps proposal (#80508) so the two
-    can merge without a key rename.
+    ``tool_budget`` was the short-lived original spelling (shared with #80508). Keep it
+    as a read-only compatibility fallback so existing installations do not silently
+    lose their MCP threshold after upgrading. Goes through ``load_config_readonly``
+    (the sanctioned path; raw config.yaml parsing outside owner modules is test-guarded).
+
+    ``tool_output`` ships in DEFAULT_CONFIG, so the loader's deep-merge means the
+    primary block always exists with default values — a whole-block "primary else
+    legacy" check would never fall back. Fall back PER KEY: a merged-in default
+    must not shadow an explicit legacy setting.
     """
     try:
         from hermes_cli.config import load_config_readonly
         data = load_config_readonly()
-        block = data.get("tool_budget") if isinstance(data, dict) else None
-        raw = block.get("mcp_result_size_chars") if isinstance(block, dict) else None
-        if raw is not None and int(raw) > 0:
-            return int(raw)
+        if not isinstance(data, dict):
+            return {}
+        primary = data.get("tool_output")
+        primary = primary if isinstance(primary, dict) else {}
+        legacy = data.get("tool_budget")
+        legacy = legacy if isinstance(legacy, dict) else {}
+        if not legacy:
+            return primary
+        merged = dict(primary)
+        if (merged.get("mcp_result_size_chars") == DEFAULT_MCP_RESULT_SIZE_CHARS
+                and "mcp_result_size_chars" in legacy):
+            merged["mcp_result_size_chars"] = legacy["mcp_result_size_chars"]
+        if not merged.get("tool_overrides") and "tool_overrides" in legacy:
+            merged["tool_overrides"] = legacy["tool_overrides"]
+        return merged
+    except Exception:
+        return {}
+
+
+def _configured_mcp_result_size() -> int:
+    """Read ``tool_output.mcp_result_size_chars`` from active config."""
+    try:
+        raw = _configured_budget_block().get("mcp_result_size_chars")
+        if raw is not None and not isinstance(raw, bool):
+            value = int(raw)
+            if value > 0:
+                return value
     except Exception:
         pass
     return DEFAULT_MCP_RESULT_SIZE_CHARS
+
+
+def _configured_tool_overrides() -> Dict[str, int]:
+    """Read positive per-tool spill thresholds from ``tool_output``.
+
+    Tool handlers and providers do not always keep their documented result
+    shape bounded. A named override lets an operator spill a known-chatty tool
+    before the generic 100K threshold without shrinking every tool or the
+    model's context window. Invalid entries are ignored fail-closed.
+    """
+    try:
+        raw = _configured_budget_block().get("tool_overrides")
+        if not isinstance(raw, dict):
+            return {}
+        overrides: Dict[str, int] = {}
+        for name, threshold in raw.items():
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if isinstance(threshold, bool):
+                continue
+            try:
+                value = int(threshold)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                overrides[name.strip()] = value
+        return overrides
+    except Exception:
+        return {}
 
 
 @dataclass(frozen=True)
@@ -100,14 +157,26 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     oversized request (#23767).
     """
     mcp_result_size = _configured_mcp_result_size()
+    tool_overrides = _configured_tool_overrides()
     if not context_length or context_length <= 0:
-        if mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS:
+        if (
+            mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS
+            and not tool_overrides
+        ):
             return DEFAULT_BUDGET
-        return BudgetConfig(mcp_result_size=mcp_result_size)
+        return BudgetConfig(
+            mcp_result_size=mcp_result_size,
+            tool_overrides=tool_overrides,
+        )
     window_chars = context_length * _CHARS_PER_TOKEN
+    per_result = max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), DEFAULT_RESULT_SIZE_CHARS))
     return BudgetConfig(
-        default_result_size=max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), DEFAULT_RESULT_SIZE_CHARS)),
+        default_result_size=per_result,
         turn_budget=max(_MIN_TURN_BUDGET_CHARS, min(int(window_chars * _PER_TURN_WINDOW_FRACTION), DEFAULT_TURN_BUDGET_CHARS)),
         preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
         mcp_result_size=mcp_result_size,
+        tool_overrides={
+            name: min(threshold, per_result)
+            for name, threshold in tool_overrides.items()
+        },
     )

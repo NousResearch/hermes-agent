@@ -175,7 +175,7 @@ def main() -> None:
     import sys
     from pathlib import Path
 
-    from hermes_cli.config import load_config
+    from hermes_cli.config import load_config, require_parseable_user_config
     from hermes_cli.update_channel import resolve_update_channel
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -184,6 +184,8 @@ def main() -> None:
     args = parser.parse_args()
     # Config diagnostics must not corrupt the JSON transport.
     with contextlib.redirect_stdout(sys.stderr):
+        # Recovery defaults are safe for repair UI, not for choosing an update target.
+        require_parseable_user_config()
         channel = resolve_update_channel(load_config(), args.install_root)
     result = {"channel": channel}
     if channel in ("stable", "canary"):

@@ -405,10 +405,17 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
     from hermes_cli.tools_config import enabled_mcp_server_names
     enabled_mcp = enabled_mcp_server_names(cfg)
-    if set(result) & enabled_mcp:
+    # MCP toolsets are registered under prefixed names (``mcp-<server>``, see
+    # tools/mcp_tool_registration.py) but ``enabled_mcp_server_names`` returns raw
+    # config keys (``<server>``). Match both forms so a per-job allowlist of either
+    # style is honored instead of silently unioning in every enabled MCP server.
+    result_lower = {str(t).lower() for t in result}
+    if result_lower & {str(n).lower() for n in enabled_mcp} or result_lower & {
+        f"mcp-{str(n).lower()}" for n in enabled_mcp
+    }:
         return result
     for name in sorted(enabled_mcp):
-        if name not in result:
+        if name not in result and f"mcp-{name}" not in result:
             result.append(name)
     return result
 

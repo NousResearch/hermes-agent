@@ -187,3 +187,37 @@ def test_anthropic_stream_without_host_deadline_runs_to_completion():
         )
     assert message.content[0].text == "summary"
     assert stream.yielded == 5
+
+
+def test_anthropic_stream_json_parse_error_falls_back_to_create():
+    """ValueError / JSONDecodeError during streaming must fall back to messages.create()."""
+    class FailingStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            raise ValueError("expected value at line 1 column 11")
+
+        def get_final_message(self):
+            raise ValueError("expected value at line 1 column 11")
+
+    expected_msg = SimpleNamespace(content=[SimpleNamespace(type="text", text="repaired_result")])
+    create_called = {"v": False}
+
+    def _mock_create(**_kw):
+        create_called["v"] = True
+        return expected_msg
+
+    client = SimpleNamespace(
+        messages=SimpleNamespace(
+            stream=lambda **_kw: FailingStream(),
+            create=_mock_create,
+        )
+    )
+    res = create_anthropic_message(client, {"model": "claude-sonnet-4-5", "messages": []})
+    assert res == expected_msg
+    assert create_called["v"] is True
+

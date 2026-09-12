@@ -680,6 +680,12 @@ def create_anthropic_message(
             return _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response)
         except TimeoutError:
             raise
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "%sAnthropic Messages stream failed with JSON parse error (%s); falling back to non-streaming messages.create()",
+                log_prefix,
+                exc,
+            )
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):
                 raise

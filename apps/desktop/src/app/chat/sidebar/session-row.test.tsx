@@ -11,6 +11,7 @@ import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import type * as WindowsStore from '@/store/windows'
 
 import { SidebarSessionRow } from './session-row'
@@ -45,6 +46,9 @@ vi.mock('@/i18n', () => ({
           today: (time: string) => `Today at ${time}`,
           yesterday: (time: string) => `Yesterday at ${time}`
         }
+      },
+      statusStack: {
+        subagents: (count: number) => `${count} Subagent${count === 1 ? '' : 's'}`
       }
     }
   })
@@ -437,5 +441,112 @@ describe('Inbox-style session card', () => {
 
     expect(workspace.className).toMatch(/\btruncate\b/)
     expect(screen.getByText('133 messages')).toBeTruthy()
+  })
+})
+
+describe('SidebarSessionRow active subagent count', () => {
+  afterEach(() => {
+    cleanup()
+    $subagentsBySession.set({})
+    clearAllSessionStates()
+  })
+
+  it('shows no badge when the session has zero active subagents', () => {
+    const { container } = renderRow(makeSession({ title: 'Quiet' }))
+
+    expect(screen.queryByLabelText(/subagent/i)).toBeNull()
+    expect(container.textContent).not.toContain('◉')
+  })
+
+  it('counts running and queued only, and paints a compact ◉ N', () => {
+    upsertSubagent('s1', { goal: 'write', status: 'running', subagent_id: 'a' })
+    upsertSubagent('s1', { goal: 'review', status: 'queued', subagent_id: 'b' })
+    upsertSubagent('s1', { goal: 'done', status: 'completed', subagent_id: 'c' })
+
+    const { container } = renderRow(makeSession({ title: 'Writer Stack' }))
+
+    expect(screen.getByLabelText('2 Subagents')).toBeTruthy()
+    expect(container.textContent).toContain('◉ 2')
+
+    cleanup()
+
+    const card = renderRow(makeSession({ title: 'Writer Stack' }), { card: true })
+
+    expect(screen.getByLabelText('2 Subagents')).toBeTruthy()
+    expect(card.container.textContent).toContain('◉ 2')
+  })
+
+  it('updates live as a subagent starts and then completes', () => {
+    const { container } = renderRow(makeSession({ title: 'Live' }))
+
+    expect(screen.queryByLabelText(/subagent/i)).toBeNull()
+
+    act(() => {
+      upsertSubagent('s1', { goal: 'x', status: 'running', subagent_id: 'a' })
+    })
+
+    expect(screen.getByLabelText('1 Subagent')).toBeTruthy()
+    expect(container.textContent).toContain('◉ 1')
+
+    act(() => {
+      upsertSubagent('s1', { goal: 'x', status: 'completed', subagent_id: 'a' })
+    })
+
+    expect(screen.queryByLabelText(/subagent/i)).toBeNull()
+    expect(container.textContent).not.toContain('◉')
+  })
+
+  it('keeps independent counts per parent session', () => {
+    upsertSubagent('s1', { goal: 'one', status: 'running', subagent_id: 'a' })
+    upsertSubagent('s1', { goal: 'two', status: 'running', subagent_id: 'b' })
+
+    render(
+      <>
+        {[makeSession({ id: 's1', title: 'One' }), makeSession({ id: 's2', title: 'Two' })].map(session => (
+          <SidebarSessionRow
+            isPinned={false}
+            isSelected={false}
+            key={session.id}
+            onArchive={noop}
+            onDelete={noop}
+            onPin={noop}
+            onResume={noop}
+            onToggleUnread={noop}
+            session={session}
+            unread={false}
+          />
+        ))}
+      </>
+    )
+
+    expect(screen.getByLabelText('2 Subagents')).toBeTruthy()
+    expect(screen.getAllByLabelText(/subagent/i)).toHaveLength(1)
+    expect(screen.getByText('One').textContent).not.toContain('◉')
+    expect(screen.getByText('One').closest('div')?.textContent).toContain('◉ 2')
+    expect(screen.getByText('Two').closest('div')?.textContent).not.toContain('◉')
+  })
+
+  it('does not hide existing unread or running chrome when a count is present', () => {
+    upsertSubagent('s1', { goal: 'x', status: 'running', subagent_id: 'a' })
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    const { container } = render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Busy' })}
+        unread
+      />
+    )
+
+    expect(screen.getByLabelText('1 Subagent')).toBeTruthy()
+    expect(container.textContent).toContain('◉ 1')
+    expect(container.querySelector('.arc-row')).toBeTruthy()
+    expect(screen.getByLabelText('Running')).toBeTruthy()
   })
 })

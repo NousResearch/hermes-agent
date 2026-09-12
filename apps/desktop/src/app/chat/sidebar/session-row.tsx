@@ -22,7 +22,7 @@ import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
-import { useStoreSelector } from '@/lib/use-session-slice'
+import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
@@ -32,6 +32,7 @@ import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/sess
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
+import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { $todoProgressBySession } from '@/store/todos'
 
 import { SessionStatusDot } from '../session-status-dot'
@@ -280,6 +281,23 @@ function SidebarSessionRowImpl({
   // Live plan progress ("3/7"), far right of the footer. A selector keyed to
   // this row: only rows whose own fraction changes repaint on todo events.
   const todoProgress = useStoreSelector($todoProgressBySession, progress => (card ? progress[session.id] : undefined))
+  // Per-session active subagent count (queued+running). Slice-subscribe so a
+  // row only repaints when ITS list reference changes — not on every tick in
+  // a sibling session. Empty/missing → no badge (fail-open).
+  const subagentItems = useSessionSlice($subagentsBySession, session.id)
+  const activeCount = activeSubagentCount(subagentItems)
+  const subagentCountLabel = activeCount > 0 ? t.statusStack.subagents(activeCount) : null
+  const subagentCountBadge = subagentCountLabel ? (
+    <Tip label={subagentCountLabel}>
+      <span
+        aria-label={subagentCountLabel}
+        className="pointer-events-auto shrink-0 text-[0.625rem] leading-none tabular-nums text-(--ui-accent)"
+        role="status"
+      >
+        {`◉ ${activeCount}`}
+      </span>
+    </Tip>
+  ) : null
 
   // An archived session has no live status to paint, so the archive glyph takes
   // the lead slot the dot would occupy instead of adding a column of its own.
@@ -526,6 +544,7 @@ function SidebarSessionRowImpl({
                       </span>
                     )}
                   </span>
+                  {subagentCountBadge}
                 </>
               )
             }
@@ -548,6 +567,7 @@ function SidebarSessionRowImpl({
                     {context}
                   </span>
                   {handoffBadge}
+                  {subagentCountBadge}
                   {actionsNode}
                 </div>
                 {/* Title + preview: ONE grouped cell with its own tight

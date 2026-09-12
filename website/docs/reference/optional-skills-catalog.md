@@ -50,6 +50,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**i-have-adhd**](/docs/user-guide/skills/optional/communication/communication-i-have-adhd) | ADHD-friendly output: action first, numbered, no filler. |
 | [**one-three-one-rule**](/docs/user-guide/skills/optional/communication/communication-one-three-one-rule) | 1-3-1 decision briefs: problem, three options, one pick. |
 
 ## creative

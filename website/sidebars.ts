@@ -344,6 +344,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-communication',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/communication/communication-i-have-adhd',
                     'user-guide/skills/optional/communication/communication-one-three-one-rule',
                   ],
                 },

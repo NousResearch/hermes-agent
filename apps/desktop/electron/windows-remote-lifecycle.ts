@@ -19,8 +19,28 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+// cmd.exe (the default OpenSSH shell on Windows) caps command lines at 8191 chars.
+// The old single-script probe (~8.4k chars) died with "The command line is too long.",
+// so discovery (cheap path computation, no filesystem checks) and validation
+// (reparse-point asserts + first-existing pick) ride two short commands (#106716).
+// Discovery returns only explicit path + home; validation recomputes the small
+// candidate list from home so no long path list crosses the wire twice.
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
+
+  const discovery = [
+    '$ErrorActionPreference="Stop"',
+    `$explicit=${explicit}`,
+    '$hermesHome=$env:HERMES_HOME',
+    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    '[ordered]@{explicit=$explicit;hermesHome=$hermesHome}|ConvertTo-Json -Compress'
+  ].join(';')
+
+  const found = JSON.parse((await ssh.exec(powerShellCommand(discovery))).trim())
+  const payload = psLiteral(JSON.stringify({
+    explicit: found.explicit || '',
+    hermesHome: found.hermesHome
+  }))
 
   const script = [
     '$ErrorActionPreference="Stop"',
@@ -34,25 +54,17 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '$parent=$item.Parent.FullName;if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
     '}',
     '}',
-    `$explicit=${explicit}`,
+    `$found=${payload} | ConvertFrom-Json`,
+    '$explicit=$found.explicit',
+    '$hermesHome=$found.hermesHome',
     'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
-    '$hermesHome=$env:HERMES_HOME',
-    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
     'Assert-NoReparse $hermesHome $true',
-    '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',
-    '$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe")',
-    'Assert-NoReparse $candidate $true',
-    'Assert-NoReparse $candidatePython $true',
-    '$profileCandidate=[IO.Path]::Combine($HOME, "hermes-agent\\.venv\\Scripts\\hermes.exe")',
-    '$profileCandidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($profileCandidate), "python.exe")',
-    'Assert-NoReparse $profileCandidate $true',
-    'Assert-NoReparse $profileCandidatePython $true',
     '$fallbackHomeCandidate=Join-Path $hermesHome "hermes-agent\\venv\\Scripts\\hermes.exe"',
     '$fallbackProfileCandidate=Join-Path $HOME "hermes-agent\\.venv\\Scripts\\hermes.exe"',
     '$candidates=@()',
     'if($explicit){$candidates+=$explicit}',
     '$cmd=Get-Command hermes.exe -ErrorAction SilentlyContinue',
-    'if($cmd){Assert-NoReparse $cmd.Source $true;$cmdPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($cmd.Source), "python.exe");Assert-NoReparse $cmdPython $true;$candidates+=$cmd.Source}',
+    'if($cmd){$candidates+=$cmd.Source}',
     '$candidates+=$fallbackHomeCandidate',
     '$candidates+=$fallbackProfileCandidate',
     '$hermes=$null',
@@ -71,22 +83,6 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
 function windowsUpdateMarkerProbeCommand(hermesHome) {
   const script = [
     '$ErrorActionPreference="Stop"',
-    `Add-Type -TypeDefinition @'
-using System;
-using System.IO;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
-public static class HermesMarkerNoFollow {
-  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-  private static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
-  public static FileStream OpenRead(string name) {
-    var handle=CreateFile(name, 0x80000000, 0x00000007, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero);
-    if(handle.IsInvalid) Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error());
-    return new FileStream(handle, FileAccess.Read);
-  }
-}
-'@
-`,
     'function Assert-NoReparse([string]$candidate,[bool]$allowMissing=$false){',
     'if([string]::IsNullOrWhiteSpace($candidate)){return}',
     '$current=[IO.Path]::GetFullPath($candidate);$first=$true',
@@ -103,12 +99,14 @@ public static class HermesMarkerNoFollow {
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
     '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
     '$result="UNCERTAIN"',
-    '$stream=$null;$memory=$null',
     'try{',
     'Assert-NoReparse $marker $true',
-    'if(-not (Test-Path -LiteralPath $marker -PathType Leaf)){$result="CLEAR"}else{$stream=[HermesMarkerNoFollow]::OpenRead($marker)',
+    // The strict assert above already rejects links on every path level including the
+    // file itself, so the old no-follow C# open was redundant: a plain read keeps the
+    // fail-closed catches (missing -> CLEAR, anything else -> UNCERTAIN).
+    'if(-not (Test-Path -LiteralPath $marker -PathType Leaf)){$result="CLEAR"}else{',
     'Assert-NoReparse $marker $false',
-    '$memory=New-Object IO.MemoryStream;$stream.CopyTo($memory);$bytes=$memory.ToArray()',
+    '$bytes=[IO.File]::ReadAllBytes($marker)',
     'if($bytes.Length -le 256){',
     '$utf8=[Text.UTF8Encoding]::new($false,$true)',
     '$text=$utf8.GetString($bytes)',
@@ -125,7 +123,7 @@ public static class HermesMarkerNoFollow {
     '}catch [ArgumentException]{$result="CLEAR"} catch{$result="UNCERTAIN"}',
     '}',
     '}',
-    '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
+    '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}',
     'Write-Output $result'
   ].join(';')
 
@@ -779,5 +777,6 @@ export {
   psLiteral,
   reusableWindowsLock,
   terminateOwnedWindowsDashboardForUpdate,
-  validLock
+  validLock,
+  windowsUpdateMarkerProbeCommand
 }

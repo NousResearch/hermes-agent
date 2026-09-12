@@ -49,6 +49,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
+import { $freeTierBlocks } from './freeTierGate.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
@@ -812,6 +813,7 @@ export function useMainApp(gw: GatewayClient) {
   })
 
   submitLiteralRef.current = submitLiteral
+  const freeTierBlocks = useStore($freeTierBlocks)
 
   // Drain one queued message whenever the session settles (busy → false):
   // agent turn ends, interrupt, shell.exec finishes, error recovered, or the
@@ -822,6 +824,7 @@ export function useMainApp(gw: GatewayClient) {
     if (
       !ui.sid ||
       ui.busy ||
+      Boolean(freeTierBlocks[ui.sid]) ||
       composerRefs.queueEditRef.current !== null ||
       composerRefs.queueRef.current.length === 0
     ) {
@@ -834,7 +837,7 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ busy: true, status: 'running…' })
       sendQueued(next)
     }
-  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
+  }, [ui.sid, ui.busy, freeTierBlocks, composerActions, composerRefs, sendQueued])
 
   const { pagerPageSize } = useInputHandlers({
     actions: {

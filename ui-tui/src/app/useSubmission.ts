@@ -11,6 +11,8 @@ import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js
 import type { Msg } from '../types.js'
 
 import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
+import { freeTierBlockMessage } from './freeTierGate.js'
+import { patchOverlayState } from './overlayStore.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -295,6 +297,15 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       const live = getUiState()
 
+      if (!live.busy && freeTierBlockMessage()) {
+        patchOverlayState({ modelPicker: {
+          continuationMessage: freeTierBlockMessage(),
+          onSignIn: () => slashRef.current('/login'),
+          onSetup: () => slashRef.current('/setup model')
+        } })
+        return
+      }
+
       if (!live.sid) {
         composerActions.pushHistory(toHistory)
         composerActions.enqueue(full)
@@ -383,7 +394,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           return turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: hasQueued })
         }
 
-        if (doubleTap && live.sid && composerRefs.queueRef.current.length) {
+        if (doubleTap && live.sid && composerRefs.queueRef.current.length && !freeTierBlockMessage()) {
           const next = composerActions.dequeue()
 
           if (next) {

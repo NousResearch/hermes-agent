@@ -16,8 +16,16 @@ import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
 const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
+const CONTINUATION_CHOICES = ['Sign in or create an account', 'Use a local model', 'Other providers']
 
-type Stage = 'provider' | 'key' | 'model' | 'disconnect'
+export function continuationProviders(providers: ModelOptionProvider[], local: boolean): ModelOptionProvider[] {
+  return providers.filter(provider => {
+    const isLocal = provider.auth_type === 'local' || ['ollama', 'lmstudio', 'llamacpp'].includes(provider.slug)
+    return !provider.free_tier_row && (local ? isLocal : !isLocal)
+  })
+}
+
+type Stage = 'continuation' | 'provider' | 'key' | 'model' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
@@ -34,11 +42,14 @@ export function providerIndexAfterClearingFilter(
 
 export function ModelPicker({
   allowPersistGlobal = true,
+  continuationMessage,
   gw,
   initialRefresh = false,
   maxWidth,
   onCancel,
   onSelect,
+  onSignIn,
+  onSetup,
   sessionId,
   t
 }: ModelPickerProps) {
@@ -49,12 +60,14 @@ export function ModelPicker({
   const [persistGlobal, setPersistGlobal] = useState(false)
   const [providerIdx, setProviderIdx] = useState(0)
   const [modelIdx, setModelIdx] = useState(0)
-  const [stage, setStage] = useState<Stage>('provider')
+  const [stage, setStage] = useState<Stage>(continuationMessage ? 'continuation' : 'provider')
   const [keyInput, setKeyInput] = useState('')
   const [keySaving, setKeySaving] = useState(false)
   const [keyError, setKeyError] = useState('')
   // Type-to-filter query, scoped per stage (cleared on stage change).
   const [filter, setFilter] = useState('')
+  const [continuationIdx, setContinuationIdx] = useState(0)
+  const [providerScope, setProviderScope] = useState<'all' | 'local' | 'external'>('all')
 
   const { stdout } = useStdout()
   // Pin the picker to a stable width so the FloatBox parent (which shrinks-
@@ -95,7 +108,7 @@ export function ModelPicker({
           )
         )
         setModelIdx(0)
-        setStage('provider')
+        setStage(continuationMessage ? 'continuation' : 'provider')
         setErr('')
         setLoading(false)
       })
@@ -103,15 +116,19 @@ export function ModelPicker({
         setErr(rpcErrorMessage(e))
         setLoading(false)
       })
-  }, [gw, initialRefresh, sessionId])
+  }, [continuationMessage, gw, initialRefresh, sessionId])
 
-  const names = useMemo(() => providerDisplayNames(providers), [providers])
+  const scopedProviders = useMemo(
+    () => providerScope === 'all' ? providers : continuationProviders(providers, providerScope === 'local'),
+    [providers, providerScope]
+  )
+  const names = useMemo(() => providerDisplayNames(scopedProviders), [scopedProviders])
 
   // Provider rows carry their display name so fuzzy filtering can match on
   // name + slug while keeping the name/provider pairing intact across ranking.
   const providerRows = useMemo(
-    () => providers.map((p, i) => ({ provider: p, name: names[i] ?? p.name ?? p.slug })),
-    [providers, names]
+    () => scopedProviders.map((p, i) => ({ provider: p, name: names[i] ?? p.name ?? p.slug })),
+    [scopedProviders, names]
   )
 
   // providerIdx / modelIdx always index into the *displayed* (filtered) lists.
@@ -187,6 +204,12 @@ export function ModelPicker({
       return
     }
 
+    if (stage === 'provider' && continuationMessage) {
+      setStage('continuation')
+      setProviderScope('all')
+      return
+    }
+
     onCancel()
   }
 
@@ -195,7 +218,39 @@ export function ModelPicker({
   const listStage = stage === 'provider' || stage === 'model'
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
+  const chooseContinuation = (choice: number) => {
+    if (choice === 0) {
+      onCancel()
+      onSignIn?.()
+      return
+    }
+    if (loading) {
+      return
+    }
+    if (choice === 1 && !continuationProviders(providers, true).length) {
+      onCancel()
+      onSetup?.()
+      return
+    }
+    setProviderScope(choice === 1 ? 'local' : 'external')
+    setProviderIdx(0)
+    setFilter('')
+    setStage('provider')
+  }
+
   useInput((ch, key) => {
+    if (stage === 'continuation') {
+      if (key.upArrow) {
+        setContinuationIdx(value => Math.max(0, value - 1))
+      } else if (key.downArrow) {
+        setContinuationIdx(value => Math.min(CONTINUATION_CHOICES.length - 1, value + 1))
+      } else if (key.return) {
+        chooseContinuation(continuationIdx)
+      } else if (/^[1-3]$/.test(ch)) {
+        chooseContinuation(Number(ch) - 1)
+      }
+      return
+    }
     // Key entry stage handles its own input
     if (stage === 'key') {
       if (keySaving) {
@@ -440,6 +495,26 @@ export function ModelPicker({
       setSel(0)
     }
   })
+
+  if (stage === 'continuation') {
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text bold color={t.color.accent}>Choose how to continue</Text>
+        <Text color={t.color.text}>{continuationMessage}</Text>
+        <Text color={t.color.muted}>Your conversation is saved.</Text>
+        <Text />
+        {CONTINUATION_CHOICES.map((choice, index) => (
+          <Text key={choice}>
+            <Text {...chipRowProps(t, continuationIdx === index)}>
+              {continuationIdx === index ? '▸ ' : '  '}{index + 1}. {choice}
+            </Text>
+          </Text>
+        ))}
+        {err && <Text color={t.color.warn}>{err}</Text>}
+        <OverlayHint t={t}>↑/↓ select · Enter choose · 1–3 quick pick · Esc close</OverlayHint>
+      </Box>
+    )
+  }
 
   if (loading) {
     return <Text color={t.color.muted}>loading models…</Text>
@@ -700,6 +775,9 @@ export function ModelPicker({
 
 interface ModelPickerProps {
   allowPersistGlobal?: boolean
+  continuationMessage?: string
+  onSignIn?: () => void
+  onSetup?: () => void
   gw: GatewayClient
   initialRefresh?: boolean
   maxWidth?: number

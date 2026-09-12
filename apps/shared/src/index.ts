@@ -56,9 +56,9 @@ export {
   type JsonRpcErrorPayload,
   type JsonRpcFrame,
   JsonRpcGatewayClient,
-  JsonRpcGatewayError,
   type WebSocketLike
 } from './json-rpc-gateway'
+export { JsonRpcGatewayError } from './json-rpc-error'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

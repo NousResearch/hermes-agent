@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-error'
+import { $freeTierBlocks } from '../app/freeTierGate.js'
 
 import { isSessionBusyError, markSubmitting, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -147,6 +149,25 @@ describe('submissionCore.submitPrompt — literal submissions (startup -q querie
     await Promise.resolve()
 
     expect(submitted).toEqual(['/model $(rm -rf ~)'])
+  })
+})
+
+describe('submissionCore free-tier admission race', () => {
+  it('retains a refused prompt in the queue and pauses further inference without an automatic retry', async () => {
+    resetUiState()
+    $freeTierBlocks.set({})
+    patchUiState({ sid: 'gated' })
+    const gw = { request: vi.fn(async () => {
+      throw new JsonRpcGatewayError('Choose a provider.', { code: 4092, data: { reason: 'free_tier_limit', retryable: true } })
+    }) } as unknown as GatewayClient
+    const deps = makeDeps(gw)
+    submitPrompt('keep this request', deps, true, undefined, { skipDetectDrop: true })
+    await vi.waitFor(() => expect(deps.enqueue).toHaveBeenCalledWith('keep this request'))
+    expect(gw.request).toHaveBeenCalledOnce()
+    expect(getUiState().busy).toBe(false)
+    expect($freeTierBlocks.get().gated).toBe('Choose a provider.')
+    expect(deps.sys).not.toHaveBeenCalled()
+    $freeTierBlocks.set({})
   })
 })
 

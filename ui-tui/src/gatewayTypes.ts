@@ -172,6 +172,14 @@ export interface SetupStatusResponse {
   provider_configured?: boolean
 }
 
+export interface RuntimeCheckResponse {
+  ok: boolean
+  provider?: string
+  model?: string
+  free_tier?: boolean
+  error?: string
+}
+
 export interface SystemBatteryResponse {
   available?: boolean
   category?: string
@@ -474,6 +482,7 @@ export interface ToolsConfigureResponse {
 
 export interface ModelOptionProvider {
   auth_type?: string
+  free_tier_row?: boolean
   authenticated?: boolean
   is_current?: boolean
   key_env?: string
@@ -795,6 +804,9 @@ export type GatewayEvent =
   | {
       payload?: {
         billing?: BillingBlock
+        code?: string
+        continuation_required?: boolean
+        free_tier_notice?: string
         failure_reason?: string
         reasoning?: string
         rendered?: string
@@ -806,4 +818,4 @@ export type GatewayEvent =
       type: 'message.complete'
     }
   | { payload?: { usage?: Usage }; session_id?: string; type: 'session.usage' }
-  | { payload?: { message?: string }; session_id?: string; type: 'error' }
+  | { payload?: { code?: string; message?: string }; session_id?: string; type: 'error' }

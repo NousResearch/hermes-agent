@@ -1,7 +1,10 @@
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-error'
+import { FREE_TIER_LIMIT_KEY } from '../content/setup.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
 import type { Msg } from '../types.js'
 
+import { setFreeTierBlock } from './freeTierGate.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -90,6 +93,15 @@ export function submitPrompt(
         }
       })
       .catch((e: Error) => {
+        if (e instanceof JsonRpcGatewayError && (e.data as { reason?: string } | undefined)?.reason === 'free_tier_limit') {
+          if (getUiState().sid === liveSid) {
+            setFreeTierBlock(e.message)
+            deps.enqueue(submitText)
+            patchUiState({ busy: false, status: 'choose a provider to continue' })
+            turnController.showNotice({ key: FREE_TIER_LIMIT_KEY, kind: 'sticky', level: 'info', text: e.message })
+          }
+          return
+        }
         // Defensive: prompt.submit no longer rejects a mid-turn send with
         // "session busy" (the gateway queues it and returns success), but keep
         // the re-queue path as a safety net for any future/legacy gateway that

@@ -268,6 +268,9 @@ export function FloatingOverlays({
       render: width => (
         <FloatBox color={theme.color.border}>
           <ModelPicker
+            continuationMessage={typeof overlay.modelPicker === 'object' ? overlay.modelPicker.continuationMessage : undefined}
+            onSignIn={typeof overlay.modelPicker === 'object' ? overlay.modelPicker.onSignIn : undefined}
+            onSetup={typeof overlay.modelPicker === 'object' ? overlay.modelPicker.onSetup : undefined}
             gw={gw}
             initialRefresh={initialRefresh}
             maxWidth={width}

@@ -934,6 +934,7 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
     _wire_callbacks(sid)
     with contextlib.suppress(Exception):  # bare agents without the attribute must not break startup
         agent.background_review_callback = lambda message, _sid=sid: _emit("review.summary", _sid, {"text": str(message)})
+        agent.background_review_event_callback = lambda payload, _sid=sid: _emit("review.summary", _sid, payload)
         agent.memory_notifications = _load_memory_notifications()
     return notify_registered
 

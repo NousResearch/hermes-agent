@@ -162,6 +162,7 @@ export async function reconcileTileTranscripts({
     try {
       // Passive: a hidden tile's refresh must never cold-start its owner
       // backend or hold a pool slot (#103375); no warm backend = retry next tick.
+      const messagesBeforeRead = $sessionStates.get()[runtimeSessionId]?.messages ?? []
       const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
 
       if (
@@ -192,7 +193,8 @@ export async function reconcileTileTranscripts({
           ...state,
           messages: preserveLocalAssistantErrors(
             graftRefreshedTailOntoBackfill(messages, state.messages),
-            state.messages
+            state.messages,
+            messagesBeforeRead
           )
         }),
         storedSessionId
@@ -237,6 +239,7 @@ export async function reconcileActiveTranscript({
         }
       : stored.profile
 
+    const messagesBeforeRead = $sessionStates.get()[runtimeSessionId]?.messages ?? []
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 
     if (
@@ -274,7 +277,11 @@ export async function reconcileActiveTranscript({
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
-        messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+        messages: preserveLocalAssistantErrors(
+          graftRefreshedTailOntoBackfill(messages, state.messages),
+          state.messages,
+          messagesBeforeRead
+        )
       }),
       storedSessionId
     )

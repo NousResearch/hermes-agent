@@ -210,6 +210,163 @@ def test_native_authorize_rejects_non_loopback_redirect(gated_client):
 
 
 # ---------------------------------------------------------------------------
+# Allowlisted custom-scheme redirect_uri (dashboard.native_redirect_schemes) —
+# the mobile-app analogue of the loopback redirect for clients that cannot
+# bind a loopback HTTP listener (RFC 8252 §7.1).
+# ---------------------------------------------------------------------------
+
+
+def _set_native_redirect_schemes(monkeypatch, schemes):
+    cfg = {"dashboard": {"native_redirect_schemes": schemes}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+
+
+def _custom_scheme_params(challenge, redirect_uri, **overrides):
+    params = {
+        "provider": "stub",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "redirect_uri": redirect_uri,
+        "state": "s",
+    }
+    params.update(overrides)
+    return params
+
+
+def test_native_authorize_accepts_allowlisted_custom_scheme(gated_client, monkeypatch):
+    """An operator who allowlisted a scheme can redirect a native (iOS/Android) client that has
+    no loopback listener, using the ``<scheme>://oauth`` form."""
+    _set_native_redirect_schemes(monkeypatch, ["com.stephenthorn.herald"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "com.stephenthorn.herald://oauth"),
+    )
+    assert r.status_code == 302, r.text
+    assert "code=stub_code" in r.headers["location"]
+
+
+def test_native_authorize_accepts_allowlisted_custom_scheme_callback_path(
+    gated_client, monkeypatch,
+):
+    _set_native_redirect_schemes(monkeypatch, ["com.stephenthorn.herald"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "com.stephenthorn.herald://oauth/callback"),
+    )
+    assert r.status_code == 302, r.text
+
+
+def test_native_authorize_rejects_non_allowlisted_custom_scheme(gated_client, monkeypatch):
+    """Empty allowlist (the default): a custom scheme is rejected exactly like any other
+    non-loopback redirect_uri — loopback behaviour is unchanged when the operator opts into
+    nothing."""
+    _set_native_redirect_schemes(monkeypatch, [])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "com.stephenthorn.herald://oauth"),
+    )
+    assert r.status_code == 400
+    assert "native_redirect_schemes" in r.json()["detail"]
+
+
+def test_native_authorize_rejects_custom_scheme_not_in_allowlist(gated_client, monkeypatch):
+    """A scheme configured for a different app must not let an unrelated scheme ride along."""
+    _set_native_redirect_schemes(monkeypatch, ["com.stephenthorn.herald"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "com.other.app://oauth"),
+    )
+    assert r.status_code == 400
+    assert "native_redirect_schemes" in r.json()["detail"]
+
+
+def test_native_authorize_rejects_allowlisted_scheme_with_query(gated_client, monkeypatch):
+    _set_native_redirect_schemes(monkeypatch, ["com.stephenthorn.herald"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(
+            challenge, "com.stephenthorn.herald://oauth?evil=1"),
+    )
+    assert r.status_code == 400
+    assert "query" in r.json()["detail"].lower()
+
+
+def test_native_authorize_rejects_allowlisted_scheme_with_fragment(gated_client, monkeypatch):
+    _set_native_redirect_schemes(monkeypatch, ["com.stephenthorn.herald"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(
+            challenge, "com.stephenthorn.herald://oauth#evil"),
+    )
+    assert r.status_code == 400
+    assert "query" in r.json()["detail"].lower()
+
+
+def test_native_authorize_rejects_allowlisted_scheme_wrong_path(gated_client, monkeypatch):
+    """Only ``<scheme>://oauth`` or ``<scheme>://oauth/callback`` are accepted — an allowlisted
+    scheme does not grant an arbitrary path."""
+    _set_native_redirect_schemes(monkeypatch, ["com.stephenthorn.herald"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(
+            challenge, "com.stephenthorn.herald://oauth/steal"),
+    )
+    assert r.status_code == 400
+
+
+def test_native_authorize_loopback_unaffected_by_configured_schemes(gated_client, monkeypatch):
+    """Configuring custom schemes must not change loopback validation — both forms stay
+    independently valid."""
+    _set_native_redirect_schemes(monkeypatch, ["com.stephenthorn.herald"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "http://127.0.0.1:53999/cb"),
+    )
+    assert r.status_code == 302, r.text
+    assert "code=stub_code" in r.headers["location"]
+
+
+def test_native_custom_scheme_full_roundtrip(gated_client, monkeypatch):
+    """authorize -> callback -> loopback-equivalent app redirect -> token exchange, using an
+    allowlisted custom scheme end to end."""
+    _set_native_redirect_schemes(monkeypatch, ["com.stephenthorn.herald"])
+    verifier, challenge = _make_pkce()
+    redirect_uri = "com.stephenthorn.herald://oauth"
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, redirect_uri),
+    )
+    assert r.status_code == 302, r.text
+    loc = r.headers["location"]
+    cb_qs = parse_qs(urlparse(loc).query)
+    cookies = r.cookies
+    r2 = gated_client.get(
+        "/auth/callback",
+        params={"code": cb_qs["code"][0], "state": cb_qs["state"][0]},
+        cookies=cookies,
+    )
+    assert r2.status_code == 302, r2.text
+    assert r2.headers["location"].startswith(f"{redirect_uri}?")
+    set_cookie = r2.headers.get("set-cookie", "")
+    assert "hermes_session_at" not in set_cookie
+
+    loop_qs = parse_qs(urlparse(r2.headers["location"]).query)
+    tokens = gated_client.post(
+        "/auth/native/token",
+        json={"code": loop_qs["code"][0], "code_verifier": verifier},
+    ).json()
+    assert tokens["access_token"]
+
+
+# ---------------------------------------------------------------------------
 # Empty-provider auto-select (the desktop omits ``provider``; the gateway
 # picks when there is exactly one brokerable candidate) — regression #78906
 # ---------------------------------------------------------------------------

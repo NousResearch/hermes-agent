@@ -961,6 +961,15 @@ DEFAULT_CONFIG = {
             "client_id": "",  # agent:{instance_id} — Portal provisions this
             "portal_url": "",
         },
+        # Allowlisted custom URL schemes (RFC 8252 §7.1) for the native OAuth redirect, for
+        # mobile clients that cannot bind a loopback HTTP listener. Empty by default: loopback
+        # (127.0.0.1 / ::1) stays the only accepted native redirect_uri until an operator opts a
+        # scheme in. Each entry must be an exact scheme the client presents as
+        # "<scheme>://oauth" or "<scheme>://oauth/callback" (no query/fragment); a reverse-DNS
+        # private-use scheme (e.g. "com.example.myapp") is recommended so it can't collide with a
+        # scheme another installed app registered, but the allowlist itself is the security
+        # boundary — being listed here is what's trusted, not the scheme's shape.
+        "native_redirect_schemes": [],
         # Username/password gate (dashboard_auth/basic plugin, no OAuth IDP). Active when username
         # plus password_hash (preferred) or password (hashed in-memory) are set; empty username =
         # no-op. Env HERMES_DASHBOARD_BASIC_AUTH_USERNAME / _PASSWORD_HASH / _PASSWORD / _SECRET /

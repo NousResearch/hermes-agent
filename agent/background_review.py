@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -201,28 +202,96 @@ def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
         return True, {}
 
 
+def _load_primary_pool_for_fork(primary_snapshot: Dict[str, Any]) -> Tuple[Any, bool]:
+    """Return ``(pool, blocked)`` without leasing a credential before request admission."""
+    from agent.credential_pool import load_pool, resolve_runtime_pool_key, credential_pool_matches_provider
+    primary_provider = str(primary_snapshot.get("provider") or "").strip().lower()
+    primary_base_url = str(primary_snapshot.get("base_url") or "")
+    key = resolve_runtime_pool_key(primary_provider, primary_base_url)
+    if not key:
+        return None, False
+    try:
+        loaded = load_pool(key)
+        if loaded is None or not credential_pool_matches_provider(
+            loaded, primary_provider, base_url=primary_base_url
+        ):
+            return None, False
+        if not loaded.has_credentials():
+            return None, False
+        next_at = getattr(loaded, "next_available_at", lambda: None)()
+        if next_at is not None and next_at > time.time():
+            return loaded, True
+        if not loaded.has_available():
+            return loaded, True
+        return loaded, False
+    except Exception as exc:
+        logger.debug("background-review could not select primary credential pool: %s", exc)
+        return None, False
+
+
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
-    parent): the parent's live runtime with ``routed=False`` (codex_app_server -> codex_responses
-    downgrade applied). When ``auxiliary.background_review.{provider,model}`` names a different
-    concrete model, resolve that runtime and set ``routed=True``."""
+    """Resolve provider/model/credentials for the review fork.
+
+    Normally the fork inherits the live parent with warm-cache parity. After a provider fallback,
+    it returns to an eligible primary snapshot as a cold routed fork; active primary cooldowns keep
+    it on the fallback. Explicit auxiliary provider/model routing remains cold as before.
+    """
     parent_runtime = agent._current_main_runtime()
     parent_api_mode = parent_runtime.get("api_mode") or None
+    # Background review/curator turns spawn AFTER the user turn. The user turn's
+    # restore_primary_runtime() (turn_context.py top) only fires on the NEXT user turn, so while a
+    # fallback is still active the review fork would inherit the fallback provider/model via
+    # agent.provider/agent.model and burn the fallback for every post-turn review/curator pass.
+    # Pin the fork to an eligible _primary_runtime snapshot instead (reporter's option 2 in
+    # #105825). Respect the same local cooldown as restore_primary_runtime: the review must not
+    # become an immediate probe of a known-limited primary. Reload and select from the primary
+    # credential pool so a cross-provider fallback pool or stale snapshot key cannot contaminate
+    # the fork. The parent agent is untouched: it stays on the fallback until the
+    # next user turn restores the primary, so on_session_end/usage attribution for THIS turn still
+    # records the fallback the turn actually used.
+    primary_snapshot = None
+    provider_fallback = bool(getattr(agent, "_provider_fallback_active", False))
+    primary_cooldown = float(getattr(agent, "_rate_limited_until", 0) or 0)
+    if provider_fallback and primary_cooldown <= time.monotonic():
+        primary_snapshot = getattr(agent, "_primary_runtime", None) or None
+    primary_pool_blocked = False
+    if primary_snapshot:
+        credential_pool, primary_pool_blocked = _load_primary_pool_for_fork(primary_snapshot)
+        if primary_pool_blocked:
+            primary_snapshot = None
+    if primary_snapshot:
+        identity = primary_snapshot
+        identity_api_mode = primary_snapshot.get("api_mode") or None
+    else:
+        identity = parent_runtime
+        identity_api_mode = parent_api_mode
+        credential_pool = getattr(agent, "_credential_pool", None)
+    # A provider-fallback recovery is always a cold route, even when labels match: the selected
+    # primary pool entry may resolve to a different endpoint after this preflight snapshot.
+    identity_changed = bool(primary_snapshot)
     parent = {
-        "provider": agent.provider, "model": agent.model,
-        "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
-        "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
-        "credential_pool": getattr(agent, "_credential_pool", None),
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "provider": identity.get("provider") or agent.provider,
+        "model": identity.get("model") or agent.model,
+        "api_key": identity.get("api_key") or None,
+        "base_url": identity.get("base_url") or None,
+        "api_mode": "codex_responses" if identity_api_mode == "codex_app_server" else identity_api_mode,
+        "credential_pool": credential_pool,
+        "request_overrides": dict(
+            identity.get("request_overrides") or {}
+            if primary_snapshot else getattr(agent, "request_overrides", {}) or {}
+        ),
         "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
-        "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
+        "args": list(getattr(agent, "acp_args", []) or []), "routed": identity_changed,
+        "select_pool_on_admission": bool(primary_snapshot and credential_pool),
     }
+    effective_provider = parent["provider"] or ""
+    effective_model = parent["model"] or ""
     task = _background_review_task_config(task_cfg)
     task_provider, task_model, task_base_url, task_api_key = (
         str(task.get(key, "")).strip() or None for key in ("provider", "model", "base_url", "api_key")
     )
     if not (task_provider and task_provider != "auto" and task_model) or (
-        task_provider == (agent.provider or "") and task_model == (agent.model or "")  # same as parent
+        task_provider == effective_provider and task_model == effective_model  # same as effective parent
     ):
         return parent
     try:
@@ -1013,6 +1082,17 @@ def _release_fork_clients(review_agent: Any) -> None:
         review_agent.release_clients()
 
 
+def _select_review_pool_credential(review_agent: Any) -> None:
+    """Lease and apply the review fork's pool credential after request admission."""
+    pool = getattr(review_agent, "_credential_pool", None)
+    if pool is None:
+        return
+    entry = pool.select()
+    if entry is None:
+        raise RuntimeError("Background review credential pool has no available entry")
+    review_agent._swap_credential(entry)
+
+
 def _run_review_fork(
     agent: Any, messages_snapshot: List[Dict], prompt: str, task_cfg: Optional[Dict[str, Any]],
     review_run: Optional[_BackgroundReviewRun], st: _ReviewForkState, review_memory: bool = False,
@@ -1051,6 +1131,8 @@ def _run_review_fork(
         _reset_background_review_read_marks()
     try:
         if review_run is None or review_run.begin_request(st.review_agent):
+            if _rt.get("select_pool_on_admission"):
+                _select_review_pool_credential(st.review_agent)
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
             st.review_agent.run_conversation(
                 user_message=(

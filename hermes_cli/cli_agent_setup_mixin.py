@@ -182,9 +182,17 @@ class CLIAgentSetupMixin:
         _primary_exc = None
         runtime = None
         try:
+            # Pass the current session model as target_model so multi-endpoint providers
+            # (e.g. OpenCode Zen/Go) re-derive api_mode from the model actually in use,
+            # not from the config default. Without this, a /model switch to a model on a
+            # different api_mode route than the default causes _ensure_runtime_credentials
+            # to overwrite self.api_mode with the default's route, which then mismatches
+            # the route signature stored at agent init — rebuilding the agent every turn.
+            # See: https://github.com/NousResearch/hermes-agent/issues/105979
             runtime = resolve_runtime_provider(
                 requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                explicit_base_url=self._explicit_base_url)
+                explicit_base_url=self._explicit_base_url,
+                target_model=self.model)
         except Exception as exc:
             _primary_exc = exc
         if _primary_exc is not None:

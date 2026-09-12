@@ -13,19 +13,33 @@
  * `session_id`); joiners receive whatever the winning call returns.
  */
 
-const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
+interface SessionResumeFlight {
+  includesMessages: boolean
+  promise: Promise<unknown>
+}
 
-export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
+const _inFlightResumeByStoredSessionId = new Map<string, SessionResumeFlight>()
+
+export function singleFlightSessionResume<T>(
+  storedSessionId: string,
+  run: () => Promise<T>,
+  options?: { requiresMessages?: boolean }
+): Promise<T> {
   const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
 
-  if (existing) {
-    return existing as Promise<T>
+  if (existing && (!options?.requiresMessages || existing.includesMessages)) {
+    return existing.promise as Promise<T>
   }
 
   // Promise.resolve().then(run) tolerates run() being synchronous, returning a
   // bare value, or throwing synchronously (test doubles and legacy callers do
   // all three) — a raw run().finally() would crash on a non-promise return.
-  const flight = Promise.resolve()
+  // A message-bearing caller cannot join an omitted-message flight. Queue one
+  // follow-up behind it instead: this preserves same-session ordering while
+  // still letting all later callers join the stronger queued snapshot.
+  const ready = existing ? existing.promise.then(() => undefined, () => undefined) : Promise.resolve()
+
+  const promise = ready
     .then(run)
     .finally(() => {
       if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
@@ -33,9 +47,14 @@ export function singleFlightSessionResume<T>(storedSessionId: string, run: () =>
       }
     })
 
+  const flight: SessionResumeFlight = {
+    includesMessages: options?.requiresMessages === true,
+    promise
+  }
+
   _inFlightResumeByStoredSessionId.set(storedSessionId, flight)
 
-  return flight
+  return promise
 }
 
 /**

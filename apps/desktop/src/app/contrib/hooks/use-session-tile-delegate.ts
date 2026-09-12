@@ -32,6 +32,7 @@ import {
   chatMessageArraysEquivalent,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
+  resolveResumedBusy,
   resolveSessionOwner
 } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
@@ -275,6 +276,7 @@ export function useSessionTileDelegate({
 
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
         const refreshTranscript = options?.refreshTranscript === true
+        const authoritativeSnapshot = options?.authoritativeSnapshot === true
 
         // Warm path: reuse a live binding — but only when it still carries a
         // transcript (or is mid-turn, where messages legitimately stream in).
@@ -291,7 +293,8 @@ export function useSessionTileDelegate({
           existing &&
           cached?.storedSessionId === storedSessionId &&
           (cached.busy || cached.messages.length > 0) &&
-          !refreshTranscript
+          !refreshTranscript &&
+          !authoritativeSnapshot
         ) {
           publishSessionState(existing, cached)
 
@@ -310,9 +313,16 @@ export function useSessionTileDelegate({
             ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
             : owner
 
-        const prefetchPromise = getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
+        const prefetchPromise = authoritativeSnapshot
+          ? Promise.resolve(null)
+          : getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
 
-        if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
+        if (
+          !authoritativeSnapshot &&
+          existing &&
+          cached?.storedSessionId === storedSessionId &&
+          (cached.busy || cached.messages.length > 0)
+        ) {
           const prefetch = await prefetchPromise
           // Deltas and completion may land while REST is in flight.
           updateSessionState(
@@ -338,17 +348,23 @@ export function useSessionTileDelegate({
           () => {
             assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
 
-            return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
-                session_id: storedSessionId,
-                cols: 96,
-                omit_messages: true,
-                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-              })
+            return singleFlightSessionResume(
+              storedSessionId,
+              () =>
+                requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+                  session_id: storedSessionId,
+                  cols: 96,
+                  omit_messages: !authoritativeSnapshot,
+                  ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+                }),
+              { requiresMessages: authoritativeSnapshot }
             )
           },
           async () => {
-            const stored = (await prefetchPromise) ?? (await fetchStoredTranscriptAcrossBackends(storedSessionId))
+            const stored =
+              (await prefetchPromise) ??
+              (await getLatestSessionMessages(storedSessionId, restScope).catch(() => null)) ??
+              (await fetchStoredTranscriptAcrossBackends(storedSessionId))
 
             if (!stored) {
               throw new Error('stored transcript unavailable on every reachable backend')
@@ -395,18 +411,42 @@ export function useSessionTileDelegate({
 
         updateSessionState(
           runtimeId,
-          state => ({
-            ...state,
-            busy: Boolean(info?.running),
-            // Persist the session's own model/provider from resume so the tile
-            // pill does not wait on a chrome-scoped catalog read (#93892).
-            ...(typeof info?.model === 'string' ? { model: info.model } : {}),
-            ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-            ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
-            ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
-          }),
+          state => {
+            const previousMessages = state.messages.length > 0 ? state.messages : (cached?.messages ?? [])
+
+            const messages = authoritativeSnapshot
+              ? resumed.messages.length > 0
+                ? mergeTileTranscript(previousMessages, resumed.messages, state.streamId ?? cached?.streamId)
+                : previousMessages
+              : previousMessages.length > 0
+                ? previousMessages
+                : toChatMessages(prefetch?.messages ?? resumed.messages ?? [])
+
+            const busyChangedWhileResuming = cached
+              ? Boolean(
+                  state.busy &&
+                    (state.turnStartedAt !== cached.turnStartedAt || (state.turnLive && !cached.turnLive))
+                )
+              : state.busy
+
+            const running = resolveResumedBusy(resumed.running ?? info?.running, busyChangedWhileResuming)
+
+            return {
+              ...state,
+              ...(typeof info?.branch === 'string' ? { branch: info.branch } : {}),
+              ...(typeof info?.cwd === 'string' ? { cwd: info.cwd } : {}),
+              ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
+              ...(typeof info?.model === 'string' ? { model: info.model } : {}),
+              ...(typeof info?.personality === 'string' ? { personality: info.personality } : {}),
+              ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
+              ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+              ...(typeof info?.service_tier === 'string' ? { serviceTier: info.service_tier } : {}),
+              ...(typeof info?.yolo === 'boolean' ? { yolo: info.yolo } : {}),
+              awaitingResponse: running && !resumed.inflight?.assistant,
+              busy: running,
+              messages
+            }
+          },
           storedSessionId
         )
 

@@ -144,6 +144,7 @@ export function useComposerSubmit({
           }
 
           const queueKey = activeQueueSessionKeyRef.current
+
           // External requests contain only text; the unsent draft and its attachments stay in the composer.
           const enqueue = () =>
             void enqueueQueuedPrompt(queueKey, { text, attachments: [], ...(displayKind ? { displayKind } : {}) })

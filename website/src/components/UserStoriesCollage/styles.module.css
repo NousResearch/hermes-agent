@@ -72,6 +72,10 @@
   color: var(--ifm-color-emphasis-0);
   border-color: var(--ifm-color-emphasis-900);
 }
+/* .filterBtn:hover outranks .filterActive and would paint emphasis-1000 text on the emphasis-900 pill. */
+.filterActive:hover {
+  color: var(--ifm-color-emphasis-0);
+}
 [data-theme='dark'] .filterActive {
   background: #e2e8f0;
   color: #0f172a;

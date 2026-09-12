@@ -365,16 +365,31 @@ describe('revalidatePooledRemoteBackends', () => {
   interface TestRemoteConnection {
     authMode?: string
     baseUrl: string
+    connectionId?: string
+    profile?: string
     process?: unknown
     remoteBaseUrl?: null | string
+    sharedRemote?: boolean
   }
 
   const harness = (
-    rawEntries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string; authMode?: string }]>
+    rawEntries: Array<
+      [
+        string,
+        {
+          process?: unknown
+          remoteBaseUrl?: null | string
+          authMode?: string
+          connectionId?: string
+          sharedProbeKey?: string
+          sharedRemote?: boolean
+        }
+      ]
+    >
   ) => {
     const entries: Array<[string, TestRemoteConnection & { connectionPromise: Promise<TestRemoteConnection> }]> =
       rawEntries.map(([profile, entry]) => {
-        const connection = { ...entry, baseUrl: String(entry.remoteBaseUrl || '') }
+        const connection = { ...entry, baseUrl: String(entry.remoteBaseUrl || ''), profile }
 
         return [profile, { ...connection, connectionPromise: Promise.resolve(connection) }]
       })
@@ -453,6 +468,169 @@ describe('revalidatePooledRemoteBackends', () => {
 
     await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder'] })
     expect(pool.stopBackend).toHaveBeenCalledWith('coder')
+  })
+
+  it('counts one host failure once when several profiles share its descriptor', async () => {
+    const pool = harness([
+      [
+        'coder',
+        { process: null, remoteBaseUrl: 'https://remote.example.com', connectionId: 'shared', sharedProbeKey: 'shared' }
+      ],
+      [
+        'writer',
+        { process: null, remoteBaseUrl: 'https://remote.example.com/', connectionId: 'shared', sharedProbeKey: 'shared' }
+      ],
+      [
+        'reviewer',
+        { process: null, remoteBaseUrl: 'https://remote.example.com', connectionId: 'shared', sharedProbeKey: 'shared' }
+      ]
+    ])
+
+    pool.unreachable.add('https://remote.example.com')
+    const tracker = new RemoteLivenessTracker()
+
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    expect(pool.probe).toHaveBeenCalledTimes(1)
+    expect(pool.stopBackend).not.toHaveBeenCalled()
+
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: [] })
+    await expect(pool.run(tracker)).resolves.toEqual({ dropped: ['coder', 'writer', 'reviewer'] })
+    expect(pool.probe).toHaveBeenCalledTimes(REMOTE_LIVENESS_FAILURE_LIMIT)
+    expect(pool.stopBackend).toHaveBeenCalledTimes(3)
+  })
+
+  it('probes same-URL descriptors independently unless the producer marks them shared', async () => {
+    const entries: Array<
+      [
+        string,
+        {
+          process: null
+          remoteBaseUrl: string
+          connectionPromise: Promise<{ baseUrl: string; profile: string }> | null
+        }
+      ]
+    > = [
+      [
+        'dead',
+        {
+          process: null,
+          remoteBaseUrl: 'https://remote.example.com',
+          connectionPromise: Promise.resolve({ baseUrl: 'https://remote.example.com', profile: 'dead' })
+        }
+      ],
+      [
+        'healthy',
+        {
+          process: null,
+          remoteBaseUrl: 'https://remote.example.com',
+          connectionPromise: Promise.resolve({ baseUrl: 'https://remote.example.com', profile: 'healthy' })
+        }
+      ]
+    ]
+
+    const probe = vi.fn(async connection => {
+      if (connection.profile === 'dead') {
+        throw new Error('unreachable')
+      }
+    })
+
+    const stopBackend = vi.fn()
+
+    await expect(
+      revalidatePooledRemoteBackends({
+        entries,
+        log: vi.fn(),
+        probe,
+        stopBackend,
+        tracker: new RemoteLivenessTracker(1)
+      })
+    ).resolves.toEqual({ dropped: ['dead'] })
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(stopBackend).toHaveBeenCalledOnce()
+    expect(stopBackend).toHaveBeenCalledWith('dead')
+  })
+
+  it('does not let an unavailable descriptor evict a healthy same-URL sibling', async () => {
+    const healthy = { baseUrl: 'https://remote.example.com', profile: 'healthy' }
+
+    const entries: Array<
+      [
+        string,
+        {
+          process: null
+          remoteBaseUrl: string
+          connectionPromise: Promise<{ baseUrl: string; profile: string }> | null
+        }
+      ]
+    > = [
+      ['missing', { process: null, remoteBaseUrl: 'https://remote.example.com', connectionPromise: null }],
+      [
+        'healthy',
+        { process: null, remoteBaseUrl: 'https://remote.example.com', connectionPromise: Promise.resolve(healthy) }
+      ]
+    ]
+
+    const stopBackend = vi.fn()
+
+    await expect(
+      revalidatePooledRemoteBackends({
+        entries,
+        log: vi.fn(),
+        probe: vi.fn(async () => undefined),
+        stopBackend,
+        tracker: new RemoteLivenessTracker(1)
+      })
+    ).resolves.toEqual({ dropped: ['missing'] })
+    expect(stopBackend).toHaveBeenCalledOnce()
+    expect(stopBackend).toHaveBeenCalledWith('missing')
+  })
+
+  it('does not let one pending descriptor block an independent healthy probe', async () => {
+    let resolvePending: (connection: { baseUrl: string; profile: string }) => void = () => undefined
+
+    const pending = new Promise<{ baseUrl: string; profile: string }>(resolve => {
+      resolvePending = resolve
+    })
+
+    const entries: Array<
+      [
+        string,
+        {
+          process: null
+          remoteBaseUrl: string
+          connectionPromise: Promise<{ baseUrl: string; profile: string }>
+        }
+      ]
+    > = [
+      ['pending', { process: null, remoteBaseUrl: 'https://pending.example.com', connectionPromise: pending }],
+      [
+        'healthy',
+        {
+          process: null,
+          remoteBaseUrl: 'https://healthy.example.com',
+          connectionPromise: Promise.resolve({ baseUrl: 'https://healthy.example.com', profile: 'healthy' })
+        }
+      ]
+    ]
+
+    const probe = vi.fn(async () => undefined)
+
+    const run = revalidatePooledRemoteBackends({
+      entries,
+      log: vi.fn(),
+      probe,
+      stopBackend: vi.fn(),
+      tracker: new RemoteLivenessTracker()
+    })
+
+    await new Promise(resolve => setImmediate(resolve))
+    expect(probe).toHaveBeenCalledWith(expect.objectContaining({ profile: 'healthy' }), '/api/status', {
+      timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+    })
+
+    resolvePending({ baseUrl: 'https://pending.example.com', profile: 'pending' })
+    await run
+    expect(probe).toHaveBeenCalledTimes(2)
   })
 
   it('clears the streak when the host answers again', async () => {

@@ -1510,7 +1510,14 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # copy under a temp dir named after the canonical id: root allow-list for default,
     # credential exclusion for named profiles.
     def _ignore_credentials(directory: str, contents: list) -> set:
-        return _EXPORT_CREDENTIAL_FILES & set(contents)
+        # Credential files, plus universal exclusions (sockets/tmp/pycache) that
+        # shutil.copytree cannot copy anyway (live unix sockets aren't regular files).
+        ignored = set(_EXPORT_CREDENTIAL_FILES & set(contents))
+        ignored.update(
+            entry for entry in contents
+            if entry == "__pycache__" or entry.endswith((".sock", ".tmp"))
+        )
+        return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
     with tempfile.TemporaryDirectory() as tmpdir:

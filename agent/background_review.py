@@ -203,9 +203,10 @@ def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
-    parent): the parent's live runtime with ``routed=False`` (codex_app_server -> codex_responses
-    downgrade applied). When ``auxiliary.background_review.{provider,model}`` names a different
-    concrete model, resolve that runtime and set ``routed=True``."""
+    parent): the parent's live runtime with ``routed=False``. When
+    ``auxiliary.background_review.{provider,model}`` names a different concrete model,
+    resolve that runtime and set ``routed=True``. Normalize codex_app_server to
+    codex_responses on whichever runtime is selected."""
     parent_runtime = agent._current_main_runtime()
     parent_api_mode = parent_runtime.get("api_mode") or None
     parent = {
@@ -233,7 +234,8 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
         )
         return {
             "provider": rp.get("provider") or task_provider, "model": rp.get("model") or task_model,
-            **{key: rp.get(key) for key in ("api_key", "base_url", "api_mode", "credential_pool", "command")},
+            **{key: rp.get(key) for key in ("api_key", "base_url", "credential_pool", "command")},
+            "api_mode": "codex_responses" if rp.get("api_mode") == "codex_app_server" else rp.get("api_mode"),
             "request_overrides": dict(rp.get("request_overrides") or {}),
             "args": list(rp.get("args") or []), "routed": True,
         }
@@ -876,6 +878,8 @@ def build_cache_parity_fork(
     # Inherit the parent's live runtime: AIAgent.__init__'s env auto-resolution fails for
     # OAuth-only providers, session-scoped creds and credential pools.
     _rt = _resolve_review_runtime(agent, task_cfg)
+    if _rt.get("api_mode") == "codex_app_server":
+        raise ValueError("Detached forks cannot use codex_app_server native tools")
     _routed = bool(_rt.get("routed"))
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations))
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
@@ -1004,6 +1008,7 @@ class _ReviewForkState:
     review_agent: Any = None
     review_messages: List[Dict] = field(default_factory=list)
     review_usage: Dict[str, Any] = field(default_factory=dict)
+    review_skipped: bool = False
 
 
 def _release_fork_clients(review_agent: Any) -> None:
@@ -1052,7 +1057,7 @@ def _run_review_fork(
     try:
         if review_run is None or review_run.begin_request(st.review_agent):
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
-            st.review_agent.run_conversation(
+            result = st.review_agent.run_conversation(
                 user_message=(
                     prompt + "\n\nYou can only call " + memory_phrase_prompt +
                     "management tools. Other tools will be denied "
@@ -1060,6 +1065,9 @@ def _run_review_fork(
                 ),
                 conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
             )
+            st.review_skipped = isinstance(result, dict) and result.get("turn_exit_reason") in {
+                "review_request_oversized", "review_request_size_unavailable",
+            }
     finally:
         clear_thread_tool_whitelist()
         # Attribute usage to the PARENT session. Snapshot BEFORE unregister/close so counters
@@ -1148,7 +1156,7 @@ def _run_review_in_thread(
                 e,
             )
             actions = []
-        _log_review_completion(st.review_usage, _classify_review_result(actions))
+        _log_review_completion(st.review_usage, "skipped" if st.review_skipped else _classify_review_result(actions))
         if actions:
             _publish_review_summary(agent, actions)
     except Exception as e:

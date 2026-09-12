@@ -537,6 +537,9 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        # Profile that owns unassigned ready rows and unroutable decomposed
+        # children on this board; overrides ``kanban.default_assignee``.
+        "default_assignee": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
         "created_at": None,
@@ -561,10 +564,11 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    default_assignee: Optional[str] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
-    set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    set on first write. ``project_id``/``default_workdir``/``default_assignee``:
+    ``None`` = unchanged, "" = clear (none of them is validated here)."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -577,7 +581,10 @@ def write_board_metadata(
             meta[key] = str(value)
     if archived is not None:
         meta["archived"] = bool(archived)
-    for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
+    for key, value in (
+        ("default_workdir", default_workdir), ("project_id", project_id),
+        ("default_assignee", default_assignee),
+    ):
         if value is not None:
             meta[key] = str(value) if value else None
     if not meta.get("created_at"):
@@ -1378,6 +1385,29 @@ def create_task(
 
 def _board_meta_for(board: Optional[str]) -> dict:
     return read_board_metadata(board if board else get_current_board())
+
+
+def board_default_assignee(board: Optional[str] = None) -> Optional[str]:
+    """``board.json`` ``default_assignee`` when it names an existing profile,
+    else ``None`` (callers fall back to ``kanban.default_assignee``). When the
+    profiles module isn't importable trust the operator's value, mirroring
+    ``kanban_db_dispatch._resolve_default_assignee``. Never raises: a malformed
+    slug or a hand-edited non-string value reads as unset so a dispatch tick
+    can't die on ``board.json``."""
+    try:
+        raw = _board_meta_for(board).get("default_assignee")
+    except Exception:
+        return None
+    name = raw.strip() if isinstance(raw, str) else ""
+    if not name:
+        return None
+    try:
+        from hermes_cli.profiles import profile_exists
+        if not profile_exists(name):
+            return None
+    except Exception:
+        pass
+    return name
 
 
 def _project_branch_name(project_obj: Any, task_id: str, title: Optional[str]) -> Optional[str]:

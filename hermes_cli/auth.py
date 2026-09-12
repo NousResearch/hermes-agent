@@ -889,31 +889,18 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
-    """Return the persisted credential pool, or one provider slice.
+def read_credential_pool(provider_id: Optional[str] = None, *, read_only: bool = False) -> Dict[str, Any]:
+    """Return the persisted pool with native per-provider profile shadowing.
 
-    In profile mode the global-root ``auth.json`` is a read-only fallback applied per provider ONLY
-    when the profile has zero entries for it (``hermes auth add`` in the profile shadows global)."""
-    pool = _load_auth_store().get("credential_pool")
-    pool = pool if isinstance(pool, dict) else {}
-    global_pool = _load_global_auth_store().get("credential_pool")
-    global_pool = global_pool if isinstance(global_pool, dict) else {}
-
-    if provider_id is None:
-        merged = dict(pool)
-        for gp_key, gp_entries in global_pool.items():
-            existing = merged.get(gp_key)
-            if not (isinstance(gp_entries, list) and gp_entries):
-                continue
-            if not (isinstance(existing, list) and existing):  # profile wins when it has ANY entries
-                merged[gp_key] = list(gp_entries)
-        return merged
-
-    provider_entries = pool.get(provider_id)
-    if isinstance(provider_entries, list) and provider_entries:
-        return list(provider_entries)
-    global_entries = global_pool.get(provider_id)
-    return list(global_entries) if isinstance(global_entries, list) else []
+    Diagnostic callers may request read_only=True: malformed stores raise,
+    without cached reads or corrupt-file recovery copies. Fresh diagnostic
+    processes should import hermes_cli.auth_store_readonly directly to avoid
+    provider-discovery side effects of this operational auth facade.
+    """
+    from hermes_cli.auth_store_readonly import read_credential_pool as read_only_pool, select_credential_pool
+    if read_only:
+        return read_only_pool(provider_id)
+    return select_credential_pool(_load_auth_store(), _load_global_auth_store(), provider_id)
 
 
 _POOL_STATUS_FIELDS = (

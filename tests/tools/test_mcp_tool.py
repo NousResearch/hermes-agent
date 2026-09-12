@@ -3157,3 +3157,23 @@ class TestRedirectHeaderStripper:
         asyncio.run(hook(response))
         assert next_request.headers["authorization"] == "Bearer x"
         assert next_request.headers["x-tenant"] == "t"
+
+
+class TestBuildSafeEnvProxyVars:
+    def test_build_safe_env_includes_proxy_env_vars(self, monkeypatch):
+        """Verify proxy env vars (http_proxy, HTTPS_PROXY, no_proxy, ALL_PROXY) are preserved in _build_safe_env."""
+        from tools.mcp_tool_config import _build_safe_env
+
+        monkeypatch.setenv("http_proxy", "http://proxy.internal:8080")
+        monkeypatch.setenv("HTTPS_PROXY", "http://secure-proxy.internal:8443")
+        monkeypatch.setenv("no_proxy", "localhost,127.0.0.1,.internal")
+        monkeypatch.setenv("ALL_PROXY", "socks5://socks.internal:1080")
+
+        env = _build_safe_env(None)
+
+        env_upper = {k.upper(): v for k, v in env.items()}
+        assert env_upper.get("HTTP_PROXY") == "http://proxy.internal:8080"
+        assert env_upper.get("HTTPS_PROXY") == "http://secure-proxy.internal:8443"
+        assert env_upper.get("NO_PROXY") == "localhost,127.0.0.1,.internal"
+        assert env_upper.get("ALL_PROXY") == "socks5://socks.internal:1080"
+

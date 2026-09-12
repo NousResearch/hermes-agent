@@ -862,10 +862,17 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     See #50502.
     """
     report: Dict[str, Any] = {"repaired": False, "strategy": None, "backup_path": None, "error": None}
+    
+    db_path = Path(db_path)
+    from hermes_state_common import _writer_gate_acquire
+    refusal = _writer_gate_acquire(db_path)
+    if refusal:
+        report["error"] = refusal
+        return report
+
     # Startup-watchdog lease: repair is I/O-bound (near-zero CPU), which the watchdog's CPU fallback would
     # misread as a parked deadlock. One lease (clamped to _MAX_LEASE_S=900) beats per-chunk renewal complexity.
     report_startup_progress(900.0, phase="state_db_repair")
-    db_path = Path(db_path)
     if not db_path.exists():
         report["error"] = f"{db_path} does not exist"
         return report

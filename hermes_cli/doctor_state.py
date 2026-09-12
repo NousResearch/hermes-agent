@@ -276,6 +276,13 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
                                        "gateway first, then re-run 'hermes doctor --fix' to checkpoint)")
             import contextlib
             import sqlite3
+            from hermes_state_common import _writer_gate_acquire
+            refusal = _writer_gate_acquire(state_db_path)
+            if refusal:
+                check_warn("WAL checkpoint skipped: state.db is locked by a live writer",
+                           f"({refusal})")
+                return f.issues.append(f"Large WAL file — {refusal}")
+            
             with contextlib.closing(sqlite3.connect(str(state_db_path))) as conn:
                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             check_ok(f"WAL checkpoint performed ({size // 1024}K → {wal_size() // 1024}K)")

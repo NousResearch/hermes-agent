@@ -640,6 +640,7 @@ class _CallIds:
         return {k: v or "" for k, v in asdict(self).items()}
 
 
+
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
     """Derive (status, error_type, error_message) from a tool result for observer hooks."""
     try:
@@ -871,6 +872,8 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    # Schema projection now happens inside registry.dispatch() so middleware
+    # can still rewrite arguments before they are validated at the handler.
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)

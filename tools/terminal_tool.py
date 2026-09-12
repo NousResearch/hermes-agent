@@ -1307,7 +1307,8 @@ TERMINAL_SCHEMA = {
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
             # them in the dispatch wrapper; explicit notify wins on conflict.
         },
-        "required": ["command"]
+        "required": ["command"],
+        "additionalProperties": False
     }
 }
 

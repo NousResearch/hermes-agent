@@ -2,8 +2,8 @@
 
 The existing managed document cache supplies profile routing, delivery eligibility
 and upload limits. Its flat age-based cleanup skips this retained subdirectory:
-retained bytes are released per admission by ``release_admission_media`` once the
-row is terminal and no live (queued/started/unknown) row still references them.
+native bytes are released by ``release_admission_media`` once their row is
+terminal and no live native input or retained API image context still holds them.
 """
 import hashlib
 import json
@@ -128,17 +128,36 @@ def capture_native_media(paths):
 
 
 def admission_media_references(payload):
-    """Every retained ``native-inputs`` reference a committed payload owns."""
+    """Native references eligible as deletion candidates after terminal settlement."""
     return list(payload.get('attachments_v1', {}).get('media', ())) + list(
         payload.get('native_text_v1', {}).get('media', ()))
 
 
-def release_admission_media(db, admission_id):
-    """Delete retained bytes of a terminal admission unless a live row still shares them.
+def _held_media_digests(db):
+    # Project only references, not potentially large inline-image/history payloads.
+    with db._read_ctx() as conn:
+        rows = conn.execute('''SELECT status, json_extract(payload_json,
+            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media')
+            FROM session_admissions WHERE status!='terminal'
+            OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL''').fetchall()
+    held = set()
+    for status, encoded in rows:
+        attachments, native, api = json.loads(encoded)
+        # API images remain canonical history context after the turn completes.
+        references = list(api or ())
+        if status != 'terminal':
+            references.extend(attachments or ())
+            references.extend(native or ())
+        held.update(reference['sha256'] for reference in references)
+    return held
 
-    Terminal rows are exact-retry evidence by digest only; their bytes are not
-    replayed. Rows that are not terminal (queued, started, unknown) may still
-    execute, so any digest they reference stays on disk.
+
+def release_admission_media(db, admission_id):
+    """Delete eligible terminal native bytes unless another retained input holds them.
+
+    Native terminal rows retain digest-only receipt evidence. Live native rows
+    may still execute, while API images can remain history context even after
+    settlement; those are holders, never additional deletion candidates.
     """
     from hermes_state_runtime import get_session_admission
     row = get_session_admission(db, admission_id=admission_id)
@@ -148,10 +167,7 @@ def release_admission_media(db, admission_id):
     if not mine:
         return 0
     root = _media_root()
-    with db._read_ctx() as conn:
-        live = conn.execute("SELECT payload_json FROM session_admissions WHERE status!='terminal'").fetchall()
-    held = {reference['sha256'] for saved in live
-            for reference in admission_media_references(json.loads(saved[0]))}
+    held = _held_media_digests(db)
     released = 0
     for reference in mine:
         path = Path(reference['path'])

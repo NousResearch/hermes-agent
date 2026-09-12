@@ -2362,16 +2362,20 @@ const UPDATE_WAIT_POLL_MS = 1000
 const UPDATE_HANDOFF_DWELL_MS = 2500
 
 // Gate deps shared by the primary-window boot path and the pool-backend
-// spawn path. Consulting BOTH the on-disk marker and the in-process
-// updateInFlight flag is load-bearing (#73822): applyUpdates kills its own
-// backend BEFORE the Windows venv-blocker scan but only writes the marker
-// AFTER it, so a marker-only gate lets the renderer's ~1s reconnect respawn
-// a backend inside the update's own critical section — which the scan then
-// reports as a blocker, aborting every update attempt.
+// spawn path. Consulting the on-disk marker, the in-process updateInFlight
+// flag, AND the successful detached hand-off state is load-bearing (#73822):
+// applyUpdates kills its own backend BEFORE the Windows venv-blocker scan but
+// only writes the marker AFTER it, so a marker-only gate lets the renderer's
+// ~1s reconnect respawn a backend inside the update's own critical section —
+// which the scan then reports as a blocker, aborting every update attempt.
+// The hand-off state closes the later Windows `cmd start` wrapper gap: the
+// wrapper exits 0 before the real PowerShell script claims the marker, and
+// `finally` clears updateInFlight immediately after the hand-off is accepted.
 function updateGateDeps() {
   return {
     hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
-    isUpdateInFlight: () => updateInFlight
+    isUpdateInFlight: () => updateInFlight,
+    isHandoffActive: () => isQuittingForHandoff
   }
 }
 

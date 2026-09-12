@@ -41,6 +41,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    default_max_runtime_seconds: Optional[int]
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -114,6 +115,9 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Fleet-wide runtime backstop for tasks with no per-task max_runtime_seconds
+        # (almost all of them). A per-task value always wins; unset/0 = no cap.
+        default_max_runtime_seconds=_positive_int_setting(kanban_cfg, "default_max_runtime_seconds"),
     )
 
 

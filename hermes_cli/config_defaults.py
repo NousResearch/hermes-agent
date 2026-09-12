@@ -1762,6 +1762,12 @@ DEFAULT_CONFIG = {
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,
+        # Dispatcher-wide runtime cap (seconds) for running tasks that carry no per-task
+        # max_runtime_seconds — i.e. almost all of them. Without it such a worker is bounded only
+        # by the stale-heartbeat backstop above, so one that keeps heartbeating while making no
+        # progress can burn a provider quota for hours. A per-task max_runtime_seconds always
+        # wins (larger or smaller). None/0 = no cap.
+        "default_max_runtime_seconds": None,
         # Each tick, requeue 'running' cards with broken claim bookkeeping (claim_lock or
         # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
         # keeps orphans frozen for manual forensics.

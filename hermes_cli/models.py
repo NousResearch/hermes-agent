@@ -1224,12 +1224,13 @@ def _openai_discovery_base_url(provider: str) -> str:
 def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     from hermes_cli.codex_models import get_codex_model_ids
 
-    # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
-    # catalog without a token / when unreachable.
+    # Match runtime and setup's pool-first authority: a revoked legacy singleton
+    # must not hide the selected pool account's live model entitlements.
     try:
-        from hermes_cli.auth import resolve_codex_runtime_credentials
+        from hermes_cli.auth import get_codex_auth_status
 
-        access_token = resolve_codex_runtime_credentials(refresh_if_expiring=True).get("api_key")
+        status = get_codex_auth_status()
+        access_token = status.get("api_key") if status.get("logged_in") else None
     except Exception:
         access_token = None
     return get_codex_model_ids(access_token=access_token)

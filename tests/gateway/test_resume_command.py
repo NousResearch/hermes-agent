@@ -846,6 +846,43 @@ class TestHandleSessionsCommand:
         tg_db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_persisted_dm_allows_same_chat_across_user_id_namespace(
+        self, tmp_path
+    ):
+        """#89123: Feishu flips ``source.user_id`` from the app-scoped open_id to
+        the tenant-scoped user_id once the contacts scope is granted, and
+        ``reset_session`` persists the pre-grant open_id into the new row. The
+        persisted DM row therefore stores a stale user_id that never equals the
+        runtime caller's — but a DM WITH a chat_id is keyed purely on chat_id
+        (``build_session_key`` appends chat_id, never the participant, for DMs
+        that carry one), and a p2p DM is 1:1, so an equal non-blank chat_id
+        proves the same owner. The persisted fallback must allow it (mirroring
+        the live-origin ``_same_origin_chat`` branch), while a DIFFERENT DM chat
+        stays blocked."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        # Row created via reset_session inherits the stale pre-grant open_id.
+        db.create_session("feishu_dm", "feishu", user_id="ou_stale_openid",
+                          chat_id="oc_dm_chat", chat_type="dm")
+        runner = _make_runner(session_db=db)
+        runner._gateway_session_origin_for_id = lambda sid: None  # persisted-only
+
+        # Runtime caller in the SAME DM chat but with the post-grant tenant
+        # user_id (different id namespace from the persisted open_id).
+        caller = SessionSource(platform=Platform.FEISHU, chat_id="oc_dm_chat",
+                               chat_type="dm", user_id="b86c5474")
+        assert await runner._resume_target_allowed(
+            caller, "feishu_dm", allow_override=False) is True
+
+        # A DIFFERENT DM chat stays blocked even with the same runtime user_id —
+        # equal chat_id is required, so this is not an ownership widening.
+        other = SessionSource(platform=Platform.FEISHU, chat_id="oc_other_chat",
+                              chat_type="dm", user_id="b86c5474")
+        assert await runner._resume_target_allowed(
+            other, "feishu_dm", allow_override=False) is False
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_gateway_dispatches_sessions_command(self, tmp_path):
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")

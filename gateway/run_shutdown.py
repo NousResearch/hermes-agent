@@ -25,7 +25,9 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget
 )
 from gateway.run_common import _UNSET
-from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_watchdog_delay
+from gateway.shutdown_watchdog import (
+    arm_process_exit_backstop, arm_shutdown_watchdog, resolve_shutdown_watchdog_delay,
+)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -1872,6 +1874,33 @@ class GatewayShutdownMixin:
             "phase_elapsed_s": ctx.elapsed() if ctx.started_at is not None else None,
         }
 
+    async def _arm_process_exit_backstop_after_shutdown(self) -> None:
+        """Arm the short leash only after both runner teardown and its caller's tail complete."""
+        stop_task = getattr(self, "_stop_task", None)
+        if stop_task is not None and stop_task is not asyncio.current_task():
+            await stop_task
+        done = getattr(self, "_shutdown_watchdog_done", None)
+        ctx = getattr(self, "_shutdown_watchdog_context", None)
+        if done is None or not done.is_set() or ctx is None or os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        explicit_exit_code = getattr(self, "_exit_code", None)
+        if not isinstance(explicit_exit_code, int):
+            unexpected_signal = (
+                bool(getattr(self, "_signal_initiated_shutdown", False))
+                and not self._restart_requested
+            )
+            explicit_exit_code = (
+                1 if bool(getattr(self, "_exit_with_failure", False)) or unexpected_signal else 0
+            )
+        arm_process_exit_backstop(
+            loop=asyncio.get_running_loop(),
+            snapshot_fn=lambda: {
+                **self._shutdown_watchdog_snapshot(ctx),
+                "phase": "post_teardown_process_exit",
+            },
+            exit_code=explicit_exit_code,
+        )
+
     async def _stop_impl(self) -> None:
         """Run every ``_stop_*`` phase under the thread-based shutdown watchdog."""
         from gateway.run import GatewayRunner
@@ -1886,11 +1915,13 @@ class GatewayShutdownMixin:
         ctx = GatewayShutdownMixin._StopContext(
             deferred_count=getattr(self, "_active_deferred_agent_worker_count", lambda: 0)
         )
+        self._shutdown_watchdog_context = ctx
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             arm_shutdown_watchdog(
                 resolve_shutdown_watchdog_delay(self._restart_drain_timeout), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
+        teardown_complete = False
         try:
             await GatewayRunner._stop_begin_teardown(self, ctx)
             timeout = self._restart_drain_timeout
@@ -1901,8 +1932,10 @@ class GatewayShutdownMixin:
             GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
             GatewayRunner._stop_persist_exit_state(self, ctx)
+            teardown_complete = True
         finally:
-            _watchdog_done.set()
+            if teardown_complete:
+                _watchdog_done.set()
 
     async def stop(
         self, *, restart: bool = False, detached_restart: bool = False, service_restart: bool = False

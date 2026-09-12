@@ -77,9 +77,21 @@ def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):
 
     remove_pid = Mock()
     release_lock = Mock()
+    order = []
+    remove_pid.side_effect = lambda: order.append("remove_pid")
+    release_lock.side_effect = lambda: order.append("release_lock")
     monkeypatch.setattr(gateway_status, "remove_pid_file", remove_pid)
     monkeypatch.setattr(gateway_status, "release_gateway_runtime_lock", release_lock)
-    monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
+    monkeypatch.setattr(
+        "gateway.shutdown_watchdog.disarm_process_exit_backstop",
+        lambda: order.append("disarm"),
+    )
+
+    def raise_exit(code):
+        order.append("exit")
+        _raise_exit(code)
+
+    monkeypatch.setattr(gateway_run.os, "_exit", raise_exit)
     monkeypatch.setattr(gateway_run.sys, "stdout", SimpleNamespace(flush=Mock()))
     monkeypatch.setattr(gateway_run.sys, "stderr", SimpleNamespace(flush=Mock()))
 
@@ -89,3 +101,4 @@ def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):
     assert exc_info.value.code == 78
     remove_pid.assert_called_once_with()
     release_lock.assert_called_once_with()
+    assert order[-2:] == ["disarm", "exit"]

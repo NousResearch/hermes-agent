@@ -137,10 +137,16 @@ class TestGetTokensReconstructsExpiresIn:
         # Should be slightly less than 3600 after the 50ms sleep.
         assert 3500 < reloaded.expires_in <= 3600
 
-    def test_get_tokens_returns_zero_ttl_for_expired_token(
+    def test_get_tokens_returns_negative_ttl_for_expired_token(
         self, tmp_path, monkeypatch
     ):
-        """An already-expired token reloaded from disk must report expires_in=0."""
+        """An expired token must remain expired after the SDK rebases its TTL.
+
+        ``expires_in=0`` is not sufficient on Windows: the SDK calculates the
+        expiry as ``time.time() + 0`` and its inclusive validity check can see
+        that timestamp as still current for one coarse clock tick.  A negative
+        TTL makes the preemptive refresh path deterministic.
+        """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
 
@@ -162,9 +168,9 @@ class TestGetTokensReconstructsExpiresIn:
         storage = HermesTokenStorage("srv")
         reloaded = asyncio.run(storage.get_tokens())
         assert reloaded is not None
-        assert reloaded.expires_in == 0, (
-            "Expired token must reload with expires_in=0 so the SDK's "
-            "is_token_valid() returns False and preemptive refresh fires."
+        assert reloaded.expires_in < 0, (
+            "Expired token must reload with a negative TTL so the SDK's "
+            "inclusive is_token_valid() check cannot briefly accept it."
         )
 
     def test_get_tokens_legacy_file_without_expires_at_is_loadable(
@@ -174,8 +180,8 @@ class TestGetTokensReconstructsExpiresIn:
 
         Pre-existing token files have ``expires_in`` but no ``expires_at``.
         Fix A falls back to the file's mtime as a best-effort wall-clock
-        proxy: a file whose (mtime + expires_in) is in the past clamps
-        expires_in to zero so the SDK refreshes on next request. A fresh
+        proxy: a file whose (mtime + expires_in) is in the past receives a
+        negative expires_in so the SDK refreshes on next request. A fresh
         legacy-format file (mtime = now) keeps most of its TTL.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -204,9 +210,9 @@ class TestGetTokensReconstructsExpiresIn:
         storage = HermesTokenStorage("srv")
         reloaded = asyncio.run(storage.get_tokens())
         assert reloaded is not None
-        assert reloaded.expires_in == 0, (
+        assert reloaded.expires_in < 0, (
             "Legacy file whose mtime + expires_in is in the past must report "
-            "expires_in=0 so the SDK refreshes on next request."
+            "a negative TTL so the SDK refreshes on next request."
         )
 
 

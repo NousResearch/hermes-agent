@@ -240,3 +240,30 @@ def test_compute_host_interrupt_uses_explicit_stop_compatibility(monkeypatch, ki
     ack = _frames(out)[-1]
     assert ack["type"] == "interrupt.ack" and ack["applied"] is True
     assert session["_turn_cancel_requested"] is True
+
+
+def test_host_builds_the_session_agent_with_the_frame_login(monkeypatch):
+    """The host process has no record for a first turn, and its pipe names no login, so the agent is built
+    from the login the frame carries and the new record keeps it for later rebuilds."""
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    captured = {}
+
+    def fake_make_agent(sid, key, **kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(session_id=key)
+
+    def fake_init_session(sid, key, agent, history, **kwargs):
+        monkeypatch.setitem(server._sessions, sid, {"agent": agent, "session_key": key})
+
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_transfer_db_to_agent", lambda agent, db: False)
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+    server._sessions.pop("s-login", None)
+
+    session = host._build_server_session(
+        server, {"sid": "s-login", "session_key": "login-key", "history": [], "auth_user_id": "basic:alice"},
+        "s-login")
+
+    assert captured["auth_user_id"] == "basic:alice"
+    assert session["auth_user_id"] == "basic:alice"
+    assert server._session_auth_user_id(session) == "basic:alice"

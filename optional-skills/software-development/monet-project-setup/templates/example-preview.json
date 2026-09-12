@@ -1,0 +1,34 @@
+{
+  "label": "Hermes Preview",
+  "captured_at": "2026-07-16T20:00:00Z",
+  "captured_with": "chromium",
+  "viewport": "desktop",
+  "color_scheme": "light",
+  "notes": "Rendered from the selected deployment after fonts and the page settled.",
+  "pages": [
+    {
+      "url": "https://example.com/",
+      "page_slug": "home",
+      "screenshot": "renders/home.png",
+      "page_title": "Example Site",
+      "viewport_width": 1440,
+      "viewport_height": 900,
+      "scroll_height": 2400,
+      "meta_description": "Example home page.",
+      "canonical_url": "https://example.com/",
+      "h1": "Example Site"
+    },
+    {
+      "url": "https://example.com/pricing",
+      "page_slug": "pricing",
+      "screenshot": "renders/pricing.png",
+      "page_title": "Pricing",
+      "viewport_width": 1440,
+      "viewport_height": 900,
+      "scroll_height": 1800,
+      "meta_description": "Example pricing page.",
+      "canonical_url": "https://example.com/pricing",
+      "h1": "Pricing"
+    }
+  ]
+}

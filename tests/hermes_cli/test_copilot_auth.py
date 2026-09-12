@@ -127,6 +127,101 @@ class TestGhCliTokenCache:
         self._reset()
 
 
+class TestGhCliProbeHome:
+    """`gh auth token` must be probed against the OS account home too.
+
+    `gh` reads hosts.yml from $HOME. A Hermes process running with HOME={HERMES_HOME}/home
+    (container installs, and hosts where is_container() false-positives — #58135) probed the
+    empty profile home, got "no oauth token found", and dropped Copilot from every model
+    picker even though the user was logged in.
+    """
+
+    def _run_result(self, stdout: str, returncode: int = 0):
+        from subprocess import CompletedProcess
+        return CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+    def test_retries_with_real_home_when_profile_home_has_no_token(self, tmp_path, monkeypatch):
+        from hermes_cli import copilot_auth
+        profile_home, real_home = tmp_path / "profile-home", tmp_path / "real-home"
+        profile_home.mkdir()
+        real_home.mkdir()
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(
+            "hermes_constants.external_credential_home_candidates",
+            lambda env=None: [profile_home, real_home])
+        monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["/usr/bin/gh"])
+
+        seen_homes = []
+
+        def _fake_run(cmd, **kwargs):
+            home = kwargs["env"]["HOME"]
+            seen_homes.append(home)
+            return self._run_result("gho_realhome\n" if home == str(real_home) else "")
+
+        monkeypatch.setattr(copilot_auth.subprocess, "run", _fake_run)
+        assert copilot_auth._probe_gh_cli_token() == "gho_realhome"
+        assert seen_homes == [str(profile_home), str(real_home)]
+
+    def test_stops_at_the_first_home_that_answers(self, tmp_path, monkeypatch):
+        from hermes_cli import copilot_auth
+        profile_home, real_home = tmp_path / "profile-home", tmp_path / "real-home"
+        profile_home.mkdir()
+        real_home.mkdir()
+        monkeypatch.setenv("HOME", str(profile_home))
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(
+            "hermes_constants.external_credential_home_candidates",
+            lambda env=None: [profile_home, real_home])
+        monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["/usr/bin/gh"])
+
+        calls = []
+        monkeypatch.setattr(
+            copilot_auth.subprocess, "run",
+            lambda cmd, **kw: (calls.append(kw["env"]["HOME"]), self._run_result("gho_first\n"))[1])
+        assert copilot_auth._probe_gh_cli_token() == "gho_first"
+        assert calls == [str(profile_home)]
+
+    def test_explicit_gh_config_dir_is_probed_once_and_home_untouched(self, tmp_path, monkeypatch):
+        """GH_CONFIG_DIR already pins the config location — don't override the user's HOME."""
+        from hermes_cli import copilot_auth
+        monkeypatch.setenv("HOME", str(tmp_path / "profile-home"))
+        monkeypatch.setenv("GH_CONFIG_DIR", str(tmp_path / "gh-config"))
+        monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["/usr/bin/gh"])
+
+        envs = []
+        monkeypatch.setattr(
+            copilot_auth.subprocess, "run",
+            lambda cmd, **kw: (envs.append(kw["env"]), self._run_result("gho_cfgdir\n"))[1])
+        assert copilot_auth._probe_gh_cli_token() == "gho_cfgdir"
+        assert len(envs) == 1
+        assert envs[0]["HOME"] == str(tmp_path / "profile-home")
+
+    def test_missing_binary_skips_to_the_next_candidate(self, tmp_path, monkeypatch):
+        """A FileNotFoundError is about the binary, not the home — don't retry the same path."""
+        from hermes_cli import copilot_auth
+        home_a, home_b = tmp_path / "a", tmp_path / "b"
+        home_a.mkdir()
+        home_b.mkdir()
+        monkeypatch.setenv("HOME", str(home_a))
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(
+            "hermes_constants.external_credential_home_candidates", lambda env=None: [home_a, home_b])
+        monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["/missing/gh", "/usr/bin/gh"])
+
+        calls = []
+
+        def _fake_run(cmd, **kwargs):
+            calls.append((cmd[0], kwargs["env"]["HOME"]))
+            if cmd[0] == "/missing/gh":
+                raise FileNotFoundError(cmd[0])
+            return self._run_result("gho_second\n")
+
+        monkeypatch.setattr(copilot_auth.subprocess, "run", _fake_run)
+        assert copilot_auth._probe_gh_cli_token() == "gho_second"
+        assert calls == [("/missing/gh", str(home_a)), ("/usr/bin/gh", str(home_a))]
+
+
 class TestRequestHeaders:
     """Copilot API header generation."""
 

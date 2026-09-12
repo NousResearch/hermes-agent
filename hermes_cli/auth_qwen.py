@@ -23,7 +23,8 @@ _RERUN = "Re-run 'qwen auth qwen-oauth'."
 
 
 def _qwen_cli_auth_path() -> Path:
-    return Path.home() / ".qwen" / "oauth_creds.json"
+    from hermes_constants import external_credential_path
+    return external_credential_path(".qwen", "oauth_creds.json")
 
 
 def _read_qwen_cli_tokens() -> Dict[str, Any]:

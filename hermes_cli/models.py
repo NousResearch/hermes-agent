@@ -1134,7 +1134,8 @@ def _first_exchangeable_copilot_token(raw_tokens) -> str:
 def _copilot_cli_config_tokens() -> list[str]:
     """``copilotTokens`` from the GitHub Copilot CLI's own plaintext store (JSONC — strip
     ``//``-comment lines), written by ``copilot login`` on hosts without an OS keychain."""
-    cli_config = os.path.expanduser("~/.copilot/config.json")
+    from hermes_constants import external_credential_path
+    cli_config = str(external_credential_path(".copilot", "config.json"))
     if not os.path.isfile(cli_config):
         return []
     with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:

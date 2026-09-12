@@ -386,7 +386,8 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
 def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     """Read ~/.codex/auth.json (Codex CLI file) tokens if valid and not expired; never writes."""
     from hermes_cli.auth import _codex_access_token_is_expiring
-    codex_home = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
+    from hermes_constants import external_credential_path
+    codex_home = os.getenv("CODEX_HOME", "").strip() or str(external_credential_path(".codex"))
     auth_path = Path(codex_home).expanduser() / "auth.json"
     if not auth_path.is_file():
         return None

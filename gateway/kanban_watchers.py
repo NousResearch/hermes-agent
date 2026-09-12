@@ -785,6 +785,26 @@ class GatewayKanbanWatchersMixin:
             )
             return
 
+        # Recovery is opt-in and fail-closed. It only materializes explicit
+        # review-fix/transient successors; HUMAN_STOP/capability blockers are
+        # never retried by the recovery queue.
+        # Config values may arrive as strings from YAML/JSON; ``bool("false")``
+        # is ``True`` in Python so we must parse string representations
+        # explicitly.
+        _rq_raw = kanban_cfg.get("recovery_queue_enabled", False)
+        if isinstance(_rq_raw, str):
+            recovery_queue_enabled = _rq_raw.strip().lower() not in (
+                "", "0", "false", "no", "off", "none",
+            )
+        else:
+            recovery_queue_enabled = bool(_rq_raw)
+        try:
+            recovery_queue_per_tick = max(
+                1, int(kanban_cfg.get("recovery_queue_per_tick", 3) or 3)
+            )
+        except (TypeError, ValueError):
+            recovery_queue_per_tick = 3
+
         try:
             from hermes_cli import kanban_db as _kb
         except Exception:
@@ -1022,6 +1042,8 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    recovery_queue_enabled=recovery_queue_enabled,
+                    recovery_queue_per_tick=recovery_queue_per_tick,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

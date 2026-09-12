@@ -101,7 +101,7 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
-VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_INITIAL_STATUSES = {"running", "blocked", "ready"}
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -2014,6 +2014,43 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
     )
+
+    # Unique partial index: enforce at most one live (non-archived) task per
+    # idempotency key.  Some migration tests (and very old databases) expose a
+    # reduced tasks table without ``status``; leave those schemas alone after
+    # the ordinary index above, since they cannot participate in task creation.
+    if "status" in cols:
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_unique "
+                "ON tasks(idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+            )
+        except sqlite3.OperationalError:
+            # Legacy database has duplicate live idempotency keys from the old
+            # race window. Archive newer duplicates (keep the oldest row per
+            # key) then retry. This is a one-time migration cost.
+            conn.execute(
+                "UPDATE tasks SET status = 'archived' "
+                "WHERE rowid NOT IN ("
+                "  SELECT MIN(rowid) FROM tasks "
+                "  WHERE idempotency_key IS NOT NULL AND status != 'archived' "
+                "  GROUP BY idempotency_key"
+                ") "
+                "AND idempotency_key IS NOT NULL "
+                "AND status != 'archived' "
+                "AND idempotency_key IN ("
+                "  SELECT idempotency_key FROM tasks "
+                "  WHERE idempotency_key IS NOT NULL AND status != 'archived' "
+                "  GROUP BY idempotency_key HAVING COUNT(*) > 1"
+                ")"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency_unique "
+                "ON tasks(idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+            )
+
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
     )
@@ -2560,11 +2597,11 @@ def create_task(
     if classification is not None:
         classification = str(classification).strip().lower() or None
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency fast-path — return the existing task without acquiring
+    # the write lock. If two concurrent creators both miss this check, the
+    # unique partial index (idx_tasks_idempotency_unique) rejects the
+    # second INSERT and the IntegrityError handler below returns the
+    # winner's row.
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
@@ -2603,9 +2640,17 @@ def create_task(
         try:
             with write_txn(conn):
                 # Determine task status from parent status, unless the caller
-                # parks it directly in blocked for human-ops review or in
-                # triage for a specifier.
-                if initial_status == "blocked":
+                # parks it directly in blocked for human-ops review, in
+                # triage for a specifier, or explicitly in ready (e.g.
+                # recovery-queue successors that should be dispatchable
+                # immediately regardless of parent state).
+                if initial_status == "ready":
+                    task_status = "ready"
+                    if parents:
+                        missing = _find_missing_parents(conn, parents)
+                        if missing:
+                            raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+                elif initial_status == "blocked":
                     task_status = "blocked"
                     if parents:
                         missing = _find_missing_parents(conn, parents)
@@ -2709,6 +2754,19 @@ def create_task(
                 )
             return task_id
         except sqlite3.IntegrityError:
+            # Two possible causes:
+            #   1. The idempotency_key unique partial index rejected a
+            #      duplicate — a concurrent writer with the same key won
+            #      the race.  Return the winner's row.
+            #   2. The (extremely unlikely) random task-id collision.
+            if idempotency_key:
+                existing = conn.execute(
+                    "SELECT id FROM tasks WHERE idempotency_key = ? "
+                    "AND status != 'archived' LIMIT 1",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing:
+                    return existing["id"]
             if attempt == 1:
                 raise
             # Retry with a fresh id.
@@ -5771,6 +5829,8 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    recovery: Optional["RecoveryResult"] = None
+    """Result of the recovery-queue pass, when enabled."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6969,6 +7029,8 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    recovery_queue_enabled: bool = False,
+    recovery_queue_per_tick: int = 3,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7003,6 +7065,8 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            recovery_queue_enabled=recovery_queue_enabled,
+            recovery_queue_per_tick=recovery_queue_per_tick,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7019,6 +7083,8 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            recovery_queue_enabled=recovery_queue_enabled,
+            recovery_queue_per_tick=recovery_queue_per_tick,
         )
 
 
@@ -7035,6 +7101,8 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    recovery_queue_enabled: bool = False,
+    recovery_queue_per_tick: int = 3,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7092,6 +7160,12 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+
+    # Recovery queue: create ready successors for eligible blocked tasks.
+    if recovery_queue_enabled and not dry_run:
+        result.recovery = recover_blocked_tasks(
+            conn, max_per_tick=recovery_queue_per_tick,
+        )
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -8796,3 +8870,227 @@ def latest_summaries(
         ids,
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Recovery queue — recover blocked tasks with review-fix markers or
+# transient block_kind into fresh ready successor tasks.
+# ---------------------------------------------------------------------------
+
+#: Marker strings in a comment body that signal "needs review fix" and
+#: therefore qualify the blocked task for automatic recovery.
+#: All matching is case-insensitive.
+_RECOVERY_REVIEW_MARKERS: frozenset[str] = frozenset({
+    "review-required",
+    "needs_fix",
+    "verdict=needs_fix",
+})
+
+#: Marker strings / block_kinds that MUST NOT be auto-recovered.  A task
+#: whose *any* recent comment contains any of these, or whose block_kind
+#: matches, is unconditionally skipped.
+#: All matching is case-insensitive.
+_RECOVERY_SAFETY_SKIP_COMMENT_MARKERS: frozenset[str] = frozenset({
+    "human_stop",
+    "needs_input",
+})
+
+_RECOVERY_SAFETY_SKIP_BLOCK_KINDS: frozenset[str] = frozenset({
+    "human_stop",
+    "needs_input",
+    "capability",
+})
+
+
+@dataclass
+class RecoveryResult:
+    """Outcome of one ``recover_blocked_tasks`` pass."""
+
+    recovered: list[tuple[str, str]] = field(default_factory=list)
+    """``(source_task_id, successor_task_id)`` pairs created this tick."""
+    skipped_safety: list[str] = field(default_factory=list)
+    """Source task ids skipped because of a safety marker."""
+    skipped_idempotent: list[str] = field(default_factory=list)
+    """Source task ids skipped because the idempotency key already exists."""
+
+
+def recover_blocked_tasks(
+    conn: sqlite3.Connection,
+    *,
+    max_per_tick: int = 3,
+) -> RecoveryResult:
+    """Recover eligible blocked tasks by creating ready successor tasks.
+
+    Uses :func:`create_task` so all schema fields, invariants, and audit
+    events are respected.  **Pure-ish function** — reads and writes only
+    the provided ``conn``; no network, no credentials, no production
+    side-effects beyond the local SQLite database.  Designed for
+    deterministic fixture testing.
+
+    Eligibility rules (ALL must hold):
+
+    1. Task is in ``status='blocked'``.
+    2. Either:
+       a. ``block_kind='transient'``, OR
+       b. The latest comment body contains one of the review-fix markers
+          (``review-required``, ``needs_fix``, ``verdict=needs_fix``).
+       All review-marker matching is **case-insensitive**.
+    3. **No** recent comment body contains any safety-skip marker
+       (``human_stop``, ``needs_input``).  All safety-marker matching
+       is **case-insensitive**.
+    4. ``block_kind`` is NOT ``human_stop``, ``needs_input`` or
+       ``capability``.
+
+    For each eligible task, create an unparented ready successor task
+    via :func:`create_task`:
+    - Title: ``"Recovery: <original title>"``
+    - Body: source task id + latest comment/reason
+    - Assignee: same as original
+    - Idempotency key: ``"recovery:<source_id>:<comment_id>"``
+    - Audit events on both source and successor (skipped when
+      ``create_task`` returns an existing idempotency-key match)
+
+    Returns a :class:`RecoveryResult` summarising the tick.
+    """
+    result = RecoveryResult()
+
+    # Fetch ALL blocked tasks — no LIMIT; the per-tick cap is applied
+    # after eligibility filtering in Python so that earlier-created but
+    # ineligible rows cannot starve later eligible ones.
+    blocked_rows = conn.execute(
+        "SELECT id, title, assignee, block_kind FROM tasks "
+        "WHERE status = 'blocked' "
+        "ORDER BY created_at ASC",
+    ).fetchall()
+
+    created = 0
+    for row in blocked_rows:
+        if created >= max_per_tick:
+            break
+
+        source_id = row["id"]
+        block_kind = (row["block_kind"] or "").lower()
+
+        # Safety: skip forbidden block_kinds
+        if block_kind in _RECOVERY_SAFETY_SKIP_BLOCK_KINDS:
+            result.skipped_safety.append(source_id)
+            continue
+
+        # Fetch ALL comments for safety check (any comment, not just latest)
+        all_comments = conn.execute(
+            "SELECT id, body FROM task_comments "
+            "WHERE task_id = ? ORDER BY created_at DESC, id DESC",
+            (source_id,),
+        ).fetchall()
+
+        # Safety: skip if ANY comment contains a safety marker (case-insensitive)
+        safety_hit = False
+        for c in all_comments:
+            c_body_lower = (c["body"] or "").lower()
+            if any(marker in c_body_lower for marker in _RECOVERY_SAFETY_SKIP_COMMENT_MARKERS):
+                safety_hit = True
+                break
+        if safety_hit:
+            result.skipped_safety.append(source_id)
+            continue
+
+        # Use latest comment for review-marker eligibility + idempotency key
+        latest_comment = all_comments[0] if all_comments else None
+        comment_id: int = 0
+        comment_body: str = ""
+        if latest_comment:
+            comment_id = latest_comment["id"]
+            comment_body = latest_comment["body"] or ""
+
+        # Eligibility: transient block_kind OR review-fix marker in
+        # latest comment (case-insensitive)
+        comment_body_lower = comment_body.lower()
+        has_review_marker = any(
+            marker in comment_body_lower for marker in _RECOVERY_REVIEW_MARKERS
+        )
+        is_transient = block_kind == "transient"
+
+        if not is_transient and not has_review_marker:
+            continue  # not eligible
+
+        # Idempotency key: derived from source id + latest comment id
+        idemp_key = f"recovery:{source_id}:{comment_id}"
+
+        # Build successor task fields
+        original_title = row["title"] or "untitled"
+        successor_title = f"Recovery: {original_title}"
+        reason = comment_body if comment_body else (block_kind or "blocked")
+        successor_body = (
+            f"Auto-recovered from blocked task {source_id}.\n"
+            f"Reason: {reason}"
+        )
+        assignee = row["assignee"]
+
+        # Create the successor task via the public API — respects all
+        # schema fields, validation, normalisation, and the "created"
+        # audit event that create_task emits.  ``initial_status="ready"``
+        # ensures the successor is immediately dispatchable regardless
+        # of parent state.
+        successor_id = create_task(
+            conn,
+            title=successor_title,
+            body=successor_body,
+            assignee=assignee,
+            created_by="recovery-queue",
+            idempotency_key=idemp_key,
+            initial_status="ready",
+        )
+
+        # Atomically check-then-emit audit events inside a single
+        # write_txn.  The BEGIN IMMEDIATE serialises concurrent writers,
+        # eliminating the TOCTOU that the old pre_existing snapshot had:
+        # two concurrent calls could both see no pre-existing row, both
+        # call create_task (whose idempotency check also runs outside
+        # its own write_txn on a non-unique index), and both proceed to
+        # emit duplicate audit events.  By gating on the audit-event
+        # row inside the same transaction that inserts it, at most one
+        # caller can succeed — the second sees the row and skips.
+        with write_txn(conn):
+            # Scope idempotency to this source+comment key. A later review
+            # comment legitimately creates a new recovery successor, so an
+            # earlier recovery event for the same source must not suppress it.
+            dispatched_rows = conn.execute(
+                "SELECT payload FROM task_events "
+                "WHERE task_id = ? AND kind = 'recovery_dispatched'",
+                (source_id,),
+            ).fetchall()
+            already_dispatched = False
+            for event in dispatched_rows:
+                try:
+                    event_key = json.loads(event["payload"] or "{}").get(
+                        "idempotency_key"
+                    )
+                except (TypeError, ValueError):
+                    event_key = None
+                if event_key == idemp_key:
+                    already_dispatched = True
+                    break
+            if already_dispatched:
+                result.skipped_idempotent.append(source_id)
+                continue
+
+            _append_event(
+                conn, source_id, "recovery_dispatched",
+                {
+                    "successor_id": successor_id,
+                    "reason": reason[:500],
+                    "idempotency_key": idemp_key,
+                },
+            )
+            _append_event(
+                conn, successor_id, "recovery_created",
+                {
+                    "source_id": source_id,
+                    "reason": reason[:500],
+                },
+            )
+
+        result.recovered.append((source_id, successor_id))
+        created += 1
+
+    return result

@@ -123,7 +123,8 @@ _SESSION_MODEL_USAGE_V20_SEED_SQL = """INSERT OR IGNORE INTO session_model_usage
                                  + COALESCE(cache_write_tokens, 0)
                                  + COALESCE(reasoning_tokens, 0) > 0"""
 _TITLE_UNIQUE_INDEX_SQL = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique ON sessions(title) WHERE title IS NOT NULL"
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique ON sessions(title) "
+    "WHERE title IS NOT NULL AND message_count > 0"
 )
 _STALE_KEY_UPSERT_SQL = (
     "INSERT INTO state_meta (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -1055,7 +1056,14 @@ class SessionSchemaMixin:
 
     def _ensure_unique_title_index(self, cursor: sqlite3.Cursor) -> None:
         """Unique title index. Older DBs may hold duplicate aliases from before the constraint;
-        the newest keeps the alias. Must never abort opening the DB, so the repair is guarded."""
+        the newest keeps the alias. Must never abort opening the DB, so the repair is guarded.
+        Schema v31: dropped and rebuilt the index to exclude empty ghost sessions."""
+        # Drop the old index if it exists (may have old filter clause)
+        try:
+            cursor.execute("DROP INDEX IF EXISTS idx_sessions_title_unique")
+        except sqlite3.Error:
+            pass  # Doesn't exist yet, fine
+        
         try:
             cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
         except sqlite3.IntegrityError:

@@ -97,7 +97,7 @@ class SessionTitlesMixin:
                 return 0
             if title:
                 conflict = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id),
+                    "SELECT id FROM sessions WHERE title = ? AND id != ? AND message_count > 0", (title, session_id),
                 ).fetchone()
                 if conflict:
                     conflict_id = conflict["id"]

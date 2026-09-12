@@ -177,12 +177,48 @@ def _enforce_worker_task_ownership(tid: str) -> None:
             f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
 
 
+REQUIRED_WORKER_SKILL = "using-superpowers"
+
+
+def _skill_loaded_for_task(task_id: str, skill_name: str) -> bool:
+    """True when this task context has actually loaded the named skill — either
+    viewed via skill_view (per-task tracker) or force-loaded by the dispatcher
+    when the card's skill list includes it."""
+    from tools.skills_tool_dedup import _skill_view_tracker, _skill_view_tracker_lock
+
+    with _skill_view_tracker_lock:
+        cache = _skill_view_tracker.get(str(task_id), {})
+        for rec_name, _file_path in cache:
+            if rec_name == skill_name or rec_name.endswith(":" + skill_name) or rec_name.endswith("/" + skill_name):
+                return True
+    return skill_name in (os.environ.get("HERMES_KANBAN_PRELOADED_SKILLS") or "").split(",")
+
+
+def _enforce_required_worker_skill(tool_name: str, task_id: str) -> None:
+    """Board mutations from a dispatcher-spawned worker require the worker-contract
+    skill to be loaded first: the governance rule says a card's updater must have
+    using-superpowers in context before touching the board, so an agent that skipped
+    the reading step cannot complete/block/comment/create on its own task."""
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return
+    if _skill_loaded_for_task(task_id, REQUIRED_WORKER_SKILL):
+        return
+    logger.info(
+        "kanban %s denied: %s not loaded for task %s",
+        tool_name, REQUIRED_WORKER_SKILL, task_id)
+    raise _Reject(
+        f"{tool_name} requires the {REQUIRED_WORKER_SKILL} skill to be loaded first "
+        f"(skill_view('{REQUIRED_WORKER_SKILL}')). Load it, then retry the board "
+        "mutation. Read-only kanban_show stays available to inspect the board.")
+
+
 def _worker_guard(tool_name: str, args: dict) -> str:
     """Worker mutation preamble, in order: delegate-child rejection, task id
-    resolution, task-scope ownership. Returns the task id."""
+    resolution, task-scope ownership, worker-contract skill gate. Returns the task id."""
     _reject_delegated_child_mutation(tool_name)
     tid = _require_task_id(args)
     _enforce_worker_task_ownership(tid)
+    _enforce_required_worker_skill(tool_name, tid)
     return tid
 
 

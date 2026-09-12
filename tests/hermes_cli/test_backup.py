@@ -1,6 +1,7 @@
 """Tests for hermes backup and import commands."""
 
 import json
+import logging
 import os
 import sqlite3
 import stat
@@ -245,6 +246,91 @@ class TestIterBackupFiles:
         list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
         assert "models" in skipped
         assert "hermes-agent" in skipped
+
+    def test_skips_non_regular_files_before_manual_and_automatic_archive(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Sockets/FIFOs are filtered before either shared archive path sees them."""
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        (root / "config.yaml").write_text("model: {}\n")
+        socket_path = root / "gateway.sock"
+        fifo_path = root / "runtime.fifo"
+        socket_path.write_bytes(b"socket placeholder")
+        fifo_path.write_bytes(b"fifo placeholder")
+
+        real_lstat = Path.lstat
+        special_modes = {
+            socket_path: stat.S_IFSOCK | 0o600,
+            fifo_path: stat.S_IFIFO | 0o600,
+        }
+
+        def _lstat(path):
+            result = real_lstat(path)
+            mode = special_modes.get(path)
+            if mode is None:
+                return result
+            values = list(result)
+            values[stat.ST_MODE] = mode
+            return os.stat_result(values)
+
+        monkeypatch.setattr(Path, "lstat", _lstat)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        from hermes_cli.backup import _write_full_zip_backup, run_backup
+
+        manual_zip = tmp_path / "manual.zip"
+        run_backup(Namespace(output=str(manual_zip)))
+        assert "Backup complete:" in capsys.readouterr().out
+        with zipfile.ZipFile(manual_zip) as archive:
+            names = set(archive.namelist())
+            assert "config.yaml" in names
+            assert not {"gateway.sock", "runtime.fifo"} & names
+
+        automatic_zip = tmp_path / "automatic.zip"
+        assert _write_full_zip_backup(automatic_zip, root) == automatic_zip
+        with zipfile.ZipFile(automatic_zip) as archive:
+            names = set(archive.namelist())
+            assert "config.yaml" in names
+            assert not {"gateway.sock", "runtime.fifo"} & names
+
+    def test_lstat_failure_is_reported_without_archiving_unknown_path(
+        self, tmp_path, monkeypatch, capsys, caplog
+    ):
+        """An unknown file type is visible as an error and never follows a link."""
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        (root / "config.yaml").write_text("model: {}\n")
+        uninspectable = root / "uninspectable.json"
+        uninspectable.write_text("{}")
+
+        real_lstat = Path.lstat
+
+        def _raising_lstat(path):
+            if path == uninspectable:
+                raise OSError("simulated lstat failure")
+            return real_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", _raising_lstat)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        caplog.set_level(logging.WARNING, logger="hermes_cli.backup")
+
+        from hermes_cli.backup import _write_full_zip_backup, run_backup
+
+        manual_zip = tmp_path / "manual.zip"
+        run_backup(Namespace(output=str(manual_zip)))
+        output = capsys.readouterr().out
+        assert "Backup incomplete:" in output
+        assert "uninspectable.json: simulated lstat failure" in output
+        with zipfile.ZipFile(manual_zip) as archive:
+            assert archive.namelist() == ["config.yaml"]
+
+        automatic_zip = tmp_path / "automatic.zip"
+        assert _write_full_zip_backup(automatic_zip, root) is None
+        assert not automatic_zip.exists()
+        assert "could not inspect 1 path(s)" in caplog.text
 
 
 # ---------------------------------------------------------------------------

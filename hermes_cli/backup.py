@@ -216,18 +216,47 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     return list(out.values())
 
 
-def _iter_external_files(base: Path) -> List[Path]:
-    """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
-    if base.is_file() and not base.is_symlink():
+def _lstat_backup_path(path: Path) -> Tuple[Optional[os.stat_result], Optional[OSError]]:
+    """Return the non-following metadata for *path*, or its inspection error."""
+    try:
+        return path.lstat(), None
+    except OSError as exc:
+        return None, exc
+
+
+def _record_backup_scan_error(
+    scan_errors: Optional[List[str]], path: Path, exc: OSError,
+) -> None:
+    """Keep an inspection failure visible without passing an unknown path to the archiver."""
+    if scan_errors is not None:
+        scan_errors.append(f"{path}: {exc}")
+
+
+def _iter_external_files(base: Path, scan_errors: Optional[List[str]] = None) -> List[Path]:
+    """Regular files under *base*, skipping symlinks, caches, and special nodes."""
+    base_stat, stat_error = _lstat_backup_path(base)
+    if stat_error is not None:
+        _record_backup_scan_error(scan_errors, base, stat_error)
+        return []
+    if stat.S_ISREG(base_stat.st_mode):
         return [base]
-    if not base.is_dir():
+    if not stat.S_ISDIR(base_stat.st_mode):
         return []
     files: List[Path] = []
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
-        files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
-                     if not (fp.is_symlink() or fp.name in _EXCLUDED_NAMES
-                             or fp.name.endswith(_EXCLUDED_SUFFIXES)))
+        for fname in filenames:
+            fpath = Path(dirpath) / fname
+            fpath_stat, stat_error = _lstat_backup_path(fpath)
+            if stat_error is not None:
+                _record_backup_scan_error(scan_errors, fpath, stat_error)
+                continue
+            if not stat.S_ISREG(fpath_stat.st_mode):
+                continue
+            if (fpath.name in _EXCLUDED_NAMES
+                    or fpath.name.endswith(_EXCLUDED_SUFFIXES)):
+                continue
+            files.append(fpath)
     return files
 
 
@@ -243,12 +272,16 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
-def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
+def _iter_backup_files(
+    hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None,
+    scan_errors: Optional[List[str]] = None,
+):
     """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
 
     The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
     shared by ``hermes backup`` and the pre-update / pre-migration path so they can never drift.
+    ``scan_errors`` receives paths whose types could not be inspected; those paths are not yielded.
     """
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(hermes_root)
@@ -263,9 +296,16 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
         for fname in filenames:
             rel = rel_dir / fname
             fpath = hermes_root / rel
-            # zipfile.write() follows file symlinks, so skip links before any archive write can
-            # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel) or fpath.is_symlink():
+            # zipfile.write() follows links and cannot archive special nodes. Inspect without
+            # following links before any archive write; an inspection failure is not proof that
+            # the path is safe, so report it instead of handing an unknown path to zipfile.
+            if _should_exclude(rel):
+                continue
+            fpath_stat, stat_error = _lstat_backup_path(fpath)
+            if stat_error is not None:
+                _record_backup_scan_error(scan_errors, rel, stat_error)
+                continue
+            if not stat.S_ISREG(fpath_stat.st_mode):
                 continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():
@@ -598,7 +638,9 @@ def _resolve_backup_output_path(output: Optional[str]) -> Path:
     return out_path
 
 
-def _collect_external_entries() -> tuple[list[tuple[Path, str]], list[str]]:
+def _collect_external_entries(
+    scan_errors: Optional[List[str]] = None,
+) -> tuple[list[tuple[Path, str]], list[str]]:
     """``([(abs_path, arcname)], [skipped])`` for the memory provider's external state, arc-named
     ``_external/<home-relative>``; paths outside home are skipped (security + portability)."""
     home_dir = Path.home().resolve()
@@ -610,7 +652,7 @@ def _collect_external_entries() -> tuple[list[tuple[Path, str]], list[str]]:
         except (ValueError, OSError):
             skipped_external.append(str(base))
             continue
-        for fpath in _iter_external_files(base):
+        for fpath in _iter_external_files(base, scan_errors):
             with suppress(ValueError, OSError):
                 rel_to_home = fpath.resolve().relative_to(home_dir)
                 external_to_add.append((fpath, _EXTERNAL_PREFIX + rel_to_home.as_posix()))
@@ -640,11 +682,17 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
     logger.info("backup phase=scan status=started")
     print(f"Scanning {display_hermes_home()} ...")
     skipped_dirs: set = set()
-    files_to_add: list[tuple[Path, Path]] = list(_iter_backup_files(hermes_root, out_path, skipped_dirs))
-    external_to_add, skipped_external = _collect_external_entries()
+    scan_errors: List[str] = []
+    files_to_add: list[tuple[Path, Path]] = list(
+        _iter_backup_files(hermes_root, out_path, skipped_dirs, scan_errors)
+    )
+    external_to_add, skipped_external = _collect_external_entries(scan_errors)
+    errors = list(scan_errors)
     if not files_to_add and not external_to_add:
         logger.info("backup phase=scan status=empty duration_ms=%.1f", (time.monotonic() - scan_started) * 1000)
         print("No files to back up.")
+        if errors:
+            _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "  ")
         return
 
     file_count = len(files_to_add) + len(external_to_add)
@@ -652,7 +700,6 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
                 (time.monotonic() - scan_started) * 1000, file_count)
     logger.info("backup phase=archive status=started files=%d", file_count)
     print(f"Backing up {file_count} files ...")
-    errors = []
     t0 = time.monotonic()
 
     def _progress(i: int) -> None:
@@ -1556,10 +1603,17 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
 def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional[Path]:
     scan_started = time.monotonic()
     logger.info("automatic backup phase=scan status=started")
+    scan_errors: List[str] = []
     try:
-        files_to_add = list(_iter_backup_files(hermes_root, out_path))
+        files_to_add = list(_iter_backup_files(hermes_root, out_path, scan_errors=scan_errors))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
+        return None
+    if scan_errors:
+        logger.warning(
+            "Full-zip backup: could not inspect %d path(s): %s",
+            len(scan_errors), "; ".join(scan_errors[:10]),
+        )
         return None
     if not files_to_add:
         return None

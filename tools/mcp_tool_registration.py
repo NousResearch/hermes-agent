@@ -6,6 +6,7 @@ live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_re
 import json
 import logging
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
@@ -122,7 +123,12 @@ def _remove_server_scope(key, scope: str) -> None:
     from tools.registry import registry
 
     server_name = _key_name(key)
-    for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}"):
+    with _core._lock:
+        server = _core._servers.get(key)
+        tool_names = list(getattr(server, "_registered_tool_names", ()) or ())
+        if not tool_names:
+            tool_names = list(_core._lazy_server_tool_names.get(key, ()))
+    for tool_name in tool_names:
         registry.deregister(tool_name, scope=scope)
     with _core._lock:
         scopes = set(_core._server_tool_scopes.get(key, ()))
@@ -448,7 +454,9 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             server = _core._servers.get(key)
             config = servers.get(_key_name(key))
             if (config is None or not _server_enabled(config) or server is None
-                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+                    or getattr(server, "session", None) is None or not _same_server_route(server, config)
+                    or bool(getattr(server, "_native_config_managed", False))
+                    != bool(getattr(config, "native_config_managed", False))):
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
@@ -463,26 +471,35 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             # Any other profile's live connection with the same route AND credentials is shareable.
             shared = [(key, live) for key, live in _core._servers.items()
                       if _key_name(key) == name and getattr(live, "session", None) is not None
+                      and not getattr(live, "_retired_from_config", False)
+                      and bool(getattr(live, "_native_config_managed", False))
+                      == bool(getattr(config, "native_config_managed", False))
                       and _same_server_route(live, config)]
         if not shared:
             continue
         key, server = shared[0]
-        # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
-        with _core._lock:
-            _core._server_tool_scopes.setdefault(key, set()).add(scope)
-        if registry.get_tool_names_for_toolset(f"mcp-{name}"):
-            continue
-        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
-        candidates += _utility_candidates(
-            name, _select_utility_schemas(name, server, config), server.tool_timeout)
-        names = _register_candidates(
-            name, _resolve_name_collisions(name, candidates),
-            check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)
-        if names:
-            registered_servers += 1
+        authority_lock = getattr(server, "_config_authority_lock", nullcontext())
+        with authority_lock:
+            # Selection and publication are one authority transaction: config
+            # retirement cannot remove the task between them.
             with _core._lock:
-                server._registered_tool_names = sorted(
-                    set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
+                if (_core._servers.get(key) is not server
+                        or getattr(server, "_retired_from_config", False)):
+                    continue
+                _core._server_tool_scopes.setdefault(key, set()).add(scope)
+            if registry.get_tool_names_for_toolset(f"mcp-{name}"):
+                continue
+            candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
+            candidates += _utility_candidates(
+                name, _select_utility_schemas(name, server, config), server.tool_timeout)
+            names = _register_candidates(
+                name, _resolve_name_collisions(name, candidates),
+                check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)
+            if names:
+                registered_servers += 1
+                with _core._lock:
+                    server._registered_tool_names = sorted(
+                        set(getattr(server, "_registered_tool_names", []) or ()) | set(names))
     return registered_servers
 
 
@@ -505,7 +522,7 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
     if registered:
         with _core._lock:
             key = _server_key(name)
-            _core._lazy_server_configs[key] = dict(config)
+            _core._lazy_server_configs[key] = config.copy()
             _core._lazy_server_fingerprints[key] = config_fingerprint(config)
             _core._lazy_server_tool_names[key] = list(registered)
         logger.info("MCP server '%s' (lazy): registered %d tool(s) from schema cache", name, len(registered))

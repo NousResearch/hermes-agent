@@ -243,6 +243,9 @@ _STDIO_RESPAWN_WAIT_SEC = 15.0
 # The client MUST ping faster than the server's idle-session TTL (short-TTL servers need a
 # smaller configured ``keepalive_interval``); the floor stops a tiny interval busy-looping.
 _DEFAULT_KEEPALIVE_INTERVAL, _MIN_KEEPALIVE_INTERVAL = 180, 5
+# Native config removals should stop a live server promptly, independently of
+# its (potentially much longer) protocol keepalive cadence.
+_MCP_CONFIG_POLL_INTERVAL = 5.0
 # One bounded cancellation cycle at final shutdown so resistant tasks cannot hang exit.
 _MCP_LOOP_DRAIN_TIMEOUT = 3.0
 # JSON-RPC 2.0 "method not found" (server without optional ``ping``); _ensure_mcp_sdk()
@@ -316,7 +319,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected")
+        "_ever_connected", "_native_config_managed", "_retired_from_config", "_config_authority_lock")
 
     def __init__(self, name: str):
         self.name = name
@@ -345,6 +348,12 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._session_proven: bool = False
         # Never cleared (unlike _ready): separates first-connect from reconnect failures.
         self._ever_connected: bool = False
+        # Native config entries are watched by the long-lived task so an external
+        # `hermes mcp remove` cannot leave this process reconnecting a deleted server.
+        # Portable plugin MCPs have a separate lifecycle and do not participate.
+        self._native_config_managed: bool = False
+        self._retired_from_config: bool = False
+        self._config_authority_lock = threading.RLock()
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True

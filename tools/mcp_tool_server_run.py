@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
+from tools import mcp_tool_config as _config
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
 
@@ -50,6 +51,93 @@ class MCPServerRunMixin:
         self._mark_stdio_recycled(recycle_reason)
         return True
 
+    def _retire_if_removed_from_config(self) -> bool:
+        """Retire a native server removed/disabled by another Hermes process.
+
+        Config read failures fail open. Deregistration happens before ownership
+        is dropped so every profile overlay can remove the server's tools.
+        """
+        if not self._native_config_managed:
+            return False
+        with self._config_authority_lock:
+            return self._reconcile_config_authority()
+
+    def _reconcile_config_authority(self) -> bool:
+        """Reconcile native scopes while serialized against shared adoption."""
+        key = _registration._server_key_for_task(self)
+        with _core._lock:
+            owner_scope = _core._server_scope_keys.get(key)
+            scopes = set(_core._server_tool_scopes.get(key, ()))
+            if owner_scope is not None:
+                scopes.add(owner_scope)
+
+        authorities = {}
+        if scopes:
+            from pathlib import Path
+            from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            for scope in scopes:
+                home_token = set_hermes_home_override(scope)
+                secret_token = set_secret_scope(build_profile_secret_scope(Path(scope)))
+                try:
+                    authorities[scope] = _config._native_mcp_server_config(self.name)
+                finally:
+                    reset_secret_scope(secret_token)
+                    reset_hermes_home_override(home_token)
+        else:
+            authorities[None] = _config._native_mcp_server_config(self.name)
+
+        # Any unreadable authority makes destructive reconciliation unsafe.
+        if any(not known for known, _cfg in authorities.values()):
+            return False
+        with _core._lock:
+            current_owner = _core._server_scope_keys.get(key)
+            current_scopes = set(_core._server_tool_scopes.get(key, ()))
+            if current_owner is not None:
+                current_scopes.add(current_owner)
+        if current_owner != owner_scope or current_scopes != scopes:
+            return False
+        surviving = {
+            scope for scope, (_known, cfg) in authorities.items()
+            if cfg is not None and _registration._same_server_route(self, cfg)
+        }
+        if surviving:
+            if scopes:
+                for scope in scopes - surviving:
+                    _registration._remove_server_scope(key, scope)
+                if owner_scope not in surviving:
+                    with _core._lock:
+                        _core._server_scope_keys[key] = next(iter(surviving))
+            return False
+        with _core._lock:
+            final_owner = _core._server_scope_keys.get(key)
+            final_scopes = set(_core._server_tool_scopes.get(key, ()))
+            if final_owner is not None:
+                final_scopes.add(final_owner)
+            if final_owner != owner_scope or final_scopes != scopes:
+                return False
+            self._retired_from_config = True
+        logger.info("MCP server '%s': removed or disabled in config; stopping live connection", self.name)
+        self._shutdown_event.set()
+        # A task can retire before its first transport starts. Complete start()'s
+        # handshake so discovery can treat that as an intentional no-op.
+        self._ready.set()
+        self._fail_inflight_calls("config removal")
+        self._deregister_tools()
+        with _core._lock:
+            if _core._servers.get(key) is self:
+                _core._servers.pop(key, None)
+            for ledger in (
+                _core._server_scope_keys, _core._server_tool_scopes,
+                _core._server_connect_errors, _core._server_connect_failures,
+                _core._server_connect_retry_after, _core._server_error_counts,
+                _core._server_breaker_opened_at, _core._server_errors_all_application,
+                _core._server_trust_levels, _core._tool_read_only_hints,
+            ):
+                ledger.pop(key, None)
+            _core._server_connecting.discard(key)
+        return True
+
     async def _wait_for_lifecycle_event(self) -> str:
         """Serve until a lifecycle event: ``"shutdown"`` (exits run), ``"reconnect"`` (session torn
         down, transport re-entered; event cleared first) or ``"recycle"`` (stdio idle/lifetime
@@ -64,12 +152,15 @@ class MCPServerRunMixin:
         keepalive_interval = max(
             _core._MIN_KEEPALIVE_INTERVAL,
             float(self._config.get("keepalive_interval", _core._DEFAULT_KEEPALIVE_INTERVAL)))
+        next_keepalive = time.monotonic() + keepalive_interval
         shutdown_task, reconnect_task = self._event_waiters()
         try:
             while True:
                 if self._recycle_if_due():
                     return "recycle"
-                timeout = keepalive_interval
+                timeout = max(0.0, next_keepalive - time.monotonic())
+                if self._native_config_managed:
+                    timeout = min(timeout, _core._MCP_CONFIG_POLL_INTERVAL)
                 recycle_deadline = self._next_stdio_recycle_deadline()
                 if recycle_deadline is not None:
                     timeout = max(0.0, min(timeout, recycle_deadline - time.monotonic()))
@@ -77,8 +168,13 @@ class MCPServerRunMixin:
                     {shutdown_task, reconnect_task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
                 if done:
                     break
+                if self._retire_if_removed_from_config():
+                    return "shutdown"
                 if self._recycle_if_due():
                     return "recycle"
+                if self._native_config_managed and time.monotonic() < next_keepalive:
+                    continue
+                next_keepalive = time.monotonic() + keepalive_interval
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
                 # concurrent ping can wedge the stdio stream; a busy server is alive anyway).
                 # Timeout — no lifecycle event fired. See #48069.
@@ -112,15 +208,29 @@ class MCPServerRunMixin:
     async def _wait_for_reconnect_or_shutdown(self, timeout: Optional[float] = None) -> str:
         """Parked wait: ``"shutdown"`` or ``"reconnect"`` (explicit, or the ``timeout`` self-probe;
         event cleared first). Shutdown wins a tie."""
-        shutdown_task, reconnect_task = self._event_waiters()
-        try:
-            await asyncio.wait({shutdown_task, reconnect_task}, return_when=asyncio.FIRST_COMPLETED, timeout=timeout)
-        finally:
-            await self._cancel_waiters(shutdown_task, reconnect_task)
-        if self._shutdown_event.is_set():
-            return "shutdown"
-        self._reconnect_event.clear()
-        return "reconnect"
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            wait_timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if self._native_config_managed:
+                wait_timeout = (_core._MCP_CONFIG_POLL_INTERVAL if wait_timeout is None
+                                else min(wait_timeout, _core._MCP_CONFIG_POLL_INTERVAL))
+            shutdown_task, reconnect_task = self._event_waiters()
+            try:
+                done, _pending = await asyncio.wait(
+                    {shutdown_task, reconnect_task}, return_when=asyncio.FIRST_COMPLETED,
+                    timeout=wait_timeout)
+            finally:
+                await self._cancel_waiters(shutdown_task, reconnect_task)
+            if self._shutdown_event.is_set():
+                return "shutdown"
+            if done:
+                self._reconnect_event.clear()
+                return "reconnect"
+            if self._retire_if_removed_from_config():
+                return "shutdown"
+            if deadline is not None and time.monotonic() >= deadline:
+                self._reconnect_event.clear()
+                return "reconnect"
 
     async def _park(self, revival_reason: str) -> bool:
         """Drop this server's tools and wait for a reconnect request; True when shutdown came instead.
@@ -140,6 +250,8 @@ class MCPServerRunMixin:
         self._reconnect_event.clear()
         if await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL) == "shutdown":
             return True
+        if self._retire_if_removed_from_config():
+            return True
         logger.debug("MCP server '%s': attempting revival %s (self-probe or explicit reconnect request); "
                      "rebuilding transport.", self.name, revival_reason)
         return False
@@ -149,6 +261,7 @@ class MCPServerRunMixin:
         must not start (bad remote URL / non-MCP endpoint: fail fast with ``_error`` set and
         ``_ready`` fired instead of burning the reconnect ladder inside the SDK's httpx layer)."""
         self._config = config
+        self._native_config_managed = bool(getattr(config, "native_config_managed", False))
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
@@ -201,6 +314,8 @@ class MCPServerRunMixin:
         self._reconnect_retries = 0
         budget = _RetryBudget()
         while True:
+            if self._retire_if_removed_from_config():
+                break
             try:
                 run_transport = self._run_http if self._is_http() else self._run_stdio
                 if not await self._on_clean_return(await run_transport(config), budget):
@@ -284,7 +399,18 @@ class MCPServerRunMixin:
         return True
 
     async def _backoff_sleep(self, budget: "_RetryBudget") -> None:
-        await asyncio.sleep(_jittered(budget.backoff))
+        if not self._native_config_managed:
+            await asyncio.sleep(_jittered(budget.backoff))
+            budget.backoff = min(budget.backoff * 2, _core._MAX_BACKOFF_SECONDS)
+            return
+        deadline = time.monotonic() + _jittered(budget.backoff)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(remaining, _core._MCP_CONFIG_POLL_INTERVAL))
+            if self._retire_if_removed_from_config():
+                break
         budget.backoff = min(budget.backoff * 2, _core._MAX_BACKOFF_SECONDS)
 
     async def _on_transport_error(self, exc: Exception, budget: "_RetryBudget") -> bool:

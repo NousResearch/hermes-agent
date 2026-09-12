@@ -139,6 +139,28 @@ def _adopt_server(name: str, server: _core.MCPServerTask) -> None:
         _core._server_scope_keys[key] = _core._mcp_registry_scope()
 
 
+def _discard_retired_candidate(name: str, server: _core.MCPServerTask) -> None:
+    """Drop pre-adoption state for a config-retired discovery candidate."""
+    with _core._lock:
+        key = _server_key(name)
+        owner = _core._servers.get(key)
+        if owner is not None and owner is not server:
+            return
+        if owner is server:
+            _core._servers.pop(key, None)
+        _core._server_scope_keys.pop(key, None)
+        _core._server_tool_scopes.pop(key, None)
+        _core._server_connecting.discard(key)
+        _core._server_connect_errors.pop(key, None)
+        lazy_names = list(_core._lazy_server_tool_names.pop(key, ()))
+        _core._lazy_server_configs.pop(key, None)
+        _core._lazy_server_fingerprints.pop(key, None)
+        _clear_connect_failure(name)
+        _core._parallel_safe_servers.discard(name)
+    for tool_name in lazy_names:
+        _registration._deregister_mcp_tool_all_scopes(key, tool_name)
+
+
 def _ensure_lazy_server_connected(server_name: str) -> bool:
     """Connect a lazily-registered server on demand (sync; blocks). Honours the cooldown and the
     ``_server_connecting`` dedup set; routes through ``_discover_and_register_server`` so
@@ -225,6 +247,10 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         raise
     finally:
         _core._connect_server_claim.reset(claim_token)
+    if server._retired_from_config:
+        await server.shutdown()
+        _discard_retired_candidate(name, server)
+        return []
     with _core._lock:
         key = _server_key(name)
         _core._server_connecting.discard(key)

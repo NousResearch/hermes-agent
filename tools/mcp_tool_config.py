@@ -15,6 +15,17 @@ from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
+
+class _MCPServerConfig(dict):
+    """A server snapshot carrying its immutable discovery provenance."""
+
+    def __init__(self, *args, native_config_managed: bool = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.native_config_managed = native_config_managed
+
+    def copy(self):
+        return type(self)(self, native_config_managed=self.native_config_managed)
+
 _mcp_stderr_log_fh: Dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
 
@@ -337,9 +348,72 @@ def _load_mcp_config() -> Dict[str, dict]:
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
-                safe_servers[name] = interpolated
+                safe_servers[name] = _MCPServerConfig(interpolated, native_config_managed=True)
         _portable_mcp_servers(safe_servers)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}
+
+
+def _native_mcp_server_config(name: str) -> Tuple[bool, Optional[dict]]:
+    """Return ``(known, effective config)`` for a native server.
+
+    The effective config includes the managed overlay, matching
+    :func:`_load_mcp_config`.  ``known=False`` means an authority file could not
+    be read safely; lifecycle callers must preserve the live task.
+    """
+    try:
+        import yaml
+        from hermes_cli import managed_scope
+        from hermes_cli.config import get_config_path, load_config, require_readable_config_before_write
+
+        # Validate both authority files before consulting load_config(): its
+        # defaults/LKG fallback is correct for serving, but cannot prove a
+        # destructive retirement on a first unreadable load.
+        require_readable_config_before_write(get_config_path())
+        managed_override = os.environ.get("HERMES_MANAGED_DIR", "").strip()
+        if managed_override:
+            from pathlib import Path
+            override_path = Path(managed_override)
+            try:
+                override_path.stat()
+            except FileNotFoundError:
+                managed_dir = None
+            except OSError:
+                return False, None
+            else:
+                managed_dir = override_path if override_path.is_dir() else None
+        else:
+            managed_dir = managed_scope.get_managed_dir()
+        managed_path = managed_dir / "config.yaml" if managed_dir is not None else None
+        if managed_path is not None and managed_path.exists():
+            with open(managed_path, encoding="utf-8") as fh:
+                managed_raw = yaml.safe_load(fh)
+            if managed_raw is not None and not isinstance(managed_raw, dict):
+                return False, None
+
+        servers = load_config().get("mcp_servers")
+        if servers is None:
+            return True, None
+        if not isinstance(servers, dict):
+            return False, None
+        config = servers.get(name)
+        if config is None:
+            return True, None
+        if not isinstance(config, dict):
+            return False, None
+        from tools.mcp_tool_common import _parse_boolish
+        if not _parse_boolish(config.get("enabled", True), default=True):
+            return True, None
+        interpolated = _interpolate_env_vars(config)
+        return (True, interpolated) if isinstance(interpolated, dict) else (False, None)
+    except Exception as exc:
+        logger.debug("Failed to inspect native MCP config for '%s': %s", name, exc)
+        return False, None
+
+
+def _native_mcp_server_enabled(name: str) -> Optional[bool]:
+    """Compatibility predicate for tests and callers that only need membership."""
+    known, config = _native_mcp_server_config(name)
+    return config is not None if known else None

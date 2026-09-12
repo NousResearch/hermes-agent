@@ -113,12 +113,21 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     const send = vi.fn()
 
     cleanups.push(
-      registerPreviewScriptRunner(tabId, async code =>
-        code.includes('"kind":"locate"')
-          ? JSON.stringify({ acted: 'looking at button "Save"', point: { x: 120, y: 80 }, success: true })
-          : // `hit` is the page's witness that the real pointerdown arrived.
-            JSON.stringify({ elements: [], hit: { tag: 'BUTTON', trusted: true }, success: true })
-      )
+      registerPreviewScriptRunner(tabId, async code => {
+        if (code.includes('"kind":"locate"')) {
+          return JSON.stringify({ acted: 'looking at button "Save"', point: { x: 120, y: 80 }, success: true })
+        }
+
+        // The focus probe from driveAction verifies that activeElement is
+        // editable after clicking. Return a happy answer so the type action
+        // proceeds without hitting the Jira-case guard.
+        if (code.includes('activeElement')) {
+          return JSON.stringify({ focused: true, tag: 'INPUT' })
+        }
+
+        // `hit` is the page's witness that the real pointerdown arrived.
+        return JSON.stringify({ elements: [], hit: { tag: 'BUTTON', trusted: true }, success: true })
+      })
     )
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
 
@@ -176,6 +185,36 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     // agent was trying to reveal, or worse, activate it.
     expect(types).not.toContain('mouseDown')
     expect(result.acted).toBe('hovered over button "Save"')
+  })
+
+  it('refuses to type when the click did not focus an editable (Jira async editor mount)', async () => {
+    const tabId = openBrowserTab()
+    const send = vi.fn()
+
+    cleanups.push(
+      registerPreviewScriptRunner(tabId, async code => {
+        if (code.includes('"kind":"locate"')) {
+          return JSON.stringify({ acted: 'looking at div "Comment area"', point: { x: 120, y: 80 }, success: true, typable: true })
+        }
+
+        // The focus probe: the click mounted the editor but focus stayed on body.
+        if (code.includes('activeElement')) {
+          return JSON.stringify({ focused: false, tag: 'BODY' })
+        }
+
+        // Read-back should never be reached — the action fails before typing.
+        return JSON.stringify({ elements: [], hit: { tag: 'BUTTON', trusted: true }, success: true })
+      })
+    )
+    cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))
+
+    const result = await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'Scope decision.' })
+
+    // No keystrokes sent — the focus check catches the unfocused target before typeText.
+    expect(send.mock.calls.filter(([event]) => event.type === 'char')).toHaveLength(0)
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('not focused')
+    expect(result.error).toContain('BODY')
   })
 
   // The witness only speaks for verbs that put the button down. Demanding one

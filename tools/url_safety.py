@@ -242,6 +242,14 @@ def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
 
 
+def ip_address_block_reason(value: str, *, allow_private: bool = False) -> str | None:
+    """Apply URL peer policy to a reported address without another DNS lookup."""
+    ip = _parse_ip(str(value).strip())
+    if ip is None:
+        return "malformed remote IP address"
+    return _resolved_ip_block_reason(ip, allow_private)
+
+
 def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[str]:
     """Why a resolved answer must be rejected, or None if it may be dialed. The metadata floor
     ignores ``allow_private``; ordinary private/internal classes are blocked only when it is False."""

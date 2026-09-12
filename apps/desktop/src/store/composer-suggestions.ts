@@ -262,6 +262,7 @@ export function sampleComposerDraft(sessionId: string | null | undefined, text: 
   const key = keyFor(sessionId)
 
   window.clearTimeout(sampleTimers.get(key))
+  sampleTimers.delete(key)
 
   const generation = (sampleGenerations.get(key) ?? 0) + 1
   sampleGenerations.set(key, generation)
@@ -277,6 +278,7 @@ export function sampleComposerDraft(sessionId: string | null | undefined, text: 
   sampleTimers.set(
     key,
     window.setTimeout(() => {
+      sampleTimers.delete(key)
       void Promise.all(
         [...draftProviders.values()].map(provider =>
           provider({ sessionId: sessionId ?? null, text }).catch((): ComposerSuggestion[] => [])
@@ -301,6 +303,9 @@ export function clearDraftSuggestions(sessionId: string | null | undefined): voi
   const key = keyFor(sessionId)
 
   window.clearTimeout(sampleTimers.get(key))
+  sampleTimers.delete(key)
+  // Fence a provider that already started before this composer unmounted.
+  sampleGenerations.set(key, (sampleGenerations.get(key) ?? 0) + 1)
   draftOfferings.delete(key)
   publish(sessionId ?? null)
 }

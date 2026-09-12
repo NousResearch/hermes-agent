@@ -2097,6 +2097,169 @@ class TestToolCallsInOutput:
 
 
 # ---------------------------------------------------------------------------
+# Responses input item parsing
+# ---------------------------------------------------------------------------
+
+
+class TestResponsesInputItemParsing:
+    @pytest.mark.asyncio
+    async def test_round_trips_output_items_back_into_input(self, adapter):
+        output_items = [
+            {"type": "function_call", "call_id": "call_1", "name": "search", "arguments": '{"q": "a"}'},
+            {"type": "function_call_output", "call_id": "call_1",
+             "output": [{"type": "input_text", "text": "result a"}]},
+            {"type": "function_call", "call_id": "call_2", "name": "search", "arguments": '{"q": "b"}'},
+            {"type": "function_call_output", "call_id": "call_2", "output": "result b"},
+            {"type": "message", "role": "assistant",
+             "content": [{"type": "output_text", "text": "All done."}]},
+        ]
+
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": output_items + ["one more question"]},
+                )
+
+            assert resp.status == 200
+            history = mock_run.call_args.kwargs["conversation_history"]
+            assert mock_run.call_args.kwargs["user_message"] == "one more question"
+            assert not any(m.get("role") == "user" and not m.get("content") for m in history)
+
+            tool_call_msgs = [m for m in history if m.get("role") == "assistant" and m.get("tool_calls")]
+            assert len(tool_call_msgs) == 2
+            assert tool_call_msgs[0]["tool_calls"] == [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "search", "arguments": '{"q": "a"}'}}]
+
+            tool_msgs = [m for m in history if m.get("role") == "tool"]
+            assert len(tool_msgs) == 2
+            assert tool_msgs[0]["tool_call_id"] == "call_1"
+            assert tool_msgs[0]["content"] == "result a"
+            assert tool_msgs[1]["tool_call_id"] == "call_2"
+            assert tool_msgs[1]["content"] == "result b"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_item_attaches_to_following_assistant_message(self, adapter):
+        input_items = [
+            {"type": "reasoning", "summary": [],
+             "content": [{"type": "reasoning_text", "text": "thinking about it"}]},
+            {"type": "function_call", "call_id": "call_9", "name": "search", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_9", "output": "ok"},
+            "final question",
+        ]
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses", json={"model": "hermes-agent", "input": input_items})
+
+            assert resp.status == 200
+            history = mock_run.call_args.kwargs["conversation_history"]
+            assistant_msg = next(m for m in history if m.get("role") == "assistant")
+            assert assistant_msg["reasoning_content"] == "thinking about it"
+
+    @pytest.mark.asyncio
+    async def test_unknown_item_type_is_skipped(self, adapter):
+        input_items = [{"type": "some_future_item_type", "foo": "bar"}, "hello"]
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses", json={"model": "hermes-agent", "input": input_items})
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["conversation_history"] == []
+            assert mock_run.call_args.kwargs["user_message"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_conversation_history_accepts_function_call_items(self, adapter):
+        raw_history = [
+            {"type": "function_call", "call_id": "call_5", "name": "get_weather",
+             "arguments": '{"city": "NYC"}'},
+            {"type": "function_call_output", "call_id": "call_5", "output": "Sunny"},
+        ]
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "thanks", "conversation_history": raw_history},
+                )
+
+            assert resp.status == 200
+            history = mock_run.call_args.kwargs["conversation_history"]
+            assert mock_run.call_args.kwargs["user_message"] == "thanks"
+            assert history[0]["role"] == "assistant"
+            assert history[0]["tool_calls"][0]["function"]["name"] == "get_weather"
+            assert history[1] == {"role": "tool", "tool_call_id": "call_5", "content": "Sunny"}
+
+    @pytest.mark.asyncio
+    async def test_trailing_assistant_message_400s_instead_of_becoming_the_user_turn(self, adapter):
+        input_items = [
+            {"role": "user", "content": "what is 6 times 7"},
+            {"type": "message", "role": "assistant", "content": "42"},
+        ]
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses", json={"model": "hermes-agent", "input": input_items})
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert "must end with a user message" in data["error"]["message"]
+            mock_run.assert_not_called()
+
+
+    def test_parser_folds_parallel_calls_and_passes_chat_shaped_history(self):
+        from gateway.platforms.api_server_openai_routes import _parse_responses_input_items
+
+        parsed = _parse_responses_input_items([
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "plan"}]},
+            {"type": "function_call", "call_id": "c1", "name": "a", "arguments": {"q": 1}},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "more"}]},
+            {"type": "function_call", "call_id": "c2", "name": "b", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": {"temp": 72}},
+            {"type": "function_call_output", "call_id": "c2", "output": [{"type": "input_text", "text": "ok"}]},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "c", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c3", "content": "done"},
+            {"role": "user", "content": ""},
+            "next",
+        ])
+        assert parsed == [
+            {"role": "assistant", "content": "", "reasoning_content": "plan\n\nmore", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "a", "arguments": '{"q": 1}'}},
+                {"id": "c2", "type": "function", "function": {"name": "b", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"temp": 72}'},
+            {"role": "tool", "tool_call_id": "c2", "content": "ok"},
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "c", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c3", "content": "done"},
+            {"role": "user", "content": "next"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_roleless_history_item_400s(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/responses", json={
+                "model": "hermes-agent", "input": "hi", "conversation_history": [{"text": "hello"}]})
+            assert resp.status == 400
+            assert (await resp.json())["error"]["param"] == "conversation_history[0].role"
+
+
+# ---------------------------------------------------------------------------
 # Usage / token counting
 # ---------------------------------------------------------------------------
 

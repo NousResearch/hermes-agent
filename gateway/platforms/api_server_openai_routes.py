@@ -88,6 +88,128 @@ def _message_item(text: Any) -> Dict[str, Any]:
             "content": [{"type": "output_text", "text": text}]}
 
 
+class _ResponsesInputItemError(ValueError):
+    def __init__(self, index: int, original: ValueError, field: str = "content"):
+        super().__init__(str(original))
+        self.index = index
+        self.original = original
+        self.field = field
+
+    def param(self, prefix: str) -> str:
+        return f"{prefix}[{self.index}].{self.field}"
+
+
+def _flatten_function_call_output(output: Any) -> str:
+    """``function_call_output.output`` is a string or a list of ``input_text`` parts."""
+    if isinstance(output, str):
+        return output
+    if output is None:
+        return ""
+    if isinstance(output, list):
+        texts = [str(part["text"]) for part in output if isinstance(part, dict) and part.get("text")]
+        if texts:
+            return "\n".join(texts)
+    return json.dumps(output, ensure_ascii=False)
+
+
+def _reasoning_item_text(item: Dict[str, Any]) -> str:
+    for key in ("content", "summary"):
+        parts = item.get(key)
+        if isinstance(parts, list):
+            text = "\n".join(str(p["text"]) for p in parts if isinstance(p, dict) and p.get("text"))
+            if text:
+                return text
+    return ""
+
+
+def _parse_responses_input_items(raw_items: List[Any]) -> List[Dict[str, Any]]:
+    from gateway.platforms.api_server import _cap_text, _normalize_multimodal_content
+    messages: List[Dict[str, Any]] = []
+    pending_tool_calls: List[Dict[str, Any]] = []
+    pending_reasoning: List[str] = []
+
+    def take_reasoning(role: str) -> str:
+        if not pending_reasoning:
+            return ""
+        text = "\n\n".join(pending_reasoning)
+        pending_reasoning.clear()
+        if role != "assistant":
+            logger.debug("Dropping Responses reasoning item with no following assistant item")
+            return ""
+        return text
+
+    def flush_tool_calls() -> None:
+        if not pending_tool_calls:
+            return
+        msg = {"role": "assistant", "content": "", "tool_calls": list(pending_tool_calls)}
+        reasoning = take_reasoning("assistant")
+        if reasoning:
+            msg["reasoning_content"] = reasoning
+        messages.append(msg)
+        pending_tool_calls.clear()
+
+    for idx, item in enumerate(raw_items):
+        if isinstance(item, str):
+            flush_tool_calls()
+            take_reasoning("user")
+            if item:
+                messages.append({"role": "user", "content": item})
+            continue
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type") or "message"
+        if item_type == "function_call":
+            arguments = item.get("arguments", "")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            pending_tool_calls.append({
+                "id": item.get("call_id", ""), "type": "function",
+                "function": {"name": item.get("name", ""), "arguments": _cap_text(arguments)}})
+            continue
+        if item_type == "function_call_output":
+            flush_tool_calls()
+            take_reasoning("tool")
+            messages.append({
+                "role": "tool", "tool_call_id": item.get("call_id", ""),
+                "content": _cap_text(_flatten_function_call_output(item.get("output", "")))})
+            continue
+        if item_type == "reasoning":
+            text = _reasoning_item_text(item)
+            if text:
+                pending_reasoning.append(_cap_text(text))
+            continue
+        if item_type != "message":
+            logger.debug("Skipping unsupported Responses input item type %r at index %d", item_type, idx)
+            continue
+        if "role" not in item:
+            raise _ResponsesInputItemError(
+                idx, ValueError("invalid_input_item:message items need 'role' and 'content'"), field="role")
+        flush_tool_calls()
+        role = str(item["role"])
+        try:
+            content = _normalize_multimodal_content(item.get("content", ""))
+        except ValueError as exc:
+            raise _ResponsesInputItemError(idx, exc) from exc
+        reasoning = take_reasoning(role)
+        tool_calls = item.get("tool_calls")
+        if not content and not tool_calls:
+            continue
+        msg: Dict[str, Any] = {"role": role, "content": content}
+        if isinstance(tool_calls, list) and tool_calls:
+            msg["tool_calls"] = tool_calls
+        if isinstance(item.get("tool_call_id"), str):
+            msg["tool_call_id"] = item["tool_call_id"]
+        if reasoning:
+            msg["reasoning_content"] = reasoning
+        elif isinstance(item.get("reasoning_content"), str) and item["reasoning_content"]:
+            msg["reasoning_content"] = _cap_text(item["reasoning_content"])
+        messages.append(msg)
+    flush_tool_calls()
+    if pending_reasoning:
+        logger.debug("Dropping trailing Responses reasoning item with no following assistant item")
+    return messages
+
+
 def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Trim large tool payloads in place so response.completed stays under ~100KB (clients
     already received the full details via the incremental events)."""
@@ -756,7 +878,7 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
             _content_has_visible_payload, _error_response, _invalid_request,
-            _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
+            _multimodal_validation_error, _redact_api_error_text,
             _resolve_media_to_data_urls, _responses_usage_payload)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -788,15 +910,10 @@ class OpenAICompatRoutesMixin:
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]
         elif isinstance(raw_input, list):
-            for idx, item in enumerate(raw_input):
-                if isinstance(item, str):
-                    input_messages.append({"role": "user", "content": item})
-                elif isinstance(item, dict):
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
-                    input_messages.append({"role": item.get("role", "user"), "content": content})
+            try:
+                input_messages = _parse_responses_input_items(raw_input)
+            except _ResponsesInputItemError as exc:
+                return _multimodal_validation_error(exc.original, param=exc.param("input"))
         else:
             return _error_response("'input' must be a string or array", 400)
 
@@ -806,14 +923,10 @@ class OpenAICompatRoutesMixin:
         if raw_history:
             if not isinstance(raw_history, list):
                 return _error_response("'conversation_history' must be an array of message objects", 400)
-            for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
-                try:
-                    entry_content = _normalize_multimodal_content(entry["content"])
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
-                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
+            try:
+                conversation_history = _parse_responses_input_items(raw_history)
+            except _ResponsesInputItemError as exc:
+                return _multimodal_validation_error(exc.original, param=exc.param("conversation_history"))
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
         stored_session_id = None
@@ -825,9 +938,10 @@ class OpenAICompatRoutesMixin:
             stored_session_id = stored.get("session_id")
             if instructions is None:
                 instructions = stored.get("instructions")
-        # All input messages but the last become history; the last is the user message.
+        if not input_messages or input_messages[-1].get("role") != "user":
+            return _error_response("'input' must end with a user message", 400)
         conversation_history.extend(input_messages[:-1])
-        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+        user_message: Any = input_messages[-1].get("content", "")
         if not _content_has_visible_payload(user_message):
             return _error_response("No user message found in input", 400)
         if body.get("truncation") == "auto":

@@ -89,6 +89,57 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     assert handlers._check_circuit_breaker("x") is None
 
 
+def test_same_named_server_with_other_mtls_cert_is_a_separate_connection(two_profiles):
+    """#109429: same url/headers, different mTLS client_cert/client_key — profile B must not be
+    shadowed into treating profile A's live connection as its own route."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
+    from tools import mcp_tool_registration as reg
+    from tools.registry import registry
+    import toolsets
+
+    cfg_a = {"url": "https://mcp.example/x", "client_cert": "/certs/a.pem", "client_key": "/certs/a.key"}
+    cfg_b = {"url": "https://mcp.example/x", "client_cert": "/certs/b.pem", "client_key": "/certs/b.key"}
+
+    two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+    assert toolsets.resolve_toolset("mcp-x") == ["mcp__x__t"]
+    for _ in range(core._CIRCUIT_BREAKER_THRESHOLD):
+        core._bump_server_error("x")
+    disc._note_connect_failure("y", RuntimeError("boom"))
+
+    two_profiles("b")
+    # B's own view: no tools yet, its memo is not A's, and A's connection is not "connected" for B.
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    assert toolsets.resolve_toolset("mcp-x") == []
+    assert disc.get_mcp_status({"x": cfg_b})[0]["status"] == "configured"
+    # B's differently-certificated 'x' is a connect candidate, not shadowed by A's ledger entries.
+    assert "x" in disc._select_new_servers({"x": cfg_b})
+    assert not disc._connect_cooldown_active("y")
+    assert handlers._check_circuit_breaker("x") is None
+
+
+def test_connection_identity_distinguishes_client_cert_and_key():
+    """#109429: identical url/headers/env/auth but different mTLS client_cert/client_key
+    must be different connection identities, or profile B could call tools over profile A's
+    client-certificate-authenticated connection."""
+    from tools.mcp_tool_registration import _connection_identity, _same_server_route
+
+    base = {"url": "https://mcp.example/x", "client_cert": "/certs/a.pem", "client_key": "/certs/a.key"}
+    other_key = {**base, "client_key": "/certs/b.key"}
+    other_cert = {**base, "client_cert": "/certs/b.pem"}
+
+    assert _connection_identity(base) != _connection_identity(other_key)
+    assert _connection_identity(base) != _connection_identity(other_cert)
+
+    server = SimpleNamespace(_config=base)
+    assert not _same_server_route(server, other_key)
+    assert not _same_server_route(server, other_cert)
+    assert _same_server_route(server, dict(base))
+
+
 def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profiles):
     import tools.mcp_tool as core
     from tools import mcp_tool_discovery as disc, mcp_tool_lifecycle as lifecycle

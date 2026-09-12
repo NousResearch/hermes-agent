@@ -409,8 +409,14 @@ def _connection_identity(config: dict) -> tuple:
     def _frozen(value):
         return json.dumps(value or {}, sort_keys=True, default=str)
 
-    return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
-            (config.get("auth") or "").lower().strip())
+    return (
+        config_fingerprint(config),
+        _frozen(config.get("env")),
+        _frozen(config.get("headers")),
+        _frozen(config.get("client_cert")),
+        _frozen(config.get("client_key")),
+        (config.get("auth") or "").lower().strip(),
+    )
 
 
 def _same_server_route(server: Any, config: dict) -> bool:

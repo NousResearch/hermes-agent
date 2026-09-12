@@ -265,6 +265,8 @@ class SessionAuthority:
     async def cancel_queued(self, actor, ref, admission_id):
         await self.receipt(actor, ref, admission_id)
         row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
+        from gateway.session_ingress_media import release_admission_media
+        release_admission_media(self.db, admission_id)
         self._publish_pending(ref)
         return self._receipt(row)
 
@@ -402,6 +404,8 @@ class SessionAuthority:
                     response=response, outcome=outcome,
                     result=self.pending_results.pop(admission_id, None))
                 live.controls.snapshot(ref.session_id, None)
+                from gateway.session_ingress_media import release_admission_media
+                release_admission_media(self.db, admission_id)
                 self._publish_pending(ref)
                 live.event_stream.publish(ref.session_id, {
                     'text': response, 'content': response, 'admission_id': admission_id,

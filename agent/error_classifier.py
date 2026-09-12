@@ -92,6 +92,7 @@ _BILLING_PATTERNS = (
     "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted",
     "model_not_supported_on_free_tier", "not available on the free tier",
+    "budget limit exceeded",
 )
 
 # Not proof of exhaustion: Anthropic returns the same "out of extra usage" body

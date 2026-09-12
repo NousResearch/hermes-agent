@@ -1413,6 +1413,21 @@ class TestIsPaymentError:
         setattr(exc, "status_code", 403)
         assert _is_payment_error(exc) is True
 
+    def test_403_openrouter_org_budget_limit_is_payment(self):
+        exc = Exception("Error code: 403 - {'error': {'message': 'Budget limit exceeded (monthly limit). Contact your org admin.', 'code': 403}}")
+        exc.status_code = 403
+        assert _is_payment_error(exc) is True
+
+    def test_403_openrouter_key_limit_is_payment(self):
+        exc = Exception("Key limit exceeded (total limit). Contact your org admin.")
+        exc.status_code = 403
+        assert _is_payment_error(exc) is True
+
+    def test_429_rate_limit_exceeded_is_not_payment(self):
+        exc = Exception("Rate limit exceeded, please slow down.")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
 
     def test_404_generic_not_found_is_not_payment(self):
         exc = Exception("Not Found")

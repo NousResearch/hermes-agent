@@ -523,6 +523,23 @@ def _discover_flag(entry: dict):
     return discover
 
 
+def _apply_configured_models(user_providers: dict, slug: str, model_ids: list) -> list:
+    """Fold a ``providers.<slug>.models`` block into a built-in/canonical row's catalog.
+
+    The declared ids extend the discovered catalog by default; ``discover_models: false``
+    marks the block as an intentional shortlist that narrows the row to it instead — the
+    same semantics custom-endpoint rows already honor.
+    """
+    from hermes_cli.model_switch import _declared_model_ids
+    configured = user_providers.get(slug) if isinstance(user_providers, dict) else None
+    if not isinstance(configured, dict):
+        return list(model_ids)
+    configured_models = _declared_model_ids(configured.get("models"))
+    if configured_models and not _discover_flag(configured):
+        return list(configured_models)
+    return list(dict.fromkeys([*configured_models, *model_ids]))
+
+
 def _display_prefix(name: str) -> str:
     """Text before the per-model separator Hermes's own writer uses ("—" / " - ")."""
     return next((name.split(sep)[0].strip() for sep in ("—", " - ") if sep in name), name)
@@ -739,7 +756,6 @@ class _PickerBuild:
 
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
-    from hermes_cli.model_switch import _declared_model_ids
     from agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
         if not (_any_env(env_vars) or _raw_pool_usable(hermes_id)):
@@ -747,9 +763,7 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         model_ids = _live_or_curated_ids(hermes_id, b.curated)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
         # emit it later because this row owns the slug.
-        configured = user_providers.get(hermes_id) if isinstance(user_providers, dict) else None
-        configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
-        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
+        model_ids = _apply_configured_models(user_providers, hermes_id, model_ids)
         pinfo = get_provider_info(mdev_id)
         display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
         b.add_builtin_row(
@@ -844,7 +858,7 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
         b.seen_slugs.add(pid.lower())
 
 
-def _lap_canonical_rows(b: _PickerBuild) -> None:
+def _lap_canonical_rows(b: _PickerBuild, user_providers: dict) -> None:
     """Section 2b: CANONICAL_PROVIDERS missed by sections 1/2."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import CANONICAL_PROVIDERS
@@ -871,6 +885,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             model_ids = _aws_live_or_curated_ids(cp.slug, b.curated)
         else:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False)
+        model_ids = _apply_configured_models(user_providers, cp.slug, model_ids)
         b.add_builtin_row(
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
@@ -1132,7 +1147,7 @@ def list_authenticated_providers(
 
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data)
-    _lap_canonical_rows(b)
+    _lap_canonical_rows(b, user_providers or {})
     if user_providers and isinstance(user_providers, dict):
         _lap_user_provider_rows(b, user_providers)
     _lap_bare_custom_row(b, custom_providers)

@@ -271,10 +271,13 @@ _nb_install_bundled_node() {
     esac
 
     local index_url="https://nodejs.org/dist/latest-v${HERMES_NODE_TARGET_MAJOR}.x/"
-    local tarball
-    tarball=$(curl -fsSL "$index_url" \
-        | grep -oE "node-v${HERMES_NODE_TARGET_MAJOR}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
-        | head -1)
+    local tarball=""
+    # `tar xf` needs the xz binary for .tar.xz; minimal images ship tar without it (#11197).
+    if command -v xz >/dev/null 2>&1; then
+        tarball=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${HERMES_NODE_TARGET_MAJOR}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+            | head -1)
+    fi
     if [ -z "$tarball" ]; then
         tarball=$(curl -fsSL "$index_url" \
             | grep -oE "node-v${HERMES_NODE_TARGET_MAJOR}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \

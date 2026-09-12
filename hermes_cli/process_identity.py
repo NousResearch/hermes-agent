@@ -267,7 +267,9 @@ def _append_entry(entry: LedgerEntry) -> bool:
         pruned.append(asdict(entry))
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_json_write(path, pruned, mode=0o600)
+            # argv may carry surrogate-escaped bytes (non-UTF-8 paths); ensure_ascii keeps the
+            # utf-8 text handle from raising UnicodeEncodeError (a ValueError, not an OSError).
+            atomic_json_write(path, pruned, mode=0o600, ensure_ascii=True)
             return True
         except OSError:
             logger.debug("spawn ledger write failed", exc_info=True)

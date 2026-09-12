@@ -128,6 +128,18 @@ class TestStepCallback:
 
 
 
+    @pytest.mark.parametrize("raw, expected", [("", ""), (0, "0"), (False, "False")])
+    def test_falsey_result_reaches_client_unchanged(self, mock_conn, event_loop_fixture, raw, expected):
+        """A present-but-falsey ``result`` is the tool's real output, not a missing key (#10845)."""
+        from collections import deque
+
+        cb = make_step_cb(mock_conn, "session-1", event_loop_fixture, {"terminal": deque(["tc-f"])}, {})
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            mock_rcts.return_value = MagicMock(spec=Future)
+            cb(1, [{"name": "terminal", "result": raw}])
+        mock_btc.assert_called_once_with("tc-f", "terminal", result=expected, function_args=None, snapshot=None)
+
     def test_result_passed_to_build_tool_complete(self, mock_conn, event_loop_fixture):
         """Tool result from prev_tools dict is forwarded to build_tool_complete."""
         from collections import deque

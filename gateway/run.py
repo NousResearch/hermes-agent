@@ -2140,7 +2140,7 @@ from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
-from gateway.run_shutdown import GatewayShutdownMixin, _exit_with_failure_verdict, _resolve_gateway_exit_verdict
+from gateway.run_shutdown import GatewayShutdownMixin, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_startup import GatewayStartupMixin
@@ -5214,8 +5214,6 @@ async def _start_gateway_shutdown_tail(
         stop_nous_auth_keepalive()
 
     _best_effort(_stop_keepalive)
-    if _exit_with_failure_verdict(runner):
-        return False
 
     # Never join(): an in-flight cron delivery is a coroutine on THIS loop; a sync join would drop it.
     # Stop cron scheduler + housekeeping cleanly. These MUST be awaited cooperatively, not join()ed. A cron
@@ -5238,6 +5236,8 @@ async def _start_gateway_shutdown_tail(
     with suppress(Exception):
         await _shutdown_mcp_servers_nonblocking()
 
+    # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
+    # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
     return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
 
 

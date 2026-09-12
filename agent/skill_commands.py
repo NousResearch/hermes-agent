@@ -20,7 +20,10 @@ _skill_commands_home: Optional[str] = None
 # Guards the (map, platform-tag, home-tag) triple so publication and the
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
-_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
+# ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
+# instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
+# applied by hermes_cli/commands_platforms.py, not here.
+_SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a

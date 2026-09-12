@@ -529,7 +529,7 @@ class GatewayNotificationsMixin:
             default_hint = f" (default: {default})" if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")
             await target.send(
-                f"⚕ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
+                f"☤ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
                 f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
             )
         # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.

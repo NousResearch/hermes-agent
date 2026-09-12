@@ -15,7 +15,7 @@ def _setup_sessions(tmp_path, sessions_data):
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     index_file = sessions_dir / "sessions.json"
-    index_file.write_text(json.dumps(sessions_data))
+    index_file.write_text(json.dumps(sessions_data), encoding="utf-8")
     return sessions_dir, index_file
 
 
@@ -116,6 +116,29 @@ class TestMirrorToSession:
             result = mirror_to_session("telegram", "99999", "Hello!")
 
         assert result is False
+
+
+    def test_failed_sqlite_write_reports_false(self, tmp_path):
+        """A mirror whose transcript write raises must not report success (#10130)."""
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "dm": {
+                "session_id": "sess_dm",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+        })
+        broken_db = MagicMock()
+        broken_db.find_session_by_origin.return_value = None  # resolve via sessions.json
+        broken_db.append_message.side_effect = OSError("disk full")
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("hermes_state_registry.acquire", return_value=broken_db), \
+             patch("hermes_state_registry.release_or_close"):
+            result = mirror_to_session("telegram", "123", "Hello!")
+
+        assert result is False
+        broken_db.append_message.assert_called_once()
 
 
 class TestAppendToSqlite:

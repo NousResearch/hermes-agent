@@ -644,7 +644,8 @@ class EmailAdapter(BasePlatformAdapter):
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
-            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name),
+            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name,
+                                     message_id=msg_data["message_id"]),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)

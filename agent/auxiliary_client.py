@@ -5572,7 +5572,7 @@ def _get_cached_client(
                 client, default_model, _ = _client_cache[cache_key]
                 # Race loser was never exposed to a caller — safe to close now.
                 _close_cached_client(built_client, close_async=async_mode)
-    return client, model or default_model
+    return client, _compat_model(client, model, default_model)
 
 
 # Aliases for direct REST APIs not modeled in PROVIDER_REGISTRY, so ``auxiliary.<task>.provider:

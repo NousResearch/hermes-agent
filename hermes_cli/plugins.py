@@ -11,6 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import importlib.metadata
 import inspect
 import json
@@ -2021,9 +2022,9 @@ def resolve_plugin_command_result(result: Any) -> Any:
         finally:
             done.set()
 
-    from contextvars import copy_context
-
-    threading.Thread(target=copy_context().run, args=(_runner,),
+    # copy_context: the helper thread must see the caller's profile/secret scope, else an
+    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
+    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
                      name="hermes-plugin-command-await", daemon=True).start()
     if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
         raise TimeoutError("Plugin command async handler did not complete within "

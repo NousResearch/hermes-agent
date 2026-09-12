@@ -1135,19 +1135,36 @@ def _route_alias_fallback(st: _Switch, key: str) -> Optional[ModelSwitchResult]:
 
 
 def _convert_vendor_colon_slug(st: _Switch) -> None:
-    """Step c: on an aggregator, ``vendor:model`` -> ``vendor/model``. Only without a slash: with
-    one, the colon is a variant tag (:free, :extended, :fast) that must be preserved."""
+    """Step c: ``vendor:model`` -> ``vendor/model``. Only without a slash: with one, the colon is
+    a variant tag (:free, :extended, :fast) that must be preserved.
+
+    On an aggregator every ``left:right`` is a slug. Elsewhere the colon is converted only when
+    ``left`` names a provider Hermes knows, so ``/model alibaba:qwen3.6-plus`` routes like
+    ``alibaba/qwen3.6-plus`` (#9748) while Ollama-style tags (``qwen3.5:4b``) stay intact."""
     raw_input = st.raw_input
     colon_pos = raw_input.find(":")
     cur_norm = str(st.current_provider).strip().lower()
-    if (
-        colon_pos > 0 and "/" not in raw_input and is_aggregator(st.current_provider)
-        and not cur_norm.startswith("custom") and cur_norm != "ollama"):
-        left = raw_input[:colon_pos].strip().lower()
-        right = raw_input[colon_pos + 1:].strip()
-        if left and right:
-            st.new_model = f"{left}/{right}"
-            logger.debug("Converted vendor:model '%s' to aggregator slug '%s'", raw_input, st.new_model)
+    if colon_pos <= 0 or "/" in raw_input or cur_norm.startswith("custom") or cur_norm == "ollama":
+        return
+    left = raw_input[:colon_pos].strip().lower()
+    right = raw_input[colon_pos + 1:].strip()
+    if not left or not right:
+        return
+    if not is_aggregator(st.current_provider) and not _names_known_provider(left, st):
+        return
+    st.new_model = f"{left}/{right}"
+    logger.debug("Converted vendor:model '%s' to slug '%s'", raw_input, st.new_model)
+
+
+def _names_known_provider(name: str, st: _Switch) -> bool:
+    """Whether ``name`` is a built-in provider id/alias or a provider the user configured."""
+    from hermes_cli.providers import get_provider
+    if resolve_provider_full(name, st.user_providers, st.custom_providers) is not None:
+        return True
+    try:
+        return get_provider(name, allow_network=False) is not None
+    except Exception:
+        return False
 
 
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:

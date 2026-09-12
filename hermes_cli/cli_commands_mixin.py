@@ -378,11 +378,11 @@ def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_not
     try:
         from hermes_cli.skin_engine import get_active_skin
         _skin = get_active_skin()
-        label = _skin.get_branding("response_label", "⚕ Hermes")
+        label = _skin.get_branding("response_label", "☤ Hermes")
         _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
         _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
     except Exception:
-        label, _resp_color, _resp_text = "⚕ Hermes", "#CD7F32", "#FFF8DC"
+        label, _resp_color, _resp_text = "☤ Hermes", "#CD7F32", "#FFF8DC"
     rich_console.print(Panel(
         _render_final_assistant_content(body, mode=cli.final_response_markdown),
         title=f"[{_resp_color} bold]{label} {title_suffix}[/]", title_align="left",
@@ -1377,7 +1377,8 @@ class CLICommandsMixin:
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
             self._session_db.get_session_title(self.session_id) or "branch")
         parent_session_id = self.session_id
-        _end_current_session(self, "branched")
+        # Create the child BEFORE ending the parent: a failed create_session must leave the session the
+        # user is still on open, not ended with end_reason="branched" and no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions
         # even after the parent is re-ended with a different end_reason.
         try:
@@ -1388,6 +1389,7 @@ class CLICommandsMixin:
                               "_branched_from": parent_session_id})
         except Exception as e:
             return _cp(f"  Failed to create branch session: {e}")
+        _end_current_session(self, "branched")
         # Best-effort chunked copy (a failed copy still yields a usable branch); the api_content
         # sidecar lets the branch's first turn replay the parent's exact wire bytes (warm cache).
         with suppress(Exception):
@@ -2654,12 +2656,12 @@ class CLICommandsMixin:
         choices = [("once", "Update Now", "exit the current session and update Hermes Agent"),
                    ("cancel", "Cancel", "keep the current session")]
         raw = self._prompt_text_input_modal(
-            title="⚕  Update Hermes Agent",
+            title="☤  Update Hermes Agent",
             detail="This will exit the current session and run `hermes update`.", choices=choices)
         if raw is None or self._normalize_slash_confirm_choice(raw, choices) != "once":
             print("  🟡 /update cancelled.")
             return False
-        _say_block("  ⚕ Launching update...")
+        _say_block("  ☤ Launching update...")
         # run() execs this on the main thread after prompt_toolkit restores terminal modes;
         # relaunching from this daemon thread would skip cleanup (POSIX) / only end the thread (Windows).
         self._pending_relaunch = ["update"]

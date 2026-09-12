@@ -562,6 +562,7 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    schema: _SchemaOutcome = field(default_factory=lambda: _SchemaOutcome(None, None, [], 0))
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -656,9 +657,15 @@ class _ChildRun:
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
             with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
+                result = child.run_conversation(
                     user_message=self.goal, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )
+                # The correction is part of this child run: retain its approval/context bindings and
+                # charge both turns to the same timeout. A blocked retry also needs deferred close.
+                self.schema = _validate_child_output_schema(
+                    child, result, task_index, self.child_task_id, self.relay_text,
+                )
+                return result
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         try:

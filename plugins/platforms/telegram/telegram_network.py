@@ -4,6 +4,7 @@ api.telegram.org while TCP retries known IPv4 literals) plus DoH-based IP discov
 from __future__ import annotations
 
 import asyncio
+import errno
 import ipaddress
 import logging
 import socket
@@ -278,5 +279,39 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
     return httpx.Request(method=request.method, url=url, headers=headers, stream=request.stream, extensions=extensions)
 
 
+_WSAEADDRNOTAVAIL = 10049
+
+
+def _is_local_ephemeral_port_exhaustion(exc: BaseException) -> bool:
+    """True when the exception chain is a local bind failure (EADDRNOTAVAIL / WSAEADDRNOTAVAIL).
+
+    Walking fallback IPs cannot help — the process has no free ephemeral ports (#107880).
+    If errno cannot be recovered, return False so the caller keeps the old retryable path.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        cur = stack.pop()
+        ident = id(cur)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        if isinstance(cur, OSError):
+            codes = {getattr(cur, "errno", None), getattr(cur, "winerror", None)}
+            if errno.EADDRNOTAVAIL in codes or _WSAEADDRNOTAVAIL in codes:
+                return True
+        cause = getattr(cur, "__cause__", None)
+        context = getattr(cur, "__context__", None)
+        if cause is not None:
+            stack.append(cause)
+        if context is not None:
+            stack.append(context)
+    return False
+
+
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+    if not isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
+        return False
+    if _is_local_ephemeral_port_exhaustion(exc):
+        return False
+    return True

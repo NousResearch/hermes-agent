@@ -161,6 +161,20 @@ _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _FLOOD_INLINE_WAIT_CAP_SECS = 5.0
 
 
+def _getupdates_max_keepalive_connections(base_limits) -> int:
+    """Darwin reuses getUpdates sockets so TIME_WAIT cannot exhaust ephemeral ports (#107880).
+
+    Reads ``sys.platform`` at call time so tests can monkeypatch. Windows stays at 0
+    (#87057). Other platforms stay at 0 (fail-open).
+    """
+    if sys.platform != "darwin":
+        return 0
+    keepalive = getattr(base_limits, "max_keepalive_connections", None)
+    if keepalive is None or keepalive < 1:
+        return 1
+    return int(keepalive)
+
+
 def _flood_cap_result(wait: float) -> "SendResult":
     """The shared fail-closed SendResult for an over-cap flood wait."""
     return SendResult(success=False, error=f"flood_control:{wait}", retry_after=float(wait))
@@ -2725,9 +2739,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 max_connections=request_kwargs["connection_pool_size"],
                 max_keepalive_connections=_base_limits.max_keepalive_connections, keepalive_expiry=_base_limits.keepalive_expiry)
             # A long-poll is continuously active, so keepalive expiry can't protect it from a server-side
-            # close: never hand getUpdates a pooled socket from a previous poll.
+            # close. Windows never reuses a previous getUpdates socket (#87057). Darwin must reuse (>=1)
+            # or TIME_WAIT fills the ephemeral range after ~2 days (#107880). Other platforms stay at 0.
             _updates_limits = _httpx.Limits(
-                max_connections=request_kwargs["connection_pool_size"], max_keepalive_connections=0,
+                max_connections=request_kwargs["connection_pool_size"],
+                max_keepalive_connections=_getupdates_max_keepalive_connections(_base_limits),
                 keepalive_expiry=_base_limits.keepalive_expiry)
         else:  # pragma: no cover — httpx always present alongside PTB
             _pool_limits = _updates_limits = None

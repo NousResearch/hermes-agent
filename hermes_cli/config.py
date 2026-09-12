@@ -2040,8 +2040,11 @@ def terminal_config_env_var_for_key(key: str) -> Optional[str]:
 
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
     """Whether the remote SSH shell must expand *cwd* itself: ``~`` expanded on the Hermes host
-    would name the host/container home instead of the SSH user's."""
-    return (backend or "").strip().lower() == "ssh" and (cwd == "~" or cwd.startswith("~/"))
+    would name the host/container home instead of the SSH user's. Every tilde form counts, and
+    the named one fails most quietly: ``expanduser("~alice/work")`` resolves against the HOST
+    account database, so it silently yields a local path whenever the same login exists on both
+    ends and passes through untouched otherwise."""
+    return (backend or "").strip().lower() == "ssh" and cwd.startswith("~")
 
 
 def apply_terminal_config_to_env(

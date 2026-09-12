@@ -2414,7 +2414,7 @@ def save_config_value(key_path: str, value: any) -> bool:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
-        # Same fail-closed cron drift warning as `hermes config set` for every model switch.
+        # Same unpinned-cron notice as `hermes config set` for every model switch.
         from hermes_cli.config import warn_unpinned_cron_jobs_after_model_config_change
 
         warn_unpinned_cron_jobs_after_model_config_change(key_path, value)
@@ -2625,7 +2625,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # Streaming display state
         self._stream_buf = ""  # partial line buffer
         self._reasoning_preview_buf = ""  # coalesces tiny reasoning chunks
-        self._stream_started = self._stream_box_opened = False
+        self._stream_started = self._stream_box_opened = self._stream_box_live = False
+        self._held_status_lines: list[str] = []  # agent status lines parked while a box streams
         # Possible markdown-table lines held until the block ends for wcwidth-aware re-padding.
         self._stream_table_buf: list[str] = []
         self._in_stream_table = False
@@ -2840,8 +2841,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._session_db = None
         self._session_db_unavailable = False
         try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
+            # Registry handle, not a bare SessionDB(): goals/loops/heartbeat acquire the same
+            # path a moment later from the REPL thread, and a second writer repeats the full
+            # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
+            # holds the GIL — that repeat was the post-banner freeze before the first prompt.
+            from hermes_state_registry import acquire
+            self._session_db = acquire()
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.
@@ -3005,6 +3010,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
+        from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+        set_unlock_prompt_callback(self._vault_unlock_callback)
+        set_save_login_prompt_callback(self._vault_save_login_callback)
+        set_code_prompt_callback(self._vault_code_callback)
         try:
             from tools.computer_use_tool import set_approval_callback as _set_cu_cb
 
@@ -3953,8 +3962,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         with suppress(Exception):
             from tools.voice_mode import cleanup_temp_recordings
             cleanup_temp_recordings()
-        for _unset in (set_sudo_password_callback, set_approval_callback, set_secret_capture_callback):
+        from agent.vault_backends.unlock import (lock as _vault_lock, set_code_prompt_callback,
+                                                 set_save_login_prompt_callback, set_unlock_prompt_callback)
+        for _unset in (set_sudo_password_callback, set_approval_callback, set_secret_capture_callback,
+                       set_unlock_prompt_callback, set_save_login_prompt_callback, set_code_prompt_callback):
             _unset(None)
+        _vault_lock()  # session tokens for external password managers die with the session
         # On SIGHUP/SIGTERM the agent thread may be reaped before its own persistence runs.
         self._persist_active_session_before_close()
 
@@ -4068,9 +4081,17 @@ def _sync_cli_session_id_from_agent(cli) -> None:
 
 
 def _run_quiet_single_query(cli, effective_query):
-    """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code."""
+    """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
+    HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it."""
+    from agent.interrupt_compat import _accepts_keyword
+    from agent.turn_author import take_turn_author_from_env
+
+    author = take_turn_author_from_env()
+    author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
     try:
-        result = cli.agent.run_conversation(user_message=effective_query, conversation_history=cli.conversation_history)
+        result = cli.agent.run_conversation(
+            user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
+        )
     except KeyboardInterrupt:
         _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)

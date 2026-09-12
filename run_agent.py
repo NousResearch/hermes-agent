@@ -409,6 +409,8 @@ class AIAgent(
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
+        self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
         self._is_user_initiated_turn = False
 
@@ -639,10 +641,11 @@ class AIAgent(
     @staticmethod
     def _provider_model_requires_responses_api(model: str, *, provider: Optional[str] = None) -> bool:
         """Return True when this provider/model pair should use Responses API."""
+        from hermes_cli.providers import is_actual_route
         normalized_provider = (provider or "").strip().lower()
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
-        if normalized_provider in ("nous", "custom"):
+        if normalized_provider in ("nous", "custom") or is_actual_route(provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -763,7 +766,8 @@ class AIAgent(
         # deferral) goes through. See #100795.
         from agent.turn_finalizer import _clone_background_review_messages
         kwargs = dict(messages_snapshot=_clone_background_review_messages(messages_snapshot),
-                      review_memory=review_memory, review_skills=review_skills, focus=focus, task_cfg=task_cfg)
+                      review_memory=review_memory, review_skills=review_skills, focus=focus, task_cfg=task_cfg,
+                      explicit=explicit)
         if focus is None and not explicit and _review_should_defer(self, task_cfg):
             from agent.review_idle_queue import QUEUE
             QUEUE.enqueue(self, _review_queue_key(self), kwargs)
@@ -772,12 +776,15 @@ class AIAgent(
 
     def _spawn_background_review_now(self, messages_snapshot: List[Dict], review_memory: bool = False,
                                      review_skills: bool = False, focus: Optional[str] = None,
-                                     task_cfg: Optional[Dict[str, Any]] = None, _requeue_attempts: int = 0) -> None:
+                                     task_cfg: Optional[Dict[str, Any]] = None, _requeue_attempts: int = 0,
+                                     explicit: bool = False) -> None:
         """Spawn the background memory/skill review thread.
 
         ``threading.Thread`` is constructed here so tests patching ``run_agent.threading.Thread`` keep working.
         ``focus`` is /refine steering text; ``task_cfg`` is the pre-loaded config block (None on direct calls).
-        A deferred review preempted by a live turn is requeued (bounded) rather than lost.
+        ``explicit`` (/refine) forks under the ``refine_review`` write origin, keeping the full
+        memory operation set. A deferred review preempted by a live turn is requeued (bounded)
+        rather than lost.
         """
         from agent.background_review import (
             finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
@@ -790,14 +797,15 @@ class AIAgent(
         try:
             target, _prompt = spawn_background_review_thread(
                 self, messages_snapshot, review_memory=review_memory, review_skills=review_skills,
-                focus=focus, task_cfg=task_cfg, review_run=review_run,
+                focus=focus, task_cfg=task_cfg, review_run=review_run, explicit=explicit,
             )
 
             def _target_with_requeue() -> None:
                 target()
                 self._maybe_requeue_preempted_review(review_run, dict(
                     messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
-                    focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1))
+                    focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,
+                    explicit=explicit))
 
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile.
@@ -891,6 +899,10 @@ class AIAgent(
             return
         try:
             sync_kwargs = {"session_id": self.session_id or "", **({"messages": messages} if messages is not None else {})}
+            # Stashed by build_turn_context() for this turn, None on a human turn.
+            turn_author = getattr(self, "_turn_author", None)
+            if turn_author is not None:
+                sync_kwargs["turn_author"] = turn_author
             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):

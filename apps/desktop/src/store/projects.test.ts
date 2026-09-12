@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
-import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
@@ -412,6 +412,55 @@ describe('createProject', () => {
     setSidebarAgentsGrouped(false)
     $activeProjectId.set(null)
     $projectsRpcAvailable.set(null)
+    $projects.set([])
+    $projectTree.set([])
+    $activeGatewayProfile.set('default')
+    setShowAllProfiles(false)
+  })
+
+  afterEach(() => {
+    setShowAllProfiles(false)
+    $activeGatewayProfile.set('default')
+  })
+
+  it.each(['default', 'coder'])('creates in the active %s profile without leaving All profiles', async profile => {
+    const created = { folders: [], id: 'p_new', name: 'Hermes Agent', primary_path: '/srv/hermes' }
+    const tree = { id: created.id, label: created.name, path: created.primary_path, repos: [], sessionCount: 0 }
+    const request = vi.fn().mockResolvedValue({ project: created })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    vi.mocked(hermes.hermesApi).mockResolvedValue({ projects: [tree], active_id: created.id })
+    $activeGatewayProfile.set(profile)
+    setShowAllProfiles(true)
+
+    await expect(createProject({ folders: ['/srv/hermes'], name: created.name, use: true })).resolves.toEqual(created)
+
+    expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ profile, name: created.name }))
+    expect($profileScope.get()).toBe(ALL_PROFILES)
+    expect($projects.get()).toContainEqual(created)
+    expect($projectTree.get()).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id })]))
+    expect($activeProjectId.get()).toBe(created.id)
+    expect(hermes.hermesApi).toHaveBeenCalledWith(
+      expect.objectContaining({ path: '/api/profiles/projects/tree?preview_limit=3' })
+    )
+  })
+
+  it('does not retarget a project create when the profile changes during reconnect', async () => {
+    const reconnect = deferred<never>()
+    const request = vi.fn()
+    activeGateway.mockReturnValue({ connectionState: 'closed', request } as never)
+    vi.mocked(gw.ensureActiveGatewayOpen).mockReturnValue(reconnect.promise)
+    $activeGatewayProfile.set('coder')
+    setShowAllProfiles(true)
+
+    const pending = createProject({ folders: ['/srv/hermes'], name: 'Hermes Agent' })
+    const rejection = expect(pending).rejects.toThrow('Active Hermes profile changed while connecting')
+    const otherGateway = { connectionState: 'open', request }
+    $activeGatewayProfile.set('other')
+    activeGateway.mockReturnValue(otherGateway as never)
+    reconnect.resolve(otherGateway as never)
+
+    await rejection
+    expect(request).not.toHaveBeenCalled()
   })
 
   it('creates the project and flips into the grouped view so a blank slate shows it', async () => {

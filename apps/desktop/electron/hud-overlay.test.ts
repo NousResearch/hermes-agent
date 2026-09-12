@@ -4,7 +4,7 @@ import { test } from 'vitest'
 
 import { applyHudElectronOverlay } from './hud-overlay'
 
-test('macOS uses the floating panel level and all-spaces visibility', () => {
+test('macOS uses the floating window level and all-spaces visibility', () => {
   const calls: string[] = []
 
   const win = {

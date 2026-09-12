@@ -178,7 +178,7 @@ class TestLoadConfigParseFailure:
             load_config()
             err = capsys.readouterr().err
 
-            baks = list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+            baks = list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
             assert len(baks) == 1, f"expected one backup, got {baks}"
             # Backup preserves the original broken content verbatim
             assert baks[0].read_text() == broken
@@ -331,7 +331,7 @@ class TestSaveAndLoadRoundtrip:
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
             "parse-failure path should snapshot a corrupt backup before refusing"
         )
 
@@ -348,7 +348,7 @@ class TestSaveAndLoadRoundtrip:
 
         assert config_path.read_text(encoding="utf-8") == original
         assert (tmp_path / ".env").read_text(encoding="utf-8") == "TERMINAL_TIMEOUT=30\n"
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
             "unset parse-failure path should snapshot a corrupt backup before refusing"
         )
 
@@ -363,7 +363,7 @@ class TestSaveAndLoadRoundtrip:
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak")), (
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*")), (
             "non-mapping root should snapshot a corrupt backup before refusing"
         )
 
@@ -378,7 +378,7 @@ class TestSaveAndLoadRoundtrip:
                 unset_config_value("model.default")
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
 
     def test_config_set_allows_valid_empty_mapping(self, tmp_path):
         """A genuine empty {} config must still be writable (not a false refuse)."""
@@ -403,7 +403,7 @@ class TestSaveAndLoadRoundtrip:
             atomic_config_write(config_path, {"model": {"provider": "openai"}})
 
         assert config_path.read_text(encoding="utf-8") == original
-        assert list(tmp_path.glob("config.yaml.corrupt.*.bak"))
+        assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
 
 class TestSaveEnvValueSecure:
 
@@ -1006,6 +1006,43 @@ class TestConfigSupportFloor:
         assert (tmp_path / ".env").read_text(encoding="utf-8") == expected_env
 
 
+class TestRetiredMultiplexAllowlist:
+    def test_v43_drops_multiplex_profile_allowlist_from_user_config(self, tmp_path, monkeypatch):
+        """The multiplexer serves every profile; a stale allowlist must not linger in config.yaml."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.config_migrations import run_migrations
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "_config_version": 42,
+            "gateway": {"multiplex_profiles": True, "multiplex_profile_allowlist": ["worker"]},
+        }), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        run_migrations(42, {"env_added": [], "config_added": [], "warnings": []}, quiet=True)
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert "multiplex_profile_allowlist" not in raw["gateway"]
+        assert raw["gateway"]["multiplex_profiles"] is True
+        assert "multiplex_profile_allowlist" not in DEFAULT_CONFIG["gateway"]
+
+
+class TestCuratorFasterPrune:
+    def test_v44_rewrites_old_curator_defaults_but_keeps_user_values(self, tmp_path, monkeypatch):
+        """Old 30/90 defaults move to 14/30; an explicitly customized window is untouched."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.config_migrations import run_migrations
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "_config_version": 43,
+            "curator": {"stale_after_days": 30, "archive_after_days": 180},
+        }), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        run_migrations(43, {"env_added": [], "config_added": [], "warnings": []}, quiet=True)
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert raw["curator"]["stale_after_days"] == DEFAULT_CONFIG["curator"]["stale_after_days"]
+        assert raw["curator"]["archive_after_days"] == 180
+
+
 class TestCustomProviderCompatibility:
     """Custom provider compatibility across legacy and v12+ config schemas.
 
@@ -1022,6 +1059,27 @@ class TestCustomProviderCompatibility:
         run_migrations(current_ver, results, quiet=True)
         return results
 
+    def test_v11_upgrade_moves_custom_providers_into_providers(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},
+                    "custom_providers": [
+                        {
+                            "name": "OpenAI Direct",
+                            "base_url": "https://api.openai.com/v1",
+                            "api_key": "test-key",
+                            "api_mode": "codex_responses",
+                            "model": "gpt-5-mini",
+                        }
+                    ],
+                    "fallback_providers": [{"provider": "openai-direct", "model": "gpt-5-mini"}],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._run_ladder(11)

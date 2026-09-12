@@ -80,7 +80,9 @@ _backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-sessi
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
-_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}  # process-scoped: (provider, model) → bool
+# (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
+# override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
+_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
 # Approval state keyed by session_id so a gateway serving concurrent sessions can't leak one run's
 # "always approve" into another; callers without a session_id share "".
 # Falls back to a shared "" bucket for callers that don't pass a session_id (e.g. the classic single-run
@@ -707,10 +709,11 @@ def _should_route_through_aux_vision() -> bool:
     try:
         from agent.auxiliary_client import _read_main_model, _read_main_provider
         from hermes_cli.config import load_config
+        from hermes_constants import hermes_home_key
         from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
         stage = "config read"
         provider, model = _read_main_provider() or "", _read_main_model() or ""
-        if (cached := _AUX_VISION_ROUTE_CACHE.get(key := (str(provider), str(model)))) is not None:
+        if (cached := _AUX_VISION_ROUTE_CACHE.get(key := (hermes_home_key(), str(provider), str(model)))) is not None:
             return cached
         stage = "decision"
         _AUX_VISION_ROUTE_CACHE[key] = decision = bool(should_route_capture_to_aux_vision(provider, model, load_config()))

@@ -35,11 +35,13 @@ def _notif_live_session_matches(keys, exclude: dict | None = None) -> bool:
         False)
 
 
-def _notif_resolve_event_key(evt_key: str) -> str:
-    """Resolve a compression-rotated session key to its continuation tip (or itself)."""
+def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
+    """Resolve a compression-rotated session key to its continuation tip (or itself). Looked up in
+    ``session``'s own store: a named-profile session's lineage lives in ``profiles/<x>/state.db``,
+    where the launch handle cannot see it."""
     try:
-        db = _get_db()
-        return (db.resolve_resume_session_id(evt_key) if db is not None else evt_key) or evt_key
+        with _session_db(session or {}) as db:
+            return (db.resolve_resume_session_id(evt_key) if db is not None else evt_key) or evt_key
     except Exception:
         return evt_key
 
@@ -62,7 +64,7 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
     # Compression can rotate AIAgent.session_id while the detached child is still running: map the event's original
     # key to its continuation tip so it reaches the live session instead of becoming an orphan any poller may consume.
     # A live continuation wins over the compressed parent, else a stale parent tab could consume the event first.
-    resolved_key = _notif_resolve_event_key(evt_key)
+    resolved_key = _notif_resolve_event_key(evt_key, session)
     if resolved_key != evt_key:
         if resolved_key in current_keys:
             return False
@@ -82,7 +84,7 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
         return True
     evt_key = str(evt.get("session_key") or "")
     current_keys = _notif_current_keys(sid, session)
-    return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key) in current_keys)
+    return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key, session) in current_keys)
 
 
 def _notification_event_requires_owner(evt: dict) -> bool:
@@ -489,6 +491,58 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
     _notif_dispatch_completions(sid, session, completions, registry, deferred)
 
 
+def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
+    """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
+    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner
+
+    home = _session_home(session)
+    with session["history_lock"]:
+        if any(session.get(key) for key in (
+                "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
+                "_auto_continue_scheduled")) or session.get("agent") is None:
+            return False
+        lease = session.get("active_session_lease")
+        if lease is None or getattr(lease, "released", False):
+            return False
+        owner = find_canonical_live_owner(home)
+        if (not owner or owner.get("lease_id") != lease.lease_id
+                or owner.get("live_session_id") != sid
+                or owner.get("session_id") != session.get("session_key")):
+            return False
+        # The mailbox matches each envelope to this pinned lease/live id and compression lineage.
+        claimed = claim_pending_delivery(home, owner)
+        if claimed is None:
+            return False
+        session["running"] = True
+
+    delivery_id = str(claimed["id"])
+
+    def terminal_receipt(terminal: dict) -> None:
+        status = str(terminal.get("status") or "failed")
+        error = str(terminal.get("error") or "")
+        reason = "cancelled" if status == "cancelled" else ""
+        if status not in {"settled", "cancelled"}:
+            from tools.bot_failure_reasons import classify_agent_error
+            reason = classify_agent_error(error)
+        # Let a failed write propagate: the turn must not retire its crash marker without its receipt.
+        complete_delivery(home, delivery_id, status=status,
+                          reply=str(terminal.get("text") or "") if status == "settled" else "",
+                          error=error, reason=reason)
+
+    try:
+        started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
+                                     image_paths=[], terminal_callback=terminal_receipt,
+                                     turn_author=claimed.get("author") or None)
+    except Exception as exc:
+        _notif_release_turn(session)
+        terminal_receipt({"status": "failed", "error": str(exc)})
+        raise
+    if not started:
+        _notif_release_turn(session)
+        terminal_receipt({"status": "failed", "error": "live session owner could not start the delivery turn"})
+    return started
+
+
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
     (ownership routing: _notif_handle_event) and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
@@ -507,6 +561,10 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
+        try:
+            _poll_bot_live_delivery_once(sid, session)
+        except Exception:
+            logger.warning("Bot live-owner delivery poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
@@ -604,11 +662,16 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _hud_surface_note(session: dict) -> str:
-    """The HUD-mode note for this turn, or "" when it was not typed there."""
-    if session.get("client_surface") != "hud":
-        return ""
-    from agent.prompt_builder import hud_surface_note
-    return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+    """The per-surface note for this turn ("" for the plain app window): HUD → the read-the-window-below
+    prior; voice-live → the spoken-delegation contract (transcript in, speakable prose out)."""
+    surface = session.get("client_surface")
+    if surface == "hud":
+        from agent.prompt_builder import hud_surface_note
+        return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+    if surface == "voice-live":
+        from tools.voice_live import voice_live_turn_note
+        return voice_live_turn_note(session.get("voice_live_context") or "")
+    return ""
 
 
 def _prepend_note(run_message: Any, note: str) -> Any:

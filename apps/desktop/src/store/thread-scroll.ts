@@ -19,6 +19,13 @@ import { $activeProfile, normalizeProfileKey } from '@/store/profile'
 // scroll every mounted transcript.
 export const $threadScrolledUp = atom(false)
 export const $threadJumpButtonVisible = atom(false)
+export const $threadMessagesBelow = atom(0)
+
+export const publishThreadMessagesBelow = (count: number, publisher: { paneVisible: boolean }): void => {
+  if (publisher.paneVisible && $threadMessagesBelow.get() !== count) {
+    $threadMessagesBelow.set(count)
+  }
+}
 
 // Skip no-op writes so subscribers don't churn on every scroll tick.
 const setter = (target: WritableAtom<boolean>) => (value: boolean) => {
@@ -35,7 +42,10 @@ export const setThreadAtBottom = (isAtBottom: boolean) => {
   setJumpButtonVisible(!isAtBottom)
 }
 
-export const resetThreadScroll = () => setThreadAtBottom(true)
+export const resetThreadScroll = () => {
+  setThreadAtBottom(true)
+  $threadMessagesBelow.set(0)
+}
 
 export const publishThreadAtBottom = (isAtBottom: boolean, publisher: { paneVisible: boolean }): void => {
   if (!publisher.paneVisible) {

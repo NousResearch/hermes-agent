@@ -15,7 +15,7 @@ import logging
 from typing import Any, Optional
 
 from agent.i18n import t
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from hermes_cli.config import atomic_config_write, clear_model_endpoint_credentials
 from utils import base_url_host_matches
 
@@ -267,10 +267,9 @@ class GatewayModelCommandsMixin:
             "capabilities": dict(result.runtime_capabilities or {}),
         }
         if one_turn:
-            if not hasattr(self, "_pending_one_turn_model_restores"):
-                self._pending_one_turn_model_restores = {}
-            snapshot = ctx.restore_snapshot or {"had_override": False, "override": None}
-            self._pending_one_turn_model_restores[ctx.session_key] = snapshot
+            # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
+            # command's snapshot is the first temporary model, not the user's standing override.
+            self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
             self._pending_one_turn_model_restores.pop(ctx.session_key, None)
         # Non-secret write-through so the override survives a restart (api_key/api_mode are

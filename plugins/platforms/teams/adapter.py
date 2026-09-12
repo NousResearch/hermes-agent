@@ -55,8 +55,9 @@ HttpMethod = str  # type: ignore[assignment,misc]
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
-    gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult, cache_image_from_url, cache_media_bytes_async,
+    gateway_trust_env, BasePlatformAdapter, SendResult, cache_image_from_url, cache_media_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import coerce_port, get_scoped_secret as _get_scoped_secret
 
 logger = logging.getLogger(__name__)
@@ -143,12 +144,18 @@ def check_requirements() -> bool:
 
 
 def _credentials(config) -> tuple[str, str, str]:
-    """(client_id, client_secret, tenant_id): env first, then ``config.extra``."""
+    """(client_id, client_secret, tenant_id): ``config.extra`` first, then the profile-scoped env.
+
+    client_id/tenant_id are read through the same scoped reader as the secret: under multiplex,
+    ``os.environ`` holds the DEFAULT profile's app identity, and pairing it with a secondary's
+    secret requests a Bot Framework token for the wrong app. ``extra`` wins so a per-profile
+    config.yaml identity is never overridden by the process env.
+    """
     extra = getattr(config, "extra", {}) or {}
     return (
-        os.getenv("TEAMS_CLIENT_ID") or extra.get("client_id", ""),
-        _get_scoped_secret("TEAMS_CLIENT_SECRET") or extra.get("client_secret", ""),
-        os.getenv("TEAMS_TENANT_ID") or extra.get("tenant_id", ""))
+        extra.get("client_id") or _get_scoped_secret("TEAMS_CLIENT_ID", ""),
+        extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", ""),
+        extra.get("tenant_id") or _get_scoped_secret("TEAMS_TENANT_ID", ""))
 
 
 def validate_config(config) -> bool:
@@ -163,19 +170,22 @@ def _env_enablement() -> dict | None:
     """Seed ``PlatformConfig.extra`` from env before adapter construction so ``gateway status`` reflects
     env-only setups without the SDK. ``None`` when not minimally configured; ``home_channel`` becomes a
     ``HomeChannel`` via the core hook."""
-    client_id = os.getenv("TEAMS_CLIENT_ID", "").strip()
+    # Every identity/endpoint here is per-profile (the app the secret belongs to, its regional
+    # service URL, the cron home conversation): read them all through the profile scope so a
+    # secondary is never seeded with the default profile's Teams app.
+    client_id = _get_scoped_secret("TEAMS_CLIENT_ID", "").strip()
     client_secret = _get_scoped_secret("TEAMS_CLIENT_SECRET", "").strip()
-    tenant_id = os.getenv("TEAMS_TENANT_ID", "").strip()
+    tenant_id = _get_scoped_secret("TEAMS_TENANT_ID", "").strip()
     if not (client_id and client_secret and tenant_id):
         return None
     seed: dict = {"client_id": client_id, "client_secret": client_secret, "tenant_id": tenant_id}
-    port = coerce_port(os.getenv("TEAMS_PORT", "").strip(), None)
+    port = coerce_port(_get_scoped_secret("TEAMS_PORT", "").strip(), None)
     if port is not None:
         seed["port"] = port
-    if service_url := os.getenv("TEAMS_SERVICE_URL", "").strip():
+    if service_url := _get_scoped_secret("TEAMS_SERVICE_URL", "").strip():
         seed["service_url"] = service_url
-    if home := os.getenv("TEAMS_HOME_CHANNEL", "").strip():
-        seed["home_channel"] = {"chat_id": home, "name": os.getenv("TEAMS_HOME_CHANNEL_NAME", "Home")}
+    if home := _get_scoped_secret("TEAMS_HOME_CHANNEL", "").strip():
+        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("TEAMS_HOME_CHANNEL_NAME", "Home")}
     return seed
 
 
@@ -191,7 +201,7 @@ async def _standalone_send(
     client_id, client_secret, tenant_id = _credentials(pconfig)
     if not (client_id and client_secret and tenant_id):
         return {"error": "Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required"}
-    raw_service_url = os.getenv("TEAMS_SERVICE_URL") or extra.get("service_url", "") or _DEFAULT_TEAMS_SERVICE_URL
+    raw_service_url = extra.get("service_url") or _get_scoped_secret("TEAMS_SERVICE_URL", "") or _DEFAULT_TEAMS_SERVICE_URL
     service_url = _validate_teams_service_url(raw_service_url)
     for failed, error in (
         (service_url is None, f"TEAMS_SERVICE_URL host is not on the Bot Framework allowlist; "
@@ -331,6 +341,8 @@ def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
 
 class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
     splits_long_messages = True  # send() chunks via truncate_message()
@@ -338,15 +350,13 @@ class TeamsAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
         extra = config.extra or {}
-        self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
-        self._client_secret = extra.get("client_secret") or _get_scoped_secret("TEAMS_CLIENT_SECRET", "")
-        self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
+        self._client_id, self._client_secret, self._tenant_id = _credentials(config)
         # (token, expiry monotonic ts) for connector attachment auth; refreshed under
         # _bf_token_lock so concurrent attachments can't stampede the STS.
         self._bf_token_cache: Optional[tuple] = None
         self._bf_token_lock: Optional[asyncio.Lock] = None
-        self._port = coerce_port(extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
-        _raw_host = extra.get("host") or os.getenv("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
+        self._port = coerce_port(extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
+        _raw_host = extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -393,15 +403,15 @@ class TeamsAdapter(BasePlatformAdapter):
 
             self._wire_plugin_handlers(self._app)
             await self._app.initialize()
-            self._runner = web.AppRunner(aiohttp_app)
-            await self._runner.setup()
-            site = web.TCPSite(self._runner, self._host, self._port)
-            await site.start()
+            # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/api/messages.
+            from gateway.platforms.shared_ingress import bind_listener
+            self._runner = await bind_listener(self, aiohttp_app, self._host, self._port, _WEBHOOK_PATH)
             self._running = True
             self._mark_connected()
-            logger.info(
-                "[teams] Webhook server listening on %s:%d%s",
-                self._host or "* (all interfaces, IPv4+IPv6)", self._port, _WEBHOOK_PATH)
+            if self._runner is not None:
+                logger.info(
+                    "[teams] Webhook server listening on %s:%d%s",
+                    self._host or "* (all interfaces, IPv4+IPv6)", self._port, _WEBHOOK_PATH)
             return True
         except Exception as e:
             self._set_fatal_error("CONNECT_FAILED", f"Teams connection failed: {e}", retryable=True)
@@ -597,9 +607,10 @@ class TeamsAdapter(BasePlatformAdapter):
         """Default-deny gate for approval clicks: require TEAMS_ALLOWED_USERS or an explicit
         TEAMS_ALLOW_ALL_USERS=true opt-in, else anyone who can message the bot could approve.
         Returns the user-facing denial text, or ``None`` when allowed."""
-        if os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
+        # Scoped reads: under multiplex os.environ is the DEFAULT profile's allow-all/allowlist.
+        if _get_scoped_secret("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}:
             return None
-        allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
+        allowed_csv = _get_scoped_secret("TEAMS_ALLOWED_USERS", "").strip()
         if not allowed_csv:
             logger.warning(
                 "[teams] card action rejected: TEAMS_ALLOWED_USERS not configured "

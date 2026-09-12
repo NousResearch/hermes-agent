@@ -127,7 +127,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "platform.slack": (
         "slack-bolt==1.30.0",
-        "slack-sdk==3.43.0",
+        "slack-sdk==3.44.1",
         "aiohttp==3.14.3",
     ),
     "platform.matrix": (

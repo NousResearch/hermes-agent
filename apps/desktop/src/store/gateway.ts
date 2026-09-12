@@ -4,7 +4,7 @@ import { atom } from 'nanostores'
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
-import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
@@ -98,6 +98,9 @@ interface Secondary {
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
+  /** Consecutive automatic dials that stalled (slot wait / dial timeout)
+   *  rather than failing fast; see SECONDARY_STALLED_DIAL_BUDGET. */
+  stalledDials: number
   reconnecting: boolean
   /** A material connection edit is waiting for live owners to drain. */
   pendingConnectionRedial: boolean
@@ -663,6 +666,33 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
   }
 }
 
+// Consecutive STALLED automatic dials (a pool-slot wait or the 20s dial
+// timeout, never a fast transport error) before a secondary parks. A
+// tile-pinned scope stays wantOpen for the tile's lifetime, so an owner
+// backend that keeps losing its slot wait otherwise re-queues a background
+// spawn on every backoff tick forever — the queue/timeout treadmill in
+// #103375. Fast failures (a gateway restarting, ECONNREFUSED) keep the
+// ordinary unbounded backoff: they cost nothing and the socket must come back
+// on its own. Parking keeps the entry; any explicit open of the scope
+// (requestGatewayForAgent, openGatewayForAgent, ensureGatewayForAgent,
+// ensureActiveGatewayOpen) re-arms it with a fresh budget.
+const SECONDARY_STALLED_DIAL_BUDGET = 3
+
+function isStalledDialError(error: unknown): boolean {
+  if (isTimeoutError(error)) {
+    return true
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.includes('timed out while waiting for a free slot')
+}
+
+function rearmSecondary(entry: Secondary): void {
+  entry.wantOpen = true
+  entry.stalledDials = 0
+}
+
 function scheduleReconnect(entry: Secondary): void {
   if (entry.reconnecting || entry.reconnectTimer !== null || !entry.wantOpen) {
     return
@@ -707,7 +737,22 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
 
       return
     }
-    // Other transport failure → fall through to the backoff below.
+
+    // Only a successful open resets the stall budget (the 'open' state
+    // listener): a treadmill that alternates slot-wait timeouts with a
+    // spawned-but-unresponsive socket must still run out of budget.
+    if (isStalledDialError(error)) {
+      entry.stalledDials += 1
+
+      if (entry.stalledDials >= SECONDARY_STALLED_DIAL_BUDGET) {
+        console.warn(
+          `[gateway] parking scope="${entry.scope}" after ${entry.stalledDials} stalled dials; the next open or wake nudge redials it`
+        )
+        entry.wantOpen = false
+        entry.stalledDials = 0
+      }
+    }
+    // Still wantOpen → fall through to the backoff below.
   } finally {
     entry.reconnecting = false
 
@@ -753,6 +798,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     offState: () => {},
     reconnectTimer: null,
     reconnectAttempt: 0,
+    stalledDials: 0,
     reconnecting: false,
     pendingConnectionRedial: false,
     retained: false,
@@ -776,6 +822,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 
     if (state === 'open') {
       entry.reconnectAttempt = 0
+      entry.stalledDials = 0
       clearTimer(entry)
     } else if (state === 'closed' || state === 'error') {
       // A dead socket cannot emit the terminal event that normally releases
@@ -864,7 +911,7 @@ async function gatewayForProfile(
     entry.retained = true
   }
 
-  entry.wantOpen = true
+  rearmSecondary(entry)
 
   if (leaseRequest) {
     entry.activeRequests += 1
@@ -989,7 +1036,7 @@ export async function requestGatewayForAgent<T>(
     entry.retained = true
   }
 
-  entry.wantOpen = true
+  rearmSecondary(entry)
   entry.activeRequests += 1
 
   try {
@@ -1108,7 +1155,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
   }
 
   entry.relayRetainCount += 1
-  entry.wantOpen = true
+  rearmSecondary(entry)
 
   let released = false
 
@@ -1180,7 +1227,7 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
     entry.retained = true
   }
 
-  entry.wantOpen = true
+  rearmSecondary(entry)
   entry.activeRequests += 1
 
   let released = false
@@ -1404,7 +1451,7 @@ export async function openGatewayForAgent(
 
   const entry = g.secondaries.get(scope) ?? createSecondary(profile, connectionId)
   entry.retained = true
-  entry.wantOpen = true
+  rearmSecondary(entry)
 
   if (activationLease) {
     // Stays held after a successful open: the activation that follows releases
@@ -1461,7 +1508,7 @@ export async function ensureGatewayForAgent(
   }
 
   entry.retained = true
-  entry.wantOpen = true
+  rearmSecondary(entry)
   // Lease the entry against the live-work pruner for the whole dial: the
   // switch target is not yet active and has no live sessions, so a prune
   // recompute firing mid-spawn would otherwise dispose it and this
@@ -1539,7 +1586,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   }
 
   entry.retained = true
-  entry.wantOpen = true
+  rearmSecondary(entry)
   // Lease the entry against the live-work pruner for the whole dial — the
   // profile-door twin of the agent path's lease above (#89622).
   entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
@@ -1596,6 +1643,9 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
   }
 
   if (!isOpen(entry.gateway)) {
+    // The viewed scope is an explicit recovery target (Reconnect action,
+    // request retry): a parked entry must dial again here, not stay parked.
+    rearmSecondary(entry)
     await reconnectSecondary(entry)
   }
 
@@ -1627,9 +1677,10 @@ const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 // signals can force sockets that still report open to retire before redialing.
 export function reconnectSecondaryGateways({ forceOpenSockets = false }: { forceOpenSockets?: boolean } = {}): void {
   for (const entry of g.secondaries.values()) {
-    if (!entry.wantOpen) {
-      continue
-    }
+    // A parked entry (stall budget spent) is still pinned by its surface, or
+    // the pruner would have removed it. This nudge is an explicit recovery
+    // signal (online / focus / wake), so it re-arms with a fresh budget.
+    rearmSecondary(entry)
 
     if (isOpen(entry.gateway)) {
       if (!forceOpenSockets) {
@@ -1665,11 +1716,15 @@ export function openSecondaryCount(): number {
 
 // Keep the idle reaper from killing a backend we still need: ping every live
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
+// "Live" means the socket is OPEN: a wantOpen entry stuck in its reconnect
+// backoff has no consumer on that backend, and pinging it anyway kept a
+// tile-pinned backend keepalive-fresh forever, so LRU eviction and the idle
+// reaper never freed its pool slot (#103375).
 export function touchSecondaryGateways(): void {
   const desktop = window.hermesDesktop
 
   for (const entry of g.secondaries.values()) {
-    if (entry.wantOpen) {
+    if (entry.wantOpen && isOpen(entry.gateway)) {
       void desktop?.touchBackend?.(entry.scope).catch(() => undefined)
     }
   }

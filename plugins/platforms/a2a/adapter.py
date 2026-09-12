@@ -23,9 +23,10 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.config import Platform
-from gateway.platforms._shared import coerce_port as _to_int, profile_scoped as _profile_scoped
+from gateway.platforms._shared import coerce_port as _to_int, get_scoped_secret as _get_scoped_secret
 
 from . import protocol, security
 
@@ -70,7 +71,7 @@ def _reply_timeout() -> float:
 
 def _default_agent_name() -> str:
     # Scope-aware: a secondary multiplex profile must not borrow the default profile's A2A_AGENT_NAME.
-    name = "" if _profile_scoped() else os.getenv("A2A_AGENT_NAME", "").strip()
+    name = _get_scoped_secret("A2A_AGENT_NAME", "").strip()
     if name:
         return name
     try:
@@ -256,11 +257,11 @@ class A2AAdapter(BasePlatformAdapter):
         # in this fix's PR description: open PR #98937 is actively rewriting this field's None-vs-empty-list
         # semantics.)
         self._security_context = security.A2ASecurityContext.capture()
-        _port_env = None if _profile_scoped() else os.getenv("A2A_PORT")
+        _port_env = _get_scoped_secret("A2A_PORT")
         self.port = int(_port_env or extra.get("port", _DEFAULT_PORT))
         self.host = self._security_context.resolve_bind_host()
         self.agent_name = _default_agent_name()
-        configured_toolsets = list(extra.get("advertised_toolsets") or []) or os.getenv("A2A_ADVERTISED_TOOLSETS", "").split(",")
+        configured_toolsets = list(extra.get("advertised_toolsets") or []) or _get_scoped_secret("A2A_ADVERTISED_TOOLSETS", "").split(",")
         self._advertised_toolsets = [t.strip() for t in configured_toolsets if str(t).strip()]
         self._active_profile = _active_profile_name()
         self._agents = self._load_served_agents(extra)
@@ -352,7 +353,7 @@ class A2AAdapter(BasePlatformAdapter):
             cfg = cfg if isinstance(cfg, dict) else {}
             raw = cfg.get("a2a_served_agents") or (cfg.get("a2a") or {}).get("served_agents")
         # Scope-aware like port: a secondary profile must not inherit A2A_AGENT_DESCRIPTION.
-        default_desc = _DEFAULT_DESCRIPTION if _profile_scoped() else os.getenv("A2A_AGENT_DESCRIPTION", _DEFAULT_DESCRIPTION)
+        default_desc = _get_scoped_secret("A2A_AGENT_DESCRIPTION", _DEFAULT_DESCRIPTION)
         agents: dict[str, dict] = {"": {
             "slug": "", "path": "", "tenant": "", "profile": self._active_profile, "local": True,
             "name": self.agent_name, "description": default_desc, "advertised_toolsets": self._advertised_toolsets,

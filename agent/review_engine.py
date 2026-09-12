@@ -97,8 +97,15 @@ def collect_parent_loaded_skills(parent_agent, messages: List[Dict[str, Any]], l
 
 
 def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loaded_skills: Optional[List[str]] = None) -> tuple:
-    """Compose the reviewer subagent's (goal, context) pair."""
+    """Compose a viewer-friendly goal and the complete reviewer briefing."""
+    focus = " ".join(user_prompt.split())
+    goal = f"Review: {focus}" if focus else "Review recent work"
+    if len(goal) > 80:
+        goal = goal[:79].rstrip() + "…"
+    # The goal is also the live worker label; keep the full instructions in context.
     lines = [
+        _REVIEW_GOAL,
+        "",
         "You were spawned by the /review command. The following is an excerpt of the most recent conversation "
         "between the user and their primary agent. It is your starting evidence — the work to "
         "review is referenced in it.",
@@ -126,7 +133,7 @@ def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loa
         "the primary agent and its user. Be direct and specific; do not "
         "soften findings.",
     ]
-    return _REVIEW_GOAL, "\n".join(lines)
+    return goal, "\n".join(lines)
 
 
 def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
@@ -176,15 +183,11 @@ def start_review(parent_agent, messages: List[Dict[str, Any]], user_prompt: str 
 
 def format_dispatch_note(result: Dict[str, Any], user_prompt: str = "") -> str:
     """Human-facing one-liner for a successful dispatch. Shared by surfaces."""
+    if result.get("status") == "dispatched":
+        return "Review started. Results will return here."
     model = str(result.get("review_model") or "").strip()
     model_note = f" on {model}" if model else ""
     focus_note = f" (focus: {user_prompt.strip()})" if user_prompt.strip() else ""
-    if result.get("status") == "dispatched":
-        return (
-            f"⚖ Review subagent dispatched{model_note}{focus_note} — it is "
-            f"investigating the last {DEFAULT_CONTEXT_MESSAGES} messages in "
-            f"the background and its full review will re-enter this conversation when it finishes."
-        )
     # Synchronous fallback (channels that cannot route async completions).
     return (
         f"⚖ Review completed synchronously{model_note}{focus_note} — "

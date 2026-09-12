@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import concurrent.futures
+import contextvars
 import hashlib
 import hmac
 import itertools
@@ -82,15 +83,16 @@ FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult,
+    BasePlatformAdapter, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, yaml_env_setter as _yaml_env_setter
 
 
 logger = logging.getLogger(__name__)
@@ -1193,6 +1195,8 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
 
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -1265,7 +1269,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return str(extra.get(key) or _get_scoped_secret(env, "")).strip()
 
         def _extra_or_env(key: str, env: str, default: str) -> str:
-            return str(extra.get(key) or os.getenv(env, default)).strip()
+            return str(extra.get(key) or _get_scoped_secret(env, default)).strip()
 
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
@@ -1281,11 +1285,10 @@ class FeishuAdapter(BasePlatformAdapter):
                     require_mention=_to_boolean(rule_cfg["require_mention"]) if "require_mention" in rule_cfg else None,
                 )
 
-        # Env-only so adapter and gateway auth bypass share one source (yaml feishu.allow_bots
-        # is bridged to the env var at config load). Scoped read: under multiplex a secondary
-        # profile's .env must govern its own adapter.
+        # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
+        # feishu.allow_bots reaches it via ``extra`` (the env bridge is skipped under its scope).
         # See #86905.
-        allow_bots = _get_scoped_secret("FEISHU_ALLOW_BOTS", "none").strip().lower()
+        allow_bots = str(_get_scoped_secret("FEISHU_ALLOW_BOTS", "") or extra.get("allow_bots") or "none").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -1315,7 +1318,7 @@ class FeishuAdapter(BasePlatformAdapter):
             text_batch_max_chars=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS)),
             media_batch_delay_seconds=env_float("HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS),
             webhook_host=_extra_or_env("webhook_host", "FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST),
-            webhook_port=int(extra.get("webhook_port") or os.getenv("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
+            webhook_port=int(extra.get("webhook_port") or _get_scoped_secret("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
             webhook_path=_extra_or_env("webhook_path", "FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH) or _DEFAULT_WEBHOOK_PATH,
             ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
@@ -1896,8 +1899,11 @@ class FeishuAdapter(BasePlatformAdapter):
         loop = self._loop
         if not self._loop_accepts_callbacks(loop):
             if self._enqueue_pending_inbound_event(data):
+                # Replayed events hop onto the loop from THIS thread's context; keep the WS thread's
+                # profile scope (see _connect_websocket) rather than starting from an empty one.
                 threading.Thread(
-                    target=self._drain_pending_inbound_events, name="feishu-pending-inbound-drainer", daemon=True,
+                    target=contextvars.copy_context().run, args=(self._drain_pending_inbound_events,),
+                    name="feishu-pending-inbound-drainer", daemon=True,
                 ).start()
             return
         self._submit_on_loop(loop, self._handle_message_event_data(data))
@@ -2394,7 +2400,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     # --- Processing status reactions ---
     def _reactions_enabled(self) -> bool:
-        return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in {"false", "0", "no"}
+        return str(_get_scoped_secret("FEISHU_REACTIONS", "true")).strip().lower() not in {"false", "0", "no"}
 
     async def _reaction_call(self, verb: str, message_id: str, ident: str, build_request: Any, api: Any) -> Any:
         """Shared add/remove reaction wrapper: returns the response data on success, else None (logged)."""
@@ -3715,7 +3721,14 @@ class FeishuAdapter(BasePlatformAdapter):
             # Without the "channel" UA tag Feishu won't push group @mention events over WS.
             extra_ua_tags=["channel"],
         )
-        self._ws_future = loop.run_in_executor(None, _run_official_feishu_ws_client, self._ws_client, self)
+        # The lark SDK owns this thread and fires every event/card callback on it; those hop back
+        # to the adapter loop via run_coroutine_threadsafe, which copies the CALLER's context — so
+        # whatever scope the WS thread carries is what pre-handler work (inbound media caching,
+        # .update_response marker, reactions env, drive comments) runs under. A bare executor
+        # thread has an empty context = launch profile. connect() runs inside the profile scope
+        # under multiplex (and the supervisor task inherits it), so snapshot it here.
+        self._ws_future = loop.run_in_executor(
+            None, contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
@@ -3726,10 +3739,9 @@ class FeishuAdapter(BasePlatformAdapter):
         # See #58536, #58902, #59180.
         app = web.Application(client_max_size=_FEISHU_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post(self._webhook_path, self._handle_webhook_request)
-        self._webhook_runner = web.AppRunner(app)
-        await self._webhook_runner.setup()
-        self._webhook_site = web.TCPSite(self._webhook_runner, self._webhook_host, self._webhook_port)
-        await self._webhook_site.start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._webhook_runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, self._webhook_path)
 
     def _prepare_client(self) -> Any:
         """Build the lark client + event dispatcher for this adapter's domain; returns the SDK domain."""
@@ -4283,14 +4295,17 @@ def interactive_setup() -> None:
 
 
 def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
-    """apply_yaml_config_fn: bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins); returns None.
+    """apply_yaml_config_fn: bridge config.yaml feishu.allow_bots to FEISHU_ALLOW_BOTS (env wins) and seed
+    ``extra.allow_bots`` so a multiplexed secondary profile's adapter reads its own value.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy feishu_cfg block from
     gateway/config.py::load_gateway_config() (allow_bots). Env vars take precedence over YAML.
     """
-    if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
-        os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
-    return None
+    if "allow_bots" not in feishu_cfg:
+        return None
+    _set_env = _yaml_env_setter()
+    _set_env("FEISHU_ALLOW_BOTS", str(feishu_cfg["allow_bots"]).lower())
+    return {"allow_bots": str(feishu_cfg["allow_bots"]).lower()}
 
 
 def _is_connected(config) -> bool:

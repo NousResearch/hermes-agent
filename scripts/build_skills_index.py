@@ -41,6 +41,7 @@ import httpx
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
 INDEX_VERSION = 1
+CLAWHUB_ENRICH_BUDGET_SECONDS = 480
 
 
 def _meta_to_dict(meta: SkillMeta) -> dict:
@@ -316,7 +317,10 @@ def main():
         print(f"  Enriching {len(clawhub_metas)} ClawHub skills with owner handles...",
               flush=True)
         enrich_start = time.time()
-        enriched = sources["clawhub"].enrich_owners(clawhub_metas, max_workers=30)
+        # Best-effort: ~2s per detail call means the full catalog would take >1h;
+        # the un-enriched remainder ships without an owner link (see enrich_owners).
+        enriched = sources["clawhub"].enrich_owners(
+            clawhub_metas, max_workers=30, budget_seconds=CLAWHUB_ENRICH_BUDGET_SECONDS)
         # Write enriched owner back into the index dicts.
         meta_by_id = {m.identifier: m for m in clawhub_metas}
         for s in clawhub_skills:

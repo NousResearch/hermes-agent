@@ -113,10 +113,10 @@ function renderPane() {
 
 // The fresh-machine states these tests exercise now lead with the
 // quickstart card; the full pane (runtime rows, model list, browser)
-// is one 'Configure…' click away. Render and click through.
+// is one 'Let me choose' click away. Render and click through.
 async function renderFullPane() {
   const result = renderPane()
-  const configure = await screen.findByRole('button', { name: /configure/i })
+  const configure = await screen.findByRole('button', { name: /let me choose/i })
 
   fireEvent.click(configure)
 
@@ -202,9 +202,11 @@ describe('LocalModelsSettings', () => {
     }
 
     mocked.getLocalCatalog.mockResolvedValue({ models: [spilledFull] })
-    await renderFullPane()
+    renderPane()
     await screen.findByText('Spilled Full')
 
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /browse models/i })).toBeTruthy()
     expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
   })
 
@@ -393,7 +395,7 @@ describe('quickstart', () => {
     renderPane()
 
     expect(await screen.findByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()
-    // One job, one view: no Set up / Configure buttons while it runs.
+    // One job, one view: no setup or model-choice buttons while it runs.
     expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
   })
 
@@ -413,6 +415,47 @@ describe('quickstart', () => {
 })
 
 describe('BrowseSection', () => {
+  it('keeps manual spill selection and HF browsing available without an automatic recommendation', async () => {
+    const stagedId = 'Spilled-Model-Q4_K_M'
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true })
+    mocked.getLocalCatalog.mockResolvedValue({ models: [SPILLED_MODEL] })
+    renderPane()
+
+    await screen.findByText('Spilled Model')
+    expect(screen.getByText('No automatic recommendation for this machine')).toBeTruthy()
+    expect(screen.getByText('Uses system RAM')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+
+    // Attach the browser-only scroll method to the real search container,
+    // so a missing or misdirected click handler cannot satisfy the assertion.
+    const search = screen.getByPlaceholderText(/search models/i)
+    const browse = search.closest('#local-model-browse')
+    expect(browse).not.toBeNull()
+    const scroll = vi.fn()
+    Object.defineProperty(browse, 'scrollIntoView', { configurable: true, value: scroll })
+    fireEvent.click(screen.getByRole('button', { name: /browse models/i }))
+    expect(scroll).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' })
+    expect(mocked.downloadLocalModel).not.toHaveBeenCalled()
+
+    // The backend reports the completed download on refresh. Use must send
+    // the staged variant id, not the catalog family id or an automatic pick.
+    mocked.downloadLocalModel.mockResolvedValue({ already_downloaded: true, job_id: null })
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      models: [{ id: stagedId, size_bytes: SPILLED_MODEL.size_bytes, size_label: SPILLED_MODEL.size_label }]
+    })
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...SPILLED_MODEL, downloaded: true, downloaded_model_id: stagedId }]
+    })
+    fireEvent.click(screen.getByRole('button', { name: /download ·/i }))
+    await waitFor(() => expect(mocked.downloadLocalModel).toHaveBeenCalledWith(SPILLED_MODEL.id))
+    mocked.activateLocalModel.mockResolvedValue({ job_id: 'explicit-spill' })
+    fireEvent.click(await screen.findByRole('button', { name: /^use$/i }))
+    await waitFor(() => expect(mocked.activateLocalModel).toHaveBeenCalledWith(stagedId))
+    expect(mocked.quickstartLocalModels).not.toHaveBeenCalled()
+  })
+
   it('searches HF after a pause and shows fit-priced files on demand', async () => {
     vi.useFakeTimers()
 
@@ -438,7 +481,7 @@ describe('BrowseSection', () => {
         await vi.runOnlyPendingTimersAsync()
       })
       // Fresh machine leads with the quickstart card — enter the full pane.
-      fireEvent.click(screen.getByRole('button', { name: /configure/i }))
+      fireEvent.click(screen.getByRole('button', { name: /let me choose/i }))
 
       const box = screen.getByPlaceholderText(/search models/i)
       fireEvent.change(box, { target: { value: 'qwen' } })

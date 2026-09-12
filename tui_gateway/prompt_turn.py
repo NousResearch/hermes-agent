@@ -115,7 +115,7 @@ def _admit_prompt_turn(
     return images, agent
 
 
-def _record_turn_marker(session: dict, text: Any) -> str:
+def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True) -> str:
     """Write the durable crash marker; returns the session key it was written under (compression
     can rotate session_key mid-turn).  A surviving marker means the process died mid-turn.
     The key is published before the disk write so an interrupt racing startup can retire
@@ -127,7 +127,8 @@ def _record_turn_marker(session: dict, text: Any) -> str:
     if isinstance(marker_text, str) and marker_text.strip():
         with session["history_lock"]:
             session["_active_turn_marker_key"] = marker_key
-        record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+        record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
+                          auto_continue=auto_continue)
         with session["history_lock"]:
             marker_cancelled = bool(session.get("_turn_cancel_requested"))
         if marker_cancelled:
@@ -449,6 +450,13 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
         from tools.terminal_scope import install_profile_terminal_scope
         scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+    elif _served_profile_homes:
+        # Multiplex residual of #68559 / #107422: the launch profile used to run
+        # unscoped and fall back to ambient os.environ. Once any secondary home
+        # has been served, bind the launch home's own terminal policy so a
+        # poisoned ambient bridge can never become the launch turn's authority.
+        from tools.terminal_scope import install_profile_terminal_scope
+        scopes.terminal = install_profile_terminal_scope(Path(_hermes_home))
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -502,7 +510,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
-    images: list[str], display_kind: str | None, display_metadata: dict | None) -> None:
+    images: list[str], display_kind: str | None, display_metadata: dict | None,
+    turn_author: dict | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``."""
     agent = st.agent
 
@@ -538,6 +547,8 @@ def _invoke_agent(
     if display_kind and "persist_user_display_kind" in run_params:
         run_kwargs["persist_user_display_kind"] = display_kind
         run_kwargs["persist_user_display_metadata"] = display_metadata
+    if turn_author and "turn_author" in run_params:
+        run_kwargs["turn_author"] = turn_author
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
@@ -746,11 +757,43 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     _clear_session_context(scopes.session_tokens)
 
 
+# Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.
+_ROUTING_REOPEN_PATIENCE_S = 0.5
+
+
+def _routing_provenance_db(session: dict):
+    """The session's own SessionDB for :func:`_reopen_routed_session_row`, or a ``None`` context."""
+    try:
+        return _session_db(session)
+    except Exception:
+        logger.debug("could not resolve the session db for routing provenance", exc_info=True)
+        return contextlib.nullcontext(None)
+
+
+def _reopen_routed_session_row(db, sid: str, session: dict) -> None:
+    """Routing provenance for #106459, called under ``_sessions_lock`` while this backend still has the
+    session registered and is about to start a turn for it: an explicit-close stamp on its row missed a
+    live conversation, so it is cleared (the gateway's #54878 stale-route self-heal, which this backend
+    lacked). ``_pop_session_by_id`` claims teardown under the same lock and sets ``_closing`` before
+    ``_finalize_session`` stamps, so a close of THIS session is either not written yet or already stops
+    the turn -- it is never cleared here. Best-effort: a failure never blocks the turn."""
+    session_id = getattr(session.get("agent"), "session_id", None)  # the compression tip this turn writes
+    if db is None or not session_id:
+        return
+    try:
+        db.reopen_if_explicitly_closed(
+            session_id, provenance=f"TUI session {sid} is still registered and accepting a turn",
+            patience_s=_ROUTING_REOPEN_PATIENCE_S)
+    except Exception:
+        logger.debug("routing-provenance reopen failed for %s", session_id, exc_info=True)
+
+
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    turn_author: dict | None = None) -> bool:
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
@@ -779,16 +822,21 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
-        st.marker_key = _record_turn_marker(session, text)
+        st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
+                if st.terminal_callback is not None and not st.receipt_attempted:
+                    st.receipt_attempted = True
+                    st.terminal_callback({
+                        "status": "failed", "text": "", "error": "Context injection refused."})
+                    st.receipt_committed = True
                 return
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata)
+                display_metadata, turn_author)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
@@ -836,10 +884,16 @@ def _run_prompt_submit(
             _emit_settled_session_info(sid, session, st.agent)
         _run_post_turn_followups(rid, sid, session, st.result, goal_followup)
     run_thread = threading.Thread(target=run, daemon=True)
-    with _sessions_lock:
+    # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
+    # state registry, and _sessions_lock gates every create/close/prompt on this backend.
+    with _routing_provenance_db(session) as routing_db, _sessions_lock:
         registered = _sessions.get(sid)
         can_start = not session.get("_closing") and (registered is None or registered is session)
         if can_start:
+            # Only a registered session is proof the conversation is routed here; an unregistered one may
+            # still run its turn, but its stamp stays (#106459).
+            if registered is session:
+                _reopen_routed_session_row(routing_db, sid, session)
             session["_run_thread"] = run_thread
             run_thread.start()
     if not can_start:

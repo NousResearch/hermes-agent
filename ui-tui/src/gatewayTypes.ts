@@ -595,6 +595,33 @@ export interface DelegationPauseResponse {
   paused?: boolean
 }
 
+export interface AsyncDelegationRecord {
+  delegation_id: string
+  goal?: string | null
+  role?: string | null
+  model?: string | null
+  status?: string | null
+  dispatched_at?: number | null
+  completed_at?: number | null
+  subagent_ids?: string[]
+}
+
+export interface SubagentListResponse {
+  subagents: {
+    subagent_id: string
+    parent_id?: string | null
+    delegation_id?: string | null
+    depth?: number | null
+    goal?: string | null
+    model?: string | null
+    started_at?: number | null
+    status?: string | null
+    tool_count?: number | null
+    last_tool?: string | null
+  }[]
+  delegations: AsyncDelegationRecord[]
+}
+
 export interface SubagentInterruptResponse {
   found?: boolean
   subagent_id?: string
@@ -740,7 +767,16 @@ export type GatewayEvent =
     }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
-  | { payload: { request_id: string }; session_id?: string; type: 'secret.expire' | 'sudo.expire' }
+  | {
+      payload: { request_id: string }
+      session_id?: string
+      type: 'secret.expire' | 'sudo.expire' | 'vault.unlock.expire'
+    }
+  | {
+      payload: { backend: string; display_name: string; request_id: string }
+      session_id?: string
+      type: 'vault.unlock.request'
+    }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
   | { payload: { question?: string; task_id: string; text: string }; session_id?: string; type: 'btw.complete' }
   | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }

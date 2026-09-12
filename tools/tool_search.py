@@ -19,12 +19,19 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from tools.registry import tool_error
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
-    CatalogEntry, _corpus_stats, _fn, _listing_group_label, _registry_entry, _registry_toolset,
+    CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
-from tools.tool_search_validation import validate_deferred_call_args
+from tools.tool_search_validation import normalize_tool_call_entries, validate_deferred_call_args
+from tools.connector_search import connections_in_scope, connector_entries_by_group, remote_schemas_for
+from tools.tool_gateway.names import CONNECTOR_BATCH_SENTINEL, is_connector_name
 
 logger = logging.getLogger("tools.tool_search")
-_MAX_QUERIES_PER_CALL = _MAX_DESCRIBE_NAMES_PER_CALL = 10  # bound the work one bridge call requests
+# Bound the work one bridge call requests. Search is capped at the gateway's
+# own limit: the connector search route answers 7 use_cases per request and
+# returns HTTP 502 for 8 or more (measured 2026-09-09), and one local call
+# maps to one gateway request. Describe has no such remote limit.
+_MAX_QUERIES_PER_CALL = 7
+_MAX_DESCRIBE_NAMES_PER_CALL = 10
 
 
 @dataclass(frozen=True)
@@ -180,11 +187,15 @@ def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
 
 
 def should_activate(config: ToolSearchConfig, deferrable_tokens: int,
-                    context_length: Optional[int]) -> bool:
+                    context_length: Optional[int], *, connections_granted: bool = False) -> bool:
     """``"off"`` never activates; ``"on"``/``"auto"`` activate whenever any deferrable tool
     exists ("auto" is reserved for a future budget-gated mode — do not distinguish them
     without that design). ``context_length`` is kept for caller compatibility."""
-    return config.enabled != "off" and deferrable_tokens > 0
+    if config.enabled == "off":
+        return False
+    if deferrable_tokens > 0:
+        return True
+    return connections_granted
 
 
 def listing_token_budget(config: ToolSearchConfig, context_length: Optional[int]) -> int:
@@ -203,17 +214,29 @@ def _bridge_schema(name: str, description: str, properties: Dict[str, Any],
         "parameters": {"type": "object", "properties": properties, "required": required}}}
 
 
-def _search_description(deferred_count: int, listing: Optional[str], listing_form: str) -> str:
-    """tool_search bridge description with the listing embedded (framing per ``listing_form``)."""
+_CONNECTIONS_HINT = (
+    " Names starting with `connectors__` are tools of remote connector accounts "
+    "(Gmail, Linear, Notion, ...); `manage_connections` checks whether an account "
+    "is connected and gets the authorization link when it is not.")
+
+
+def _search_description(deferred_count: int, listing: Optional[str], listing_form: str,
+                        connections_granted: bool = False) -> str:
+    """tool_search bridge description with the listing embedded (framing per ``listing_form``).
+    ``connections_granted`` adds the one sentence that ties ``connectors__`` names to
+    ``manage_connections``; without that tool in the session the sentence would name a tool
+    the model cannot call."""
     desc = (
-        f"Search {deferred_count} additional tools that are loaded on demand. "
-        "Takes a list of queries searched in parallel against the same "
+        (f"Search {deferred_count} additional tools that are loaded on demand. "
+         if deferred_count else "Search remote connector tools (email, calendars, issue trackers, and more). ")
+        + "Takes a list of queries searched in parallel against the same "
         "catalog; send one query per distinct capability you need. Returns "
         "matching tool names grouped per query plus a shared map with each "
         "tool's description. Follow with "
         f"`{TOOL_DESCRIBE_NAME}` to load full parameter schemas, "
         f"then `{TOOL_CALL_NAME}` to invoke. Tools listed at the top of this "
-        "system prompt are already available and do not need to be searched.")
+        "system prompt are already available and do not need to be searched."
+        + (_CONNECTIONS_HINT if connections_granted else ""))
     if not listing:
         return desc
     if listing_form == "groups":
@@ -237,14 +260,14 @@ def _search_description(deferred_count: int, listing: Optional[str], listing_for
 
 
 def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
-                        listing_form: str = "") -> List[Dict[str, Any]]:
+                        listing_form: str = "", connections_granted: bool = False) -> List[Dict[str, Any]]:
     """Bridge tool schemas injected in place of deferred tools; kept short — every byte is paid
     every turn. ``listing`` is embedded in the tool_search description; per-tool forms say
     "skip search when you see the exact name", "groups" says search is mandatory."""
     return [
         _bridge_schema(
             TOOL_SEARCH_NAME,
-            _search_description(deferred_count, listing, listing_form),
+            _search_description(deferred_count, listing, listing_form, connections_granted),
             {
                 "queries": {
                     "type": "array",
@@ -274,17 +297,28 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
         ),
         _bridge_schema(
             TOOL_CALL_NAME,
-            "Invoke a deferred tool by name with the given arguments. Argument shape "
-            f"matches the tool's schema (see `{TOOL_DESCRIBE_NAME}`). Policy, hooks, "
-            "and approvals run exactly as for any directly-listed tool.",
+            "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
+            "— one entry per invocation; a single call is an array of one. "
+            "Local tools require one entry per tool_call. Only connectors__ names "
+            "may be batched together; mixed and multi-local batches are rejected. "
+            "Connector entries execute individually with results in input order. "
+            f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
+            "Policy, hooks, and approvals run as for directly-listed tools.",
             {
-                "name": {"type": "string", "description": "Exact tool name to invoke."},
-                "arguments": {
-                    "type": "object",
-                    "description": "Arguments for the tool, matching its schema.",
+                "calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Exact tool name to invoke."},
+                            "arguments": {"type": "object", "description": "Arguments matching the tool schema."},
+                        },
+                        "required": ["name", "arguments"],
+                    },
+                    "description": "One local invocation, or one or more connector invocations. Never mix local and connector tools.",
                 },
             },
-            ["name", "arguments"],
+            ["calls"],
         ),
     ]
 
@@ -310,7 +344,11 @@ def assemble_tool_defs(tool_defs: List[Dict[str, Any]], *, context_length: Optio
     incoming = [td for td, name in zip(tool_defs, _tool_def_names(tool_defs))
                 if name not in BRIDGE_TOOL_NAMES]
     visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
+    connections_granted = connections_in_scope(incoming)
     if not deferrable:
+        if should_activate(config, 0, context_length, connections_granted=connections_granted):
+            return AssemblyResult(tool_defs=incoming + bridge_tool_schemas(0, connections_granted=connections_granted),
+                                  activated=True, tier=2)
         return AssemblyResult(tool_defs=incoming, activated=False)
     deferrable_tokens = estimate_tokens_from_schemas(deferrable)
     if not should_activate(config, deferrable_tokens, context_length):
@@ -323,7 +361,8 @@ def assemble_tool_defs(tool_defs: List[Dict[str, Any]], *, context_length: Optio
     if config.listing != "off":
         listing, listing_form = build_catalog_listing_with_form(
             deferrable, max_tokens=listing_budget)
-    bridge = bridge_tool_schemas(len(deferrable), listing=listing, listing_form=listing_form)
+    bridge = bridge_tool_schemas(len(deferrable), listing=listing, listing_form=listing_form,
+                                 connections_granted=connections_granted)
     tier = 1 if listing_form in ("full", "names", "mixed") else 2
     logger.info(
         "tool_search activated (tier %d): %d core/visible tools kept, %d deferred "
@@ -339,6 +378,17 @@ def is_bridge_tool(name: str) -> bool:
     return name in BRIDGE_TOOL_NAMES
 
 
+def _clip_description(text: str, cap: int = 500) -> str:
+    """Cap a record description, marking the cut so it reads as deliberate.
+
+    A bare slice ends mid-word ("apply exponential bac") and looks like
+    corruption; the ellipsis says "there is more — tool_describe has it".
+    500 keeps 9 in 10 vendor connector descriptions whole and every first
+    sentence (measured p90 575, first-sentence max 329 over 353 tools).
+    """
+    return text if len(text) <= cap else text[:cap] + "…"
+
+
 def _shared_tool_record(entry: CatalogEntry) -> Dict[str, Any]:
     """One record for the shared ``tools`` map (per-query groups carry names only);
     ``required`` lets the model attempt a trivial call without a ``tool_describe`` round-trip."""
@@ -347,7 +397,7 @@ def _shared_tool_record(entry: CatalogEntry) -> Dict[str, Any]:
     except (TypeError, KeyError, AttributeError):
         required = []
     return {"source": entry.source, "source_name": entry.source_name,
-            "description": (entry.description or "")[:400],  # cap chatty MCP descriptions
+            "description": _clip_description(entry.description or ""),
             "required": [r[:64] for r in (required if isinstance(required, list) else [])
                          if isinstance(r, str)][:32]}
 
@@ -380,11 +430,15 @@ def _string_list_arg(args: Dict[str, Any], key: str, *, dedupe: bool, max_items:
 
 
 def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
-                         config: Optional[ToolSearchConfig] = None) -> str:
+                         config: Optional[ToolSearchConfig] = None,
+                         connector_search: Optional[Any] = None) -> str:
     """Execute the ``tool_search`` bridge tool -> JSON ``{queries, total_available,
     results: [{query, matches: [names]}], tools: {name: {source, source_name, description,
-    required}}}``. ``limit`` applies PER QUERY; empty groups get ``available_sources`` +
-    ``hint`` so a lexical miss is not mistaken for a missing capability."""
+    required}}}``. ``limit`` is the total PER QUERY across local and connector tools: the
+    gateway's hits for a query join the local catalog as documents and one BM25 pass ranks
+    them together, so a connector tool that answers the query is never starved by local
+    tools that share one word with it. Empty groups get ``available_sources`` + ``hint`` so
+    a lexical miss is not mistaken for a missing capability."""
     config = config or load_config()
     queries, err = _string_list_arg(args, "queries", dedupe=False, max_items=_MAX_QUERIES_PER_CALL,
                                     retry_hint="Retry with fewer, more targeted queries.")
@@ -394,16 +448,20 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
     limit = (config.search_default_limit if raw_limit is None
              else _clamped_int(raw_limit, config.search_default_limit, 1, config.max_search_limit))
     catalog = build_catalog(_deferrable_in(current_tool_defs))
+    remote_entries: List[List[CatalogEntry]] = [[] for _ in queries]
+    if connections_in_scope(current_tool_defs):
+        remote_entries = connector_entries_by_group(queries, connector_search=connector_search)
     results: List[Dict[str, Any]] = []
     tools_map: Dict[str, Dict[str, Any]] = {}
-    corpus_stats = _corpus_stats(catalog)
     available_sources = _available_source_summary(catalog) if catalog else []
-    for query in queries:
-        hits = search_catalog(catalog, query, limit=limit, corpus_stats=corpus_stats)
+    for position, query in enumerate(queries):
+        corpus = catalog + remote_entries[position]
+        hits = search_catalog(corpus, query, limit=limit)
         for h in hits:
             tools_map.setdefault(h.name, _shared_tool_record(h))
-        group: Dict[str, Any] = {"query": query, "matches": [h.name for h in hits]}
-        if not hits and catalog:
+        matches = [h.name for h in hits]
+        group: Dict[str, Any] = {"query": query, "matches": matches}
+        if not matches and catalog:
             group["available_sources"] = available_sources
             group["hint"] = (
                 "This query returned no lexical matches, but the sources above "
@@ -411,12 +469,14 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
                 "tool_search with the service name plus a concrete action or "
                 "object before concluding the capability is unavailable.")
         results.append(group)
-    return json.dumps({"queries": queries, "total_available": len(catalog), "results": results,
+    remote_count = sum(1 for name in tools_map if is_connector_name(name))
+    return json.dumps({"queries": queries, "total_available": len(catalog) + remote_count, "results": results,
                        "tools": tools_map}, ensure_ascii=False)
 
 
 def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
-                           config: Optional[ToolSearchConfig] = None) -> str:
+                           config: Optional[ToolSearchConfig] = None,
+                           connector_describe: Optional[Any] = None) -> str:
     """Execute the ``tool_describe`` bridge tool -> JSON ``{tools: {name: {description,
     parameters}}, not_found: [...]  (unknown / not in this assembly; never fails the call),
     errors: {name: msg}  (registered but non-deferrable)}``. Duplicates dedupe silently."""
@@ -428,14 +488,22 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         return err
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
+    remote_schemas = remote_schemas_for(names, current_tool_defs, connector_describe)
+
     tools: Dict[str, Dict[str, Any]] = {}
     not_found: List[str] = []
     errors: Dict[str, str] = {}
     for name in names:
         fn = by_name.get(name)
+        remote_fn = remote_schemas.get(name)
         if fn is not None:
             tools[name] = {"description": fn.get("description", ""),
                            "parameters": fn.get("parameters", {})}
+        elif isinstance(remote_fn, dict):
+            tools[name] = {"description": str(remote_fn.get("description", "")),
+                           "parameters": remote_fn.get("parameters", {})}
+        elif is_connector_name(name):
+            not_found.append(name)
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
@@ -463,26 +531,39 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
 
 
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
-    """Parse a ``tool_call`` invocation -> (underlying_name, args, error_msg); ``(None, {}, msg)``
-    on error. Shared by dispatch, display and the trajectory recorder so all three agree."""
-    name = str(args.get("name") or "").strip()
-    if not name:
-        return None, {}, "tool_call requires a 'name' argument"
-    if name in BRIDGE_TOOL_NAMES:
-        return None, {}, f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
-    raw_args = args.get("arguments")
-    if isinstance(raw_args, str):
-        try:
-            raw_args = json.loads(raw_args)
-        except json.JSONDecodeError as e:
-            return None, {}, f"tool_call 'arguments' is not valid JSON: {e}"
-    raw_args = {} if raw_args is None else raw_args
-    if not isinstance(raw_args, dict):
-        return None, {}, "tool_call 'arguments' must be an object"
+    """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
+
+    Used by:
+    * the dispatcher in ``model_tools.handle_function_call``,
+    * the display layer (so the activity feed shows the underlying tool),
+    * the trajectory recorder.
+
+    A connector-only batch resolves
+    to ``(CONNECTOR_BATCH_SENTINEL, {"calls": [...]}, None)``: the batch is
+    one dispatch unit owned by the ``model_tools`` bridge branch, and the
+    sentinel is what planners/display layers see. A single local entry keeps
+    the historical single-tool contract unchanged.
+
+    On parse error, returns ``(None, {}, error_message)``.
+    """
+    entries, err = normalize_tool_call_entries(args)
+    if err:
+        return None, {}, err
+
+    if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
+        return None, {}, (
+            "Local tools require one entry per tool_call; mixed and multi-local batches are not supported."
+        )
+    if is_connector_name(entries[0]["name"]):
+        return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
+
+    name = entries[0]["name"]
+    raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
-            "list already, call it directly instead of via tool_call.")
+            "list already, call it directly instead of via tool_call."
+        )
     return name, raw_args, None
 
 
@@ -493,7 +574,8 @@ __all__ = [
     "build_catalog_listing_with_form", "listing_token_budget", "search_catalog",
     "bridge_tool_schemas", "assemble_tool_defs", "is_bridge_tool", "dispatch_tool_search",
     "dispatch_tool_describe", "resolve_underlying_call", "scoped_deferrable_names",
-    "validate_deferred_call_args"]
+    "validate_deferred_call_args", "normalize_tool_call_entries",
+    "CONNECTOR_BATCH_SENTINEL", "is_connector_name"]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

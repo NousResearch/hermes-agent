@@ -383,6 +383,8 @@ _ENV_SEED_KEYS = (("LINE_HOST", "host"), ("LINE_PUBLIC_URL", "public_url"), ("LI
 
 class LineAdapter(BasePlatformAdapter):
     """LINE Messaging API gateway adapter (no message editing → REQUIRES_EDIT_FINALIZE stays False)."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("line"))

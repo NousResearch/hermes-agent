@@ -1195,6 +1195,8 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
 
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)

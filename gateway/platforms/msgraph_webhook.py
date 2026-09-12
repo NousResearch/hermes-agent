@@ -98,6 +98,8 @@ def _render_template(template: str, payload: Dict[str, Any]) -> str:
 
 class MSGraphWebhookAdapter(BasePlatformAdapter):
     """Receive Microsoft Graph change notifications and surface them internally."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MSGRAPH_WEBHOOK)

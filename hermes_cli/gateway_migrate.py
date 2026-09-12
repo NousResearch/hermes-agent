@@ -312,6 +312,10 @@ def platform_serves_profile_prefix(platform_value: str) -> bool:
             adapter_cls, _ok = _builtin_adapter_import(spec[0], spec[1], spec[2])
             return _declares(adapter_cls)
     with contextlib.suppress(Exception):
+        # Plugin-shipped adapters (sms, line, teams, feishu, wecom, ...) only exist in the registry
+        # after discovery; a bare CLI process has not run it yet.
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_value)
         if entry is not None:

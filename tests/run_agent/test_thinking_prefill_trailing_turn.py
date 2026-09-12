@@ -1,11 +1,12 @@
 """Regression test for the thinking-only prefill reaching the wire.
 
-A thinking-only response (reasoning tokens, no visible text) makes the loop
-append an empty assistant turn and re-send so the model continues its own
-reasoning. On providers that don't echo reasoning back, the API copy has its
-reasoning fields stripped before ``_drop_thinking_only_and_merge_users`` runs,
-so the drop pass used to see a bare ``{"role": "assistant", "content": ""}``
-and let it through. Gemini rejects that with
+A non-clean-stop thinking-only response (reasoning tokens, no visible text)
+makes the loop append an empty assistant turn and re-send so the model continues
+its own reasoning. On providers that don't echo
+reasoning back, the API copy has its reasoning fields stripped before
+``_drop_thinking_only_and_merge_users`` runs, so the drop pass used to see a
+bare ``{"role": "assistant", "content": ""}`` and let it through. Gemini rejects
+that with
 
     400 INVALID_ARGUMENT: Requests ending with a model turn are not supported.
 
@@ -52,11 +53,11 @@ def loop_agent():
 
 
 def _thinking_only_response():
-    """Reasoning tokens, no visible text — what triggers the prefill retry."""
+    """Reasoning without a clean-stop signal triggers prefill retry."""
     from tests.run_agent.test_run_agent import _mock_response
     return _mock_response(
         content="",
-        finish_reason="stop",
+        finish_reason="tool_calls",
         reasoning="Let me work through the request step by step.",
     )
 

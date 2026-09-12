@@ -73,6 +73,8 @@ def finish_text_response(
         )
 
     final_response = assistant_message.content or ""
+    promoted_clean_stop = False
+    promoted_content_for_storage = None
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
     agent._mute_post_response = False
@@ -94,7 +96,14 @@ def finish_text_response(
             return _verdict("return", _ev.result)
         if _ev.action == "break":
             return _verdict("break")
-        return _verdict("continue")
+        if _ev.action != "promote":
+            return _verdict("continue")
+        promoted_clean_stop = True
+        from agent.redact import redact_sensitive_text
+
+        promoted_content_for_storage = redact_sensitive_text(
+            agent._strip_think_blocks(final_response).strip()
+        )
 
     agent._empty_content_retries = 0
     agent._thinking_prefill_retries = 0
@@ -143,6 +152,8 @@ def finish_text_response(
             )
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+        if promoted_clean_stop:
+            interim_msg["content"] = promoted_content_for_storage
         append_message(messages, interim_msg)
         agent._emit_interim_assistant_message(interim_msg)
         append_message(messages, {"role": "user", "content": _CODEX_ACK_CONTINUATION_NUDGE})
@@ -167,6 +178,8 @@ def finish_text_response(
     final_response = agent._strip_think_blocks(final_response).strip()
 
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    if promoted_clean_stop:
+        final_msg["content"] = promoted_content_for_storage
 
     # Dropped tool-call recovery (copilot/Claude): finish_reason="tool_calls" with empty
     # tool_calls would end the turn unstarted; re-prompt (max 3 CONSECUTIVE stalls).
@@ -236,7 +249,8 @@ def finish_text_response(
             exc_info=True,
         )
 
-    _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+    if not promoted_clean_stop:
+        _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
     if not agent.quiet_mode:
         agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
     return _verdict("break")

@@ -1,10 +1,11 @@
 """Empty / thinking-only final-response recovery ladder for the conversation turn loop.
 
 Runs when the model returned no visible text after ``<think>`` blocks. Ladder order is
-load-bearing: partial-stream recovery → reuse prior turn content (housekeeping tools only)
-→ one post-tool-call nudge → thinking-only prefill continuation (×2) → empty-response
-retries (budgeted, deterministic-empty short-circuit) → fallback provider → terminal
-``(empty)`` sentinel. Nothing here imports ``agent.conversation_loop`` at module level.
+load-bearing: partial-stream recovery → clean-stop reasoning promotion → reuse prior turn
+content (housekeeping tools only) → one post-tool-call nudge → thinking-only prefill
+continuation (×2) → empty-response retries (budgeted, deterministic-empty short-circuit)
+→ fallback provider → terminal ``(empty)`` sentinel. Nothing here imports
+``agent.conversation_loop`` at module level.
 """
 
 from __future__ import annotations
@@ -27,11 +28,12 @@ _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 class EmptyResponseVerdict:
     """Outcome of ``recover_empty_response``.
 
-    ``action``: ``"break"`` (turn is done — ``final_response`` is set), ``"continue"``
-    (re-enter the OUTER turn loop: a nudge/prefill row was appended, a retry wait
-    elapsed, or a fallback was activated and preflight must re-run), ``"return"``
-    (interrupted during a retry wait — return ``result``) or ``"fallthrough"``
-    (unreachable: every path exits; kept for the contract)."""
+    ``action``: ``"break"`` (turn is done — ``final_response`` is set), ``"promote"``
+    (reasoning became final text and must continue through the ordinary final-response
+    gates), ``"continue"`` (re-enter the OUTER turn loop: a nudge/prefill row was
+    appended, a retry wait elapsed, or a fallback was activated and preflight must
+    re-run), ``"return"`` (interrupted during a retry wait — return ``result``) or
+    ``"fallthrough"`` (unreachable: every path exits; kept for the contract)."""
 
     action: str
     result: Optional[Dict[str, Any]]
@@ -175,6 +177,20 @@ def recover_empty_response(
         # sends the text plus the abnormal-turn explanation.
         agent._response_was_previewed = False
         return _verdict("break")
+
+    # A clean stop says the provider considers generation complete. Some reasoning
+    # parsers misclassify the entire answer as reasoning when their closing delimiter
+    # is missing, so retrying would only re-bill the same input. Length-limited
+    # reasoning remains on the continuation path because it may be incomplete.
+    _reasoning_text = agent._extract_reasoning(assistant_message)
+    if finish_reason == "stop" and _reasoning_text:
+        _turn_exit_reason = "reasoning_response(clean_stop)"
+        final_response = _reasoning_text
+        logger.info(
+            "Clean-stop reasoning-only response (%d chars) — using reasoning as final response",
+            len(_reasoning_text),
+        )
+        return _verdict("promote")
 
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.
     # With substantive tools it was mid-task narration and the empty reply is a choke;

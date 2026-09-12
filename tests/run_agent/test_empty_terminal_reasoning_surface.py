@@ -1,16 +1,13 @@
-"""Tests for the empty-terminal reasoning surface.
+"""Tests for reasoning-only and truly empty final responses.
 
-When the empty-response ladder is fully exhausted (prefill continuation,
-empty-content retries, provider fallback) and the model produced structured
-reasoning but no visible text, the DELIVERED final_response is a clearly
-labeled reasoning excerpt instead of a bare "(empty)" — the reasoning often
-contains the actual answer. Idea credit: PR #48795 (@ligl0325).
+When a provider reports a clean stop with structured reasoning but no visible
+text, the reasoning is the completed response and must bypass the expensive
+empty-response recovery ladder. Idea credit: PR #48795 (@ligl0325).
 
 Invariants pinned here:
-- The persisted assistant message keeps the "(empty)" sentinel and the
-  ``_empty_terminal_sentinel`` marker (replay semantics unchanged).
-- Raw reasoning is NEVER promoted earlier in the ladder — a reasoning-only
-  response still goes through prefill continuation first.
+- Clean-stop reasoning is returned and persisted without another API call.
+- Length-limited reasoning still goes through continuation instead of being
+  promoted as a complete answer.
 - A truly empty exhaustion (no reasoning either) still returns "(empty)".
 """
 
@@ -47,17 +44,18 @@ def _build_agent(tmp_path, monkeypatch):
     return agent
 
 
-def _reasoning_only_response():
+def _reasoning_only_response(*, finish_reason="stop", reasoning=None):
+    reasoning = reasoning or "The answer is 42 because of the calculation above."
     return SimpleNamespace(
         choices=[SimpleNamespace(
             message=SimpleNamespace(
                 content="",
-                reasoning="The answer is 42 because of the calculation above.",
+                reasoning=reasoning,
                 reasoning_content=None,
                 reasoning_details=None,
                 tool_calls=None,
             ),
-            finish_reason="stop",
+            finish_reason=finish_reason,
         )],
         usage=None,
         model="test-model",
@@ -81,32 +79,177 @@ def _truly_empty_response():
     )
 
 
-def test_exhausted_reasoning_only_delivers_labeled_excerpt(tmp_path, monkeypatch):
-    """After the full ladder is exhausted on reasoning-only responses, the
-    delivered text is the labeled excerpt — not a bare '(empty)' — while the
-    transcript keeps its existing sentinel-scaffolding semantics."""
+def _text_response(content):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content=content,
+                reasoning=None,
+                reasoning_content=None,
+                reasoning_details=None,
+                tool_calls=None,
+            ),
+            finish_reason="stop",
+        )],
+        usage=None,
+        model="test-model",
+    )
+
+
+def _tool_call_response():
+    tool_call = SimpleNamespace(
+        id="call_1",
+        type="function",
+        function=SimpleNamespace(name="todo", arguments="{}"),
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content="",
+                reasoning=None,
+                reasoning_content=None,
+                reasoning_details=None,
+                tool_calls=[tool_call],
+            ),
+            finish_reason="tool_calls",
+        )],
+        usage=None,
+        model="test-model",
+    )
+
+
+def test_clean_stop_reasoning_is_promoted_without_retry(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
+    calls = 0
+    secret = "sk-" + "promoted-secret-value-123456"
+    expected = f"The answer is 42. Credential: {secret}"
+
+    def respond(api_kwargs):
+        nonlocal calls
+        calls += 1
+        return _reasoning_only_response(reasoning=expected)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", respond)
+
+    result = agent.run_conversation("what is the answer?")
+
+    assert result["final_response"] == expected
+    assert result["turn_exit_reason"] == "reasoning_response(clean_stop)"
+    assert calls == 1
+    assert secret not in result["messages"][-1]["content"]
+    assert result["messages"][-1]["reasoning"] == expected
+
+
+def test_clean_stop_promotion_survives_stall_guard_continuation(tmp_path, monkeypatch):
+    agent = _build_agent(tmp_path, monkeypatch)
+    agent.valid_tool_names = {"todo"}
+    secret = "sk-" + "interim-secret-value-123456"
+    promoted = f"The tests pass. Credential: {secret}. I will now run the linter."
+    responses = [
+        _reasoning_only_response(reasoning=promoted),
+        _text_response("The linter passes."),
+    ]
     monkeypatch.setattr(
-        agent, "_interruptible_api_call",
-        lambda api_kwargs: _reasoning_only_response(),
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+
+    result = agent.run_conversation("verify the change")
+
+    assert result["final_response"] == "The linter passes."
+    assert not responses
+    assistant_messages = [
+        message for message in result["messages"] if message["role"] == "assistant"
+    ]
+    assert assistant_messages[0]["content"].startswith("The tests pass.")
+    assert secret not in assistant_messages[0]["content"]
+    assert assistant_messages[-1]["content"] == "The linter passes."
+    roles = [message["role"] for message in result["messages"]]
+    assert all(left != right for left, right in zip(roles, roles[1:]))
+
+
+def test_clean_stop_promotion_removes_prior_thinking_prefill(tmp_path, monkeypatch):
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [
+        _reasoning_only_response(
+            finish_reason="tool_calls",
+            reasoning="Still working through the request.",
+        ),
+        _reasoning_only_response(reasoning="The completed answer."),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
     )
 
     result = agent.run_conversation("what is the answer?")
 
-    final = result["final_response"]
-    assert "(empty)" != final
-    assert "only internal reasoning" in final
-    assert "The answer is 42" in final
+    assert result["final_response"] == "The completed answer."
+    assert result["turn_exit_reason"] == "reasoning_response(clean_stop)"
+    assert not responses
+    assert not any(message.get("_thinking_prefill") for message in result["messages"])
+    roles = [message["role"] for message in result["messages"]]
+    assert all(left != right for left, right in zip(roles, roles[1:]))
 
-    # Persistence semantics unchanged: the delivered excerpt is
-    # delivery-only. The turn finalizer strips the "(empty)" terminal
-    # sentinel from the transcript tail (replay safety, existing design),
-    # and the labeled excerpt must never be persisted as assistant content.
-    assert not any(
-        m.get("role") == "assistant"
-        and "only internal reasoning" in (m.get("content") or "")
-        for m in result["messages"]
+
+def test_clean_stop_promotion_preserves_completed_tool_exchange(tmp_path, monkeypatch):
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [
+        _tool_call_response(),
+        _truly_empty_response(),
+        _reasoning_only_response(reasoning="The tool result is complete."),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
     )
+
+    def execute_tool(assistant_message, messages, effective_task_id, api_call_count=0):
+        messages.append({
+            "role": "tool",
+            "name": "todo",
+            "tool_call_id": "call_1",
+            "content": "tool result",
+        })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", execute_tool)
+
+    result = agent.run_conversation("run the tool")
+
+    assert result["final_response"] == "The tool result is complete."
+    assert not responses
+    assert any(message.get("tool_calls") for message in result["messages"])
+    assert any(message.get("role") == "tool" for message in result["messages"])
+    assert not any(
+        message.get("_empty_recovery_synthetic") for message in result["messages"]
+    )
+
+
+def test_clean_stop_promotion_runs_kanban_stop_gate(tmp_path, monkeypatch):
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [
+        _reasoning_only_response(reasoning="I am done."),
+        _reasoning_only_response(reasoning="Lifecycle action completed."),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+    monkeypatch.setattr(
+        "agent.kanban_stop.build_kanban_stop_nudge",
+        lambda messages, attempts=0: "Call the terminal lifecycle tool." if attempts == 0 else None,
+    )
+
+    result = agent.run_conversation("finish the task")
+
+    assert result["final_response"] == "Lifecycle action completed."
+    assert result["turn_exit_reason"] == "reasoning_response(clean_stop)"
+    assert agent._kanban_stop_nudges == 1
+    assert not responses
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
@@ -128,13 +271,10 @@ def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
     assert "only internal reasoning" not in final
 
 
-def test_reasoning_never_promoted_before_ladder_exhaustion(tmp_path, monkeypatch):
-    """A reasoning-only response must first go through prefill continuation —
-    if the model then produces real text, THAT is the answer, and no labeled
-    reasoning excerpt appears."""
+def test_length_limited_reasoning_still_uses_continuation(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     responses = [
-        _reasoning_only_response(),
+        _reasoning_only_response(finish_reason="length"),
         SimpleNamespace(
             choices=[SimpleNamespace(
                 message=SimpleNamespace(
@@ -158,4 +298,5 @@ def test_reasoning_never_promoted_before_ladder_exhaustion(tmp_path, monkeypatch
     result = agent.run_conversation("what is the answer?")
 
     assert result["final_response"] == "42."
-    assert "only internal reasoning" not in result["final_response"]
+    assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
+    assert not responses

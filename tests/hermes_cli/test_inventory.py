@@ -98,6 +98,47 @@ def _list_auth_returning(rows: list[dict]):
     )
 
 
+def test_virtual_rows_honor_excluded_providers():
+    """Staged-local and MoA rows must not bypass model_catalog exclusions.
+
+    list_authenticated_providers filters them, but the virtual llamacpp/moa
+    rows are injected afterwards in build_models_payload — same hole class
+    as the include_unconfigured leak.
+    """
+    import hermes_cli.inventory as inventory_mod
+
+    def _ctx(excluded):
+        return ConfigContext(
+            current_provider="openrouter",
+            current_model="m",
+            current_base_url="",
+            user_providers={},
+            custom_providers=[],
+            excluded_providers=excluded,
+        )
+
+    local_row = {"slug": "llamacpp", "name": "Local", "models": ["m.gguf"],
+                 "total_models": 1, "is_current": False, "is_user_defined": False,
+                 "source": "local-runtime"}
+    moa_row = {"slug": "moa", "name": "Mixture of Agents", "models": ["p"],
+               "total_models": 1, "is_current": False, "is_user_defined": False,
+               "source": "virtual"}
+    with (
+        _list_auth_returning([]),
+        patch.object(inventory_mod, "_local_runtime_row", return_value=local_row),
+        patch.object(inventory_mod, "_moa_provider_row", return_value=moa_row),
+    ):
+        hidden = build_models_payload(_ctx(["moa", " LLAMACPP "]))
+        hidden_slugs = {r["slug"] for r in hidden["providers"]}
+        assert "moa" not in hidden_slugs
+        assert "llamacpp" not in hidden_slugs
+
+        shown = build_models_payload(_ctx([]))
+        shown_slugs = {r["slug"] for r in shown["providers"]}
+        assert "moa" in shown_slugs
+        assert "llamacpp" in shown_slugs
+
+
 def _nous_row(model: str = "openai/gpt-5.5") -> dict:
     return {
         "slug": "nous",

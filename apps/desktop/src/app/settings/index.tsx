@@ -162,7 +162,10 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
 
     try {
-      await saveHermesConfig(await getHermesConfigDefaults())
+      // The user just confirmed the destructive reset; the backend otherwise
+      // refuses records that reset configured sections to factory defaults
+      // (a cross-machine overwrite looks identical, #109357).
+      await saveHermesConfig(await getHermesConfigDefaults(), null, { allowDefaultsRegression: true })
       triggerHaptic('success')
       onConfigSaved?.()
     } catch (err) {

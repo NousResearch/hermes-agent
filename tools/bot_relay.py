@@ -343,7 +343,12 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
         "while time.time() < deadline:\n"
         "    if os.path.exists(p):\n"
-        "        d = json.load(open(p, encoding='utf-8'))\n"
+        "        with open(p, encoding='utf-8') as stream:\n"
+        "            d = json.load(stream)\n"
+        "        try:\n"
+        "            os.unlink(p)\n"
+        "        except OSError:\n"
+        "            pass\n"
         "        if d.get('error'):\n"
         # Typed reason code rides ahead of the free text so the sender can
         # branch on it without parsing provider prose.

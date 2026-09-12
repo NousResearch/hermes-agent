@@ -2249,6 +2249,24 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if _effective_cap < self.threshold_tokens:
                 self.threshold_tokens = _effective_cap
 
+    @classmethod
+    def compression_budget(
+        cls, context_length: int, threshold_percent: float, max_tokens: Any = None,
+        threshold_tokens_cap: Any = None,
+    ) -> tuple[int, int]:
+        """Return the effective input capacity and compaction trigger."""
+        max_tokens = cls._coerce_max_tokens(max_tokens)
+        context_capacity = context_length - (max_tokens or 0)
+        if context_capacity <= 0:
+            context_capacity = context_length
+        trigger_tokens = cls._compute_threshold_tokens(
+            context_length, cls._effective_threshold_percent(context_length, threshold_percent), max_tokens
+        )
+        threshold_cap = cls._coerce_threshold_tokens_cap(threshold_tokens_cap)
+        if threshold_cap is not None:
+            trigger_tokens = min(trigger_tokens, min(threshold_cap, context_length))
+        return context_capacity, trigger_tokens
+
     @staticmethod
     def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
         """Raise-only small-context threshold floor: models under 512K trigger at >= 75%."""

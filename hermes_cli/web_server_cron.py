@@ -79,23 +79,6 @@ def _validate_dashboard_cron_context_from(refs: Optional[List[str]], profile_nam
                 detail=f"context_from job '{ref}' not found in profile '{profile_name}'")
 
 
-def _default_multiplex_profile_allowlist() -> "list[str] | None":
-    """``gateway.multiplex_profile_allowlist`` as the DEFAULT profile's config declares it (the
-    multiplexer's served set), so the Desktop ticker mirrors ``gateway/run.py::_multiplex_profile_homes``
-    instead of ticking every installed profile. ``None`` = serve all (historical behavior)."""
-    from gateway.config import _normalize_multiplex_profile_allowlist
-    from hermes_cli.config import read_user_config_raw
-    from hermes_constants import get_default_hermes_root
-
-    cfg_path = get_default_hermes_root() / "config.yaml"
-    if not cfg_path.exists():
-        return None
-    cfg = read_user_config_raw(cfg_path) or {}
-    raw = cfg.get("multiplex_profile_allowlist") if "multiplex_profile_allowlist" in cfg else (
-        cfg.get("gateway") or {}).get("multiplex_profile_allowlist")
-    return _normalize_multiplex_profile_allowlist(raw)
-
-
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""

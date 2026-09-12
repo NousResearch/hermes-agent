@@ -1,6 +1,11 @@
 import { useStore } from '@nanostores/react'
 
-import { DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
+import {
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  dropdownMenuRow
+} from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { notifyError } from '@/store/notifications'
@@ -49,7 +54,9 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
           <span className="flex min-w-0 flex-col">
             <span>{c.voiceEngineLive}</span>
             {liveAvailable ? null : (
-              <span className="text-muted-foreground truncate text-xs">{status.reason ?? c.voiceEngineLiveNeedsKey}</span>
+              <span className="text-muted-foreground truncate text-xs">
+                {status.reason ?? c.voiceEngineLiveNeedsKey}
+              </span>
             )}
           </span>
         </DropdownMenuRadioItem>
@@ -67,5 +74,7 @@ export function useVoiceEngineName(): null | string {
     return null
   }
 
-  return selectedVoiceChatMode(status) === 'gpt-live' ? t.composer.voiceEngineLiveShort : t.composer.voiceEngineChainedShort
+  return selectedVoiceChatMode(status) === 'gpt-live'
+    ? t.composer.voiceEngineLiveShort
+    : t.composer.voiceEngineChainedShort
 }

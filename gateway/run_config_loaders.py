@@ -381,9 +381,13 @@ class GatewayConfigLoadersMixin:
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
-        """Background process notification mode from env/config (default ``concise``)."""
+        """Background process notification mode from env/config (default ``concise``), resolved for
+        the AMBIENT profile — callers deciding for another profile's event enter its scope first
+        (``_completion_event_scope``). The env override reads through the secret scope so a served
+        secondary sees its own ``.env`` value, not the launch profile's ``os.environ``."""
         from gateway.run import _load_gateway_runtime_config
-        mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
+        from gateway.authz_mixin import _platform_gate_env
+        mode = _platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS")
         if not mode:
             raw = cfg_get(_load_gateway_runtime_config(), "display", "background_process_notifications")
             if raw is False:

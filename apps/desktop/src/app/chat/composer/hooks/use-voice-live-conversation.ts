@@ -2,11 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { sanitizeTextForSpeech } from '@/lib/speech-text'
-import {
-  type LiveHistoryMessage,
-  type LiveTranscriptFragment,
-  VoiceLiveSession
-} from '@/lib/voice-live'
+import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -120,8 +116,30 @@ export function useVoiceLiveConversation({
   const spokenResponseIdRef = useRef<null | string>(null)
   const lastToolLabelRef = useRef<null | string>(null)
   const wasEnabledRef = useRef(enabled)
-  const latest = useRef({ activeToolLabel, beforeMicOpen, onFatalError, onInterrupt, onStopWord, onSubmit, pendingResponse, consumePendingResponse, seedHistory })
-  latest.current = { activeToolLabel, beforeMicOpen, onFatalError, onInterrupt, onStopWord, onSubmit, pendingResponse, consumePendingResponse, seedHistory }
+
+  const latest = useRef({
+    activeToolLabel,
+    beforeMicOpen,
+    onFatalError,
+    onInterrupt,
+    onStopWord,
+    onSubmit,
+    pendingResponse,
+    consumePendingResponse,
+    seedHistory
+  })
+
+  latest.current = {
+    activeToolLabel,
+    beforeMicOpen,
+    onFatalError,
+    onInterrupt,
+    onStopWord,
+    onSubmit,
+    pendingResponse,
+    consumePendingResponse,
+    seedHistory
+  }
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -316,7 +334,15 @@ export function useVoiceLiveConversation({
       setStatus('idle')
       latest.current.onFatalError?.()
     }
-  }, [end, refreshStatus, setDelegation, voiceCopy.couldNotStartSession, voiceCopy.liveDelegationFailed, voiceCopy.liveEnded, voiceCopy.liveError])
+  }, [
+    end,
+    refreshStatus,
+    setDelegation,
+    voiceCopy.couldNotStartSession,
+    voiceCopy.liveDelegationFailed,
+    voiceCopy.liveEnded,
+    voiceCopy.liveError
+  ])
 
   // Drive the reply back into the voice: stream commentary as Hermes writes
   // it (sentence-chunked), quiet tool progress as thinking appends, and clear
@@ -385,7 +411,10 @@ export function useVoiceLiveConversation({
 
       // The submit ack lags: give the turn time to be seen running before
       // reading "idle and no reply" as a finished turn.
-      if (!busyRef.current && (turnObservedRef.current || Date.now() - submittedAtRef.current > SUBMIT_SETTLE_GRACE_MS)) {
+      if (
+        !busyRef.current &&
+        (turnObservedRef.current || Date.now() - submittedAtRef.current > SUBMIT_SETTLE_GRACE_MS)
+      ) {
         // Turn settled without a speakable reply (tool-only, error, interrupted).
         if (spokenLengthRef.current === 0) {
           session.think(delegationId, 'Hermes finished that request without a spoken result.')

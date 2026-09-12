@@ -17,7 +17,14 @@ from tools import browser_tool_cdp as _cdp
 
 
 def _memo(_bt, resolved_attr: str, cache_attr: str, compute: Callable[[], object]):
-    """Process-lifetime cache on ``_bt``: the resolved flag is set BEFORE computing, then the final value is stored."""
+    """Process-lifetime cache on ``_bt``: the resolved flag is set BEFORE computing, then the final value is stored.
+
+    Under a routed profile (HERMES_HOME override, multiplexed gateway) the slot is NOT consulted: every
+    ``_memo`` here caches a ``browser.*`` config read, and one process-wide slot would hand the launch
+    profile's engine/headed/private-URL policy to every other profile (same rule as ``_allow_private_urls``).
+    """
+    if get_hermes_home_override() is not None:
+        return compute()
     if not getattr(_bt, resolved_attr):
         setattr(_bt, resolved_attr, True)
         setattr(_bt, cache_attr, compute())

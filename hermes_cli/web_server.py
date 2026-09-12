@@ -99,12 +99,9 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
         try:
             from hermes_cli.profiles import (
                 _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
-            from hermes_cli.web_server_cron import _default_multiplex_profile_allowlist
 
-            # Same served set as the multiplexer (allowlist honoured): a profile the default
-            # gateway deliberately does not serve must not be ticked from the Desktop either.
-            profile_homes = list(profiles_to_serve(
-                multiplex=True, profile_allowlist=_default_multiplex_profile_allowlist()))
+            # Same served set as the multiplexer: default + every live profile under profiles/.
+            profile_homes = list(profiles_to_serve(multiplex=True))
             if profile_homes:
                 # Even one profile needs the per-tick gateway gate; otherwise
                 # Desktop races its dedicated gateway for the same cron store.

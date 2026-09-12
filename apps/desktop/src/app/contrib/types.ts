@@ -46,6 +46,7 @@ export type ChatActions = Pick<
   | 'onRestoreToMessage'
   | 'onRetryResume'
   | 'onSteer'
+  | 'onSteerHidden'
   | 'onSubmit'
   | 'onThreadMessagesChange'
   | 'onToggleSelectedPin'

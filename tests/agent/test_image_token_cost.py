@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from agent import image_token_cost as itc
 from agent.model_metadata import estimate_messages_tokens_rough
-from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor
+from agent.usage_anchor import anchored_context_tokens, capture_usage_anchor, set_usage_anchor
 
 
 def _img():
@@ -19,7 +19,9 @@ def _img():
 
 
 def _agent(anchor):
-    return SimpleNamespace(_usage_anchor=anchor, model="vision-local", base_url="http://127.0.0.1:8080/v1")
+    agent = SimpleNamespace(model="vision-local", base_url="http://127.0.0.1:8080/v1")
+    set_usage_anchor(agent, anchor)
+    return agent
 
 
 def _isolate(monkeypatch, tmp_path):

@@ -270,7 +270,7 @@ def compress_after_tool_results(
     # provider, post-disconnect, gateway restart), kept route-aware (#96995/#97602).
     from agent.usage_anchor import anchored_context_tokens
 
-    _anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    _anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None), route=agent)
     if _anchored is not None:
         _real_tokens = _anchored
     elif _compressor.last_prompt_tokens > 0:

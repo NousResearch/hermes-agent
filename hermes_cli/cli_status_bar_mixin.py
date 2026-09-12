@@ -287,7 +287,7 @@ class CLIStatusBarMixin:
                 _anchored = anchored_context_tokens(
                     _msgs if isinstance(_msgs, list) else [],
                     getattr(agent, "_turn_base_usage_anchor", None),
-                    charge_stale_thinking=False)
+                    route=agent, charge_stale_thinking=False)
                 if _anchored is not None and _anchored > 0:
                     context_tokens = _anchored
                     anchor = agent._turn_base_usage_anchor

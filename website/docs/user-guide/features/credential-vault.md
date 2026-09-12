@@ -86,6 +86,13 @@ Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
 visible metadata; passwords and card values never leave the vault except into
 the page.
 
+## What does not belong
+
+Documents and scans are not vault items: there is no document or blob kind.
+Statement PDFs, passport scans, and tax PDFs belong outside the vault. Putting
+a PDF in the vault and `read_file`ing it is equivalent to `get_secret`.
+File-input (`type=file`) uploads are not `browser_vault_fill`.
+
 ## Headless sessions
 
 Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a

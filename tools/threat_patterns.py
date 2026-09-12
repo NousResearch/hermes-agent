@@ -64,7 +64,10 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     # ── Known C2 / red-team framework names (warn-only) ─────────────
     # Every token must be a distinctive offensive-security brand: a common English word here
     # (e.g. "praxis", also a legitimate agent name) false-positives whole AGENTS.md / SOUL.md files.
-    (r'\b(?:cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b', "known_c2_framework", "context"),
+    # Same for "havoc" — a common English word (e.g. "wreaks havoc") that silently blocked
+    # legitimate SOUL.md/AGENTS.md content; the Havoc C2 framework is still caught by the
+    # context-rich patterns below.
+    (r'\b(?:cobalt\s*strike|sliver|mythic|metasploit|brainworm)\b', "known_c2_framework", "context"),
     (r'\bc2\s+(?:server|channel|infrastructure|beacon)\b', "c2_explicit", "context"),
     (r'\bcommand\s+and\s+control\b', "c2_explicit_long", "context"),
 

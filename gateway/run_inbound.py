@@ -858,23 +858,19 @@ class GatewayInboundMixin:
         from gateway.slash_commands_model import ModelSwitchConfirmation
 
         _model_event, _inline_payload = self._split_inline_command_payload(event)
-        _response = await self._handle_model_command(_model_event)
+        # Keep this request's predecessor, not whichever request is current after an await.
+        stash = self._model_inline_payload_stash()
+        previous_payload = stash.get(_quick_key)
+        _response = await self._handle_model_command(
+            _model_event, inline_payload=_inline_payload,
+        )
         if not isinstance(_response, ModelSwitchConfirmation):
-            if _inline_payload.strip():
-                # The guard prompt is a plain string (or None on button adapters), so the pending
-                # confirm registry — not response text — decides retention for /approve; every
-                # other non-routing reply (error, picker, help) drops the payload.
-                from tools import slash_confirm as _slash_confirm_mod
-
-                _pending = _slash_confirm_mod.get_pending(_quick_key)
-                if _pending and _pending.get("command") == "model":
-                    self._model_inline_payload_stash()[_quick_key] = _inline_payload.strip()
-                else:
-                    self._model_inline_payload_stash().pop(_quick_key, None)
+            # The guard binds its own payload BEFORE publishing its confirmation. Do not
+            # write it here: presentation can return after a newer request or a fast approval.
             return True, _response
-        # A successful switch supersedes any approval-path stash; a single-line /model keeps
-        # returning the confirmation as the reply (no payload → no routing).
-        self._model_inline_payload_stash().pop(_quick_key, None)
+        stash = self._model_inline_payload_stash()
+        if previous_payload is not None and stash.get(_quick_key) is previous_payload:
+            stash.pop(_quick_key, None)
         if not _inline_payload.strip():
             return True, _response
         await self._send_command_ack(source, str(_response), "model")

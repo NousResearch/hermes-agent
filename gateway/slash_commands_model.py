@@ -191,6 +191,16 @@ class RoutedModelSwitchConfirmation(ModelSwitchConfirmation):
         return obj
 
 
+class _ModelInlinePayload(str):
+    """Unique request-local token; text equality does not grant another callback ownership.
+
+    The slash-confirm registry binds the callback to its confirm_id and lifetime.
+    This token also lets the existing conversation-boundary cleanup revoke that callback.
+    """
+
+    __slots__ = ()
+
+
 class GatewayModelCommandsMixin:
     """Model-route slash commands (/model, /codex-runtime, /reasoning, /fast, /personality)."""
 
@@ -476,7 +486,7 @@ class GatewayModelCommandsMixin:
         return "\n".join(lines)
 
     async def _model_selection_guard_reply(
-        self, event: MessageEvent, ctx: _ModelSwitchContext, result
+        self, event: MessageEvent, ctx: _ModelSwitchContext, result, *, inline_payload: str = ""
     ) -> tuple[bool, Optional[str]]:
         """Selection-guard confirmation for the typed path (pickers confirm via their own UI).
 
@@ -496,17 +506,26 @@ class GatewayModelCommandsMixin:
         if warning is None:
             return False, None
 
+        # Bind the exact request before registration can expose a button or text reply.
+        # A fresh token is required even for empty/equal text: requests are not identified
+        # by their wording. Expired/superseded confirm_ids cannot invoke this callback.
+        stash_key = self._session_key_for_source(event.source)
+        payload = _ModelInlinePayload(inline_payload)
+        stash = self._model_inline_payload_stash()
+        stash[stash_key] = payload
+
         async def _on_cost_confirm(choice: str) -> str:
-            # Pop-before-run: a stashed inline payload routes at most once, and cancel or a
-            # failed switch drops it (slash_confirm.resolve already popped the confirm itself).
-            stash_key = self._session_key_for_source(event.source)
-            payload = self._model_inline_payload_stash().pop(stash_key, None)
+            # Reset/supersession revokes ownership. Never consume a successor's payload.
+            current_stash = self._model_inline_payload_stash()
+            if current_stash.get(stash_key) is not payload:
+                return "Model switch confirmation is no longer current."
+            current_stash.pop(stash_key, None)
             if choice == "cancel":
                 return f"🟡 Model switch cancelled. Current model unchanged ({ctx.current_model or 'unknown'})."
             # "once" and "always" both proceed — selection guards have no persistent opt-out.
             reply = await self._commit_model_switch(result, ctx, source=ctx.source)
-            if payload and isinstance(reply, ModelSwitchConfirmation):
-                return RoutedModelSwitchConfirmation(reply, payload)
+            if payload.strip() and isinstance(reply, ModelSwitchConfirmation):
+                return RoutedModelSwitchConfirmation(reply, str(payload))
             return reply
 
         _p = self._typed_command_prefix_for(event.source.platform)
@@ -518,7 +537,9 @@ class GatewayModelCommandsMixin:
             event=event, command="model", title=warning.title, message=message, handler=_on_cost_confirm,
         )
 
-    async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
+    async def _handle_model_command(
+        self, event: MessageEvent, *, inline_payload: str = ""
+    ) -> Optional[str]:
         """Handle /model command — switch model."""
         from gateway.run import _hermes_home
         from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
@@ -568,7 +589,9 @@ class GatewayModelCommandsMixin:
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
         if error is not None:
             return error
-        guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
+        guard_fired, guard_reply = await self._model_selection_guard_reply(
+            event, ctx, result, inline_payload=inline_payload,
+        )
         if guard_fired:
             return guard_reply
         return await self._commit_model_switch(result, ctx, source=source)

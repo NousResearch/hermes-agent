@@ -3035,7 +3035,14 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
-    unit_path.write_text(new_unit, encoding="utf-8")
+    # An externally managed unit (Home Manager/Nix symlink into a read-only store) makes the write fail;
+    # the restart/install that only wanted a current definition must still proceed with the installed unit (#107727).
+    try:
+        unit_path.write_text(new_unit, encoding="utf-8")
+    except OSError as e:
+        print(f"⚠ Could not refresh the gateway {_service_scope_label(system)} unit at {unit_path}: {e}")
+        print("  Continuing with the installed unit definition — it may be managed by an external tool.")
+        return False
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True

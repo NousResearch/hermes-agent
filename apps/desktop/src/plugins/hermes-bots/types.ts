@@ -53,6 +53,12 @@ export interface SessionPreview {
 
 /** Per-bot presentation state, persisted in the profile's `ui_meta`. */
 export interface BotMeta {
+  /** Which user-made section this bot is filed under (`user-sections.ts`).
+   *  Membership lives on the BOT, not as a member list on the section: a bot
+   *  can only be in one place, deleting a section cannot orphan anybody, and
+   *  the assignment rides the same profile.yaml sync every other bot setting
+   *  already uses — so sections follow the profile to another machine. */
+  sectionId?: null | string
   color?: string
   /** Set when the user has customized the avatar, so defaults stop applying. */
   custom?: boolean
@@ -170,6 +176,8 @@ export interface GroupChat {
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
+  /** Local display order, deliberately excluded from the gateway mirror. */
+  rosterOrder?: number
   /** Read when ordering rooms; no write site in the plugin today. */
   pinned?: boolean
   /** How far each `<thread>::<member>` has read into `log`. Required: unlike
@@ -280,7 +288,7 @@ export type AvatarShape = 'circle' | 'cloud' | 'drop' | 'hexagon' | 'pill' | 'sq
 export type BlobKind =
   'boxy' | 'capsule' | 'cloud' | 'droplet' | 'hexagon' | 'nub' | 'organic' | 'round' | 'sun' | 'triangle'
 
-export type FaceMood = 'idle' | 'work'
+export type FaceMood = 'idle' | 'think' | 'work'
 
 export interface AvatarAppearance {
   /** `null` when nothing is picked — the name's deterministic hue stands in.

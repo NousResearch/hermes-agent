@@ -132,6 +132,7 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `pinUserPeer` | `false` | Gateway only. When `true`, every platform user collapses to `peerName` |
 | `userPeerAliases` | `{}` | Gateway only. Map of runtime IDs to peers (`{"7654321": "alice"}`). Many-to-one |
 | `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_7654321`) when no alias matches |
+| `a2aSessions` | `true` | Write DMs from other bots into their own Honcho session per sender bot, never the human's. `false` skips bot-authored turns entirely |
 
 **Session strategy** controls how Honcho sessions map to your work:
 - `per-session` — each `hermes` run gets a fresh session. Clean starts, memory via tools. Recommended for new users.
@@ -172,6 +173,8 @@ The setup wizard detects whether a gateway platform is connected and skips this 
 Pick `[e]` at the prompt to set the three keys directly instead.
 
 The resolver tries the keys top-down, first match wins: `pinUserPeer` → `userPeerAliases[id]` → `runtimePeerPrefix + id` → raw runtime ID → `peerName` → session-key fallback.
+
+Each turn is written under the peer of whoever wrote it, so in a shared chat the first person to message no longer collects everyone else's facts. A turn from another bot (a Bot Mode DM tagged `bot:<profile>`, or a platform account the adapter flags as a bot) always gets its own peer: `pinUserPeer` unifies one person's accounts, never a bot. Its turn lands in a per-sender `a2a` session (see `a2aSessions`), and `honcho_conclude` / `honcho_profile` refuse writes while such a turn runs, since conclusions and cards describe the human.
 
 :::warning Un-pinning orphans pooled memory
 Flipping `pinUserPeer` from `true` to `false` does not migrate data — memory accumulated under `peerName` stays there, and platform users resolve to fresh, empty peers. To keep your own continuity, choose the **pooled** path so your runtime IDs alias back to `peerName`. The wizard offers this steer automatically when it detects the transition.

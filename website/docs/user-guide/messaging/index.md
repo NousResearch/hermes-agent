@@ -14,6 +14,20 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/integrations/nous-portal) subscription bundles all of them.
 :::
 
+## Messaging status in Desktop and the dashboard
+
+Messaging status belongs to the selected profile on the selected machine. Credentials
+saved by `hermes gateway setup` can enable a credential-based platform without a
+`platforms` entry in `config.yaml`; an explicit `platforms.<name>.enabled: false`
+still disables it. A different profile never inherits the server process's credentials.
+Platforms without required credential fields are not enabled merely because that list
+is empty.
+
+Naming the server's own profile explicitly (for example `profile=default` on a
+default-profile server) gives the same status as an unscoped request. **Saved** means
+credentials are stored, not that the messaging gateway is running or the platform is
+connected. An enabled platform can correctly show **Messaging gateway stopped**.
+
 ## Platform Comparison
 
 | Platform | Voice | Images | Files | Threads | Reactions | Typing | Streaming |
@@ -210,7 +224,8 @@ platform network disconnect as an event-loop failure.
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
 | `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |
 | `/rollback [number]` | List or restore filesystem checkpoints |
-| `/background <prompt>` | Run a prompt in a separate background session |
+| `/bg <prompt>` | Run a prompt in a separate background session |
+| `/btw <question>` | Ask a side question about the current conversation without interrupting it |
 | `/reload-mcp` | Reload MCP servers from config |
 | `/update` | Update Hermes Agent to the latest version |
 | `/help` | Show available commands |
@@ -224,7 +239,7 @@ Sessions persist across messages until they reset. The agent remembers your conv
 
 ### Finding Past Sessions (`/sessions`)
 
-`/sessions` lists your previous sessions for the current chat, and `/sessions <name>` resumes one (shorthand for `/resume`). When the list grows long, `/sessions search <query>` (alias `find`) filters by title or session-id match, ordered by most recently active. Cross-origin listing with `/sessions all` is admin-only — regular users only ever see sessions from their own chat origin.
+`/sessions` lists your previous sessions for the current chat — including the one you're in now, marked `(current)` — and `/sessions <name>` resumes one (shorthand for `/resume`). When the list grows long, `/sessions search <query>` (alias `find`) filters by title or session-id match, ordered by most recently active. Cross-origin listing with `/sessions all` is admin-only — regular users get a notice explaining the list stayed chat-scoped, and only ever see sessions from their own chat origin.
 
 ### Persistent `/model` Overrides
 
@@ -245,55 +260,31 @@ Semantics are honest at-least-once:
   may not have received it) is redelivered with a visible
   "♻️ Recovered reply — … may be a duplicate" prefix. Ambiguity is labeled,
   never silently resent.
+- A final send refused by **flood control** (such as Telegram rate limits) is retried automatically
+  after the recorded penalty expires, without requiring a reconnect or restart.
+  A restart during the penalty adopts the stored reply without spending a retry
+  attempt or re-running the agent. Retries retain the original bot profile, chat
+  and thread. A rate-limit recovery prefix warns that earlier chunks may already
+  have arrived; the ledger cannot infer partial delivery from message length.
 - Redelivery is bounded: 3 attempts, 24-hour freshness, then the row is
   abandoned. Delivered rows are pruned after 7 days.
 
 Disable with `gateway.delivery_ledger: false` in `config.yaml` (restores the
 old behavior: in-flight responses are lost on crash).
 
-### Reset Policies
+### Session continuity
 
-**By default sessions never auto-reset** — context lives until you `/reset`
-manually or context compression kicks in. If you want automatic resets, opt in
-with the `session_reset` section in `~/.hermes/config.yaml`:
+Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
+or `/reset` for an explicit new conversation; context compression remains automatic.
+Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
+variables are ignored. Cached agents may be released to reclaim resources without
+replacing the durable conversation. Restart-recovery freshness limits automatic
+continuation, not the history loaded when you send a message.
 
-```yaml
-session_reset:
-  mode: idle        # "idle", "daily", "both", or "none" (default)
-  idle_minutes: 1440  # for idle/both: minutes of inactivity before reset
-  at_hour: 4          # for daily/both: hour of day (0-23, local time)
-```
-
-| Mode | Description |
-|------|-------------|
-| `none` | Never auto-reset (default) |
-| `daily` | Reset at a specific hour each day |
-| `idle` | Reset after N minutes of inactivity |
-| `both` | Whichever triggers first |
-
-A live background process (started with `terminal(background=true)`) normally
-protects its session from resetting so output isn't lost. To stop a forgotten
-process — say a preview server — from pinning a session open forever, a
-background process older than `bg_process_max_age_hours` (default **24**) no
-longer blocks reset. The process is **not** killed, only ignored by the reset
-guard. Set it to `0` to disable the cutoff (any live process blocks reset, the
-old behavior), or raise it if you run legitimate multi-day jobs whose liveness
-should keep the conversation open.
-
-Configure per-platform overrides in `~/.hermes/gateway.json`:
-
-```json
-{
-  "reset_by_platform": {
-    "telegram": { "mode": "idle", "idle_minutes": 240 },
-    "discord": { "mode": "idle", "idle_minutes": 60 }
-  }
-}
-```
 
 ## Per-Channel Model & System Prompt Overrides
 
-Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:
+Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -404,10 +395,12 @@ Send a message while the agent is working to correct the active turn:
 
 ### Queue vs interrupt vs steer (busy-input mode)
 
-By default, messaging a busy agent redirects its active turn. Two other modes are available:
+By default, messaging a busy agent redirects its active turn (a running foreground terminal command is moved to the background rather than killed, so your message is read immediately). Two other modes are available:
 
 - `queue` — follow-up messages wait and run as the next turn after the current task finishes.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+
+Gateway steers (including explicit `/steer`) and active-turn redirects carry the requesting event's available platform, chat, thread, sender, message, profile, and scope identifiers as per-message JSON context. With `privacy.redact_pii: true`, identifiers in this model-visible context are hashed on supported platforms, including alternate and parent identifiers; the original event identifiers remain internal for routing. Otherwise identifiers are preserved exactly. Neither mode changes the session's system prompt or chooses a fallback reply destination. The context is routing data, not authorization or a guarantee of automatic delivery.
 
 ```yaml
 display:
@@ -495,7 +488,7 @@ When enabled, the bot sends status messages as it works:
 Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:
 
 ```
-/background Check all servers in the cluster and report any that are down
+/bg Check all servers in the cluster and report any that are down
 ```
 
 Hermes confirms immediately:
@@ -507,7 +500,7 @@ Hermes confirms immediately:
 
 ### How It Works
 
-Each `/background` prompt spawns a **separate agent instance** that runs asynchronously:
+Each `/bg` prompt spawns a **separate agent instance** that runs asynchronously:
 
 - **Isolated session** — the background agent has its own session with its own conversation history. It has no knowledge of your current chat context and receives only the prompt you provide.
 - **Same configuration** — inherits your model, provider, toolsets, reasoning settings, and provider routing from the current gateway setup.
@@ -539,10 +532,10 @@ HERMES_BACKGROUND_NOTIFICATIONS=result
 
 ### Use Cases
 
-- **Server monitoring** — "/background Check the health of all services and alert me if anything is down"
-- **Long builds** — "/background Build and deploy the staging environment" while you continue chatting
-- **Research tasks** — "/background Research competitor pricing and summarize in a table"
-- **File operations** — "/background Organize the photos in ~/Downloads by date into folders"
+- **Server monitoring** — "/bg Check the health of all services and alert me if anything is down"
+- **Long builds** — "/bg Build and deploy the staging environment" while you continue chatting
+- **Research tasks** — "/bg Research competitor pricing and summarize in a table"
+- **File operations** — "/bg Organize the photos in ~/Downloads by date into folders"
 
 :::tip
 Background tasks on messaging platforms are fire-and-forget — you don't need to wait or check on them. Results arrive in the same chat automatically when the task finishes.
@@ -672,6 +665,54 @@ Once the gateway is running, use the `/platform` slash command from any connecte
 
 See also the broader status summary command [`/platforms`](../../reference/slash-commands.md#info).
 
+### Disabling a platform whose credentials are still in `.env`
+
+`platforms.<name>.enabled: false` in `~/.hermes/config.yaml` is authoritative.
+Credentials for that platform left in the environment (`TELEGRAM_BOT_TOKEN`,
+`WEIXIN_TOKEN`, `HASS_TOKEN`, `EMAIL_*`, `TWILIO_ACCOUNT_SID`, ...) are still
+wired into the platform's config so send-only tooling keeps working, but they
+no longer start the adapter:
+
+```yaml title="~/.hermes/config.yaml"
+platforms:
+  weixin:
+    enabled: false   # wins over WEIXIN_TOKEN in .env
+```
+
+Earlier releases let the mere presence of credentials re-enable twelve
+platforms (Weixin, WhatsApp Cloud, Home Assistant, Email, SMS, DingTalk, Feishu,
+WeCom, WeCom callback, BlueBubbles, QQ Bot, Yuanbao) regardless of that key. If
+you relied on that, the gateway now logs one WARNING per affected platform at
+startup so it does not just go dark:
+
+```
+Platform 'weixin' is explicitly disabled by platforms.weixin.enabled: false in config.yaml,
+so the credentials found in the environment (WEIXIN_TOKEN, WEIXIN_ACCOUNT_ID) will NOT start
+its adapter. Environment credentials no longer override an explicit disable. Remove the key
+or set platforms.weixin.enabled: true to turn it back on.
+```
+
+Omitting the `enabled` key entirely keeps the env-only behaviour: credentials
+present → adapter starts.
+
+### Ignoring an inherited proxy (`gateway.trust_env`)
+
+By default every platform adapter honors `HTTP_PROXY` / `HTTPS_PROXY` /
+`NO_PROXY` (and `SSL_CERT_FILE`) from the gateway's environment, and
+auto-detects the macOS system proxy. A gateway started by a Windows Scheduled
+Task or a service manager can inherit a proxy the interactive shell never
+sees — a local Clash/V2Ray listener that isn't running yet — and log
+`Cannot connect to host 127.0.0.1:7890` on every poll. Turn the inherited
+proxy off for all adapters at once:
+
+```yaml title="~/.hermes/config.yaml"
+gateway:
+  trust_env: false
+```
+
+Explicit per-platform proxy variables (`DISCORD_PROXY`, `TELEGRAM_PROXY`,
+`MATRIX_PROXY`, ...) are still honored. Restart the gateway after changing it.
+
 ### Automatic circuit breaker
 
 Each adapter is wrapped in a circuit breaker. Repeated retryable failures (network blips, rate-limit replies, 5xx upstream responses, websocket disconnects) cause the breaker to trip — the adapter is auto-paused, an operator notification is sent to the home channel of another live platform when one is configured, and a structured log line is emitted.
@@ -690,7 +731,7 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 ### Restart notifications
 
-When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `gateway-config.yaml`, which defaults to `true`:
+When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `config.yaml`, which defaults to `true`:
 
 ```yaml
 gateway:
@@ -707,7 +748,7 @@ Disable it on noisy or low-priority platforms while leaving it on for your prima
 
 ### Typing indicators
 
-While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `gateway-config.yaml`, which defaults to `true`:
+While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `config.yaml`, which defaults to `true`:
 
 ```yaml
 gateway:

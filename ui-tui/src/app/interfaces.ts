@@ -29,7 +29,8 @@ import type {
   SessionInfo,
   SlashCatalog,
   SudoReq,
-  Usage
+  Usage,
+  VaultUnlockReq
 } from '../types.js'
 
 export interface StateSetter<T> {
@@ -297,6 +298,7 @@ export interface OverlayState {
   petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
+  vaultUnlock: null | VaultUnlockReq
   sessions: boolean
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
@@ -322,6 +324,9 @@ export interface UiState {
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
+  // Context compaction in progress (idle/preflight/auto). Distinct from
+  // `compact`, which is the /compact layout-density flag.
+  compacting: boolean
   destructiveSlashConfirm: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
@@ -343,6 +348,10 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  // display.status_bar.fields — visibility filter for status-rule segments,
+  // shared with the classic CLI bar. null = user has not customized (show
+  // the default set).
+  statusBarFields: null | ReadonlySet<string>
   streaming: boolean
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
@@ -491,6 +500,7 @@ export interface GatewayEventHandlerContext {
   }
   system: {
     bellOnComplete: boolean
+    bellOnPrompt?: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }
@@ -559,6 +569,7 @@ export interface AppLayoutActions {
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
+  answerVaultUnlock: (password: string) => void
   clearSelection: () => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
@@ -633,6 +644,7 @@ export interface AppOverlaysProps {
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
+  onVaultUnlockSubmit: (password: string) => void
   pagerPageSize: number
 }
 

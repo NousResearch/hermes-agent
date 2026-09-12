@@ -15,7 +15,7 @@ Himalaya CLI: IMAP/SMTP email from terminal.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/email/himalaya` |
+| Path | `skills/email\himalaya` |
 | Version | `1.1.0` |
 | Author | community |
 | License | MIT |

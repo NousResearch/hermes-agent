@@ -180,3 +180,142 @@ class TestCustomReasoningWithNumCtx:
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
 
+
+@pytest.fixture
+def clear_thinking_probe_cache(custom_profile):
+    """Isolate the probe cache (held on the registry-singleton profile instance)
+    so tests never see each other's probes."""
+    cache = custom_profile._THINKING_PROBE_CACHE
+    cache.clear()
+    yield cache
+    cache.clear()
+
+
+class TestThinkingCapabilityProbe:
+    """Ollama /v1 400s ("does not support thinking") when ``reasoning_effort`` targets
+    a model without the ``thinking`` capability (#granite4). Before the probe, the
+    profile forwarded any configured effort verbatim, so a global
+    ``agent.reasoning_effort: high`` broke every non-thinking local model.
+    ``ollama_model_supports_thinking`` (native /api/show capabilities) already existed
+    for Ollama Cloud — custom now reuses it for Ollama-shaped localhost endpoints."""
+
+    @pytest.mark.parametrize(
+        "base_url",
+        ["http://localhost:11434/v1", "http://127.0.0.1:11434/v1", "https://ollama.com/v1"],
+    )
+    def test_non_thinking_model_omits_effort(self, custom_profile, clear_thinking_probe_cache,
+                                             monkeypatch, base_url):
+        """Probed OK without ``thinking`` → effort omitted; request cannot 400."""
+        import hermes_cli.models_local as ml
+
+        probes = []
+        monkeypatch.setattr(
+            ml, "ollama_model_supports_thinking",
+            lambda model, base_url_, api_key=None, timeout=5.0: probes.append(model) or False)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="granite4:3b", base_url=base_url)
+        assert probes == ["granite4:3b"]
+        assert eb == {}
+        assert tl == {}
+
+    def test_thinking_model_sends_effort(self, custom_profile, clear_thinking_probe_cache,
+                                         monkeypatch):
+        """Probed OK with ``thinking`` → effort forwarded verbatim (qwen3, deepseek-r1…)."""
+        import hermes_cli.models_local as ml
+
+        monkeypatch.setattr(
+            ml, "ollama_model_supports_thinking",
+            lambda model, base_url_, api_key=None, timeout=5.0: True)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="qwen3:8b", base_url="http://localhost:11434/v1")
+        assert eb == {}
+        assert tl == {"reasoning_effort": "high"}
+
+    def test_probe_failure_fails_open(self, custom_profile, clear_thinking_probe_cache,
+                                      monkeypatch):
+        """Unreachable /api/show (server down, ollama removed) → send the effort.
+        A transient probe failure must not silently drop the user's reasoning config;
+        the worst case is the pre-probe behaviour (a 400 from the endpoint itself)."""
+        import hermes_cli.models_local as ml
+
+        monkeypatch.setattr(
+            ml, "ollama_model_supports_thinking",
+            lambda model, base_url_, api_key=None, timeout=5.0: None)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="granite4:3b", base_url="http://localhost:11434/v1")
+        assert tl == {"reasoning_effort": "high"}
+
+        # ...and a raising probe is equally fail-open, not fatal to kwargs building.
+        def _boom(model, base_url_, api_key=None, timeout=5.0):
+            raise OSError("connection refused")
+
+        clear_thinking_probe_cache.clear()
+        monkeypatch.setattr(ml, "ollama_model_supports_thinking", _boom)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="granite4:3b", base_url="http://localhost:11434/v1")
+        assert tl == {"reasoning_effort": "high"}
+
+    def test_definitive_probe_cached(self, custom_profile, clear_thinking_probe_cache,
+                                     monkeypatch):
+        """A definitive True/False is cached for the process lifetime — one /api/show
+        per (model, base_url), not one per request build."""
+        import hermes_cli.models_local as ml
+
+        calls = []
+        monkeypatch.setattr(
+            ml, "ollama_model_supports_thinking",
+            lambda model, base_url_, api_key=None, timeout=5.0: calls.append(model) or False)
+        rc = {"enabled": True, "effort": "high"}
+        for _ in range(3):
+            custom_profile.build_api_kwargs_extras(
+                reasoning_config=rc, model="granite4:3b", base_url="http://localhost:11434/v1")
+        assert calls == ["granite4:3b"]
+
+        # A different model is a different cache key → probed separately.
+        custom_profile.build_api_kwargs_extras(
+            reasoning_config=rc, model="ministral-3:8b", base_url="http://localhost:11434/v1")
+        assert calls == ["granite4:3b", "ministral-3:8b"]
+
+    @pytest.mark.parametrize(
+        "base_url",
+        ["https://ark.cn-beijing.volces.com/api/v3", "https://api.groq.com/openai/v1"],
+    )
+    def test_probe_skipped_on_non_ollama_endpoints(self, custom_profile,
+                                                   clear_thinking_probe_cache, monkeypatch,
+                                                   base_url):
+        """GLM/ARK, Groq, llama.cpp, vLLM… keep the verbatim passthrough — no probe,
+        no latency, no behaviour change (#57601 contract)."""
+        import hermes_cli.models_local as ml
+
+        probes = []
+        monkeypatch.setattr(
+            ml, "ollama_model_supports_thinking",
+            lambda model, base_url_, api_key=None, timeout=5.0: probes.append(model) or False)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="glm-5.2", base_url=base_url)
+        assert probes == []
+        assert tl == {"reasoning_effort": "high"}
+
+    def test_disabled_still_disables_on_thinking_model(self, custom_profile,
+                                                       clear_thinking_probe_cache,
+                                                       monkeypatch):
+        """The explicit disable path (reasoning_effort="none" + think=False) is probed
+        never and always honoured — #14820/#25758 contract unchanged."""
+        import hermes_cli.models_local as ml
+
+        probes = []
+        monkeypatch.setattr(
+            ml, "ollama_model_supports_thinking",
+            lambda model, base_url_, api_key=None, timeout=5.0: probes.append(model) or True)
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="qwen3:8b", base_url="http://localhost:11434/v1")
+        assert probes == []
+        assert eb == {"think": False}
+        assert tl == {"reasoning_effort": "none"}
+

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -49,7 +50,9 @@ def test_gateway_room_grant_secret_is_private_persistent_and_not_an_api_key(
     secret_path = home / ".room-link-grant-secret"
     assert first == second
     assert len(first) == 32
-    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
+    # NTFS access is governed by ACLs, not these POSIX permission bits.
+    if os.name != "nt":
+        assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
     assert secret_path.read_bytes() != first
     assert first != derive_room_grant_secret("gateway-api-key-1234567890")
 

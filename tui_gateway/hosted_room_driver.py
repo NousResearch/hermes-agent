@@ -100,6 +100,8 @@ class HostedRoomRuntime:
         turn_lock: Callable[[str], ContextManager[Any]], rpc: InternalSessionRPC | None = None,
         transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
+        prepare_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
+        maintain_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
         publish_terminal: Callable[[HostedRoomBinding, Mapping[str, Any]], None] | None = None,
         pending_action: Callable[[str, str, Mapping[str, Any] | None], None] | None = None,
         clock: Callable[[], float] = time.time,
@@ -126,6 +128,8 @@ class HostedRoomRuntime:
         self.db_path = Path(db_path)
         self.rpc, self.transport_resolver, self.turn_lock = rpc, transport_resolver, turn_lock
         self.prepare_room, self.publish_terminal = prepare_room, publish_terminal
+        self.prepare_leased_room = prepare_leased_room
+        self.maintain_leased_room = maintain_leased_room
         self.pending_action, self.clock = pending_action, clock
         for name, value in positive.items():
             setattr(self, name, float(value))
@@ -508,6 +512,8 @@ class HostedRoomRuntime:
         if (lease.room_id, lease.lease_generation) not in self._recovered_leases:
             state.recover_room(self.db_path, lease, clock=self.clock)
             self._recovered_leases.add((lease.room_id, lease.lease_generation))
+        if self.prepare_leased_room is not None:
+            self.prepare_leased_room(binding, lease)
         if self._retry_stopping_tasks(binding, lease):
             self._set_blocked(binding.room_id, True)
             return
@@ -525,8 +531,18 @@ class HostedRoomRuntime:
                 expected_cancel_generation=task["cancel_generation"], clock=self.clock)
             self._execute_attempt(binding, task, attempt)
             current = state.get_task(self.db_path, task["identity"])
+            if current["status"] in state.TERMINAL_STATUSES:
+                lease = self._maintain_room(binding, lease)
             if current["status"] not in state.TERMINAL_STATUSES:
                 return
+
+        self._maintain_room(binding, lease)
+
+    def _maintain_room(self, binding: HostedRoomBinding, lease: state.DriverLease) -> state.DriverLease:
+        if self.maintain_leased_room is not None and not self._stop.is_set():
+            lease = self._renew_lease_if_needed(lease)
+            self.maintain_leased_room(binding, lease)
+        return lease
 
     def _defer_unavailable_route(self, task: Mapping[str, Any]) -> float:
         key = (task["identity"].room_id, _member_id(task))
@@ -607,7 +623,15 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            # Only start_task's newly allocated, still-fenced generation proves freshness.
+            fresh_preflight_failure = (
+                getattr(exc, "dispatch_not_attempted", False) is True
+                and task.get("status") == "queued"
+                and task.get("execution_generation") == attempt.execution_generation - 1
+            )
+            if submit_attempted and (
+                bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure
+            ):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
@@ -698,6 +722,7 @@ class HostedRoomRuntime:
                 return receipt
             info = transport.info(**_session_kw(profile, session_id))
             self._report_pending_action(task, session_id=session_id, info=info)
+            lease = self._maintain_room(binding, lease)
             remaining = max(0.0, deadline_monotonic - time.monotonic())
             self._wake.wait(min(self.active_poll_interval_seconds, remaining))
             self._wake.clear()

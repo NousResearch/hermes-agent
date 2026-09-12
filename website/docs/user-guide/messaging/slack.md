@@ -657,7 +657,7 @@ Slack supports both patterns: `@mention` required to start a conversation by def
 :::
 
 :::caution Group DMs (MPIMs) are shared surfaces, not 1:1 DMs
-A **1:1 direct message** is a private conversation with one person, so it is mention-exempt. A **group DM (MPIM / multi-person DM)** is a *shared surface* — multiple people can see and trigger the bot — so it obeys the same operator controls as a channel: `require_mention`, `strict_mention`, `free_response_channels`, and `allowed_channels` all apply, and the bot only adds `:eyes:`/`:white_check_mark:` reactions when it is actually `@mentioned`. To let the bot respond freely in a specific group DM, add its channel ID (starts with `G`) to `free_response_channels`.
+A **1:1 direct message** is a private conversation with one person, so it is mention-exempt. A **group DM (MPIM / multi-person DM)** is a *shared surface* — multiple people can see and trigger the bot — so it obeys the same operator controls as a channel: `require_mention`, `strict_mention`, `free_response_channels`, and `allowed_channels` all apply, and the bot only adds `:eyes:`/`:white_check_mark:` reactions when it is actually `@mentioned`. To let the bot respond freely in a specific group DM, add its channel ID to `free_response_channels`. (Copy the real ID rather than assuming a prefix: modern workspaces mint MPIM IDs starting with `C`, same as regular channels; only legacy workspaces use `G`.)
 :::
 
 #### Which mention option do I want?
@@ -811,7 +811,7 @@ If this target passes but a live workspace still misroutes messages, investigate
 
 Restrict the bot to a fixed set of Slack channels — useful when the bot is invited to many channels but should only respond in a few. When set, messages from channels NOT in this list are **silently ignored**, even if the bot is `@mentioned`.
 
-**1:1 DMs are exempt** from this filter, so authorized users can always reach the bot in a direct message. **Group DMs (MPIMs) are not exempt** — like channels, an MPIM must be on the allowlist (its ID starts with `G`) or its messages are dropped.
+**1:1 DMs are exempt** from this filter, so authorized users can always reach the bot in a direct message. **Group DMs (MPIMs) are not exempt** — like channels, an MPIM must be on the allowlist or its messages are dropped. (Modern workspaces mint MPIM IDs starting with `C`, same as regular channels; only legacy workspaces use `G` — copy the actual ID.)
 
 ```yaml
 slack:

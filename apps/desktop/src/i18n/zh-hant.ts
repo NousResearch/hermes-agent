@@ -1084,6 +1084,16 @@ export const zhHant = defineLocale({
       importConfirmMany: count => `將 ${count} 個伺服器加入 mcp.json`
     },
     model: {
+      applyAllProfiles: "套用至所有 Profile",
+      applyAllDesc: "一次設定目前連線所有 Profile 的預設提供方與模型，沿用各自的服務商設定。之後仍可逐一修改。",
+      applyAllSuccess: "已套用",
+      applyAllFailed: "失敗或未確認",
+      applyAllUnavailable: "此 Profile 尚未設定該提供方或模型。",
+      applyAllConnectionRequired: "請先選擇或重新連線，再套用至所有 Profile。",
+      applyAllInterrupted: "連線或 Profile 已切換，操作已停止。",
+      applyAllNoProfiles: "沒有可用的 Profile。",
+      applyAllMoaUnavailable: "Mixture of Agents 預設需在每個 Profile 中個別設定。",
+
       loading: '正在載入模型設定...',
       appliesDesc: '套用至新工作階段。可在輸入框的模型選擇器中臨時切換目前對話。',
       provider: '提供方',

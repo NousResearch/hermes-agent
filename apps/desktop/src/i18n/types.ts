@@ -1101,6 +1101,16 @@ export interface Translations {
       importConfirmMany: (count: number) => string
     }
     model: {
+      applyAllProfiles: string
+      applyAllDesc: string
+      applyAllSuccess: string
+      applyAllFailed: string
+      applyAllUnavailable: string
+      applyAllConnectionRequired: string
+      applyAllInterrupted: string
+      applyAllNoProfiles: string
+      applyAllMoaUnavailable: string
+
       loading: string
       appliesDesc: string
       provider: string

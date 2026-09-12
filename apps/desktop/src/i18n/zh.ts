@@ -1447,6 +1447,16 @@ export const zh = defineLocale({
       importConfirmMany: count => `添加 ${count} 个服务器到 mcp.json`
     },
     model: {
+      applyAllProfiles: "应用到所有 Profile",
+      applyAllDesc: "一次性设置当前连接所有 Profile 的默认提供方和模型，沿用各自的服务商配置。之后仍可逐个修改。",
+      applyAllSuccess: "已应用",
+      applyAllFailed: "失败或未确认",
+      applyAllUnavailable: "此 Profile 尚未配置该提供方或模型。",
+      applyAllConnectionRequired: "请先选择或重新连接一个连接，再应用到所有 Profile。",
+      applyAllInterrupted: "连接或 Profile 已切换，操作已停止。",
+      applyAllNoProfiles: "没有可用的 Profile。",
+      applyAllMoaUnavailable: "Mixture of Agents 预设需要在每个 Profile 中单独配置。",
+
       loading: '正在加载模型配置...',
       appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',
       provider: '提供方',

@@ -6,6 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import {
+  getApiRequestConnection,
+  getApiRequestProfile,
   getAuxiliaryModels,
   getGlobalModelInfo,
   getGlobalModelOptions,
@@ -38,6 +40,7 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
+import { applyModelToProfiles, type ProfileModelResult } from './model-settings-bulk'
 import { ListRow, Pill, SectionHeading } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
@@ -234,6 +237,19 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   const { data: config } = useHermesConfigRecord(scopeProfile)
   const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
   const [applying, setApplying] = useState(false)
+  const [bulkApplying, setBulkApplying] = useState(false)
+  const [bulkResults, setBulkResults] = useState<ProfileModelResult[]>([])
+  const mounted = useRef(true)
+
+  // Lifecycle guard only; no reactive store value is mirrored into this ref.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    mounted.current = true
+
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
   const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
   // Aux slots reported stale by the backend immediately after a main-model
@@ -333,6 +349,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     setSelectedProvider('')
     setSelectedModel('')
     setApiKeyDraft('')
+    setBulkResults([])
     void refresh({ replaceSelection: true })
   })
 
@@ -699,6 +716,75 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     setCaughtError
   ])
 
+  const applyAllProfiles = useCallback(async () => {
+    if (!selectedProvider || !selectedModel || applying || bulkApplying) {
+      return
+    }
+
+    const epoch = profileEpoch.current
+    const connectionId = getApiRequestConnection()
+
+    // An absent identity may be a legacy remote primary, never assume local.
+    if (!connectionId) {
+      setError(m.applyAllConnectionRequired)
+
+      return
+    }
+
+    const activeProfile = getApiRequestProfile()
+
+    const isCurrent = () =>
+      mounted.current &&
+      profileEpoch.current === epoch &&
+      getApiRequestConnection() === connectionId &&
+      getApiRequestProfile() === activeProfile
+
+    setBulkApplying(true)
+    setBulkResults([])
+    setError('')
+
+    try {
+      const results = await applyModelToProfiles({
+        connectionId,
+        provider: selectedProvider,
+        model: selectedModel,
+        isCurrent,
+        onResult: result => {
+          if (isCurrent()) {
+            setBulkResults(previous => [...previous, result])
+          }
+        },
+        unavailable: m.applyAllUnavailable,
+        interrupted: m.applyAllInterrupted,
+        failed: m.loadFailed
+      })
+
+      if (isCurrent()) {
+        if (results.some(result => result.ok && result.profile === (activeProfile || 'default'))) {
+          const verified = await getGlobalModelInfo({ connectionId, profile: activeProfile || 'default' })
+
+          if (isCurrent()) {
+            onMainModelChanged?.(verified.provider, verified.model)
+          }
+        }
+
+        await refresh({ replaceSelection: true })
+
+        if (isCurrent() && !results.length) {
+          setError(m.applyAllNoProfiles)
+        }
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        setCaughtError(error, m.loadFailed)
+      }
+    } finally {
+      if (mounted.current) {
+        setBulkApplying(false)
+      }
+    }
+  }, [applying, bulkApplying, m, onMainModelChanged, refresh, selectedModel, selectedProvider, setCaughtError])
+
   // Sibling of the applyMainModel endpoint passthrough (#65254): auxiliary
   // assignments targeting a user-defined provider must carry that provider's
   // endpoint too, or the backend pins the slot without a base_url and the
@@ -839,7 +925,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       <section>
         <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
         <div className="flex flex-wrap items-center gap-2">
-          <Select onValueChange={setSelectedProvider} value={selectedProvider}>
+          <Select disabled={bulkApplying} onValueChange={setSelectedProvider} value={selectedProvider}>
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
               <SelectValue placeholder={m.provider} />
             </SelectTrigger>
@@ -883,7 +969,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
             )
           ) : (
             <>
-              <Select onValueChange={setSelectedModel} value={selectedModel}>
+              <Select disabled={bulkApplying} onValueChange={setSelectedModel} value={selectedModel}>
                 <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
                   <SelectValue placeholder={m.model} />
                 </SelectTrigger>
@@ -896,16 +982,38 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                 </SelectContent>
               </Select>
               <Button
-                disabled={!selectedProvider || !selectedModel || applying}
+                disabled={!selectedProvider || !selectedModel || applying || bulkApplying}
                 onClick={() => void applyMainModel()}
                 size="sm"
               >
                 {applying && <Loader2 className="size-3.5 animate-spin" />}
                 {applying ? m.applying : t.common.apply}
               </Button>
+              <Button
+                disabled={!selectedProvider || !selectedModel || applying || bulkApplying || selectedProvider === 'moa'}
+                onClick={() => void applyAllProfiles()}
+                size="sm"
+                variant="textStrong"
+              >
+                {bulkApplying && <Loader2 className="size-3.5 animate-spin" />}
+                {bulkApplying ? m.applying : m.applyAllProfiles}
+              </Button>
             </>
           )}
         </div>
+        <p className="mt-2 text-xs text-muted-foreground">{m.applyAllDesc}</p>
+        {selectedProvider === 'moa' && (
+          <p className="mt-2 text-xs text-muted-foreground">{m.applyAllMoaUnavailable}</p>
+        )}
+        {bulkResults.length > 0 && (
+          <ul aria-live="polite" className="mt-2 space-y-1 text-xs">
+            {bulkResults.map(result => (
+              <li className={result.ok ? 'text-muted-foreground' : 'text-destructive'} key={result.profile}>
+                {result.profile}: {result.ok ? m.applyAllSuccess : `${m.applyAllFailed} — ${result.error}`}
+              </li>
+            ))}
+          </ul>
+        )}
         {needsSetup && !setupIsApiKey && selectedProviderRow && (
           <p className="mt-2 text-xs text-muted-foreground">
             {selectedProviderRow?.auth_type === 'api_key'

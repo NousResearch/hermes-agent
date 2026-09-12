@@ -290,7 +290,7 @@ export function SkillsView({
 
   const { data: profilesData } = useQuery({
     queryKey: ['capabilities-profiles'],
-    queryFn: getProfiles,
+    queryFn: () => getProfiles(),
     staleTime: 60_000,
     // Pinned scope never shows the selector, so don't fetch the roster for it.
     enabled: !fixedProfile

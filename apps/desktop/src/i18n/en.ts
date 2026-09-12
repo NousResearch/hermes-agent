@@ -1258,6 +1258,16 @@ export const en: Translations = {
       importConfirmMany: count => `Add ${count} servers to mcp.json`
     },
     model: {
+      applyAllProfiles: "Apply to all profiles",
+      applyAllDesc: "Apply this default provider and model once to every profile on this connection, using each profile’s own provider configuration. You can still edit each profile separately.",
+      applyAllSuccess: "Applied",
+      applyAllFailed: "Failed or unverified",
+      applyAllUnavailable: "The provider or model is not configured for this profile.",
+      applyAllConnectionRequired: "Select or reconnect a connection before applying to all profiles.",
+      applyAllInterrupted: "Stopped because the connection or profile changed.",
+      applyAllNoProfiles: "No profiles available.",
+      applyAllMoaUnavailable: "Mixture of Agents presets must be configured in each profile.",
+
       loading: 'Loading model configuration...',
       appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
       provider: 'Provider',

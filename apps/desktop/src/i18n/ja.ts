@@ -1125,6 +1125,16 @@ export const ja = defineLocale({
       importConfirmMany: count => `${count} 件のサーバーを mcp.json に追加`
     },
     model: {
+      applyAllProfiles: "すべてのプロファイルに適用",
+      applyAllDesc: "この接続の全プロファイルに既定のプロバイダーとモデルを一度だけ適用します。各プロファイルのプロバイダー設定を使い、後から個別に変更できます。",
+      applyAllSuccess: "適用済み",
+      applyAllFailed: "失敗または未確認",
+      applyAllUnavailable: "このプロファイルではプロバイダーまたはモデルが未設定です。",
+      applyAllConnectionRequired: "すべてのプロファイルに適用する前に接続を選択するか、再接続してください。",
+      applyAllInterrupted: "接続またはプロファイルが変わったため停止しました。",
+      applyAllNoProfiles: "利用可能なプロファイルがありません。",
+      applyAllMoaUnavailable: "Mixture of Agents のプリセットは各プロファイルで設定してください。",
+
       loading: 'モデル設定を読み込み中...',
       appliesDesc:
         '新しいセッションに適用されます。コンポーザーのモデルピッカーを使ってアクティブなチャットをホットスワップできます。',

@@ -10,9 +10,9 @@ import type {
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
-export function getGlobalModelInfo(profile?: null | string): Promise<ModelInfoResponse> {
+export function getGlobalModelInfo(profile?: ProfileScope): Promise<ModelInfoResponse> {
   return hermesApi<ModelInfoResponse>({
-    ...profileScoped(profile),
+    ...(profile && typeof profile === 'object' ? capabilityScoped(profile) : profileScoped(profile)),
     path: '/api/model/info',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -31,7 +31,7 @@ export function getGlobalModelOptions(
     includeUnconfigured?: boolean
     explicitOnly?: boolean
   },
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<ModelOptionsResponse> {
   const params = new URLSearchParams()
 
@@ -48,7 +48,7 @@ export function getGlobalModelOptions(
   }
 
   return hermesApi<ModelOptionsResponse>({
-    ...profileScoped(profile),
+    ...(profile && typeof profile === 'object' ? capabilityScoped(profile) : profileScoped(profile)),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -118,10 +118,10 @@ export function saveMoaModels(
 
 export function setModelAssignment(
   body: ModelAssignmentRequest,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<ModelAssignmentResponse> {
   return hermesApi<ModelAssignmentResponse>({
-    ...profileScoped(profile),
+    ...(profile && typeof profile === 'object' ? capabilityScoped(profile) : profileScoped(profile)),
     path: '/api/model/set',
     method: 'POST',
     body

@@ -84,7 +84,7 @@ class TestSchema:
         # Mode is inferred from which args are set — no explicit mode param
         assert "mode" not in params
 
-    def test_detail_parameter_is_appended_for_positional_compatibility(self):
+    def test_new_parameters_are_appended_for_positional_compatibility(self):
         parameters = list(inspect.signature(session_search).parameters)
         historical_prefix = [
             "query",
@@ -98,7 +98,7 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [*historical_prefix, "detail", "platform"]
 
 
 class TestFormatTimestamp:
@@ -501,6 +501,38 @@ class TestSessionLink:
     def test_link_carries_the_named_profile(self):
         assert _session_link("s_oldest", "work") == "@session:work/s_oldest"
 
+    def test_surface_contract_across_search_shapes(self, db):
+        from tools.registry import registry
+
+        _seed_modpack_sessions(db)
+        for platform in ("telegram", "cli", "acp", "desktop", None):
+            for args in ({"query": "modpack"}, {}, {"session_id": "s_oldest"},
+                         {"query": "no-such-session"}):
+                result = json.loads(registry.dispatch(
+                    "session_search", args, db=db, platform=platform))
+                assert result["success"]
+                entries = result.get("results", [result])
+                if platform in (None, "desktop"):
+                    assert all(entry["link"].startswith("@session:") for entry in entries)
+                else:
+                    assert all("link" not in entry for entry in entries)
+                    assert "plain text" in result["link_hint"]
+                    assert "Markdown link" in result["link_hint"]
+                if result["mode"] == "read":
+                    assert result["session_meta"]["title"] == "Building the Modpack"
+
+    def test_current_surface_overrides_historical_source(self, db):
+        _seed_modpack_sessions(db)
+        for source in ("telegram", "cli", "desktop"):
+            current_id = f"current_{source}"
+            db.create_session(current_id, source=source)
+            for platform in (None, "desktop", "acp"):
+                result = json.loads(session_search(
+                    query="modpack", db=db, current_session_id=current_id,
+                    platform=platform))
+                expect_links = (platform or source) == "desktop"
+                assert result["results"]
+                assert all(("link" in entry) is expect_links for entry in result["results"])
 
     def test_every_discovery_result_links_to_its_own_session(self, db):
         _seed_modpack_sessions(db)

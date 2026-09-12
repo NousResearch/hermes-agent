@@ -505,9 +505,32 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         current_session_id=current_session_id, link_profile=profile)
 
 
+def _adapt_session_links_for_platform(raw_result: str, platform: Any = None) -> str:
+    """Keep Desktop references out of surfaces without the session-link renderer."""
+    surface = str(getattr(platform, "value", platform) or "").strip().lower()
+    # Direct callers without surface context retain the historical payload.
+    if not surface or surface == "desktop":
+        return raw_result
+    payload = json.loads(raw_result)
+    if not payload.get("success"):
+        return raw_result
+    removed_ref = payload.pop("link", None) is not None
+    for entry in payload.get("results") or []:
+        removed_ref = entry.pop("link", None) is not None or removed_ref
+    if removed_ref or payload.get("mode") in {"discover", "browse", "read"}:
+        payload["link_hint"] = (
+            f"Hermes @session references render only in Desktop, not on {surface}. "
+            "Refer to the result `title` (or `session_meta.title`) as plain text "
+            "when present; do not emit a session reference/id or format the title "
+            "as a Markdown link."
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
-                   window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive") -> str:
+                   window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
+                   platform: Any = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
     from hermes_state import format_session_db_unavailable
     from hermes_state_registry import acquire, release_or_close
@@ -518,8 +541,13 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
             return tool_error(format_session_db_unavailable(), success=False)
         owned_dbs.append(db)
     try:
-        return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
+        if platform is None and current_session_id:
+            current_meta = _quiet(lambda: db.get_session(current_session_id), None,
+                                  "Could not resolve session_search rendering surface")
+            platform = (current_meta or {}).get("source")
+        result = _dispatch(query, role_filter, limit, db, current_session_id, session_id,
                          around_message_id, window, sort, profile, detail, owned_dbs)
+        return _adapt_session_links_for_platform(result, platform)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
@@ -547,9 +575,10 @@ SESSION_SEARCH_SCHEMA = {
         "Searches conversation history ONLY — when the user gave a direct "
         "source (URL, file, contact, live system), inspect that first; never "
         "conclude 'not found' from history alone. Use for questions about past "
-        "conversations: 'what did we do about X', 'where did we leave Y'. When "
-        "referring the user to a session, write its `link` value verbatim "
-        "inline (it renders as a titled link)."
+        "conversations: 'what did we do about X', 'where did we leave Y'. "
+        "Results include clickable `link` references only on Hermes Desktop. "
+        "On other surfaces, refer to the returned `title` as plain text and "
+        "follow the response's `link_hint`."
     ),
     "parameters": {
         "type": "object",
@@ -649,6 +678,7 @@ registry.register(
     handler=lambda args, **kw: session_search(
         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
+        platform=kw.get("platform"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile")}),
     check_fn=check_session_search_requirements,
     emoji="🔍")

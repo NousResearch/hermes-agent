@@ -174,10 +174,27 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
+# ``re.sub`` never rescans the text it has produced, so ONE pass can splice a surviving
+# prefix and suffix into a brand-new valid tag: deleting the inner tag of
+# ``</memory-</memory-context>context>`` leaves ``</memory-`` + ``context>``. Sanitizing to a
+# fixed point closes that; the cap bounds the work, and a payload still carrying a fence tag
+# after this many passes is dropped by ``build_memory_context_block`` rather than fenced badly.
+_SANITIZE_MAX_PASSES = 8
+
+
 def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
-    for pattern in (_INTERNAL_CONTEXT_RE, _INTERNAL_NOTE_RE, _FENCE_TAG_RE):
-        text = pattern.sub('', text)
+    """Strip fence tags, injected context blocks, and system notes from provider output.
+
+    Applied repeatedly until the text stops changing (see ``_SANITIZE_MAX_PASSES``): a single
+    pass is not idempotent, and a tag it reassembles would close the model-facing fence early.
+    """
+    for _ in range(_SANITIZE_MAX_PASSES):
+        cleaned = text
+        for pattern in (_INTERNAL_CONTEXT_RE, _INTERNAL_NOTE_RE, _FENCE_TAG_RE):
+            cleaned = pattern.sub('', cleaned)
+        if cleaned == text:
+            break
+        text = cleaned
     return text
 
 
@@ -276,6 +293,13 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    if _FENCE_TAG_RE.search(clean):
+        # Fail closed. A fence tag surviving the fixed point would close this block early and
+        # frame everything after it as trusted turn scaffolding instead of recalled memory;
+        # losing one turn's recall is the cheaper failure.
+        logger.error("memory provider recall still carries a memory-context tag after %d sanitize "
+                     "passes; dropping the recall block for this turn", _SANITIZE_MAX_PASSES)
+        return ""
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

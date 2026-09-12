@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  compactQuantizationLabel,
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
@@ -31,6 +32,44 @@ describe('model-status-label', () => {
     expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
     // Cloud ids keep their existing behavior.
     expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
+  })
+
+  it('compacts Ollama quantization_level metadata and ignores unknown soup', () => {
+    expect(compactQuantizationLabel('Q4_K_M')).toBe('Q4')
+    expect(compactQuantizationLabel('Q8_0')).toBe('Q8')
+    expect(compactQuantizationLabel('IQ3_XXS')).toBe('IQ3')
+    expect(compactQuantizationLabel('F16')).toBe('F16')
+    expect(compactQuantizationLabel('BF16')).toBe('BF16')
+    expect(compactQuantizationLabel('unknown')).toBe('')
+    expect(compactQuantizationLabel('fp32-something-weird')).toBe('')
+    expect(compactQuantizationLabel('')).toBe('')
+  })
+
+  it('applies inventory quantization only when the id has no variant/quant tag', () => {
+    expect(modelDisplayParts('qwen3.5:9b').tag).toBe('')
+    expect(modelDisplayParts('qwen3.5:9b', { quantization: 'Q4_K_M' })).toEqual({
+      name: 'Qwen3.5:9b',
+      tag: 'Q4'
+    })
+    expect(modelDisplayParts('gemma4:12b', { quantization: 'Q4_K_M' })).toEqual({
+      name: 'Gemma4:12b',
+      tag: 'Q4'
+    })
+    expect(modelDisplayParts('Qwen3.6-27B-UD-Q4_K_XL').tag).toBe('Q4')
+    expect(modelDisplayParts('anthropic/claude-opus-4.8-fast', { quantization: 'Q4_K_M' }).tag).toBe('Fast')
+  })
+
+  it('keeps compact quant and reasoning effort as separate status tokens', () => {
+    expect(formatModelStatusLabel('qwen3.5:9b', { reasoningEffort: 'medium', quantization: 'Q4_K_M' })).toBe(
+      'Qwen3.5:9b · Q4 Med'
+    )
+    expect(
+      formatModelStatusLabel('qwen3.5:9b', {
+        fastMode: true,
+        reasoningEffort: 'medium',
+        quantization: 'Q4_K_M'
+      })
+    ).toBe('Qwen3.5:9b · Q4 Fast Med')
   })
 
   it('maps reasoning effort to compact labels', () => {

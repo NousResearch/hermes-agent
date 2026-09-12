@@ -69,9 +69,30 @@ function prettifyBase(base: string): string {
   return titleCase(base.replace(/-/g, ' '))
 }
 
+/** Compact a raw GGUF/Ollama level (`Q4_K_M`, `IQ3_XXS`) to `Q4` / `IQ3`.
+ *  Unknown soup (`unknown`, `fp32-…`) yields an empty string — never dump it. */
+export function compactQuantizationLabel(raw?: string): string {
+  const value = String(raw || '').trim()
+
+  if (!value) {
+    return ''
+  }
+
+  const match = value.match(/^(?:UD-)?(Q\d+|IQ\d+|F16|BF16)(?:[_-].*)?$/i)
+
+  return match ? match[1].toUpperCase() : ''
+}
+
+function isCompactQuantTag(tag: string): boolean {
+  return /^(Q\d+|IQ\d+|F16|BF16)$/i.test(tag)
+}
+
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
+export function modelDisplayParts(
+  model: string,
+  options?: { quantization?: string }
+): { name: string; tag: string } {
   let base = modelBaseId(model)
   let tag = ''
 
@@ -98,6 +119,12 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
     }
   }
 
+  // Inventory metadata only fills a missing tag (Ollama `qwen3.5:9b` + Q4_K_M).
+  // A cloud `-fast` / GGUF suffix already parsed above wins.
+  if (!tag) {
+    tag = compactQuantizationLabel(options?.quantization)
+  }
+
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
   base = base.replace(/-\d{8}$/, '')
 
@@ -114,15 +141,20 @@ export function displayModelName(model: string): string {
  *  no explicit effort so the label never advertises a default the agent won't use. */
 export function formatModelStatusLabel(
   model: string,
-  options?: { defaultEffort?: string; fastMode?: boolean; reasoningEffort?: string }
+  options?: { defaultEffort?: string; fastMode?: boolean; quantization?: string; reasoningEffort?: string }
 ): string {
-  const name = displayModelName(model)
+  const { name, tag } = modelDisplayParts(model, { quantization: options?.quantization })
 
   if (!model.trim()) {
     return name
   }
 
   const parts: string[] = []
+  const quant = isCompactQuantTag(tag) ? tag : compactQuantizationLabel(options?.quantization)
+
+  if (quant) {
+    parts.push(quant)
+  }
 
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
   // active model is a `…-fast` variant (fast via a separate model id).

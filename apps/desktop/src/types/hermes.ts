@@ -512,6 +512,9 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+  /** Local/Ollama ``details.quantization_level`` keyed by model id (raw, e.g.
+   *  ``Q4_K_M``). Absent for cloud rows and when the tags probe had no levels. */
+  quantization?: Record<string, string>
 }
 
 export interface ModelCapabilities {

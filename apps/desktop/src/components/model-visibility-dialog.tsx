@@ -13,7 +13,7 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { modelDisplayParts } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import {
   $visibleModels,
@@ -75,8 +75,11 @@ export function ModelVisibilityDialog({
 
   const q = normalize(search)
 
-  const matches = (provider: ModelOptionProvider, model: string) =>
-    !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
+  const matches = (provider: ModelOptionProvider, model: string) => {
+    const { name, tag } = modelDisplayParts(model, { quantization: provider.quantization?.[model] })
+
+    return !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${name} ${tag}`, q)
+  }
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -144,7 +147,9 @@ export function ModelVisibilityDialog({
                   </div>
                   {!collapsed &&
                     models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
+                      const { name, tag } = modelDisplayParts(family.id, {
+                        quantization: provider.quantization?.[family.id]
+                      })
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (

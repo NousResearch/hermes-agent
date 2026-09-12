@@ -61,6 +61,10 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
+    # Actual cost reported by the provider (e.g. Nous portal's
+    # usage.cost_details.upstream_inference_cost). When present, prefer this
+    # over the rate-table estimate in estimate_usage_cost().
+    actual_cost_usd: Optional[Decimal] = None
 
     @property
     def prompt_tokens(self) -> int:
@@ -539,9 +543,28 @@ def normalize_usage(
             cache_read_tokens, cache_write_tokens,
         )
 
+    # Extract actual cost from provider when present (e.g. Nous portal's
+    # usage.cost_details.upstream_inference_cost). This is the authoritative
+    # figure when available — rate-table estimates can diverge significantly.
+    actual_cost_usd: Optional[Decimal] = None
+    cost_details = getattr(u, "cost_details", None) if hasattr(u, "cost_details") else None
+    if cost_details is None:
+        # Fallback for dict-shaped usage objects
+        cost_details = u.get("cost_details") if isinstance(u, dict) else None
+    if cost_details is not None:
+        upstream_cost = getattr(cost_details, "upstream_inference_cost", None)
+        if upstream_cost is None and isinstance(cost_details, dict):
+            upstream_cost = cost_details.get("upstream_inference_cost")
+        if upstream_cost is not None:
+            try:
+                actual_cost_usd = Decimal(str(upstream_cost))
+            except (ValueError, TypeError):
+                pass
+
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
+        actual_cost_usd=actual_cost_usd,
     )
 
 
@@ -553,6 +576,16 @@ def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> CostResult:
+    # Prefer provider-reported actual cost when available (e.g. Nous portal's
+    # usage.cost_details.upstream_inference_cost). Rate-table estimates can
+    # diverge significantly from billed amounts.
+    if usage.actual_cost_usd is not None:
+        return CostResult(
+            amount_usd=usage.actual_cost_usd, status="actual", source="provider_cost_api",
+            label=format_cost_label(usage.actual_cost_usd),
+            notes=("cost_details.upstream_inference_cost",),
+        )
+
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return CostResult(

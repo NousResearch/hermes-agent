@@ -962,3 +962,53 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+# ---------------------------------------------------------------------------
+# Provider-reported actual cost (e.g. Nous portal cost_details.upstream_inference_cost)
+# ---------------------------------------------------------------------------
+
+
+class TestProviderReportedCost:
+    """When the provider reports usage.cost_details.upstream_inference_cost,
+    Hermes should prefer it over the rate-table estimate."""
+
+    def test_normalize_extracts_upstream_inference_cost(self):
+        """normalize_usage pulls upstream_inference_cost into actual_cost_usd."""
+        usage = SimpleNamespace(
+            input_tokens=144043,
+            output_tokens=500,
+            cost_details=SimpleNamespace(upstream_inference_cost=Decimal("0.06338552")),
+        )
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd == Decimal("0.06338552")
+
+    def test_estimate_prefers_actual_over_rate_table(self):
+        """estimate_usage_cost returns status=actual when upstream cost present."""
+        usage = CanonicalUsage(
+            input_tokens=144043, output_tokens=500,
+            actual_cost_usd=Decimal("0.06338552"),
+        )
+        result = estimate_usage_cost("deepseek/deepseek-v4-flash-0731", usage, provider="nous")
+        assert result.status == "actual"
+        assert result.source == "provider_cost_api"
+        assert result.amount_usd == Decimal("0.06338552")
+        assert "cost_details.upstream_inference_cost" in result.notes
+
+    def test_dict_shaped_cost_details(self):
+        """Dict-shaped usage.cost_details is also handled."""
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=500,
+            cost_details={"upstream_inference_cost": "0.01234"},
+        )
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd == Decimal("0.01234")
+
+    def test_missing_cost_details_falls_back_to_rate_table(self):
+        """When no upstream cost, rate-table estimate is used as before."""
+        usage = CanonicalUsage(input_tokens=1000, output_tokens=500)
+        result = estimate_usage_cost("gemini-2.5-pro", usage, provider="google")
+        # Rate-table path: source is official_docs_snapshot or similar
+        assert result.status == "estimated"
+        assert result.amount_usd is not None

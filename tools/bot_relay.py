@@ -291,6 +291,8 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
     path = base / REPLIES_DIR / f"{safe}.json"
     _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code},
                        prefix=".rep-")
+    with contextlib.suppress(OSError):
+        (base / CLAIMED_DIR / f"{safe}.json").unlink()
     return path
 
 

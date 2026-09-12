@@ -546,3 +546,23 @@ KANBAN_SPECIFY_SCHEMA = _schema(
     },
     ["task_id"],
 )
+
+KANBAN_ARCHIVE_SCHEMA = _schema(
+    "kanban_archive",
+    (
+        "Archive one finished task — the model-facing counterpart of "
+        "`hermes kanban archive`. The DB layer (kanban_db.archive_task) "
+        "keeps the row, comments, attachments, events, runs, and "
+        "dependency links exactly as they are; only the status moves to "
+        "archived and the recompute releases dependent children. The "
+        "active run, if any, is closed (outcome 'reclaimed') so history "
+        "survives. Single task per call — no batch, no purge/delete "
+        "variants. Orchestrator-only — hidden from dispatcher-spawned "
+        "task workers. Fails closed when the task is unknown or already "
+        "archived."
+    ),
+    {
+        "task_id": _prop("string", "Task id to archive."),
+    },
+    ["task_id"],
+)

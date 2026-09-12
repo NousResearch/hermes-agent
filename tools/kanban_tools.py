@@ -20,6 +20,7 @@ from hermes_cli.goals import judge_goal
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
+    KANBAN_ARCHIVE_SCHEMA,
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
@@ -1002,11 +1003,36 @@ def _handle_specify(args: dict, **kw) -> str:
         return _ok(task_id=tid, **_fields(task, ("status", "title", "assignee")))
 
 
+@_kanban_handler("kanban_archive")
+def _handle_archive(args: dict, **kw) -> str:
+    """Archive one finished task (single task; no batch/purge variants).
+
+    Thin wrapper over ``kanban_db.archive_task``: the DB layer keeps the
+    row, comments, attachments, events, runs, and dependency links and
+    closes the active run so history survives. Deterministic refusal for
+    unknown or already-archived tasks."""
+    _reject_delegated_child_mutation("kanban_archive")
+    _require_orchestrator_tool("kanban_archive")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    _enforce_worker_task_ownership(tid)
+    with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, tid)
+        archived = kb.archive_task(conn, tid)
+        # Fail closed: the task disappeared or was archived between the
+        # existence check and the write (stale race) — report, don't guess.
+        _check(archived, f"task {tid} is unknown or already archived — nothing was changed")
+        task = kb.get_task(conn, tid)
+        return _ok(task_id=tid, **_fields(task, ("status", "title")))
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock / kanban_specify route the board and are hidden
-# from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_specify"})
+# kanban_list / kanban_unblock / kanban_specify / kanban_archive route the
+# board and are hidden from task workers.
+_ORCHESTRATOR_TOOLS = frozenset(
+    {"kanban_list", "kanban_unblock", "kanban_specify", "kanban_archive"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1022,7 +1048,8 @@ _TOOLS = (
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
-    ("kanban_specify", KANBAN_SPECIFY_SCHEMA, _handle_specify, "📝"))
+    ("kanban_specify", KANBAN_SPECIFY_SCHEMA, _handle_specify, "📝"),
+    ("kanban_archive", KANBAN_ARCHIVE_SCHEMA, _handle_archive, "🗄"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

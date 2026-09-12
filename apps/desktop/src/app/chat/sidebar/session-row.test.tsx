@@ -411,6 +411,51 @@ describe('SidebarSessionRow', () => {
   })
 })
 
+// Electron drag-region carve-out (#106661): session rows sit under / adjacent
+// to the titlebar's `-webkit-app-region:drag` strips. At fractional OS scale
+// (Windows 125%) those native regions win hit-testing over DOM, so rows look
+// pinned to the chrome and clicks never reach resume. Same class as SIDEBAR_NAV
+// / USER_BUBBLE_BASE_CLASS. jsdom cannot reproduce compositor hit-testing —
+// assert the carve-out is on the interactive row root.
+describe('SidebarSessionRow Electron no-drag carve-out', () => {
+  const rowRoot = (container: HTMLElement) => {
+    const body = container.querySelector('[data-slot="row-button"]')
+    expect(body).toBeTruthy()
+
+    return body!.parentElement as HTMLElement
+  }
+
+  it('marks the interactive row root as -webkit-app-region:no-drag', () => {
+    const { container } = renderRow(makeSession({ title: 'Switchable session' }))
+
+    expect(rowRoot(container).className).toContain('[-webkit-app-region:no-drag]')
+  })
+
+  it('does not call onPin when a plain click resumes the session', () => {
+    const onPin = vi.fn()
+    const onResume = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={onPin}
+        onResume={onResume}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Resume without pin' })}
+        unread={false}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resume without pin' }))
+
+    expect(onResume).toHaveBeenCalledTimes(1)
+    expect(onPin).not.toHaveBeenCalled()
+  })
+})
+
 describe('Inbox-style session card', () => {
   it('gives truncated card lines room for glyph ink instead of clipping them', () => {
     renderRow(

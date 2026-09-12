@@ -100,6 +100,8 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._async_queue: queue.Queue | None = queue.Queue() if self._write_frequency == "async" else None
         self._async_thread: threading.Thread | None = None
         self._async_thread_lock = threading.Lock()
+        self._flush_locks_guard = threading.Lock()
+        self._flush_locks: dict[str, Any] = {}
 
     @property
     def honcho(self) -> Honcho:
@@ -281,6 +283,18 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         return peer
 
     def _flush_session(self, session: HonchoSession) -> bool:
+        """Serialize one remote session's flushes without blocking unrelated sessions."""
+        with self._flush_locks_guard:
+            # RLock keeps a future same-thread retry/re-entry safe while the
+            # per-session key preserves duplicate-upload exclusion.
+            flush_lock = self._flush_locks.setdefault(
+                session.honcho_session_id,
+                threading.RLock(),
+            )
+        with flush_lock:
+            return self._flush_session_locked(session)
+
+    def _flush_session_locked(self, session: HonchoSession) -> bool:
         """Write unsynced messages to Honcho synchronously."""
         new_messages = [m for m in session.messages if not m.get("_synced")]
         if not new_messages:

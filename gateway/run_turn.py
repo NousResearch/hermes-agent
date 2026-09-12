@@ -3461,6 +3461,9 @@ class GatewayTurnMixin:
             await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
 
         updated_history = result.get("messages", history)
+        followup_session_id = session_id
+        if isinstance(response, dict):
+            followup_session_id = response.get("session_id") or followup_session_id
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
@@ -3471,7 +3474,7 @@ class GatewayTurnMixin:
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
-            if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
+            if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(followup_session_id):
                 logger.info(
                     "Discarding stale goal continuation for session %s — goal is no longer active",
                     session_key or "?",
@@ -3519,14 +3522,14 @@ class GatewayTurnMixin:
         # call re-enters — would otherwise see the grown on-disk count against the stale build-time snapshot
         # and rebuild the agent on THIS process's OWN writes, destroying the prompt-cache prefix #46237 was
         # merged to preserve. The existing re-baseline in _handle_message_with_agent only runs after the
-        # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same (session_key,
-        # session_id) the recursive call runs under so the snapshot matches exactly what the follow-up's
-        # guard will consult. Fail-safe in helper.
-        await self._refresh_agent_cache_message_count(session_key, session_id)
+        # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same
+        # (next_session_key, followup_session_id) as the recursive call so its guard sees the
+        # completed turn's compression child. Fail-safe in helper.
+        await self._refresh_agent_cache_message_count(next_session_key, followup_session_id)
 
         followup_result = await self._run_agent(
             message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-            source=next_source, session_id=session_id, session_key=next_session_key,
+            source=next_source, session_id=followup_session_id, session_key=next_session_key,
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
             event_message_id=next_message_id, inbound_message_id=next_inbound_id,
             channel_prompt=next_channel_prompt, message_type=next_message_type,

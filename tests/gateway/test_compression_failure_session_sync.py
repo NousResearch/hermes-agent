@@ -5,9 +5,13 @@ import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 import gateway.run as gateway_run
 from gateway.config import Platform
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
 
 
 SESSION_KEY = "agent:main:telegram:dm:12345"
@@ -77,9 +81,14 @@ class _StreamConsumer:
 
 class _Adapter:
     SUPPORTS_MESSAGE_EDITING = True
-    _pending_messages = {}
 
-    def get_pending_message(self, _session_key):
+    def __init__(self):
+        self._pending_messages = {}
+
+    def get_pending_message(self, session_key):
+        return self._pending_messages.pop(session_key, None)
+
+    async def send(self, *_args, **_kwargs):
         return None
 
     async def send_typing(self, *_args, **_kwargs):
@@ -96,7 +105,7 @@ def _runner(session_store):
     runner.hooks = SimpleNamespace(loaded_hooks=False, emit=AsyncMock())
     runner.session_store = session_store
     runner._session_db = MagicMock()
-    runner._session_db.get_telegram_topic_binding_by_session.return_value = None
+    runner._session_db._db.get_telegram_topic_binding_by_session.return_value = None
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     runner._running_agents = {}
@@ -235,6 +244,7 @@ def test_empty_rate_limit_response_preserves_failure_metadata(monkeypatch):
     assert result["failure_reason"] == "rate_limit"
     assert result["completed"] is False
 
+
 class _ProviderSwitchAgent(_CompressionThenFailureAgent):
     created_providers = []
     second_turn_history = None
@@ -283,3 +293,88 @@ class _ProviderSwitchAgent(_CompressionThenFailureAgent):
         }
 
 
+@pytest.mark.parametrize("interrupted", [False, True])
+@pytest.mark.parametrize("rotates", [False, True])
+def test_queued_burst_follows_each_compression_child(monkeypatch, interrupted, rotates):
+    session_store = _SessionStore()
+    runner = _runner(session_store)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    next_key = runner._session_key_for_source(source)
+    run_ids, agent_ids = [], []
+
+    class BurstAgent(_CompressionThenFailureAgent):
+        def run_conversation(self, user_message, conversation_history=None, **kwargs):
+            agent_ids.append(self.session_id)
+            turn = len(agent_ids)
+            messages = [{"role": "user", "content": user_message}]
+            if turn < 3:
+                if rotates:
+                    self.session_id = f"compression-child-{turn}"
+                    messages.insert(0, {"role": "user", "content": f"summary-{turn}"})
+                key = SESSION_KEY if turn == 1 else next_key
+                adapter._pending_messages[key] = MessageEvent(
+                    text=f"queued-{turn}", source=source, message_type=MessageType.TEXT,
+                    message_id=f"queued-id-{turn}",
+                )
+            return {
+                "final_response": f"turn-{turn}-done", "session_id": self.session_id,
+                "interrupted": interrupted and turn < 3, "messages": messages, "api_calls": 1,
+            }
+
+    _install_compression_failure_agent(monkeypatch, BurstAgent)
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(
+        side_effect=lambda **kw: kw["event"].text,
+    )
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner._deliver_queued_first_response = AsyncMock()
+    original_run_agent = runner._run_agent
+
+    async def record_turn(*args, **kwargs):
+        run_ids.append(kwargs["session_id"])
+        return await original_run_agent(*args, **kwargs)
+
+    runner._run_agent = record_turn
+    result = _run_compression_failure_turn(runner, source)
+    expected = ["session-before-compression", "compression-child-1", "compression-child-2"] if rotates else ["session-before-compression"] * 3
+    assert run_ids == expected
+    assert agent_ids == expected
+    assert result["session_id"] == expected[-1]
+    assert result["final_response"] == "turn-3-done"
+    assert not adapter._pending_messages
+    assert runner._deliver_queued_first_response.await_count == (0 if interrupted else 2)
+    assert [call.args for call in runner._refresh_agent_cache_message_count.await_args_list] == [
+        (next_key, session_id) for session_id in expected[1:]
+    ]
+    assert [call.kwargs["session_key"] for call in runner._prepare_profile_scoped_inbound_message_text.await_args_list] == [next_key, next_key]
+    if rotates:
+        assert runner._prepare_profile_scoped_inbound_message_text.await_args_list[1].kwargs["history"][0]["content"] == "summary-2"
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_queued_goal_checks_compression_child_before_preprocessing(active):
+    runner = _runner(_SessionStore())
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1")
+    ctx = TurnContext(source=source, session_id="closed-parent", session_key=SESSION_KEY, history=[])
+    pending = MessageEvent(text="continue goal", source=source)
+    response = {"session_id": "compression-child", "messages": [], "interrupted": True}
+    runner._is_goal_continuation_event = lambda event: True
+    runner._goal_still_active_for_session = MagicMock(side_effect=lambda sid: active and sid == response["session_id"])
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value=pending.text)
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner._run_agent = AsyncMock(return_value={"final_response": "continued", "session_id": response["session_id"]})
+
+    result = asyncio.run(runner._run_agent_queued_followup(
+        ctx, runner.adapters[Platform.TELEGRAM], pending.text, pending, response, response, None,
+    ))
+
+    runner._goal_still_active_for_session.assert_called_once_with(response["session_id"])
+    if active:
+        assert result["final_response"] == "continued"
+        assert runner._run_agent.await_args.kwargs["session_id"] == response["session_id"]
+        runner._prepare_profile_scoped_inbound_message_text.assert_awaited_once()
+    else:
+        assert result is response
+        runner._prepare_profile_scoped_inbound_message_text.assert_not_awaited()
+        runner._refresh_agent_cache_message_count.assert_not_awaited()
+        runner._run_agent.assert_not_awaited()

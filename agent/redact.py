@@ -750,11 +750,21 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 # ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
-# Commands that read file contents to stdout. A ``.env`` target is a credential
-# dump (per AGENTS.md ``.env`` holds only secrets), so the ENV pass must run.
+# Commands that read file contents to stdout. Secret-bearing targets need the
+# assignment passes even though arbitrary source/config dumps do not.
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat",
+    "zcat", "tac", "view", "batcat", "grep", "egrep", "fgrep", "rg",
+    "awk", "sed",
+})
+
+_SECRET_FILE_BASENAMES = _ENV_FILE_BASENAMES | frozenset({
+    "config.yaml",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+    ".zshrc",
+    ".zprofile",
 })
 
 
@@ -763,10 +773,12 @@ def _command_segments(command: str) -> list[str]:
     return [seg.strip() for seg in re.split(r"[|;&]+", command) if seg.strip()]
 
 
-def _command_reads_env_file(command: str | None) -> bool:
-    """True if ``command`` reads a ``.env``-style file (by basename) to stdout.
-    Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
-    .env)``, ``sed``/``awk``) are not detected, matching ``is_env_dump_command``."""
+def _command_reads_secret_file(command: str | None) -> bool:
+    """True if ``command`` reads a known secret-bearing file to stdout.
+
+    This is defense-in-depth, not a boundary: indirect readers such as ``sudo``
+    and command substitutions are not detected, matching ``is_env_dump_command``.
+    """
     if not command:
         return False
     for seg in _command_segments(command):
@@ -777,7 +789,7 @@ def _command_reads_env_file(command: str | None) -> bool:
             if arg.startswith("-"):
                 continue
             basename = arg.strip("\"'").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if basename.lower() in _ENV_FILE_BASENAMES:
+            if basename.lower() in _SECRET_FILE_BASENAMES:
                 return True
     return False
 
@@ -799,11 +811,11 @@ def is_env_dump_command(command: str | None) -> bool:
 
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
     """Single redaction policy for ALL terminal-output surfaces: the ENV-assignment
-    pass runs only when ``command`` is an env dump or reads a ``.env`` file
-    (otherwise code_file=True avoids false positives on source/config dumps)."""
+    pass runs when ``command`` is an env dump or reads a known secret-bearing
+    file (otherwise code_file=True avoids false positives on arbitrary dumps)."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_env_file(command))
+    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 

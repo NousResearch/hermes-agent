@@ -839,7 +839,7 @@ class TestTerminalOutputRedaction:
 
     Terminal/process stdout must be redacted on every surface (foreground
     `terminal` AND background `process(poll/log/wait)`). Env-dump commands
-    and commands that read ``.env`` files get the ENV-assignment pass so
+    and commands that read known secret-bearing files get the assignment passes so
     opaque tokens (no vendor prefix) are masked; other commands stay on
     the code_file path to avoid false positives.
     """
@@ -859,55 +859,69 @@ class TestTerminalOutputRedaction:
         assert not is_env_dump_command("")
         assert not is_env_dump_command(None)
 
-    # ── .env file detection (issue #61352 v2) ──
+    # ── secret-bearing file detection (issues #61352, #109362) ──
 
-    def test_command_reads_env_file_detection(self):
-        from agent.redact import _command_reads_env_file
+    def test_command_reads_secret_file_detection(self):
+        from agent.redact import _command_reads_secret_file
         # Basic detection
-        assert _command_reads_env_file("cat .env")
-        assert _command_reads_env_file("cat .env.local")
-        assert _command_reads_env_file("cat .env.production")
-        assert _command_reads_env_file("cat .envrc")
-        assert _command_reads_env_file("head .env")
-        assert _command_reads_env_file("tail .env")
-        assert _command_reads_env_file("type .env")
-        assert _command_reads_env_file("nl .env")
-        assert _command_reads_env_file("bat .env")
+        assert _command_reads_secret_file("cat .env")
+        assert _command_reads_secret_file("cat .env.local")
+        assert _command_reads_secret_file("cat .env.production")
+        assert _command_reads_secret_file("cat .envrc")
+        assert _command_reads_secret_file("head .env")
+        assert _command_reads_secret_file("tail .env")
+        assert _command_reads_secret_file("type .env")
+        assert _command_reads_secret_file("nl .env")
+        assert _command_reads_secret_file("bat .env")
         # With flags
-        assert _command_reads_env_file("cat -n .env")
-        assert _command_reads_env_file("cat -A .env")
+        assert _command_reads_secret_file("cat -n .env")
+        assert _command_reads_secret_file("cat -A .env")
         # With paths
-        assert _command_reads_env_file("cat ~/.hermes/.env")
-        assert _command_reads_env_file("cat /home/user/project/.env")
-        assert _command_reads_env_file("cat ./config/.env.local")
+        assert _command_reads_secret_file("cat ~/.hermes/.env")
+        assert _command_reads_secret_file("cat /home/user/project/.env")
+        assert _command_reads_secret_file("cat ./config/.env.local")
+        assert _command_reads_secret_file("grep TOKEN ~/.hermes/config.yaml")
+        assert _command_reads_secret_file("awk '{print $0}' ~/.bashrc")
         # In a pipeline / sequence
-        assert _command_reads_env_file("cat .env | grep KEY")
-        assert _command_reads_env_file("echo '---' && cat .env")
+        assert _command_reads_secret_file("cat .env | grep KEY")
+        assert _command_reads_secret_file("echo '---' && cat .env")
         # Windows-style backslash paths
-        assert _command_reads_env_file("cat C:\\Users\\test\\.env")
+        assert _command_reads_secret_file("cat C:\\Users\\test\\.env")
         # Quoted paths (plain split leaves the quotes attached)
-        assert _command_reads_env_file('cat ".env"')
-        assert _command_reads_env_file("cat '.env'")
+        assert _command_reads_secret_file('cat ".env"')
+        assert _command_reads_secret_file("cat '.env'")
         # Case-insensitive basename (macOS/Windows filesystems)
-        assert _command_reads_env_file("cat .ENV")
+        assert _command_reads_secret_file("cat .ENV")
 
-    def test_command_reads_env_file_excludes_templates(self):
-        from agent.redact import _command_reads_env_file
+    def test_command_reads_secret_file_excludes_templates(self):
+        from agent.redact import _command_reads_secret_file
         # Templates/examples should NOT trigger
-        assert not _command_reads_env_file("cat .env.example")
-        assert not _command_reads_env_file("cat .env.sample")
-        assert not _command_reads_env_file("cat .env.template")
-        assert not _command_reads_env_file("cat .env.dist")
+        assert not _command_reads_secret_file("cat .env.example")
+        assert not _command_reads_secret_file("cat .env.sample")
+        assert not _command_reads_secret_file("cat .env.template")
+        assert not _command_reads_secret_file("cat .env.dist")
 
-    def test_command_reads_env_file_rejects_non_env_files(self):
-        from agent.redact import _command_reads_env_file
-        assert not _command_reads_env_file("cat config.py")
-        assert not _command_reads_env_file("cat README.md")
-        assert not _command_reads_env_file("cat .envrc.bak")  # .bak not in list
-        assert not _command_reads_env_file("python app.py")
-        assert not _command_reads_env_file("echo .env")  # echo is not a file-read cmd
-        assert not _command_reads_env_file("")
-        assert not _command_reads_env_file(None)
+    def test_command_reads_secret_file_rejects_other_files(self):
+        from agent.redact import _command_reads_secret_file
+        assert not _command_reads_secret_file("cat config.py")
+        assert not _command_reads_secret_file("cat README.md")
+        assert not _command_reads_secret_file("cat .envrc.bak")  # .bak not in list
+        assert not _command_reads_secret_file("python app.py")
+        assert not _command_reads_secret_file("echo .env")  # echo is not a file-read cmd
+        assert not _command_reads_secret_file("")
+        assert not _command_reads_secret_file(None)
+
+    @pytest.mark.parametrize(
+        ("output", "command"),
+        [
+            ("ADS_API_TOKEN: " + "A" * 40, "grep -n mcp ~/.hermes/config.yaml"),
+            ("export FOO_TOKEN=" + "B" * 40, "awk '{print $0}' ~/.bashrc"),
+        ],
+    )
+    def test_secret_bearing_file_reads_mask_opaque_assignments(self, output, command):
+        from agent.redact import redact_terminal_output
+        secret = output.rsplit(" ", 1)[-1].split("=", 1)[-1]
+        assert secret not in redact_terminal_output(output, command)
 
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""

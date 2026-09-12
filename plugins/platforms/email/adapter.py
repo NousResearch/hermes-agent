@@ -341,6 +341,10 @@ class EmailAdapter(BasePlatformAdapter):
         setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")  # noqa: E731
         tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))  # noqa: E731
         self._address = setting("EMAIL_ADDRESS", "address").strip()
+        # Separate authentication identity; the public From: address remains self._address.
+        self._login_user = (
+            _get_secret("EMAIL_LOGIN_USER", "") or extra.get("login_user", "") or self._address
+        ).strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
@@ -404,7 +408,7 @@ class EmailAdapter(BasePlatformAdapter):
         # (#79889).
         imap = self._connect_imap()
         try:
-            imap.login(self._address, self._password)
+            imap.login(self._login_user, self._password)
             _send_imap_id(imap)
             imap.select("INBOX")
             yield imap
@@ -459,7 +463,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             smtp = self._connect_smtp()
             try:
-                smtp.login(self._address, self._password)
+                smtp.login(self._login_user, self._password)
             finally:
                 smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
@@ -687,7 +691,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Login, send, and always release the SMTP connection (quit, else close)."""
         smtp = self._connect_smtp()
         try:
-            smtp.login(self._address, self._password)
+            smtp.login(self._login_user, self._password)
             smtp.send_message(msg)
         finally:
             try:
@@ -770,6 +774,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
+    login_user = (extra.get("login_user") or _get_secret("EMAIL_LOGIN_USER", "") or address).strip() or address
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
@@ -780,7 +785,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
-        server.login(address, password)
+        server.login(login_user, password)
         server.send_message(msg)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}

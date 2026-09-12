@@ -21,6 +21,10 @@ requires_env:
     prompt: "SMTP host"
     password: false
 optional_env:
+  - name: EMAIL_LOGIN_USER
+    description: "Separate IMAP/SMTP login username (defaults to EMAIL_ADDRESS; for custom-domain alias setups)"
+    prompt: "IMAP/SMTP login username (leave empty to use EMAIL_ADDRESS)"
+    password: false
   - name: EMAIL_SMTP_PORT
     description: "SMTP port (default 587)"
     prompt: "SMTP port"

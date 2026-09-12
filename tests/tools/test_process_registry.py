@@ -533,6 +533,65 @@ class TestOrphanedPipeReconciliation:
         assert result["exit_code"] == 0
         assert elapsed < 0.9  # must stay under the old 1s poll tick being regression-tested, f"wait() should wake on completion; took {elapsed:.3f}s"
 
+    def test_get_does_not_wait_for_finished_result_persistence(self, registry):
+        """A stalled durable receipt must not hold the registry query lock."""
+        s = _make_session(sid="proc_slow_receipt", output="done")
+        s.exited = True
+        s.exit_code = 0
+        s.notify_on_complete = True
+        registry._running[s.id] = s
+
+        persistence_started = threading.Event()
+        release_persistence = threading.Event()
+        get_returned = threading.Event()
+        observed = []
+
+        def stalled_save(saved_session):
+            assert saved_session is s
+            persistence_started.set()
+            assert release_persistence.wait(timeout=5)
+
+        def finish():
+            registry._move_to_finished(s)
+
+        def get_session():
+            observed.append(registry.get(s.id))
+            get_returned.set()
+
+        with (
+            patch("tools.process_registry.save_completed_result", side_effect=stalled_save),
+            patch.object(registry, "_write_checkpoint"),
+        ):
+            finish_thread = threading.Thread(target=finish)
+            finish_thread.start()
+            assert persistence_started.wait(timeout=2)
+
+            get_thread = threading.Thread(target=get_session)
+            get_thread.start()
+            try:
+                assert get_returned.wait(timeout=2), (
+                    "ProcessRegistry.get blocked on stalled result persistence"
+                )
+                assert observed == [s]
+                assert s.id in registry._running
+                assert s.id not in registry._finished
+                assert registry.completion_queue.empty()
+                assert not s._completion_event.is_set()
+            finally:
+                release_persistence.set()
+                finish_thread.join(timeout=2)
+                get_thread.join(timeout=2)
+
+            assert not finish_thread.is_alive()
+            assert not get_thread.is_alive()
+            assert s.id not in registry._running
+            assert registry._finished[s.id] is s
+            assert s._completion_event.is_set()
+            assert registry.completion_queue.qsize() == 1
+
+            registry._move_to_finished(s)
+            assert registry.completion_queue.qsize() == 1
+
 
 # =========================================================================
 # Read log

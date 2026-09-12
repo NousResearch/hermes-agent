@@ -478,6 +478,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
+        self._finishing: set[str] = set()
         self._lock = threading.Lock()
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
@@ -1269,11 +1270,24 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             was_running = session.id in self._running
             if was_running:
-                # Keep the session tracked until its result is durable. A finite
-                # parent must not observe completion and exit during this write.
+                if session.id in self._finishing:
+                    return
+                self._finishing.add(session.id)
+            else:
+                self._finished[session.id] = session
+        if was_running:
+            try:
+                # Keep the session tracked until its result is durable, but never
+                # hold the registry lock across synchronous filesystem I/O.
                 save_completed_result(session)
+            except BaseException:
+                with self._lock:
+                    self._finishing.discard(session.id)
+                raise
+            with self._lock:
                 self._running.pop(session.id)
-            self._finished[session.id] = session
+                self._finished[session.id] = session
+                self._finishing.discard(session.id)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {

@@ -18,6 +18,46 @@ pytestmark = pytest.mark.windows_only
 _INSTALL_PS1 = Path(__file__).resolve().parents[1] / "scripts" / "install.ps1"
 
 
+def test_fresh_install_manifest_orders_repo_before_checkout_scoped_python(
+    tmp_path: Path,
+) -> None:
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("Windows PowerShell is required")
+
+    install_dir = tmp_path / "install"
+    run = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(_INSTALL_PS1),
+            "-Manifest",
+            "-HermesHome",
+            str(tmp_path / "hermes-home"),
+            "-InstallDir",
+            str(install_dir),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=45,
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    manifest = json.loads(run.stdout)
+    stages = [stage["name"] for stage in manifest["stages"]]
+    assert (
+        stages.index("repository")
+        < stages.index("python")
+        < stages.index("venv")
+    )
+    assert not install_dir.exists(), "manifest lookup must remain read-only"
+
+
 def _run_venv_stage(
     powershell: str,
     tmp_path: Path,

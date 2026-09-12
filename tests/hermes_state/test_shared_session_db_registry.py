@@ -17,7 +17,6 @@ Covers the three ownership invariants the PR review demanded:
    every state.db in the process).
 """
 
-import contextlib
 import os
 import shutil
 import threading
@@ -35,10 +34,15 @@ def _clean_registry():
     registry.close_all()
     registry._generations.clear()
     registry._retired.clear()
+    registry._opening.clear()
+    registry._tearing_down.clear()
+    registry._path_lifecycle_locks.clear()
     yield
     registry.close_all()
     registry._generations.clear()
     registry._retired.clear()
+    registry._opening.clear()
+    registry._tearing_down.clear()
 
 
 def _replace_file_preserving_schema(src: Path, dst: Path) -> None:
@@ -178,6 +182,127 @@ def stats_live_for(path: Path):
 
 
 class TestTeardownOutsideLock:
+    def test_concurrent_cold_acquire_opens_one_writer(self, tmp_path, monkeypatch):
+        """Concurrent first callers must not construct redundant writers.
+
+        Returning one winning object is not enough: every losing constructor
+        has already opened its own writable SQLite connection by then.  Hold
+        the first construction so peer callers overlap deterministically and
+        assert the registry single-flights the open itself.
+        """
+        db_path = tmp_path / "state.db"
+        callers = 6
+        ready = threading.Barrier(callers + 1)
+        release_open = threading.Event()
+        count_lock = threading.Lock()
+        open_calls = 0
+        results = []
+        errors = []
+
+        class _FakeDB:
+            def __init__(self, path):
+                self.db_path = path
+                self._shared_registry_owned = False
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        def _blocked_open(path):
+            nonlocal open_calls
+            with count_lock:
+                open_calls += 1
+            assert release_open.wait(5.0)
+            return _FakeDB(path)
+
+        monkeypatch.setattr(registry, "_open_session_db", _blocked_open)
+
+        def _acquire():
+            try:
+                ready.wait()
+                results.append(registry.acquire(db_path))
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_acquire) for _ in range(callers)]
+        for thread in threads:
+            thread.start()
+        ready.wait()
+        time.sleep(0.1)
+        release_open.set()
+        for thread in threads:
+            thread.join(10.0)
+            assert not thread.is_alive(), "concurrent acquire deadlocked"
+
+        assert errors == []
+        assert open_calls == 1
+        assert len({id(db) for db in results}) == 1
+        for db in results:
+            assert registry.release(db) is True
+
+    def test_waiter_retries_after_cold_open_failure(self, tmp_path, monkeypatch):
+        """A failed elected opener must wake a peer to retry the path."""
+        db_path = tmp_path / "state.db"
+        first_entered = threading.Event()
+        release_failure = threading.Event()
+        open_calls = 0
+        results = []
+        errors = []
+
+        class _FakeDB:
+            def __init__(self, path):
+                self.db_path = path
+                self._shared_registry_owned = False
+
+            def close(self):
+                pass
+
+        def _fail_then_open(path):
+            nonlocal open_calls
+            open_calls += 1
+            if open_calls == 1:
+                first_entered.set()
+                assert release_failure.wait(5.0)
+                raise OSError("transient open failure")
+            return _FakeDB(path)
+
+        monkeypatch.setattr(registry, "_open_session_db", _fail_then_open)
+
+        def _acquire():
+            try:
+                results.append(registry.acquire(db_path))
+            except BaseException as exc:
+                errors.append(exc)
+
+        first = threading.Thread(target=_acquire)
+        second = threading.Thread(target=_acquire)
+        first.start()
+        assert first_entered.wait(5.0)
+        second.start()
+        time.sleep(0.1)
+        release_failure.set()
+        first.join(10.0)
+        second.join(10.0)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert open_calls == 2
+        assert len(errors) == 1
+        assert isinstance(errors[0], OSError)
+        assert len(results) == 1
+        assert registry.release(results[0]) is True
+
+    def test_equivalent_path_spellings_share_generation(self, tmp_path):
+        """Registry identity is the resolved file, not caller spelling."""
+        db_path = tmp_path / "nested" / "state.db"
+        equivalent = tmp_path / "nested" / ".." / "nested" / "state.db"
+
+        first = registry.acquire(db_path)
+        second = registry.acquire(equivalent)
+        assert first is second
+        assert registry.release(first) is True
+        assert registry.release(second) is True
+
     def test_final_release_does_not_hold_registry_lock_during_close(self, tmp_path, monkeypatch):
         """A final release's teardown (token-writer stop, WAL checkpoint,
         read-pool drain) must run OUTSIDE the registry lock — otherwise
@@ -231,10 +356,16 @@ class TestTeardownOutsideLock:
 
         def _worker(n):
             try:
-                for _ in range(20):
+                for index in range(20):
                     db = registry.acquire(db_path)
                     try:
-                        db.get_session("nonexistent")
+                        db.create_session(
+                            session_id=f"worker-{n}-{index}",
+                            source="test",
+                            model="test-model",
+                            model_config={},
+                            system_prompt=None,
+                        )
                     finally:
                         registry.release(db)
             except Exception as exc:  # pragma: no cover - failure path
@@ -248,9 +379,29 @@ class TestTeardownOutsideLock:
             assert not t.is_alive(), "worker deadlocked"
 
         assert errors == []
+        verifier = registry.acquire(db_path)
+        try:
+            with verifier._lock:
+                assert verifier._conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            registry.release(verifier)
         stats = registry.stats()
         assert stats["live_generations"] == 0
         assert stats["retired_generations"] == 0
+
+
+class TestLifecycleBarrier:
+    def test_maintenance_borrow_pins_connection_until_scope_exits(self, tmp_path):
+        """Maintenance gets a temporary holder, not an unpinned snapshot."""
+        db_path = tmp_path / "state.db"
+        db = registry.acquire(db_path)
+
+        with registry.borrow_live_shared_session_dbs() as borrowed:
+            assert borrowed == [db]
+            assert registry.release(db) is True
+            assert db._conn is not None
+
+        assert db._conn is None
 
 
 class TestLegacyCloseSemantics:
@@ -335,3 +486,230 @@ class TestAcquireSingleFlight:
         assert len(opened) >= 1
         registry.release(results[0])
         registry.release(results[1])
+
+
+class TestMultiGenerationTeardownBarrier:
+    """One path, several closes admitted at once (#103118 review).
+
+    The per-path mutex only serializes teardowns that already entered it. A
+    releasing thread can be descheduled after its generation left the registry
+    and its close was admitted, but before the mutex. If the path barrier is a
+    bare event, the NEXT teardown to settle lifts it for everybody: ``close_all``
+    reports a finished sweep and ``acquire`` publishes a replacement writer while
+    the first handle is still inside checkpoint/WAL-unlink — the overlap that
+    leaves zero-hole pages behind (#102827).
+    """
+
+    @staticmethod
+    def _pause_teardown_of(monkeypatch, target):
+        """Hold ``target``'s physical teardown *before* the lifecycle mutex.
+
+        Returns ``(entered, resume)``: ``entered`` fires once the paused
+        teardown is admitted-but-unfinished, ``resume`` lets it proceed.
+        """
+        entered = threading.Event()
+        resume = threading.Event()
+        original = registry._teardown_generation
+
+        def _paused(path, db, *, barrier=None):
+            if db is target:
+                entered.set()
+                if not resume.wait(10.0):  # pragma: no cover - failure path
+                    raise AssertionError("timed out holding a teardown")
+            original(path, db, barrier=barrier)
+
+        monkeypatch.setattr(registry, "_teardown_generation", _paused)
+        return entered, resume
+
+    @staticmethod
+    def _release_async(db, errors):
+        def _run():
+            try:
+                assert registry.release(db) is True
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        return thread
+
+    def _two_generations(self, tmp_path, monkeypatch):
+        """Acquire a generation, replace the file identity, acquire its successor."""
+        db_path = tmp_path / "state.db"
+        old = registry.acquire(db_path)
+        _replace_file_preserving_schema(db_path, db_path)
+        current = registry.acquire(db_path)
+        assert current is not old
+        return db_path, old, current
+
+    def test_retired_drain_does_not_lift_a_pending_current_teardown(self, tmp_path, monkeypatch):
+        """close_all() must not report a finished sweep over a pending close."""
+        db_path, old, current = self._two_generations(tmp_path, monkeypatch)
+        resolved = Path(db_path).resolve()
+        entered, resume = self._pause_teardown_of(monkeypatch, current)
+        errors = []
+        releaser = self._release_async(current, errors)
+        try:
+            assert entered.wait(5.0)
+
+            # The retired generation's final release settles completely while the
+            # current generation's close is still admitted.
+            assert registry.release(old) is True
+            assert old._conn is None
+            barrier = registry._tearing_down.get(resolved)
+            assert barrier is not None, "retired drain lifted the shared path barrier"
+            assert barrier.pending == 1
+            assert not barrier.event.is_set()
+
+            swept = []
+            sweep_done = threading.Event()
+
+            def _close_all():
+                swept.append(registry.close_all())
+                sweep_done.set()
+
+            sweeper = threading.Thread(target=_close_all, daemon=True)
+            sweeper.start()
+            assert not sweep_done.wait(0.5), "close_all returned with a close still pending"
+            assert current._conn is not None
+
+            resume.set()
+            assert sweep_done.wait(10.0)
+            sweeper.join(10.0)
+        finally:
+            resume.set()
+            releaser.join(10.0)
+
+        assert errors == []
+        assert current._conn is None
+        assert registry._tearing_down.get(resolved) is None
+
+    def test_replacement_is_not_published_before_the_last_close_settles(self, tmp_path, monkeypatch):
+        """acquire() must not open a writer on top of an unfinished close."""
+        db_path, old, current = self._two_generations(tmp_path, monkeypatch)
+        entered, resume = self._pause_teardown_of(monkeypatch, current)
+        errors = []
+        releaser = self._release_async(current, errors)
+        acquired = []
+        acquire_done = threading.Event()
+        try:
+            assert entered.wait(5.0)
+            assert registry.release(old) is True
+
+            def _acquire():
+                try:
+                    fresh = registry.acquire(db_path)
+                    # Record the predecessor's state AT publication time.
+                    acquired.append((fresh, current._conn is None))
+                except BaseException as exc:  # pragma: no cover - failure path
+                    errors.append(exc)
+                finally:
+                    acquire_done.set()
+
+            opener = threading.Thread(target=_acquire, daemon=True)
+            opener.start()
+            assert not acquire_done.wait(0.5), "replacement published before the previous close"
+
+            resume.set()
+            assert acquire_done.wait(10.0)
+            opener.join(10.0)
+        finally:
+            resume.set()
+            releaser.join(10.0)
+
+        assert errors == []
+        assert len(acquired) == 1
+        fresh, predecessor_was_closed = acquired[0]
+        assert predecessor_was_closed, "a new writer was published over a live handle"
+        assert fresh is not current
+        assert registry.release(fresh) is True
+
+    def test_failed_teardown_still_settles_the_barrier(self, tmp_path, monkeypatch):
+        """A raising close must not strand the path barrier forever."""
+        db_path = tmp_path / "state.db"
+        db = registry.acquire(db_path)
+        resolved = Path(db_path).resolve()
+        real_teardown = registry._teardown
+
+        def _raising_teardown(target):
+            real_teardown(target)
+            raise RuntimeError("checkpoint exploded")
+
+        monkeypatch.setattr(registry, "_teardown", _raising_teardown)
+        with pytest.raises(RuntimeError):
+            registry.release(db)
+
+        assert registry._tearing_down.get(resolved) is None
+        monkeypatch.setattr(registry, "_teardown", real_teardown)
+        fresh = registry.acquire(db_path)
+        assert fresh is not db
+        assert registry.release(fresh) is True
+
+
+class TestCloseAllUnder:
+    def test_closes_connections_inside_directory_only(self, tmp_path):
+        profile_dir = tmp_path / "profiles" / "work"
+        profile_dir.mkdir(parents=True)
+        inside = registry.acquire(profile_dir / "state.db")
+        outside = registry.acquire(tmp_path / "other" / "state.db")
+        assert inside._conn is not None
+        assert outside._conn is not None
+
+        closed = registry.close_all_under(profile_dir)
+        assert closed == 1
+        assert inside._conn is None
+        assert outside._conn is not None
+        assert registry.close_all_under(profile_dir) == 0
+
+        again = registry.acquire(profile_dir / "state.db")
+        assert again._conn is not None
+        assert again is not inside
+        assert registry.release(again) is True
+        assert registry.release(outside) is True
+
+    def test_noop_when_this_process_holds_nothing(self, tmp_path):
+        profile_dir = tmp_path / "profiles" / "empty"
+        profile_dir.mkdir(parents=True)
+        assert registry.close_all_under(profile_dir) == 0
+
+    def test_waits_for_admitted_teardown_after_generation_is_gone(self, tmp_path, monkeypatch):
+        """Final release admits teardown before close; rmtree still needs that wait."""
+        profile_dir = tmp_path / "profiles" / "work"
+        profile_dir.mkdir(parents=True)
+        db = registry.acquire(profile_dir / "state.db")
+        entered, resume = TestMultiGenerationTeardownBarrier._pause_teardown_of(
+            monkeypatch, db
+        )
+        errors: list[BaseException] = []
+        releaser = TestMultiGenerationTeardownBarrier._release_async(db, errors)
+        try:
+            assert entered.wait(5.0)
+            resolved = (profile_dir / "state.db").resolve()
+            assert registry._generations.get(resolved) is None
+            barrier = registry._tearing_down.get(resolved)
+            assert barrier is not None and not barrier.event.is_set()
+
+            swept: list[int] = []
+            sweep_done = threading.Event()
+
+            def _sweep() -> None:
+                swept.append(registry.close_all_under(profile_dir))
+                sweep_done.set()
+
+            sweeper = threading.Thread(target=_sweep, daemon=True)
+            sweeper.start()
+            assert not sweep_done.wait(0.5), (
+                "close_all_under returned with a close still pending"
+            )
+            assert db._conn is not None
+
+            resume.set()
+            assert sweep_done.wait(10.0)
+            sweeper.join(10.0)
+        finally:
+            resume.set()
+            releaser.join(10.0)
+
+        assert errors == []
+        assert db._conn is None
+        assert swept == [0]

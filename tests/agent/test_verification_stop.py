@@ -28,6 +28,13 @@ def _make_project(root: Path) -> None:
     _node_project(root)
 
 
+@pytest.fixture(autouse=True)
+def _ledger_on(monkeypatch):
+    """The ledger is inert unless verify-on-stop is enabled; ``clear_verify_env`` (requested
+    explicitly, so it runs after this) strips it again for the enabled()-logic tests."""
+    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+
+
 @pytest.fixture
 def clear_verify_env(monkeypatch):
     """Clear every env signal verify_on_stop_enabled consults.

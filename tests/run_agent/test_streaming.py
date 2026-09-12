@@ -260,6 +260,46 @@ class TestStreamingAccumulator:
         assert call_kwargs["stream"] is True
         assert "stream_options" not in call_kwargs
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_endpoint_rejecting_stream_options_is_retried_without_it(self, mock_close, mock_create, monkeypatch):
+        """Strict OpenAI-compatible endpoints (Azure AI Foundry MaaS) 422 on
+        ``stream_options.include_usage``; the call is retried once without the field and
+        the session remembers the rejection (#9705). The compatibility retry must not spend
+        the transient-retry budget: with HERMES_STREAM_RETRIES=0 it still happens."""
+        from openai import APIStatusError
+        from run_agent import AIAgent
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        body = {"detail": [{"type": "extra_forbidden", "loc": ["body", "stream_options", "include_usage"],
+                            "msg": "Extra inputs are not permitted"}]}
+        rejection = APIStatusError("Unprocessable Entity", response=MagicMock(status_code=422), body=body)
+        rejection.status_code = 422
+        calls = []
+
+        def _create(**kwargs):
+            calls.append(kwargs)
+            if "stream_options" in kwargs:
+                raise rejection
+            return iter([_make_stream_chunk(content="ok", finish_reason="stop", model="mistral-small")])
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _create
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(api_key="k", base_url="https://hub.services.ai.azure.com/openai/v1",
+                        model="mistral-small-2503", provider="custom", quiet_mode=True,
+                        skip_context_files=True, skip_memory=True)
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "ok"
+        assert [("stream_options" in c) for c in calls] == [True, False]
+        assert agent._stream_options_unsupported is True
+        assert agent._disable_streaming is False  # streaming itself still works there
+
 
 
     @patch("run_agent.AIAgent._create_request_openai_client")
@@ -305,8 +345,177 @@ class TestStreamingAccumulator:
         assert tc[0].function.name == "terminal"
         assert tc[0].function.arguments == '{"command": "ls"}'
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_argument_deltas_are_collected_without_concatenating_each_chunk(
+        self, mock_close, mock_create
+    ):
+        """Large tool arguments must not rebuild the accumulated string per delta."""
+        from run_agent import AIAgent
 
+        class AppendOnlyChunk(str):
+            def __radd__(self, other):
+                raise AssertionError("tool argument delta was concatenated eagerly")
 
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, tc_id="call_123", name="write_file"
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments=AppendOnlyChunk('{"path":"out.txt",')
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, arguments=AppendOnlyChunk('"content":"hello"}')
+                )
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        assert tool_call.function.arguments == (
+            '{"path":"out.txt","content":"hello"}'
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("agent.relay_llm.stream")
+    def test_relay_finalizer_emits_joined_tool_arguments(
+        self, mock_relay_stream, mock_close, mock_create
+    ):
+        """Relay receives the public string shape, not buffered fragments."""
+        from run_agent import AIAgent
+
+        captured = {}
+        fake_stream = MagicMock()
+        fake_stream.final_response = None
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0,
+                    tc_id="call_123",
+                    name="search",
+                    arguments='{"q":',
+                )
+            ]),
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='"hello"}')
+            ]),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        fake_stream.__iter__.return_value = iter(chunks)
+
+        def relay_stream_impl(*args, **kwargs):
+            captured["finalizer"] = kwargs["finalizer"]
+            captured["on_chunk"] = kwargs["on_chunk"]
+            return fake_stream
+
+        mock_relay_stream.side_effect = relay_stream_impl
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([])
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        # Relay's contract: the collector sees every chunk as JSON, then the finalizer runs.
+        from agent.relay_llm import _jsonable
+        for chunk in chunks:
+            captured["on_chunk"](_jsonable(chunk))
+        payload = captured["finalizer"]()
+        tool_calls = payload["choices"][0]["message"]["tool_calls"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"] == {
+            "name": "search",
+            "arguments": '{"q":"hello"}',
+        }
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_argument_assembly_is_chunk_boundary_invariant(
+        self, mock_close, mock_create
+    ):
+        """Argument bytes are identical across ASCII and Unicode fragment sizes."""
+        import json
+
+        from run_agent import AIAgent
+
+        payload = json.dumps(
+            {"path": "/tmp/x", "content": "héllo wörld 日本語 " * 50},
+            ensure_ascii=False,
+        )
+
+        def assemble(fragment_size):
+            fragments = [
+                payload[i : i + fragment_size]
+                for i in range(0, len(payload), fragment_size)
+            ]
+            chunks = [
+                _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(
+                        index=0,
+                        tc_id="call_123",
+                        name="write_file",
+                        arguments=fragments[0],
+                    )
+                ])
+            ]
+            chunks.extend(
+                _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(index=0, arguments=fragment)
+                ])
+                for fragment in fragments[1:]
+            )
+            chunks.append(_make_stream_chunk(finish_reason="tool_calls"))
+
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = iter(chunks)
+            mock_create.return_value = mock_client
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.api_mode = "chat_completions"
+            agent._interrupt_requested = False
+
+            response = agent._interruptible_streaming_api_call({})
+            return response.choices[0].message.tool_calls[0].function.arguments
+
+        for fragment_size in (len(payload), 64, 7, 3, 1):
+            arguments = assemble(fragment_size)
+            assert arguments.encode("utf-8") == payload.encode("utf-8")
 
 
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
@@ -799,7 +1008,7 @@ class TestCodexStreamCallbacks:
         mock_client = MagicMock()
         mock_client.responses.create.return_value = mock_stream
 
-        agent._run_codex_create_stream_fallback(
+        agent._run_codex_stream(
             {"model": "test/model", "instructions": "hi", "input": []},
             client=mock_client,
         )
@@ -1431,8 +1640,8 @@ class TestCopilotACPStreamingDecision:
     must detect ACP runtimes and route to _interruptible_api_call instead.
     """
 
-    @patch("run_agent.get_tool_definitions", return_value=[])
-    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("model_tools.get_tool_definitions", return_value=[])
+    @patch("model_tools.check_toolset_requirements", return_value={})
     @patch("agent.copilot_acp_client.CopilotACPClient")
     def test_provider_name_triggers_non_streaming(
         self, mock_acp_cls, _mock_check, _mock_tools
@@ -1462,8 +1671,8 @@ class TestCopilotACPStreamingDecision:
             response = mock_non_stream({})
             mock_stream.assert_not_called()
 
-    @patch("run_agent.get_tool_definitions", return_value=[])
-    @patch("run_agent.check_toolset_requirements", return_value={})
+    @patch("model_tools.get_tool_definitions", return_value=[])
+    @patch("model_tools.check_toolset_requirements", return_value={})
     @patch("agent.copilot_acp_client.CopilotACPClient")
     def test_acp_base_url_triggers_non_streaming(
         self, mock_acp_cls, _mock_check, _mock_tools

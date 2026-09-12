@@ -17,6 +17,13 @@ convoying on the writer lock. Methods that write under the lock are the
 lock's legitimate users and pass. New violations fail with the method
 name and the fix (route through ``_read_ctx()``).
 
+``SessionDB`` itself is declared in ``hermes_state.py`` as
+``class SessionDB(SessionSearchMixin, SessionSchemaMixin,
+SessionPortabilityMixin)`` — its actual methods live across four files.
+A gate that only opens ``hermes_state.py`` never sees a locked reader
+declared in one of the three mixin files, so ``_ALL_STATE_SOURCES`` scans
+each of them under their own class name.
+
 Deliberately NOT flagged:
 - methods that INSERT/UPDATE/DELETE/REPLACE under the lock (writers);
 - read-modify-write methods (the read is ordered against its own write);
@@ -32,7 +39,18 @@ from pathlib import Path
 
 import pytest
 
-_STATE_PY = Path(__file__).resolve().parents[2] / "hermes_state.py"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_STATE_PY = _REPO_ROOT / "hermes_state.py"
+
+# SessionDB's own class body lives in hermes_state.py; the rest of its
+# methods come from these mixins (see module docstring). Each entry is
+# (source file, class name to scan in that file).
+_ALL_STATE_SOURCES: list[tuple[Path, str]] = [
+    (_STATE_PY, "SessionDB"),
+    (_REPO_ROOT / "hermes_state_search.py", "SessionSearchMixin"),
+    (_REPO_ROOT / "hermes_state_schema.py", "SessionSchemaMixin"),
+    (_REPO_ROOT / "hermes_state_portability.py", "SessionPortabilityMixin"),
+]
 
 _WRITE_RE = re.compile(
     r"^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|VACUUM|BEGIN|COMMIT|ANALYZE)\b",
@@ -124,17 +142,19 @@ def _is_self_lock_with(item: ast.withitem) -> bool:
     )
 
 
-def _scan_locked_readers(state_py: "Path | None" = None) -> list[str]:
+def _scan_locked_readers(
+    state_py: "Path | None" = None, class_name: str = "SessionDB"
+) -> list[str]:
     target = state_py if state_py is not None else _STATE_PY
     tree = ast.parse(target.read_text(encoding="utf-8"))
     violations: list[str] = []
 
     session_db = None
     for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == "SessionDB":
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
             session_db = node
             break
-    assert session_db is not None, "SessionDB class not found"
+    assert session_db is not None, f"{class_name} class not found in {target}"
 
     for method in session_db.body:
         if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -197,9 +217,22 @@ def _scan_locked_readers(state_py: "Path | None" = None) -> list[str]:
     return violations
 
 
+def _scan_all_state_sources() -> list[str]:
+    """Run ``_scan_locked_readers`` over every file that contributes methods
+    to ``SessionDB`` — the class body in ``hermes_state.py`` plus each mixin
+    it inherits from (see module docstring). Violations are prefixed with
+    their source filename since methods can share names across mixins.
+    """
+    violations: list[str] = []
+    for path, class_name in _ALL_STATE_SOURCES:
+        for v in _scan_locked_readers(path, class_name):
+            violations.append(f"{path.name}: {v}")
+    return violations
+
+
 class TestNoPureReadersUnderWriterLock:
     def test_no_locked_pure_readers(self):
-        violations = _scan_locked_readers()
+        violations = _scan_all_state_sources()
         assert violations == [], (
             "Pure-read SessionDB methods holding the writer lock "
             "(Pattern C — every concurrent turn's persistence convoys "
@@ -235,3 +268,24 @@ class TestNoPureReadersUnderWriterLock:
         assert flagged == {
             "guilty_reader", "guilty_alias_reader", "guilty_variable_sql"
         }, violations
+
+    def test_scan_all_state_sources_visits_every_mixin_file(self, tmp_path):
+        """Sabotage self-check for the multi-file scope itself: a locked
+        reader planted in a MIXIN file (not hermes_state.py) must still be
+        caught. Guards against the gate's scope silently narrowing back to
+        one file — exactly how the real 2026-08 gap (9 locked readers across
+        three mixin files, invisible to the single-file scanner) happened.
+        """
+        mixin_sabotage = (
+            "class FakeMixin:\n"
+            "    def guilty_mixin_reader(self):\n"
+            "        with self._lock:\n"
+            "            return self._conn.execute(\"SELECT 1\").fetchone()\n"
+        )
+        p = tmp_path / "fake_mixin.py"
+        p.write_text(mixin_sabotage, encoding="utf-8")
+
+        violations = [
+            f"{p.name}: {v}" for v in _scan_locked_readers(p, "FakeMixin")
+        ]
+        assert any("guilty_mixin_reader" in v for v in violations), violations

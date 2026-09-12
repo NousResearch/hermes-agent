@@ -3,24 +3,9 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.models import (
-    azure_foundry_model_api_mode,
-    copilot_model_api_mode,
-    fetch_github_model_catalog,
-    curated_models_for_provider,
-    fetch_api_models,
-    fetch_lmstudio_models,
-    github_model_reasoning_efforts,
-    normalize_copilot_model_id,
-    normalize_opencode_model_id,
-    normalize_provider,
-    opencode_model_api_mode,
-    parse_model_input,
-    probe_api_models,
-    provider_label,
-    provider_model_ids,
-    validate_requested_model,
-)
+from hermes_cli.models import azure_foundry_model_api_mode, copilot_model_api_mode, fetch_github_model_catalog, curated_models_for_provider, fetch_api_models, github_model_reasoning_efforts, normalize_copilot_model_id, normalize_opencode_model_id, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_label, provider_model_ids
+from hermes_cli.models_local import fetch_lmstudio_models
+from hermes_cli.models_validate import validate_requested_model
 
 
 # -- helpers -----------------------------------------------------------------
@@ -74,6 +59,14 @@ class TestCuratedModelsForProvider:
 
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
+
+    def test_live_catalog_projected_to_tuples_else_static_fallback(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=["m-live"]):
+            assert curated_models_for_provider("nous") == [("m-live", "")]
+        with patch("hermes_cli.models.provider_model_ids", return_value=[]), patch.dict(
+            "hermes_cli.models._PROVIDER_MODELS", {"nous": ["m-static"]}
+        ):
+            assert curated_models_for_provider("nous") == [("m-static", "")]
 
 
 # -- normalize_provider ------------------------------------------------------
@@ -804,3 +797,30 @@ class TestValidateRequestedModelNousPortalRecommendations:
             result = validate_requested_model("inclusionai/ling-2.6-flash", "nous")
         mock_portal.assert_not_called()
         assert result["accepted"] is True
+
+
+# -- validate — custom endpoint fallback when /models is unreachable (#12220) --
+
+class TestValidateCustomUnreachableFallback:
+    """A custom proxy without GET /models must not brick `/model` switches (#12220)."""
+
+    def _validate(self, model, provider, models, **kw):
+        probe = {"models": models, "probed_url": "http://localhost:8000/v1/models",
+                 "resolved_base_url": "http://localhost:8000/v1", "suggested_base_url": None, "used_fallback": False}
+        with patch("hermes_cli.models.probe_api_models", return_value=probe):
+            return validate_requested_model(model, provider, api_key="k", base_url="http://localhost:8000/v1", **kw)
+
+    @pytest.mark.parametrize("provider", ["custom", "custom:myproxy"])
+    @pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages"])
+    def test_unreachable_catalog_persists_unverified_for_chat_modes(self, provider, api_mode):
+        result = self._validate("my-proxy-model", provider, models=None, api_mode=api_mode)
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+        assert "accepted without verification" in result["message"]
+
+    @pytest.mark.parametrize("api_mode", [None, "codex_responses"])
+    def test_unreachable_catalog_still_rejects_other_api_modes(self, api_mode):
+        result = self._validate("my-proxy-model", "custom", models=None, api_mode=api_mode)
+        assert result["accepted"] is False
+        assert "was not saved" in result["message"]
+        # A reachable catalog keeps authoritative validation regardless of mode.
+        assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True

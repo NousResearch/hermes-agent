@@ -135,6 +135,80 @@ elif hasattr(signal, "SIGBREAK"):
 _install_signal("SIGINT", signal.SIG_IGN)
 
 
+# ── Native-crash forensics ──────────────────────────────────────────────
+# _log_signal above only covers signals Python can hand to a handler
+# (SIGTERM/SIGHUP). A *fatal* signal — SIGSEGV from a C extension, typically
+# an OpenSSL/httpx socket teardown racing another thread — kills the
+# interpreter with no Python-level trace at all, so the TUI could only report
+# "child exit signal=SIGSEGV" with nothing to point at (observed 2026-08-31).
+# faulthandler writes an all-thread native+Python stack into the same crash
+# log the tui-parent appends its lifecycle lines to, so the next occurrence
+# lands next to the exit line instead of vanishing.
+#
+# The file handle is module-global on purpose: faulthandler keeps writing to
+# this fd for the process lifetime, so it must never be garbage-collected.
+_FAULTHANDLER_FILE = None
+
+
+def _enable_faulthandler() -> None:
+    """Route fatal-signal stack dumps into the TUI gateway crash log.
+
+    Best-effort by design: a gateway that cannot open its crash log must
+    still start and serve the session. Also registers SIGUSR2 (POSIX only)
+    as an on-demand "dump every thread" trigger for a wedged gateway —
+    ``kill -USR2 <gateway pid>`` while it looks hung.
+    """
+    global _FAULTHANDLER_FILE
+
+    import faulthandler
+
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        _FAULTHANDLER_FILE = open(_CRASH_LOG, "a", encoding="utf-8")
+    except Exception:
+        # No crash log available — fall back to stderr, which the node
+        # parent tees. enable() with no file raises when stderr is None
+        # (detached service), hence the second guard.
+        try:
+            faulthandler.enable(all_threads=True)
+        except (RuntimeError, ValueError, OSError, AttributeError):
+            pass
+        return
+
+    try:
+        faulthandler.enable(file=_FAULTHANDLER_FILE, all_threads=True)
+    except (RuntimeError, ValueError, OSError, AttributeError):
+        # enable() rejected the handle — don't strand an fd nothing will ever
+        # write to for the rest of the process lifetime.
+        try:
+            _FAULTHANDLER_FILE.close()
+        except Exception:
+            pass
+        _FAULTHANDLER_FILE = None
+
+        return
+
+    _sigusr2 = getattr(signal, "SIGUSR2", None)
+    if _sigusr2 is not None and hasattr(faulthandler, "register"):
+        try:
+            faulthandler.register(
+                _sigusr2,
+                file=_FAULTHANDLER_FILE,
+                all_threads=True,
+                # chain=False on purpose: SIGUSR2's default disposition is
+                # "terminate", so chaining would make the diagnostic dump kill
+                # the very session we wanted to inspect. Dump and keep serving.
+                chain=False,
+            )
+        except (ValueError, OSError, RuntimeError):
+            # register() is main-thread-only, same constraint as
+            # _install_signal — an off-thread import just skips it.
+            pass
+
+
+_enable_faulthandler()
+
+
 def _log_exit(reason: str) -> None:
     """Record why the gateway exits (every path is a silent sys.exit(0) otherwise)."""
     _append_crash_log(f"gateway exit · {time.strftime('%Y-%m-%d %H:%M:%S')} · reason={reason}")

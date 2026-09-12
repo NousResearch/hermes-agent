@@ -269,6 +269,7 @@ class PostMergeExecutor:
                 raise DeploymentError("package_output_invalid") from error
             if not isinstance(package_payload, dict):
                 raise DeploymentError("package_output_invalid")
+            _require_package_provenance(package_payload, deployed_sha)
             identity = self._bundles.inspect(bundle)
             if (
                 identity.identifier != self._policy.bundle_identifier
@@ -276,7 +277,10 @@ class PostMergeExecutor:
             ):
                 raise DeploymentError("bundle_identity_mismatch")
             self._repository.require_clean(self._policy.deployment_path)
-            for process in pre_census:
+            # Packaging can take a long time. Re-census immediately before
+            # termination so an exited process cannot leave a stale PID (or a
+            # reused PID) as the deployment target.
+            for process in self._processes.census():
                 if process.executable.resolve() == identity.executable_path.resolve():
                     self._processes.terminate(process.pid)
             relaunch = self._commands.run(
@@ -348,6 +352,19 @@ class PostMergeExecutor:
         )
         self._ledger.record_deployment_receipt(receipt)
         return receipt
+
+
+def _require_package_provenance(
+    package_payload: Mapping[str, object], expected_sha: str
+) -> None:
+    source_sha = package_payload.get("source_sha")
+    if (
+        not isinstance(source_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}", source_sha, re.IGNORECASE) is None
+    ):
+        raise DeploymentError("package_provenance_missing")
+    if source_sha.casefold() != expected_sha.casefold():
+        raise DeploymentError("package_provenance_mismatch")
 
 
 def _require_runtime_absent(

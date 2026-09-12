@@ -2292,6 +2292,37 @@ class FeedbackLedger:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise LedgerStateError("stored deployment receipt is invalid") from error
 
+    def failed_deployment_merge_receipts(self, repository: str) -> tuple[object, ...]:
+        """Return merge receipts whose latest deployment attempt failed.
+
+        The merge receipt is durable even after the PR leaves the open set, so
+        post-merge retries do not depend on another open-PR scan seeing it.
+        """
+
+        from .merge_controller import MergeReceipt
+
+        rows = self._connection.execute(
+            "SELECT d.pr_number, m.receipt_json FROM deployment_receipts d "
+            "JOIN merge_attempts m ON m.repository = d.repository AND m.pr_number = d.pr_number "
+            "AND m.status = 'completed' "
+            "WHERE d.repository = ? AND d.status = 'failed' "
+            "AND d.completed_at = (SELECT MAX(latest.completed_at) FROM deployment_receipts latest "
+            "WHERE latest.repository = d.repository AND latest.pr_number = d.pr_number) "
+            "AND m.updated_at = (SELECT MAX(latest_merge.updated_at) FROM merge_attempts latest_merge "
+            "WHERE latest_merge.repository = m.repository AND latest_merge.pr_number = m.pr_number "
+            "AND latest_merge.status = 'completed')",
+            (repository,),
+        ).fetchall()
+        receipts: list[MergeReceipt] = []
+        for _pr_number, receipt_json in rows:
+            if receipt_json is None:
+                continue
+            try:
+                receipts.append(MergeReceipt.from_payload(json.loads(receipt_json)))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise LedgerStateError("stored merge receipt is invalid") from error
+        return tuple(receipts)
+
     def close(self) -> None:
         self._connection.close()
 

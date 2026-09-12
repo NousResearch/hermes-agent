@@ -689,6 +689,11 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
         "merge-status", help="Show bounded merge and deployment counts"
     )
     merge_status.add_argument("--details", action="store_true", help="Include the ten most recent verified merge receipts")
+    retry_deployment = subcommands.add_parser(
+        "retry-deployment", help="Retry one failed post-merge deployment explicitly"
+    )
+    retry_deployment.add_argument("--repository", required=True)
+    retry_deployment.add_argument("--pr-number", required=True, type=int)
     merge_enable = subcommands.add_parser(
         "merge-enable", help="Enroll one configured PR for automatic merging"
     )
@@ -806,6 +811,8 @@ def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
         return _merge_scan(ctx)
     if action == "merge-status":
         return _merge_status(details=bool(getattr(args, "details", False)))
+    if action == "retry-deployment":
+        return _retry_deployment(ctx, args)
     if action == "merge-enable":
         return _merge_enable(ctx, args)
     if action == "merge-disable":
@@ -1283,6 +1290,40 @@ def _retry(ctx: Any, args: argparse.Namespace) -> int:
         ledger.close()
     print(json.dumps(_scan_payload(result), sort_keys=True))
     return 1 if result.degraded else 0
+
+
+def _retry_deployment(ctx: Any, args: argparse.Namespace) -> int:
+    try:
+        policy = _load_policy_from_context(ctx)
+        merge_policy = policy.merge_policy_for(args.repository)
+        if merge_policy is None or merge_policy.post_merge is None:
+            raise ValueError("post-merge deployment is not enabled for this repository")
+    except ValueError as error:
+        print(json.dumps({"status": "invalid_configuration", "error": str(error)}, sort_keys=True))
+        return 1
+
+    ledger = FeedbackLedger.for_current_profile()
+    try:
+        merge = next(
+            (
+                candidate
+                for candidate in ledger.failed_deployment_merge_receipts(args.repository)
+                if candidate.pr_number == args.pr_number
+            ),
+            None,
+        )
+        if merge is None:
+            payload = {"status": "blocked", "blocker": "failed_deployment_receipt_missing"}
+            print(json.dumps(payload, sort_keys=True))
+            return 1
+        deployment = PostMergeExecutor(merge_policy.post_merge, ledger).run(merge)
+    except (LedgerStateError, RuntimeError, ValueError) as error:
+        print(json.dumps({"status": "degraded", "error": str(error)}, sort_keys=True))
+        return 1
+    finally:
+        ledger.close()
+    print(json.dumps(deployment.to_payload(), sort_keys=True))
+    return 0 if deployment.status == "completed" else 1
 
 
 def _dispatch_feedback(ctx: Any, args: argparse.Namespace) -> int:

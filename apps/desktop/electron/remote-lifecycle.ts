@@ -1613,7 +1613,10 @@ async function connect(deps) {
   }
 
   if (lock) {
-    const pidAlive = await remotePidAlive(ssh, lock.pid)
+    const numericPidAlive = await remotePidAlive(ssh, lock.pid)
+    const liveCreationTime = numericPidAlive && lock.creationTime ? await remoteProcessCreationTime(ssh, lock.pid) : ''
+    const pidAlive =
+      numericPidAlive && (!lock.creationTime || !liveCreationTime || liveCreationTime === lock.creationTime)
 
     const owned =
       pidAlive &&
@@ -1760,7 +1763,38 @@ async function connect(deps) {
     } else {
       assertBootstrapNotSuperseded(signal)
       await assertRemoteInstallUpdateClear(ssh, hermesHome)
-      const cleaned = await cleanupStale(ssh, ownershipId, lock, pidAlive, undefined, true)
+      const canChallengeOwnership =
+        !owned &&
+        pidAlive &&
+        lock.port > 0 &&
+        Boolean(reuseToken) &&
+        lock.tokenFingerprint === fingerprintToken(reuseToken)
+      const proveConfiguredLockOwnership = canChallengeOwnership
+        ? async () => {
+            const localPort = await openForward(deps, lock.port)
+
+            try {
+              return await proveOwnershipWithChallenge(
+                probeOwnershipChallenge,
+                `http://127.0.0.1:${localPort}`,
+                reuseToken,
+                lock.spawnNonce,
+                lock.pid,
+                deps.mintOwnershipChallenge || mintOwnershipChallenge
+              )
+            } finally {
+              await cancelForwardSafe(deps, localPort, lock.port)
+            }
+          }
+        : undefined
+      const cleaned = await cleanupStale(
+        ssh,
+        ownershipId,
+        lock,
+        pidAlive,
+        proveConfiguredLockOwnership,
+        true
+      )
 
       if (!cleaned) {
         const error: any = new Error(

@@ -1287,7 +1287,7 @@ test('connect reaps an authenticated wrapper before replacing its stale runtime'
   assert.ok(ssh.calls.some(command => /setsid|nohup/.test(command)))
 })
 
-test('connect preserves an authenticated stale lock when the live creation time no longer matches', async () => {
+test('connect preserves an authenticated stale lock when the live creation time cannot be read', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
   const challenge = 'f'.repeat(64)
@@ -1302,7 +1302,7 @@ test('connect preserves an authenticated stale lock when the live creation time 
     [/cat .*lock\.json/, JSON.stringify(lock)],
     [/kill -0 333/, 'ALIVE'],
     [/print\("OWNED"/, 'FOREIGN\n'],
-    [/value="linux:"/, 'linux:999999\n'],
+    [/value="linux:"/, '\n'],
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [/python3 -c/, ''],
     [/setsid|nohup/, '444\n'],
@@ -1328,6 +1328,43 @@ test('connect preserves an authenticated stale lock when the live creation time 
   )
   assert.ok(!ssh.calls.some(command => /rm -f .*backend\.lock\.json/.test(command)))
   assert.ok(!ssh.calls.some(command => /setsid|nohup/.test(command)))
+})
+
+test('connect discards a recycled-PID lock without signaling the foreign process', async () => {
+  const reuseToken = 'stored-token'
+  const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken), creationTime: 'linux:123456' })
+  let challengeCalls = 0
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, JSON.stringify(lock)],
+    [/kill -0 333/, 'ALIVE'],
+    [/print\("OWNED"/, 'FOREIGN\n'],
+    [/value="linux:"/, 'linux:999999\n'],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid|nohup/, '444\n'],
+    [/kill -0 444/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=50002\n']
+  ])
+
+  const result = await connect(
+    connectDeps(ssh, {
+      reuseToken,
+      probeOwnershipChallenge: async () => {
+        challengeCalls += 1
+        throw new Error('the stale port is unreachable')
+      },
+      adoptServedToken: async () => 'fresh-token'
+    })
+  )
+
+  assert.equal(result.reused, false)
+  assert.equal(result.pid, 444)
+  assert.equal(challengeCalls, 0, 'a recycled PID must be rejected before opening the stale tunnel')
+  assert.ok(!ssh.calls.some(command => /\bkill (-9 )?333\b/.test(command)))
+  assert.ok(ssh.calls.some(command => /setsid|nohup/.test(command)))
 })
 
 test('connect refuses to replace an alive process whose ownership cannot be proved', async () => {
@@ -1407,16 +1444,23 @@ test('connect() respawns when the requested remote profile differs from the lock
   )
 })
 
-test('connect() respawns when the lockfile hermesPath differs from the resolved path', async () => {
+test('connect() respawns through authenticated ownership when the lockfile hermesPath differs', async () => {
   const reuseToken = 'stored-token'
   const lock = ownedLock({ hermesPath: '/old/stale/hermes', tokenFingerprint: fingerprintToken(reuseToken) })
+  const challenge = 'a'.repeat(64)
+  const proof = crypto
+    .createHmac('sha256', ownershipProofKey(reuseToken))
+    .update(`${challenge}:${SPAWN_NONCE}:333:${PROTOCOL_VERSION}`)
+    .digest('hex')
 
   const ssh = fakeSsh([
     [/uname/, 'Linux\nx86_64'],
     [/\[ -x/, 'OK'],
     [/cat .*lock\.json/, JSON.stringify(lock)],
     [/kill -0/, 'ALIVE'],
-    [/print\("OWNED"/, 'OWNED\n'],
+    [/print\("OWNED"/, 'FOREIGN\n'],
+    [/value="linux:"/, `${lock.creationTime}\n`],
+    [/pidfd_open/, 'TERMINATED\n'],
     [/--version/, 'Hermes Agent v0.18.2\n'],
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [/python3 -c/, ''],
@@ -1425,10 +1469,18 @@ test('connect() respawns when the lockfile hermesPath differs from the resolved 
   ])
 
   const result = await connect(
-    connectDeps(ssh, { reuseToken, remoteHermesPath: '/new/hermes', adoptServedToken: async () => 'fresh' })
+    connectDeps(ssh, {
+      reuseToken,
+      remoteHermesPath: '/new/hermes',
+      mintOwnershipChallenge: () => challenge,
+      probeOwnershipChallenge: async () => ({ ok: true, protocolVersion: PROTOCOL_VERSION, proof }),
+      adoptServedToken: async () => 'fresh'
+    })
   )
 
   assert.equal(result.reused, false, 'must respawn, not reuse the old-path dashboard')
+  assert.ok(ssh.calls.some(c => /pidfd_open/.test(c)), 'authenticated ownership must use signal-bound teardown')
+  assert.ok(!ssh.calls.some(c => /\bkill (-9 )?333\b/.test(c)), 'the old numeric PID must never be signaled directly')
   assert.ok(
     ssh.calls.some(c => /setsid/.test(c)),
     'a fresh dashboard must be spawned'

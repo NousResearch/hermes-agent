@@ -511,6 +511,10 @@ mcp_servers:
 
 If `enabled: false`, Hermes skips the server completely and does not even attempt a connection.
 
+You can flip this from the command line without editing YAML — `hermes mcp disable legacy` /
+`hermes mcp enable legacy`. The change applies to new sessions; running sessions keep their
+current toolset.
+
 ### Whitelist server tools
 
 ```yaml

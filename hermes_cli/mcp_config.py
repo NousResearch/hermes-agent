@@ -532,17 +532,85 @@ def cmd_mcp_remove(args):
         pass
 
 
+def _set_mcp_server_enabled(name: str, enabled: bool) -> Optional[bool]:
+    """Flip the ``enabled`` key on a server entry in config.yaml.
+
+    Returns the previous effective enabled state, or None when the server doesn't exist.
+    """
+    config = load_config()
+    servers = config.get("mcp_servers") or {}
+    cfg = servers.get(name)
+    if not isinstance(cfg, dict):
+        return None
+    from tools.mcp_tool_common import _parse_boolish
+    previous = _parse_boolish(cfg.get("enabled", True), default=True)
+    if enabled:
+        # The runtime treats a missing key as enabled; drop it rather than writing `enabled: true`.
+        cfg.pop("enabled", None)
+    else:
+        cfg["enabled"] = False
+    save_config(config)
+    return previous
+
+
+def cmd_mcp_enable(args):
+    """Enable an MCP server without re-entering its config (mirrors `hermes plugins enable`)."""
+    _toggle_mcp_server(args.name, enabled=True)
+
+
+def cmd_mcp_disable(args):
+    """Disable an MCP server while keeping its config (tools drop next session)."""
+    _toggle_mcp_server(args.name, enabled=False)
+
+
+def _toggle_mcp_server(name: str, *, enabled: bool) -> None:
+    servers = _get_mcp_servers()
+    if _lookup_server(name, servers) is None:
+        return
+    verb = "enabled" if enabled else "disabled"
+    previous = _set_mcp_server_enabled(name, enabled)
+    if previous is enabled:
+        _info(f"Server '{name}' is already {verb}.")
+        return
+    _success(f"{verb.capitalize()} '{name}'")
+    _info("Takes effect for new sessions; running sessions keep their current toolset.")
+
+
 def cmd_mcp_list(args=None):
     """List all configured MCP servers."""
     servers = _get_mcp_servers()
     if not servers:
-        print()
-        _info("No MCP servers configured.")
-        print()
-        _info("Add one with:")
-        _info('  hermes mcp add <name> --url <endpoint>')
-        _info('  hermes mcp add <name> --command <cmd> --args <args...>')
-        print()
+        if getattr(args, "json_output", False):
+            print("[]")
+        else:
+            print()
+            _info("No MCP servers configured.")
+            print()
+            _info("Add one with:")
+            _info('  hermes mcp add <name> --url <endpoint>')
+            _info('  hermes mcp add <name> --command <cmd> --args <args...>')
+            print()
+        return
+
+    if getattr(args, "json_output", False):
+        import json as _mcp_json
+
+        rows = []
+        for name, cfg in servers.items():
+            transport_type = "streamable_http" if "url" in cfg else "stdio"
+            transport_value = cfg.get("url") or cfg.get("command")
+            enabled = cfg.get("enabled", True)
+            if isinstance(enabled, str):
+                enabled = enabled.lower() in {"true", "1", "yes"}
+            rows.append({
+                "name": name,
+                "transport": transport_type,
+                "url": cfg.get("url"),
+                "command": cfg.get("command"),
+                "args": cfg.get("args"),
+                "enabled": enabled,
+            })
+        print(_mcp_json.dumps(rows, indent=2))
         return
 
     print()
@@ -867,8 +935,10 @@ _MCP_USAGE = (
     "hermes mcp add <name> --command <cmd>         Add a stdio server",
     "hermes mcp add <name> --preset <preset>       Add from a known preset",
     "hermes mcp remove <name>                      Remove a server",
-    "hermes mcp list                               List configured servers",
+    "hermes mcp list                               List configured servers (--json for scripting)",
     "hermes mcp test <name>                        Test connection",
+    "hermes mcp enable <name>                      Enable a server (next session)",
+    "hermes mcp disable <name>                     Disable a server, keep its config",
     "hermes mcp configure <name>                   Toggle tools",
     "hermes mcp login <name>                       Re-authenticate OAuth",
     "hermes mcp reauth <name> | --all              Re-auth one or all OAuth servers",
@@ -900,6 +970,7 @@ def mcp_command(args):
         "add": cmd_mcp_add, "remove": cmd_mcp_remove, "rm": cmd_mcp_remove, "list": cmd_mcp_list,
         "ls": cmd_mcp_list, "test": cmd_mcp_test, "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure, "login": cmd_mcp_login, "reauth": cmd_mcp_reauth,
+        "enable": cmd_mcp_enable, "disable": cmd_mcp_disable,
     }.get(action)
     if handler:
         handler(args)

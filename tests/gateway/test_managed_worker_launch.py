@@ -85,6 +85,9 @@ def _model_saw_tool(request, name):
 
 
 @pytest.mark.linux_only
+# The 'background' case probes a process the retired worker reparented to init: the test spawned it
+# (through its own daemon), but pid_exists() on it is outside pytest's subtree for the live guard.
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize('worker_action', ['detach', 'kill', 'controls', 'stop', 'history', 'background', 'mcp'])
 def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path, worker_action):
     root = Path(__file__).resolve().parents[2]

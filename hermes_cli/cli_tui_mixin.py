@@ -41,6 +41,8 @@ from typing import Optional
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
 _PANEL_RESERVED_BELOW = 6
+# Enter within this many seconds of the last buffer change is a pasted/dictated newline, not a submit.
+_RAPID_INPUT_ENTER_WINDOW_S = 0.05
 _TYPING_CHARS = string.digits + string.ascii_letters + "-_.:/ "
 
 _APPROVAL_CHOICE_LABELS = {
@@ -1349,6 +1351,13 @@ class CLITuiMixin:
         if self._tui_enter_overlay(event):
             return
         buf = event.app.current_buffer
+        # Paste without bracketed-paste (tmux strips it) and IME/voice dictation deliver each
+        # newline as its own Enter key event; the buffer collapse in _tui_on_text_changed only
+        # sees whole-chunk pastes. Text still arriving (<50 ms since the last change) means this
+        # Enter is a line break inside one message, not a submit — humans type >50 ms apart (#10994).
+        if time.monotonic() - getattr(self, "_tui_last_text_change", 0.0) < _RAPID_INPUT_ENTER_WINDOW_S:
+            buf.insert_text("\n")
+            return
         raw_text = buf.text
         if (
             self._tui_multiline_shortcuts
@@ -1676,6 +1685,7 @@ class CLITuiMixin:
         tick), or the newline count jumped by 4+ (terminals that feed characters individually
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
+        self._tui_last_text_change = time.monotonic()
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)

@@ -39,12 +39,19 @@
     "serialize-javascript": "7.0.7",
     "uuid": "14.0.1",
     "minimatch": "10.2.6",
-    "nanoid": "3.3.17",
-    "js-yaml": "4.3.1",
+    "nanoid": "3.3.18",
+    "js-yaml": "4.3.2",
+    "browserslist": "4.28.8",
+    "baseline-browser-mapping": "2.11.0",
+    "qs": "6.16.0",
+    "fast-uri": "3.1.6",
+    "joi": "17.13.6",
+    "svgo": "3.3.5",
     "dompurify": "3.4.13",
     "mermaid": "11.16.1",
     "image-size": "npm:@nous-research/image-size@2.0.3",
-    "tar": "7.5.22"
+    "tar": "7.5.22",
+    "colord": "2.9.4"
   },
   "browserslist": {
     "production": [

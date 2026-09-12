@@ -121,7 +121,7 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})  # legitimately e
 NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
 # Pinned to match scripts/install.sh / install.ps1's managed install so a bare-npx
 # resolution gets the same version instead of floating latest. Update together.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
+AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.27.0"
 
 # Process caches (``_cached_X`` + ``_X_resolved`` pairs) for config-derived lookups;
 # reset by ``cleanup_all_browsers``. Written/read by the sibling modules via ``browser_tool_origin``.

@@ -17,6 +17,18 @@ def open_ledger(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path, timeout=5)
 
 
+def open_ledger_readonly(path: Path) -> sqlite3.Connection:
+    """Open an existing ledger for one non-mutating, statement-scoped projection."""
+    # ``mode=ro`` is essential here: observer requests must not create the profile
+    # directory/database or initialize/migrate a ledger.  Do not call
+    # ``prepare_ledger`` either; its WAL configuration is a writer concern.
+    conn = sqlite3.connect(
+        path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5, isolation_level=None
+    )
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def prepare_ledger(
     conn: sqlite3.Connection, *, db_label: str, synchronous_full: bool = True
 ) -> None:

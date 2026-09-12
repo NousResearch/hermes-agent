@@ -49,6 +49,131 @@ def test_execution_can_be_loaded_by_exact_attempt_id(monkeypatch, tmp_path):
     assert executions.get_execution("missing") is None
 
 
+def test_no_agent_receipt_is_strict_atomic_bounded_and_content_free(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    valid = json.dumps({
+        "version": "hermes.cron.receipt.v1", "status": "completed", "receipt_id": "one",
+        "result_sha256": "b" * 64,
+    })
+    malformed = json.dumps({
+        "version": "hermes.cron.receipt.v1", "status": "completed", "receipt_id": "one",
+        "result_sha256": "b" * 64, "output": "must-not-be-stored",
+    })
+    duplicate_key = (
+        '{"version":"hermes.cron.receipt.v1","status":"completed",'
+        '"receipt_id":"one","receipt_id":"two","result_sha256":"' + "b" * 64 + '"}'
+    )
+    array_of_pairs = json.dumps([
+        ["version", "hermes.cron.receipt.v1"], ["status", "completed"],
+        ["receipt_id", "one"], ["result_sha256", "b" * 64],
+    ])
+    for output in (
+        malformed, duplicate_key, array_of_pairs, {"version": "hermes.cron.receipt.v1"}, "x" * 513,
+        json.dumps({"version": "wrong", "status": "completed", "receipt_id": "one", "result_sha256": "b" * 64}),
+        json.dumps({"version": "hermes.cron.receipt.v1", "status": "failed", "receipt_id": "one", "result_sha256": "b" * 64}),
+    ):
+        rejected = executions.create_execution(
+            "receipt-job", source="builtin", scheduled_instant="2026-09-07T10:00:00+00:00")
+        assert executions.mark_execution_running(rejected["id"]) is not None
+        assert executions.finish_execution(rejected["id"], success=True, receipt_output=output) is not None
+        assert executions.get_public_execution_receipt("receipt-job", rejected["id"]) is None
+
+    execution = executions.create_execution(
+        "receipt-job", source="builtin", scheduled_instant="2026-09-07T10:00:00+00:00")
+    assert executions.mark_execution_running(execution["id"]) is not None
+    assert executions.finish_execution(execution["id"], success=True, receipt_output=valid) is not None
+
+    projected = executions.get_public_execution_receipt("receipt-job", execution["id"])
+    assert projected is not None
+    assert projected["scheduled_at"] == "2026-09-07T10:00:00+00:00"
+    assert projected["fire_authority_sha256"] != executions._PROCESS_ID
+    assert "output" not in projected
+
+    # A successful terminal state without a server-derived fired timestamp,
+    # and a repeated script receipt identifier, are both unqualified.
+    no_fire = executions.create_execution(
+        "receipt-job", source="builtin", scheduled_instant="2026-09-07T10:00:00+00:00")
+    assert executions.finish_execution(no_fire["id"], success=True, receipt_output=valid) is not None
+    assert executions.get_public_execution_receipt("receipt-job", no_fire["id"]) is None
+    repeated = executions.create_execution(
+        "receipt-job", source="builtin", scheduled_instant="2026-09-07T10:00:00+00:00")
+    assert executions.mark_execution_running(repeated["id"]) is not None
+    assert executions.finish_execution(repeated["id"], success=True, receipt_output=valid) is not None
+    assert executions.get_public_execution_receipt("receipt-job", repeated["id"]) is None
+
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(execution_receipts)")}
+        assert columns == {"execution_id", "job_id", "receipt_version", "receipt_id", "result_sha256"}
+        assert "must-not-be-stored" not in str(conn.execute("SELECT * FROM execution_receipts").fetchall())
+
+    # Inject the old finish-then-record crash seam.  The one transaction must
+    # leave neither a terminal state nor receipt when it is interrupted.
+    execution = executions.create_execution(
+        "atomic-receipt", source="builtin", scheduled_instant="2026-09-07T10:00:00+00:00")
+    assert executions.mark_execution_running(execution["id"]) is not None
+    output = json.dumps({
+        "version": "hermes.cron.receipt.v1", "status": "completed", "receipt_id": "atomic",
+        "result_sha256": "a" * 64,
+    })
+
+    def interrupt(_conn):
+        raise RuntimeError("interrupted after receipt insert")
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(executions, "_prune_unlocked", interrupt)
+        try:
+            executions.finish_execution(execution["id"], success=True, receipt_output=output)
+        except RuntimeError:
+            pass
+        else:  # pragma: no cover - assertion protects this test's crash seam
+            raise AssertionError("interruption injection did not run")
+    assert executions.get_execution(execution["id"])["status"] == "running"
+    assert executions.get_public_execution_receipt("atomic-receipt", execution["id"]) is None
+
+    # Receipt retention follows the retained terminal execution; no orphan
+    # receipt is left when the existing bounded ledger prunes old rows.
+    monkeypatch.setattr(executions, "MAX_TERMINAL_EXECUTIONS", 1)
+
+    def complete(receipt_id):
+        record = executions.create_execution(
+            "retention-job", source="builtin", scheduled_instant="2026-09-07T10:00:00+00:00")
+        assert executions.mark_execution_running(record["id"]) is not None
+        output = json.dumps({
+            "version": "hermes.cron.receipt.v1", "status": "completed", "receipt_id": receipt_id,
+            "result_sha256": "c" * 64,
+        })
+        assert executions.finish_execution(record["id"], success=True, receipt_output=output) is not None
+        return record["id"]
+
+    first = complete("first")
+    second = complete("second")
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        assert conn.execute("SELECT execution_id FROM execution_receipts").fetchall() == [(second,)]
+        assert conn.execute(
+            "SELECT count(*) FROM execution_receipts r LEFT JOIN executions e ON e.id=r.execution_id "
+            "WHERE e.id IS NULL").fetchone()[0] == 0
+    assert executions.get_execution(first) is None
+
+
+def test_public_receipt_lookup_never_initializes_or_migrates_a_legacy_store(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    executions.EXECUTIONS_FILE.parent.mkdir(parents=True)
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        conn.execute("CREATE TABLE legacy_marker (id INTEGER PRIMARY KEY)")
+
+    def unexpected_writer_transaction():
+        raise AssertionError("observer lookup entered the writer transaction")
+
+    monkeypatch.setattr(executions, "_transaction", unexpected_writer_transaction)
+
+    assert executions.get_public_execution_receipt("receipt-job", "0" * 32) is None
+    with sqlite3.connect(executions.EXECUTIONS_FILE) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert tables == {"legacy_marker"}
+    assert not executions.EXECUTIONS_FILE.with_name("executions.db-wal").exists()
+    assert not executions.EXECUTIONS_FILE.with_name("executions.db-shm").exists()
+
+
 def test_fresh_external_handoff_is_not_recovered_before_worker_adopts(
     monkeypatch, tmp_path
 ):

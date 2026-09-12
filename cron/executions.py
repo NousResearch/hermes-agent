@@ -7,7 +7,10 @@ immutable.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -16,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from cron.ledger import ledger_transaction, open_ledger, prepare_ledger
+from cron.ledger import ledger_transaction, open_ledger, open_ledger_readonly, prepare_ledger
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -27,14 +30,26 @@ EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
+_RECEIPT_VERSION = "hermes.cron.receipt.v1"
+_MAX_RECEIPT_ENVELOPE_BYTES = 512
+_RECEIPT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
 
+class _JSONObjectPairs(list):
+    """Distinguish a JSON object from a top-level array of lookalike pairs."""
+
+
 # --- executions ledger --------------------------------------------------------------------------
 
+def _ledger_path() -> Path:
+    return EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+
+
 def _connect() -> sqlite3.Connection:
-    return open_ledger(EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db"))
+    return open_ledger(_ledger_path())
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -79,6 +94,16 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
         "ON executions(job_id, scheduled_instant) WHERE status='completed'"
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS execution_receipts (
+             execution_id TEXT PRIMARY KEY,
+             job_id TEXT NOT NULL,
+             receipt_version TEXT NOT NULL,
+             receipt_id TEXT NOT NULL,
+             result_sha256 TEXT NOT NULL,
+             UNIQUE(job_id, receipt_id)
+           )"""
     )
 
 
@@ -127,6 +152,17 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
+    # The receipt is a projection of an execution, never an independent archive.
+    # Remove it in the same transaction as its terminal execution so retention remains
+    # bounded even on SQLite installations without foreign-key enforcement.
+    conn.execute(
+        """DELETE FROM execution_receipts WHERE execution_id IN (
+             SELECT id FROM executions
+             WHERE status IN ('completed','failed','unknown')
+             ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
+           )""",
+        (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
+    )
     conn.execute(
         """DELETE FROM executions WHERE id IN (
              SELECT id FROM executions
@@ -238,12 +274,18 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None,
+    delivery_outcome: Optional[str] = None, receipt_output: Any = None,
 ) -> Optional[Dict[str, Any]]:
-    """Write a terminal result once; terminal attempts cannot be rewritten."""
+    """Write a terminal result once; terminal attempts cannot be rewritten.
+
+    A no-agent receipt is parsed before terminalization and, when valid, inserted in
+    this same ledger transaction.  A crash can therefore leave no receipt, but can
+    never leave a completed execution waiting for a separately committed receipt.
+    """
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
+    envelope = _parse_receipt_envelope(receipt_output) if success and receipt_output is not None else None
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions
@@ -255,8 +297,26 @@ def finish_execution(
         )
         if cur.rowcount != 1:
             return None
-        _prune_unlocked(conn)
         record = _fetch(conn, execution_id)
+        if (
+            envelope is not None and record is not None
+            and all(record[field] for field in ("scheduled_instant", "started_at", "finished_at"))
+        ):
+            # Derive the join solely from the just-terminalized server row; a caller
+            # cannot name an alternate job for receipt authority.
+            duplicate = conn.execute(
+                "SELECT 1 FROM execution_receipts WHERE job_id=? AND receipt_id=?",
+                (str(record["job_id"]), envelope["receipt_id"]),
+            ).fetchone()
+            if duplicate is None:
+                conn.execute(
+                    """INSERT INTO execution_receipts
+                       (execution_id, job_id, receipt_version, receipt_id, result_sha256)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (str(execution_id), str(record["job_id"]), _RECEIPT_VERSION,
+                     envelope["receipt_id"], envelope["result_sha256"]),
+                )
+        _prune_unlocked(conn)
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
     return record
 
@@ -342,6 +402,75 @@ def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
             (str(execution_id),),
         ).fetchone()
     return dict(row) if row is not None else None
+
+
+def _parse_receipt_envelope(output: Any) -> Optional[Dict[str, str]]:
+    """Accept one exact, bounded, content-free no-agent receipt envelope."""
+    if not isinstance(output, str):
+        return None
+    try:
+        encoded = output.encode("utf-8", "strict")
+    except UnicodeError:
+        return None
+    if not encoded or len(encoded) > _MAX_RECEIPT_ENVELOPE_BYTES:
+        return None
+    try:
+        pairs = json.loads(encoded.decode("utf-8"), object_pairs_hook=_JSONObjectPairs)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(pairs, _JSONObjectPairs) or len(pairs) != 4:
+        return None
+    keys = [key for key, _value in pairs]
+    if set(keys) != {"version", "status", "receipt_id", "result_sha256"} or len(set(keys)) != 4:
+        return None
+    envelope = dict(pairs)
+    if (
+        envelope.get("version") != _RECEIPT_VERSION
+        or envelope.get("status") != "completed"
+        or not isinstance(envelope.get("receipt_id"), str)
+        or not isinstance(envelope.get("result_sha256"), str)
+        or not _RECEIPT_ID.fullmatch(envelope["receipt_id"])
+        or not _SHA256.fullmatch(envelope["result_sha256"])
+    ):
+        return None
+    return {"receipt_id": envelope["receipt_id"], "result_sha256": envelope["result_sha256"]}
+
+
+def get_public_execution_receipt(job_id: str, execution_id: str) -> Optional[Dict[str, str]]:
+    """Project an immutable content-free receipt for the fixed exact job/execution join."""
+    try:
+        conn = open_ledger_readonly(_ledger_path())
+    except sqlite3.Error:
+        # An absent ledger or a store predating receipt support is intentionally
+        # indistinguishable from a missing receipt to the observer capability.
+        return None
+    try:
+        row = conn.execute(
+            """SELECT e.id, e.job_id, e.source, e.process_id, e.scheduled_instant, e.started_at,
+                      e.finished_at, r.receipt_version, r.receipt_id, r.result_sha256
+               FROM executions AS e JOIN execution_receipts AS r
+                    ON r.execution_id=e.id AND r.job_id=e.job_id
+               WHERE e.id=? AND e.job_id=? AND e.status='completed'""",
+            (str(execution_id), str(job_id)),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if row is None or not all(row[field] for field in ("scheduled_instant", "started_at", "finished_at")):
+        return None
+    return {
+        "version": str(row["receipt_version"]),
+        "job_id": str(row["job_id"]),
+        "execution_id": str(row["id"]),
+        "scheduled_at": str(row["scheduled_instant"]),
+        "fired_at": str(row["started_at"]),
+        "finished_at": str(row["finished_at"]),
+        "fire_authority_sha256": hashlib.sha256(
+            (str(row["source"]) + "\x00" + str(row["process_id"])).encode("utf-8")).hexdigest(),
+        "receipt_id": str(row["receipt_id"]),
+        "result_sha256": str(row["result_sha256"]),
+    }
 
 
 def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:

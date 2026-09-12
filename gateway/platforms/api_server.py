@@ -119,6 +119,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_cron_receipts as _cron_receipts
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, is_network_accessible, validate_media_delivery_path)
@@ -1107,6 +1108,10 @@ def _run_route_delegate(name: str):
     return _handler
 
 
+async def _cron_receipt_route_delegate(self, request: "web.Request") -> "web.Response":
+    return await _cron_receipts.handle(self, request, web=web)
+
+
 class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
@@ -1131,6 +1136,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
+        # A separate process/profile-scoped secret only: platform YAML/config
+        # must never become a second credential source for this observer route.
+        self._cron_receipt_observer_key: str = _get_scoped_secret(
+            "CRON_RECEIPT_OBSERVER_KEY", "")
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")))
         self._model_name: str = self._resolve_model_name(
@@ -1559,6 +1568,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
         return routes
+
+    def _register_http_routes(self, app: "web.Application") -> None:
+        """Register native/multiplex routes plus the one intentionally unscoped observer route."""
+        for method, path, handler in self._http_route_table():
+            app.router.add_route(method, path, handler)
+            app.router.add_route(method, f"/p/{{profile}}{path}", handler)
+        # This is a separately authorized, fixed default-profile projection.  Do
+        # not place it in _http_route_table(): that table is deliberately mirrored
+        # under /p/{profile} for ordinary API routes.
+        app.router.add_get(
+            "/v1/cron/jobs/{job_id}/executions/{execution_id}/receipt",
+            self._handle_get_cron_execution_receipt,
+            allow_head=False)
 
     # -- Session header helpers -------------------------------------------------------
 
@@ -3816,6 +3838,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_run_approval = _run_route_delegate("_handle_run_approval")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
     _handle_stop_run = _run_route_delegate("_handle_stop_run")
+    _handle_get_cron_execution_receipt = _cron_receipt_route_delegate
 
     async def _sweep_orphaned_runs(self) -> None:
         return await _api_runs._sweep_orphaned_runs(self)
@@ -3891,9 +3914,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and
             # scopes config/credentials when multiplexing is on).
-            for method, path, handler in self._http_route_table():
-                self._app.router.add_route(method, path, handler)
-                self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
+            self._register_http_routes(self._app)
             # After native routes: Relay bootstrap shims feature-detect on this key and must
             # no-op rather than shadow the native session-control handlers.
             self._app["api_server_adapter"] = self

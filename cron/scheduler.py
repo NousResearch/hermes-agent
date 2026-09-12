@@ -2614,6 +2614,7 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    receipt_output: Optional[str] = None
 
 
 def _save_compose_deliver(
@@ -2740,7 +2741,10 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
     finish_execution(
-        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
+        execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome,
+        # The ledger parses and, if valid, stores this opt-in receipt atomically
+        # with terminalization.  Invalid output remains an unqualified completion.
+        receipt_output=d.receipt_output if d.success else None)
     return True
 
 
@@ -2888,7 +2892,10 @@ def _run_one_job_body(
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error)
+        d = _RunDelivery(
+            job=job, success=success, error=error,
+            receipt_output=final_response if job.get("no_agent") else None,
+        )
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

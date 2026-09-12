@@ -262,23 +262,89 @@ except Exception as exc:
 emit(recorded)
 """
 
+# kind: model-provider is loaded by providers._discover_providers() via
+# import-time register_provider(), not PluginManager.register(ctx).
+# Spy on the real register_provider during import; a no-op register(ctx)
+# must not pass.
+_MP_PROBE_SCRIPT = r"""
+import importlib.util
+import json
+import sys
 
-def _run_capability_probe(plugin_dir: Path) -> Tuple[Optional[dict], str]:
+plugin_dir = sys.argv[1]
+sentinel = sys.argv[2]
+
+def emit(payload):
+    print(sentinel + json.dumps(payload))
+
+try:
+    import providers as providers_mod
+except Exception as exc:
+    emit({"error": "model-provider probe could not import providers: %s" % exc})
+    sys.exit(0)
+
+calls = []
+_orig = providers_mod.register_provider
+
+def _spy(profile):
+    name = getattr(profile, "name", None)
+    calls.append(str(name) if name is not None else "")
+    return _orig(profile)
+
+providers_mod.register_provider = _spy
+
+try:
+    spec = importlib.util.spec_from_file_location(
+        "hermes_validate_probe_plugin",
+        plugin_dir + "/__init__.py",
+        submodule_search_locations=[plugin_dir],
+    )
+    module = importlib.util.module_from_spec(spec)
+    module.__path__ = [plugin_dir]
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+except Exception as exc:
+    emit({"error": "import failed: %s" % exc})
+    sys.exit(0)
+
+if not calls:
+    emit({"error": "model-provider did not call register_provider()"})
+    sys.exit(0)
+
+emit({"providers": calls, "tools": [], "hooks": [], "middleware": [], "commands": []})
+"""
+
+
+def _probe_child_env(scratch: str, *, kind: str) -> dict:
+    """Throwaway HERMES_HOME. Prepend this tree to PYTHONPATH only for the
+    model-provider spy so a generic probe still sees the original env."""
+    env = dict(os.environ)
+    env["HERMES_HOME"] = scratch
+    if kind == "model-provider":
+        root = str(Path(__file__).resolve().parent.parent)
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = root if not existing else root + os.pathsep + existing
+    return env
+
+
+def _run_capability_probe(
+    plugin_dir: Path, *, kind: str = "standalone"
+) -> Tuple[Optional[dict], str]:
     """Run the recording probe in a scratch subprocess.
 
     Returns ``(recorded, error)`` — exactly one is meaningful: *recorded*
     is the ``{tools, hooks, middleware, commands}`` dict on success, and
     *error* is a human-readable failure description otherwise.
     """
+    script = _MP_PROBE_SCRIPT if kind == "model-provider" else _PROBE_SCRIPT
     with tempfile.TemporaryDirectory(prefix="hermes-validate-") as scratch:
-        env = dict(os.environ)
-        env["HERMES_HOME"] = scratch
+        env = _probe_child_env(scratch, kind=kind)
         try:
             result = subprocess.run(
                 [
                     sys.executable,
                     "-c",
-                    _PROBE_SCRIPT,
+                    script,
                     str(plugin_dir),
                     _PROBE_SENTINEL,
                 ],
@@ -324,37 +390,56 @@ def _check_capabilities(
     Returns the recorded dict (for the built-in collision check) or None
     when the probe failed / was skipped.
     """
+    # Exact match: providers._declares_model_provider_kind compares strip() ==
+    # "model-provider" (no case-fold). PluginManager lowercases unknown kinds to
+    # standalone for its own loader, so a mis-cased value is not a live MP.
+    kind = str(manifest.get("kind") or "standalone").strip()
     if not (plugin_dir / "__init__.py").is_file():
+        if kind == "model-provider":
+            report.add(
+                "capability probe",
+                False,
+                "kind: model-provider requires __init__.py that calls register_provider()",
+            )
+            return None
         report.warn(
             "no __init__.py — capability probe skipped (manifest-only plugin)"
         )
         report.add("capability probe", True, "skipped (no __init__.py)")
         return None
 
-    recorded, error = _run_capability_probe(plugin_dir)
+    recorded, error = _run_capability_probe(plugin_dir, kind=kind)
     if recorded is None:
         report.add("capability probe", False, error)
         return None
-    report.add("capability probe", True, "register() ran in isolation")
+    if kind == "model-provider":
+        names = [n for n in (recorded.get("providers") or []) if n]
+        report.add(
+            "capability probe",
+            True,
+            "register_provider() ran at import (%s)" % (", ".join(names) or "unnamed"),
+        )
+    else:
+        report.add("capability probe", True, "register() ran in isolation")
 
-    for kind, manifest_key in (
+    for cap_kind, manifest_key in (
         ("tools", "provides_tools"),
         ("hooks", "provides_hooks"),
         ("middleware", "provides_middleware"),
     ):
         declared = set(_declared_list(manifest, manifest_key))
-        actual = set(recorded.get(kind) or [])
+        actual = set(recorded.get(cap_kind) or [])
         undeclared = sorted(actual - declared)
         unregistered = sorted(declared - actual)
         if undeclared:
             report.add(
-                f"declared {kind}",
+                f"declared {cap_kind}",
                 False,
-                f"undeclared {kind} registered (not in {manifest_key}): "
+                f"undeclared {cap_kind} registered (not in {manifest_key}): "
                 f"{', '.join(undeclared)}",
             )
         else:
-            report.add(f"declared {kind}", True, "matches registrations")
+            report.add(f"declared {cap_kind}", True, "matches registrations")
         if unregistered:
             report.warn(
                 f"{manifest_key} declares {', '.join(unregistered)} "

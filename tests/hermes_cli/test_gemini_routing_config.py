@@ -12,7 +12,7 @@ EXPECTED_GEMINI_ROUTING_DEFAULTS = {
     "enabled": False,
     "profiles": [],
     "default_route": "gemini",
-    "default_data_classification": "standard",
+    "default_data_classification": "restricted",
     "command": "agy",
     "model": "gemini-3.8-flash-low",
     "effort": "low",

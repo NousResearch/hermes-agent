@@ -45,7 +45,7 @@ def _build_gateway(agent, events: list[tuple]):
     gateway._persist_active_agents = lambda: None
     gateway._agent_cache_lock = None
     gateway._agent_cache = {KEY: (agent, "signature", 0)}
-    gateway._spawn_release_thread = lambda target, args, name, inline_fallback: events.append(
+    gateway._spawn_release_thread = lambda target, args, name, inline_fallback, **kw: events.append(
         ("cache_release", args[0])
     )
     state = gateway._session_state(KEY)

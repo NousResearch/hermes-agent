@@ -775,7 +775,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `RoomLinkProbe` | restored-helper | `(deleted; restored as a dependency of select_room_link)` |
 | `_LINK_PRIORITY` | restored-helper | `(deleted; restored as a dependency of select_room_link)` |
 | `select_room_link` | restored-def | `(deleted; BASE body restored)` |
-| `time` | import | `time` |
 
 ### `gateway.hosted_room_replicas`
 

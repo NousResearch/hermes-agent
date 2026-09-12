@@ -15,6 +15,7 @@ import math
 import os
 import re
 import stat
+import time
 import urllib.parse
 from dataclasses import asdict, dataclass
 from functools import lru_cache, partial
@@ -449,20 +450,38 @@ def verify_room_grant(
     return payload
 
 
-def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float | None = None) -> dict[str, Any]:
-    """Verify grant signature, lifetime and operation without a dispatch."""
+def decode_room_grant(
+    secret: bytes,
+    token: str,
+    *,
+    permission: str,
+    now: float | None = None,
+    allow_expired_for_revocation: bool = False,
+) -> dict[str, Any]:
+    """Verify a signed grant without restoring expired operational authority."""
+    if allow_expired_for_revocation and permission != "status":
+        raise HostedRoomGrantError("expired grants are valid only for revocation")
     if not isinstance(token, str) or len(token.encode("utf-8")) > MAX_TOKEN_BYTES:
         raise HostedRoomGrantError("room grant is invalid")
-    encoded, supplied_signature = _split_token(token)
-    if not hmac.compare_digest(hmac.new(secret, encoded, hashlib.sha256).digest(), supplied_signature):
+    encoded_token, separator, signature_token = token.partition(".")
+    if not separator:
+        raise HostedRoomGrantError("room grant is invalid")
+    encoded = _b64decode(encoded_token)
+    supplied_signature = _b64decode(signature_token)
+    expected_signature = hmac.new(secret, encoded, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected_signature, supplied_signature):
         raise HostedRoomGrantError("room grant signature is invalid")
     try:
         payload = json.loads(encoded.decode("ascii"))
     except Exception as exc:
         raise HostedRoomGrantError("room grant payload is invalid") from exc
-    if not isinstance(payload, dict) or frozenset(payload) not in {_GRANT_FIELDS, _GRANT_REFRESH_FIELDS}:
+    if not isinstance(payload, dict) or frozenset(payload) not in {
+        frozenset(_GRANT_FIELDS),
+        frozenset(_GRANT_REFRESH_FIELDS),
+    }:
         raise HostedRoomGrantError("room grant fields are invalid")
-    if not math.isfinite(checked_now := clock(now)):
+    checked_now = time.time() if now is None else float(now)
+    if not math.isfinite(checked_now):
         raise HostedRoomGrantError("room grant clock is invalid")
     try:
         issued_at = float(payload["issued_at"])
@@ -470,14 +489,30 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
         status_expires_at = float(payload.get("status_expires_at", expires_at))
     except (TypeError, ValueError) as exc:
         raise HostedRoomGrantError("room grant lifetime is invalid") from exc
-    lifetimes = (issued_at, expires_at, status_expires_at)
-    if not (all(map(math.isfinite, lifetimes)) and issued_at < expires_at <= status_expires_at):
+    if not (
+        math.isfinite(issued_at)
+        and math.isfinite(expires_at)
+        and math.isfinite(status_expires_at)
+        and issued_at < expires_at <= status_expires_at
+    ):
         raise HostedRoomGrantError("room grant lifetime is invalid")
-    operation_expires_at = status_expires_at if permission in {"approve", "status", "stop"} else expires_at
-    if checked_now < issued_at - 30 or checked_now >= operation_expires_at:
+    operation_expires_at = (
+        status_expires_at
+        if permission in {"approve", "status", "stop"}
+        else expires_at
+    )
+    if (
+        not allow_expired_for_revocation
+        and (checked_now < issued_at - 30 or checked_now >= operation_expires_at)
+    ):
         raise HostedRoomGrantError("room grant is expired or not active")
-    if not isinstance(permissions := payload.get("permissions"), list) or permission not in permissions:
+    permissions = payload.get("permissions")
+    if not isinstance(permissions, list) or permission not in permissions:
         raise HostedRoomGrantError("room grant does not allow this operation")
+    # Hash the complete signed bearer in canonical base64 form so padding or
+    # equivalent base64 spellings cannot bypass exact revocation.
+    canonical_token = _b64encode(encoded) + "." + _b64encode(supplied_signature)
+    payload["_token_sha256"] = hashlib.sha256(canonical_token.encode("ascii")).hexdigest()
     return payload
 
 
@@ -494,7 +529,6 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-import time  # noqa: F401,E402
 
 @dataclass(frozen=True)
 class RoomLinkProbe:

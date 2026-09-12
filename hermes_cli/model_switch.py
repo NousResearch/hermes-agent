@@ -1525,17 +1525,25 @@ def _scoped_key_env(name: str) -> str:
     current profile whatever key happens to be in the process environment — another profile's.
     Identical to ``os.getenv`` when multiplexing is off. A fail-closed ``UnscopedSecretError``
     (multiplexing on, no scope installed) means "no credential visible for this profile here",
-    which is exactly how the picker already treats a missing key. A scoped miss falls back to the
-    agent ``.env`` via ``get_env_prefer_dotenv`` — the chain the chat path already resolves keys
-    through — so a ``key_env`` that lives only in ``.env`` authenticates the ``/model``
-    verification probe too instead of firing it unauthenticated."""
+    which is exactly how the picker already treats a missing key. A scope hit stays authoritative
+    and a scoped miss falls back to the agent ``.env`` via ``get_env_prefer_dotenv``. In
+    single-profile (unscoped) operation the key resolves through ``get_env_prefer_dotenv``
+    directly — the chain the chat path already resolves keys through — so a ``key_env`` that
+    lives only in ``.env`` authenticates the ``/model`` verification probe, and a rotated
+    ``.env`` beats a stale value inherited in the process env (a long-lived shell still holding
+    the pre-rotation key)."""
     if not name:
         return ""
     try:
-        from agent.secret_scope import get_secret
-        val = (get_secret(name, "") or "").strip()
-        if val:
-            return val
+        from agent.secret_scope import current_secret_scope, get_secret, is_multiplex_active
+        if is_multiplex_active() and current_secret_scope() is None:
+            # Fail closed: a profile multiplexer with no scope installed must never
+            # borrow a credential from the shared .env or process env here.
+            return ""
+        if current_secret_scope() is not None:
+            val = (get_secret(name, "") or "").strip()
+            if val:
+                return val
     except Exception:
         pass
     try:

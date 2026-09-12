@@ -166,8 +166,8 @@ class TestScanCronSkillAssembled:
     def test_descriptive_attack_command_prose_allowed(self):
         """Security postmortems and runbooks routinely describe attack
         commands in prose — that's not a payload, it's documentation.
-        Real example: the `hermes-agent-dev` skill contains a postmortem
-        section saying 'the attacker could just cat ~/.hermes/.env'.
+        Real example: a skill's postmortem section saying 'the attacker
+        could just cat ~/.hermes/.env'.
         """
         assert _scan_cron_skill_assembled(
             "the attacker could just cat ~/.hermes/.env to steal credentials"

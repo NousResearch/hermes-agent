@@ -345,16 +345,16 @@ def test_reconcile_absorbed_into_beats_everything_else(curator_env):
         removed=["pr-review-format"],
         heuristic={"consolidated": [], "pruned": [{"name": "pr-review-format"}]},
         model_block={"consolidations": [], "prunings": []},  # model forgot YAML block
-        destinations={"hermes-agent-dev"},
+        destinations={"target-skill-x"},
         absorbed_declarations={
-            "pr-review-format": {"into": "hermes-agent-dev", "declared": True},
+            "pr-review-format": {"into": "target-skill-x", "declared": True},
         },
     )
     assert len(out["consolidated"]) == 1
     assert out["pruned"] == []
     e = out["consolidated"][0]
     assert e["name"] == "pr-review-format"
-    assert e["into"] == "hermes-agent-dev"
+    assert e["into"] == "target-skill-x"
     assert "absorbed_into" in e["source"]
 
 

@@ -198,15 +198,30 @@ def _read_package_files_from_latest_backup(prefixes: List[str]) -> Dict[str, byt
     return out
 
 
+def _parts_after_longest_package_prefix(rel: str, prefixes: List[str]) -> List[str]:
+    """Remainder of a tar member after the longest ``package_prefixes`` entry
+    that is a full path-prefix of *rel*. Unmatched members keep every segment
+    so the dest_root.name first-segment strip can still apply."""
+    parts = [p for p in rel.replace("\\", "/").split("/") if p]
+    best = 0
+    for prefix in prefixes:
+        pref = [p for p in prefix.strip("/").split("/") if p]
+        n = len(pref)
+        if n > best and parts[:n] == pref:
+            best = n
+    return parts[best:] if best else parts
+
+
 def fill_snapshot_from_curator_backup(
     root: Optional[Path], existing: Optional[List[Dict[str, str]]] = None, *,
     skill: Optional[str] = None) -> List[Dict[str, str]]:
     """Union missing skill-package files from the newest curator snapshot. Completeness fill, not
     a gate: failures return *existing* unchanged, and only ABSENT paths are filled. Fill targets go
     where rollback must restore them: under *root* when known (for purge that is
-    ``.archive/<name>/``, NOT the live tree), else the live skills dir; the tar's leading
-    package-dir segment is stripped when *root* already names the package. Every target must stay
-    under ``skills/`` and HERMES_HOME."""
+    ``.archive/<name>/``, NOT the live tree), else the live skills dir; when *root* already
+    names the package, the longest matching package prefix is stripped (not only the first
+    path segment, which would re-join a categorized prefix under dest_root). Every target must
+    stay under ``skills/`` and HERMES_HOME."""
     out = list(existing or [])
     prefixes = package_prefixes(root, skill, out)
     if not prefixes:
@@ -223,9 +238,13 @@ def fill_snapshot_from_curator_backup(
     pkg_names = {dest_root.name, _strip_archive_timestamp(dest_root.name)} if dest_root else set()
     have = {rel for rel in (_rel_posix(str(i.get("path", "")), skills) for i in out) if rel is not None}
     for rel, data in extra.items():
-        parts = rel.split("/")
-        if dest_root is not None and parts and parts[0] in pkg_names:
-            parts = parts[1:]
+        parts = [p for p in rel.replace("\\", "/").split("/") if p]
+        if dest_root is not None:
+            remainder = _parts_after_longest_package_prefix(rel, prefixes)
+            if len(remainder) < len(parts):
+                parts = remainder
+            elif parts and parts[0] in pkg_names:
+                parts = parts[1:]
         if not parts:
             continue
         dest = (dest_root if dest_root is not None else skills).joinpath(*parts)

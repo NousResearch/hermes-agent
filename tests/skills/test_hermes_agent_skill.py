@@ -67,3 +67,43 @@ def test_the_index_is_published_where_the_skill_says_it_is(skill_text):
     spec.loader.exec_module(gen)
 
     assert f"{gen.SITE_BASE}/llms.txt" in skill_text
+
+
+NATIVE_MCP_TEXT = (
+    SKILL_DIR / "references" / "native-mcp.md"
+).read_text(encoding="utf-8")
+
+
+def test_native_mcp_reference_documents_reload():
+    assert "/reload-mcp" in NATIVE_MCP_TEXT
+    assert "auto_reload_on_config_change" in NATIVE_MCP_TEXT
+    assert "no hot-reload" not in NATIVE_MCP_TEXT
+    assert "requires restarting the agent" not in NATIVE_MCP_TEXT
+
+
+def test_native_mcp_reference_documents_interpolation():
+    assert "${env:VAR}" in NATIVE_MCP_TEXT
+    assert "keeps its literal" in NATIVE_MCP_TEXT
+
+
+def test_native_mcp_reference_keeps_credentials_out_of_config():
+    forbidden = ("ghp_x", "sk-x", 'GITHUB_PERSONAL_ACCESS_TOKEN: "ghp', "Bearer sk-")
+    for token in forbidden:
+        assert token not in NATIVE_MCP_TEXT
+    assert "${GITHUB_PERSONAL_ACCESS_TOKEN}" in NATIVE_MCP_TEXT
+    assert ".env" in NATIVE_MCP_TEXT
+
+
+def test_windows_reference_does_not_dump_the_environment():
+    text = (SKILL_DIR / "references" / "windows-quirks.md").read_text(encoding="utf-8")
+    assert 'os.environ.get("SYSTEMROOT"' in text
+    assert "echo `os.environ`" not in text
+
+
+def test_portal_proxy_reference_requires_client_authorization():
+    text = (
+        SKILL_DIR / "references" / "portal-auth-for-third-party-apps.md"
+    ).read_text(encoding="utf-8")
+    assert "with any\nplaceholder key" not in text
+    for required in ("SO_PEERCRED", "127.0.0.1", "trust boundary"):
+        assert required in text

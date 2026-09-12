@@ -52,32 +52,38 @@ outside.
 
 ## Layer 3 — Can we bridge the gap without Portal changing anything?
 
-Yes. The pattern is a **local credential-broker proxy**. Even without a public
-OAuth flow, an app on the user's machine can:
+Yes, through an authenticated local credential-broker proxy. The broker, not the
+external application, resolves the Portal credential through Hermes's provider
+authentication layer. The broker then:
 
-1. Read Hermes's existing Portal credential out of `~/.hermes/auth.json`.
-2. Expose a local OpenAI-compatible endpoint at `http://localhost:NNNN/v1`.
-3. Forward incoming requests to `inference-api.nousresearch.com/v1` with that
-   bearer attached.
+1. Listens on `127.0.0.1` with a generated, revocable client bearer, or on a
+   same-user Unix-domain socket.
+2. Authorizes the client before resolving or using the Portal credential.
+3. Forwards an accepted OpenAI-compatible request to
+   `inference-api.nousresearch.com/v1` with the Portal bearer attached.
+4. Returns the provider response without exposing the Portal bearer.
 
-Karakeep/OpenWebUI/etc. then point at `http://localhost:NNNN/v1` with any
-placeholder key. The user never copies their Portal key around — the proxy
-rides on the credential Hermes already holds.
+Loopback is a network boundary, not an authorization boundary. Another process
+running as the same user can usually reach a port on `127.0.0.1`, so a TCP broker
+must validate its own client credential. On Linux, a mode-`0600` Unix-domain socket
+can instead verify the connecting UID with `SO_PEERCRED`. This same-user check is
+the trust boundary; platforms without peer-credential support need an equivalent
+client-authentication mechanism.
+
+Third-party applications then use the broker URL and the broker's client credential.
+They never receive or read Hermes's Portal credential.
 
 Where this could live in Hermes:
 
-- `gateway/platforms/api_server.py` is the precedent — it exposes the agent
-  over a local OpenAI-compatible endpoint, but routes through the full agent
-  loop (tool calls and all). The proxy variant is **pure inference
-  pass-through**: no agent loop, no tools, just forward `/chat/completions`
-  upstream with the user's stored Portal bearer.
-- ~150 lines as a new gateway adapter or a plugin under `plugins/`.
-- Token refresh: if the browser-OAuth flow produces a refreshable token, the
-  credential pool's refresh logic already exists. If it's a long-lived static
-  bearer, even simpler.
+- `gateway/platforms/api_server.py` is the transport precedent. The proxy variant
+  is pure inference pass-through: no agent loop and no tools.
+- A new gateway adapter or plugin can reuse Hermes's provider credential resolver
+  and token-refresh logic.
+- The implementation must reject unauthorized clients before any provider call and
+  keep both the local client credential and upstream credential out of logs.
 
-This is genuinely useful and worth shipping — it's the answer to "use my
-Portal sub with $external_app without copy-pasting keys."
+This pattern lets a separate local application use the subscription without copying
+the upstream Portal credential into that application's configuration.
 
 ---
 

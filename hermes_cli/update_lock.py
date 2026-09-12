@@ -125,17 +125,14 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     return UpdateHolder(pid=pid, age_seconds=age)
 
 
-def describe_holder(holder: UpdateHolder) -> str:
-    """One-line, user-facing explanation of who holds the update lock."""
-    minutes, seconds = divmod(int(max(holder.age_seconds, 0)), 60)
+def describe_holder(holder: UpdateHolder | None) -> str:
+    minutes, seconds = divmod(int(max(0 if holder is None else holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
     return (
-        f"✗ Another Hermes update is already running (PID {holder.pid}, "
+        f"✗ Another Hermes update is already running {f"(PID {holder.pid})" if holder else ""}, "
         f"started {elapsed} ago).\n"
         "\n"
-        "  Two updates mutating the same checkout corrupt it: one rewrites\n"
-        "  source while the other is mid-install. Wait for it to finish, or\n"
-        "  close the window/dashboard tab that started it, then retry."
+        "  Two updates running at once can corrupt Hermes. Wait for the update to finish, then try again."
     )
 
 

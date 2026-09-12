@@ -114,7 +114,6 @@ def stop_for_relaunch() -> NoReturn:
     _result = 1
     try:
         request, resumes, receipt_slot = _historical_context()
-        print("Completing the update with the new Hermes updater…", file=sys.stderr, flush=True)
         _result, completed = _run_child(request)
         if completed.get("resume_handled"):
             for token in resumes:

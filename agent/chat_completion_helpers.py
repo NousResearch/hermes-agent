@@ -1378,6 +1378,40 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     )
 
 
+_MEDIA_PART_TYPES = frozenset(_IMAGE_PART_TYPES | {"video", "video_url", "input_video"})
+
+
+def _has_media_content(api_messages: list) -> bool:
+    """True if any message in this call's payload carries an image/video content part."""
+    for msg in api_messages or ():
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in _MEDIA_PART_TYPES:
+                return True
+    return False
+
+
+def _disable_cache_prompt_for_media(request_overrides: dict, api_messages: list) -> dict:
+    """Force ``extra_body.cache_prompt`` off for a call whose payload carries image/video.
+
+    llama-server style backends reuse the prompt/KV cache slot keyed on the textual
+    prefix, so back-to-back media turns in one session can be served the previous
+    request's answer (#108659). Only touches providers that already set the key
+    (no-op otherwise) and only the media-carrying call — plain-text turns keep the
+    cache-reuse benefit the user configured.
+    """
+    extra_body = request_overrides.get("extra_body") if isinstance(request_overrides, dict) else None
+    if not isinstance(extra_body, dict) or not extra_body.get("cache_prompt"):
+        return request_overrides  # key absent, or already off — nothing to do
+    if not _has_media_content(api_messages):
+        return request_overrides
+    request_overrides = dict(request_overrides)
+    request_overrides["extra_body"] = {**extra_body, "cache_prompt": False}
+    return request_overrides
+
+
 def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     # One-shot continuation override — consumed exactly once, on the FIRST
     # request this call builds (only one api_mode branch runs per invocation).
@@ -1387,6 +1421,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # The one place request_overrides are consumed: static /fast values are already pinned
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
     request_overrides = effective_request_overrides(agent)
+    request_overrides = _disable_cache_prompt_for_media(request_overrides, api_messages)
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":

@@ -600,6 +600,33 @@ class TestManualBackendRespawn:
         assert failed == [["./venv/bin/hermes", "dashboard"]]
         popen.assert_not_called()
 
+    def test_respawn_rejects_relative_script_without_captured_cwd(self, tmp_path, monkeypatch):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        command = [sys.executable, "./bin/hermes_cli/main.py", "dashboard"]
+
+        with patch.object(live.subprocess, "Popen") as popen:
+            failed = live._respawn_dashboard_processes([(command, None)])
+
+        assert failed == [command]
+        popen.assert_not_called()
+
+    def test_duplicate_argv_keeps_first_candidate_cwd(self):
+        from hermes_cli.dashboard_procs import _restart_killed_backends
+
+        argv = ["./venv/bin/hermes", "dashboard", "--port", "8300"]
+        with patch.object(main_dashboard, "_respawn_dashboard_processes", return_value=[]) as respawn:
+            _restart_killed_backends(
+                [101, 202],
+                {101: None, 202: None},
+                {101: None, 202: None},
+                {101: argv, 202: argv},
+                {101: None, 202: None},
+                {101: "/install/first", 202: "/install/second"},
+            )
+
+        respawn.assert_called_once_with([(argv, "/install/first")])
+
 
 class TestFilterDashboardRespawnCandidates:
     """Unit tests for respawn filtering / dedupe / orphan skip (#78821)."""

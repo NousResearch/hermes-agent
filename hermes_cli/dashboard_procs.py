@@ -418,11 +418,9 @@ def _restart_killed_backends(
     for svc, err in failed_restarts:
         print(f"    ⚠ {svc}: {err}")
     respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
-    cwd_by_cmdline = {
-        tuple(pid_cmdline[pid]): pid_cwd.get(pid)
-        for pid in killed
-        if pid in pid_cmdline
-    }
+    cwd_by_cmdline: dict[tuple[str, ...], str | None] = {}
+    for pid, command, _home in respawn_candidates:
+        cwd_by_cmdline.setdefault(tuple(command), pid_cwd.get(pid))
     respawn_requests = [(cmd, cwd_by_cmdline.get(tuple(cmd))) for cmd in respawn_cmds]
     failed_cmds = _dash._respawn_dashboard_processes(respawn_requests) if respawn_requests else None
     if failed_cmds:

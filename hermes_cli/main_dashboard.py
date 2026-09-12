@@ -251,6 +251,18 @@ def _dashboard_cwd_for_pid(pid: int) -> str | None:
         return None
 
 
+def _dashboard_launch_prefix_needs_cwd(command: list[str]) -> bool:
+    """Whether a path-qualified relative launch token precedes the backend subcommand."""
+    subcommand_index = next(
+        (index for index, token in enumerate(command) if token in {"serve", "dashboard"}),
+        len(command),
+    )
+    return any(
+        not (path := Path(token)).is_absolute() and path.parent != Path(".")
+        for token in command[:subcommand_index]
+    )
+
+
 def _respawn_dashboard_processes(
     commands: list[list[str] | tuple[list[str], str | None]],
 ) -> list[list[str]]:
@@ -270,8 +282,7 @@ def _respawn_dashboard_processes(
     for request in commands:
         command, cwd = request if isinstance(request, tuple) else (request, None)
         try:
-            executable = Path(command[0])
-            if cwd is None and not executable.is_absolute() and executable.parent != Path("."):
+            if cwd is None and _dashboard_launch_prefix_needs_cwd(command):
                 raise ValueError("original working directory is unavailable for relative argv")
             # Keep restarted dashboards headless; reopening a browser after a
             # background update is noisy and fails in SSH/headless sessions.

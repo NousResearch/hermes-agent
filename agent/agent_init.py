@@ -290,6 +290,39 @@ def _custom_provider_extra_body_for_agent(
     return fallback
 
 
+def _custom_provider_send_session_metadata(
+    *, provider: str, model: str, base_url: str, custom_providers: List[Dict[str, Any]]
+) -> bool:
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm != "custom" and not provider_norm.startswith("custom:"):
+        return False
+    provider_key_filter = provider_norm.partition(":")[2].strip()
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return False
+    fallback = False
+    for entry in custom_providers or []:
+        if (
+            not isinstance(entry, dict)
+            or entry.get("send_session_metadata") is not True
+        ):
+            continue
+        entry_keys = {
+            str(entry.get("provider_key", "") or "").strip().lower(),
+            str(entry.get("name", "") or "").strip().lower(),
+        }
+        if provider_key_filter and provider_key_filter not in entry_keys:
+            continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        if str(entry.get("model", "") or "").strip():
+            if _custom_provider_model_matches(model, entry):
+                return True
+        elif not fallback:
+            fallback = True
+    return fallback
+
+
 def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
     extra_body = _custom_provider_extra_body_for_agent(
         provider=agent.provider, model=agent.model, base_url=agent.base_url,
@@ -1712,6 +1745,12 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 
     # Reused by _check_compression_model_feasibility (aux compression model detection).
     agent._custom_providers = _custom_providers
+    agent._send_session_metadata = _custom_provider_send_session_metadata(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=_custom_providers,
+    )
     _merge_custom_provider_extra_body(agent, _custom_providers)
 
     if _config_context_length is None and _custom_providers:

@@ -1060,6 +1060,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
+    "send_session_metadata",
     "ssl_ca_cert", "ssl_verify", "key_env"}
 
 # Fields that look like they should be inside custom_providers, not at root

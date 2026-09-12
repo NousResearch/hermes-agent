@@ -1,33 +1,40 @@
 import { configure } from '@testing-library/react'
 
+// Keep ONE storage implementation across every supported Node version.
+//
 // Node 26 defines its own `localStorage` accessor on the global object, which
 // returns `undefined` unless the process was started with --localstorage-file
 // (it warns: "localStorage is not available because --localstorage-file was
 // not provided"). In the jsdom environment `globalThis` IS the window, so that
 // accessor shadows jsdom's Storage and every `localStorage.getItem(...)` in a
-// test throws "Cannot read properties of undefined". Install a real in-memory
-// Storage when the global resolves to nothing, before any test module reads it.
-if (typeof (globalThis as any).localStorage === 'undefined') {
-  const store = new Map<string, string>()
+// test throws "Cannot read properties of undefined".
+//
+// Node 22/24 do not define that accessor, so jsdom's proxy Storage used to
+// leak through instead: it mirrors stored keys as named properties and
+// silently ignores instance-level patches (`vi.spyOn(localStorage, 'setItem')`
+// never fires while the write goes straight through). Storage-failure tests
+// (e.g. voice-prefs' quota/denied paths) therefore only misbehaved outside
+// CI. Install the same in-memory Storage on every supported Node, before any
+// test module reads it, so local runs match CI exactly.
+const store = new Map<string, string>()
 
-  const storage: Storage = {
-    get length() {
-      return store.size
-    },
-    key: (i: number) => [...store.keys()][i] ?? null,
-    getItem: (k: string) => store.get(String(k)) ?? null,
-    setItem: (k: string, v: string) => void store.set(String(k), String(v)),
-    removeItem: (k: string) => void store.delete(String(k)),
-    clear: () => store.clear(),
-  }
+const storage: Storage = {
+  get length() {
+    return store.size
+  },
+  key: (i: number) => [...store.keys()][i] ?? null,
+  getItem: (k: string) => store.get(String(k)) ?? null,
+  setItem: (k: string, v: string) => void store.set(String(k), String(v)),
+  removeItem: (k: string) => void store.delete(String(k)),
+  clear: () => store.clear(),
+}
 
-  for (const target of [globalThis, (globalThis as any).window].filter(Boolean)) {
-    Object.defineProperty(target, 'localStorage', {
-      value: storage,
-      configurable: true,
-      writable: true,
-    })
-  }
+for (const target of [globalThis, (globalThis as any).window].filter(Boolean)) {
+  Object.defineProperty(target, 'localStorage', {
+    value: storage,
+    configurable: true,
+    writable: true,
+  })
 }
 
 // jsdom has no layout or intersection delivery. Tests of observer behavior

@@ -6056,10 +6056,6 @@ def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
-    if getattr(args, "drain", False):
-        from hermes_cli.gateway_desktop_drain import drain_all_desktop_work
-
-        drain_all_desktop_work()
     # Under s6 a bare pkill is seen as a crash and restarted; go through the supervisor.
     if stop_all and _dispatch_all_via_service_manager_if_s6("stop"):
         return

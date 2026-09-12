@@ -121,13 +121,15 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
     re.IGNORECASE,
 )
 # Inline credential assignments commonly arrive embedded in JSON/stringified
-# provider payloads, where a line-start anchor is unavailable. Keep this
-# deliberately narrow: only credential keywords are accepted, and the value
-# must be non-empty and end at a payload delimiter.
+# provider payloads, where a line-start anchor is unavailable. Require a
+# structural delimiter before the key so prose, dotted technical settings,
+# relative URLs, and form bodies remain available to their dedicated passes.
 _INLINE_SECRET_ASSIGN_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:token|secret|password|passwd|credential|auth|api[_-]?key)"
-    r"\s*=\s*(?!<redacted(?:-[^>]+)?>)(?:'[^']*'|\"[^\"]*\"|[^\s,;]+)",
-    re.IGNORECASE,
+    r"(^|[{[(,]\s*|[\"'])"
+    r"(token|secret|password|passwd|credential|auth|api[_-]?key)"
+    r"(\s*=\s*)(?!<redacted(?:-[^>]+)?>)"
+    r"(?:'[^']*'|\"[^\"]*\"|[^\s,;&\"']+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # Lowercase / dotted config-file keys (``spring.datasource.password=x``,
@@ -524,7 +526,7 @@ def _redact_assignments(text: str) -> str:
             # params; the lowercase one would (issue #77484).
             text = _ENV_ASSIGN_LOWER_RE.sub(_redact_env, text)
             text = _INLINE_SECRET_ASSIGN_RE.sub(
-                lambda match: match.group(0).split("=", 1)[0] + "=***",
+                lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}***",
                 text,
             )
         # The keyword pre-gate is exact and matters: _CFG_DOTTED_RE backtracks

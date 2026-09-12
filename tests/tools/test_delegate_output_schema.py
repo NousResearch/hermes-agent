@@ -77,6 +77,64 @@ class TestValidateOutput:
         assert errors
 
 
+class TestForgivingSchema:
+    """v0.21.3: ``{}`` (or any non-constraining schema) wraps prose into a
+    JSON object instead of failing. Closes the "活干了但汇报被吞" bug where
+    a child agent reported in markdown prose (a valid response to the work)
+    but the empty schema's strict JSON parse ate it and the parent saw
+    ``status="failed"`` with ``Final answer does not satisfy the declared
+    output_schema (after 1 retry)``.
+    """
+
+    def test_empty_schema_is_forgiving(self):
+        from tools.delegation_output_schema import is_forgiving_schema
+        assert is_forgiving_schema({}) is True
+        assert is_forgiving_schema({"title": "anything"}) is True
+        assert is_forgiving_schema({"description": "x", "$schema": "https://x"}) is True
+
+    def test_constraining_keys_make_schema_strict(self):
+        from tools.delegation_output_schema import is_forgiving_schema
+        # Any of these keys makes the schema impose real constraints — keep strict.
+        for k in ("type", "properties", "required", "items", "allOf",
+                  "anyOf", "oneOf", "additionalProperties", "minProperties"):
+            assert is_forgiving_schema({k: []}) is False, f"{k!r} should be strict"
+        # Even a bare "type":"object" is constraining — caller wants an object.
+        assert is_forgiving_schema({"type": "object"}) is False
+
+    def test_prose_passes_forgiving_schema(self):
+        ok, errs = validate_output(
+            "I did the work. Here is the report:\n- step 1\n- step 2",
+            {},
+        )
+        assert ok is True
+        assert any("non_json_wrapped" in e for e in errs)
+
+    def test_fenced_prose_passes_forgiving_schema(self):
+        ok, errs = validate_output(
+            "```\n## Summary\nDid it.\n```",
+            {},
+        )
+        assert ok is True
+        assert any("non_json_wrapped" in e for e in errs)
+
+    def test_constraining_schema_still_rejects_prose(self):
+        # Regression: the lenient path must NOT swallow strict-schema failures.
+        ok, errs = validate_output(
+            "not json, sorry",
+            {"type": "object", "required": ["city"]},
+        )
+        assert ok is False
+        assert errs
+        assert not any("non_json_wrapped" in e for e in errs)
+
+    def test_json_object_passes_forgiving_schema(self):
+        # Sanity: forgiving schema still validates a proper JSON object cleanly
+        # (no spurious "non_json_wrapped" warning).
+        ok, errs = validate_output('{"city": "Berlin"}', {})
+        assert ok is True
+        assert errs == []
+
+
 class TestCoerceOutputSchema:
     def test_valid_schema_passes(self):
         schema, err = coerce_output_schema(ADDRESS_SCHEMA)
@@ -308,6 +366,69 @@ class TestRunSingleChildSchemaValidation:
         entry = _run(child)
         assert entry["status"] == "completed"
         assert "error" not in entry
+
+    # ----- v0.21.3: forgiving-schema prose acceptance -----
+
+    def test_forgiving_schema_with_prose_first_try_completed_with_warnings(self):
+        """Empty schema {} + prose answer (the live-site bug):
+        no retry turn, summary preserved verbatim, status="completed_with_warnings".
+        """
+        PROSE = "I did the work. Here is the report:\n- step 1\n- step 2"
+        child = _StubChild([PROSE])
+        child._delegate_output_schema = {}
+        entry = _run(child)
+        assert entry["status"] == "completed_with_warnings"
+        assert entry["summary"] == PROSE
+        assert entry["schema_valid"] is True
+        assert any("non_json_wrapped" in w for w in entry["schema_warnings"])
+        assert entry["answer_was_wrapped"] is True
+        # Critical: no retry was sent — the work is already done.
+        assert len(child.calls) == 1
+
+    def test_forgiving_schema_skips_retry_turn_altogether(self):
+        """Forgiving schema + prose: validator wraps on the first try and skips
+        the bounded retry turn — re-prompting the child to "give JSON" wastes
+        a turn on work that is already done. The child's only call is the
+        original one (calls == 1)."""
+        PROSE = "Same prose on retry."
+        child = _StubChild([PROSE, PROSE])  # 2 responses queued, only 1 used
+        child._delegate_output_schema = {}
+        entry = _run(child)
+        assert entry["status"] == "completed_with_warnings"
+        assert entry["summary"] == PROSE
+        assert entry["answer_was_wrapped"] is True
+        # Critical efficiency win: no retry was sent — the work was already done.
+        assert len(child.calls) == 1
+        # schema_retries is NOT emitted (retries == 0 is falsy).
+        assert "schema_retries" not in entry
+
+    def test_forgiving_schema_with_json_object_still_completed(self):
+        """Sanity: forgiving schema + proper JSON object → status="completed"
+        (no spurious warning, no wrapped flag)."""
+        child = _StubChild(['{"answer": 42}'])
+        child._delegate_output_schema = {}
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert entry["schema_valid"] is True
+        assert "schema_warnings" not in entry
+        assert "answer_was_wrapped" not in entry
+        assert len(child.calls) == 1
+
+    def test_constraining_schema_with_prose_still_failed(self):
+        """Regression: strict-schema + prose answer keeps the v0.21.2 contract
+        of status="failed" with a schema violation error message. The lenient
+        path must NOT swallow strict-schema failures (otherwise orchestrators
+        would silently accept empty verdicts)."""
+        child = _StubChild(["not json", "still not json"])
+        child._delegate_output_schema = ADDRESS_SCHEMA
+        entry = _run(child)
+        assert entry["status"] == "failed"
+        assert entry["schema_valid"] is False
+        assert entry["schema_errors"]
+        assert "output_schema" in entry.get("error", "")
+        assert entry["summary"] == "still not json"
+        assert "schema_warnings" not in entry
+        assert "answer_was_wrapped" not in entry
 
 
 # ---------------------------------------------------------------------------

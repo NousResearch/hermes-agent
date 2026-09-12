@@ -1,0 +1,13 @@
+name: hermes-a2a-peers
+repo: https://github.com/kadiratesdev/hermes-a2a-peers
+sha: 1044970c70656df0b3e2957ff71bb6cb969663df
+description: Dashboard tab and /node slash command for configured a2a_agents via server-side dispatch.
+maintainer: kadiratesdev
+tier: community
+docs_url: https://github.com/kadiratesdev/hermes-a2a-peers
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

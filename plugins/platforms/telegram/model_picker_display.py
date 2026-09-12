@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Display-only labels and vendor grouping for Bedrock model IDs in inline pickers.
+"""Display-only shaping for Bedrock IDs in the Telegram ``/model`` picker.
 
 Bedrock advertises the same model several times: as a plain foundation-model ID
 (``anthropic.claude-opus-5``) and behind one or more routing namespaces
-(``us.``, ``global.``, ...). Rendered raw in a two-column Telegram keyboard those
-IDs truncate to indistinguishable buttons (issue #94986).
+(``us.``, ``global.``, ...). Rendered raw in a two-column inline keyboard those
+IDs truncate to indistinguishable buttons, which makes picking a specific model
+guesswork rather than a choice (issue #94986).
 
-Pure functions on purpose — no Telegram objects, no adapter state — so the label
-contract is testable without a bot. **Model IDs are never rewritten**: callers
-select through positional indices into their own list, so the exact ID the
-provider advertised is what reaches Bedrock.
+Pure functions on purpose — no Telegram objects, no adapter state — so the
+display contract is testable without a bot. **Model IDs are never rewritten**:
+callers select through positional indices into their own list, so the exact ID
+the provider advertised is what reaches Bedrock.
 """
 
 from __future__ import annotations
@@ -47,6 +48,11 @@ VENDOR_ALIASES = {"moonshot": "moonshotai"}
 # Telegram truncates long button text; keep labels inside the usable width.
 _MAX_LABEL = 38
 
+# Two columns of a mobile inline keyboard show roughly this much before the
+# label is ellipsized — past it a button gets a full-width row of its own so a
+# trailing model count stays readable (#94986).
+TWO_COLUMN_BUDGET = 18
+
 
 def split_bedrock_id(model_id: str) -> Tuple[str, str, str]:
     """Split a Bedrock ID into ``(geo, vendor, model)``.
@@ -78,14 +84,25 @@ def _display_short(vendor: str, short: str) -> str:
     return short.removeprefix("claude-") if vendor == "anthropic" else short
 
 
+def _geo_prefix(geo: str) -> str:
+    # ``G`` keeps the global/regional distinction without eating a whole button.
+    return "G" if geo == "global" else geo
+
+
 def model_button_labels(models: List[str]) -> List[str]:
     """Readable, pairwise-distinct labels for *models*, one per entry, same order.
 
     The routing namespace is dropped when the model name alone is unambiguous and
-    kept as a short ``geo:`` prefix when the same model appears more than once —
-    a bare foundation-model ID keeps no prefix, which is what distinguishes it
-    from its routed twins. Collisions are counted over the list the caller
-    renders, so labels do not change as the user pages.
+    kept as a short ``geo:`` prefix when the same model is advertised more than
+    once. A bare foundation-model ID keeps NO prefix: it does not carry a
+    namespace, and lending it the configured region would make it identical to
+    its regional twin (``us.amazon.nova-lite-v1:0`` vs ``amazon.nova-lite-v1:0``
+    both rendering ``us: nova-lite-v1:0``). :func:`routing_legend` names that
+    unprefixed shape in the message body instead, where it costs no button width.
+
+    Collisions are counted over the list the caller renders, on the label as
+    displayed, so labels neither change as the user pages nor collide after the
+    vendor prefix is stripped.
     """
     parsed = [split_bedrock_id(m) for m in models]
     counts: Dict[str, int] = {}
@@ -97,15 +114,47 @@ def model_button_labels(models: List[str]) -> List[str]:
     for model_id, (geo, vendor, short) in zip(models, parsed):
         label = _display_short(vendor, short)
         if vendor and geo and counts.get(label, 0) > 1:
-            # ``G`` keeps the useful global/regional distinction without eating a
-            # whole button's width.
-            label = f"{'G' if geo == 'global' else geo}: {label}"
+            label = f"{_geo_prefix(geo)}: {label}"
         if not label:  # never emit blank text: Telegram rejects the whole message
             label = model_id
         if len(label) > _MAX_LABEL:
             label = label[: _MAX_LABEL - 3] + "..."
         labels.append(label)
     return labels
+
+
+def routing_legend(models: List[str], region_geo: str = "") -> str:
+    """One-line explanation of the ``geo:`` prefixes, or ``""`` when unneeded.
+
+    A bare label is only self-explanatory next to a legend, so one is offered
+    exactly when the rendered list mixes a namespaced ID with the plain
+    foundation-model ID of the same model — the case where the user must choose
+    between routing scopes rather than between models.
+    """
+    parsed = [split_bedrock_id(m) for m in models]
+    bare = {_display_short(v, s) for g, v, s in parsed if v and not g}
+    geos = sorted({g for g, v, s in parsed if v and g and _display_short(v, s) in bare})
+    if not geos:
+        return ""
+    scopes = ", ".join(f"{_geo_prefix(g)}: = {g}" for g in geos)
+    in_region = f"in-region ({region_geo})" if region_geo else "in-region"
+    return f"{scopes}, no prefix = {in_region}"
+
+
+def configured_region_geo() -> str:
+    """Short geography of the Bedrock endpoint this runtime calls (``""`` unknown).
+
+    Follows the runtime's own region precedence so the legend describes the
+    endpoint Hermes will actually reach, and deliberately shows the geography
+    rather than the full region name, which would not fit.
+    """
+    try:
+        from agent.bedrock_adapter import resolve_bedrock_runtime_region
+        from hermes_cli.model_setup_flows_bedrock import bedrock_region_geo_prefix
+
+        return bedrock_region_geo_prefix(resolve_bedrock_runtime_region()).rstrip(".")
+    except Exception:
+        return ""
 
 
 def group_models_by_vendor(models: List[str]) -> List[Dict[str, Any]]:
@@ -124,3 +173,29 @@ def group_models_by_vendor(models: List[str]) -> List[Dict[str, Any]]:
         {"vendor": vendor, "label": VENDOR_LABELS[vendor], "indices": indices}
         for vendor, indices in sorted(groups.items())
     ]
+
+
+def pack_rows(labels: List[str], budget: int = TWO_COLUMN_BUDGET) -> List[List[int]]:
+    """Row layout for *labels* as index groups: pairs, or a full-width row.
+
+    Two columns halve the readable width, which is what ellipsized
+    ``✓ AWS Bedrock (1…`` and hid the model count. A label that does not fit a
+    column takes a row of its own instead of being truncated; order is preserved
+    so a caller's positional callbacks stay valid.
+    """
+    rows: List[List[int]] = []
+    pending: List[int] = []
+    for i, label in enumerate(labels):
+        if len(label) > budget:
+            if pending:
+                rows.append(pending)
+                pending = []
+            rows.append([i])
+            continue
+        pending.append(i)
+        if len(pending) == 2:
+            rows.append(pending)
+            pending = []
+    if pending:
+        rows.append(pending)
+    return rows

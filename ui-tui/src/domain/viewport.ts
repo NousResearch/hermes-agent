@@ -99,10 +99,12 @@ export const promptRowIndexes = (messages: readonly Msg[]): number[] => {
 
 /**
  * Index INTO `rows` of the prompt the viewport sits in: the last prompt at or
- * above the viewport top. Pinned to the bottom the viewport is past every
- * prompt by construction, so the newest one answers without a walk — the same
- * fast path the desktop rail takes while it is following the tail. -1 when the
- * session has no prompts yet.
+ * above the viewport top. -1 while the top is above EVERY prompt — an intro or
+ * banner row above the first user message is the normal shape, so this is a
+ * position, not an error — and likewise in a session with no prompts yet.
+ * Pinned to the bottom the viewport is past every prompt by construction, so
+ * the newest one answers without a walk — the same fast path the desktop rail
+ * takes while it is following the tail.
  */
 export const activePromptIndex = (
   offsets: ArrayLike<number>,
@@ -119,7 +121,7 @@ export const activePromptIndex = (
     return rows.length - 1
   }
 
-  let active = 0
+  let active = -1
 
   for (let i = 0; i < rows.length; i++) {
     // Offsets are a monotone prefix sum, so the first prompt BELOW the
@@ -136,8 +138,11 @@ export const activePromptIndex = (
 
 /**
  * Absolute scroll offset for stepping one prompt from where the viewport is
- * now — the row to land ON. null at either end (and with no prompts at all) so
- * the caller leaves the viewport alone rather than bouncing it.
+ * now — the row to land ON. The bounds check is the whole of it: from -1 (the
+ * viewport above the first prompt) a forward step lands on the FIRST prompt
+ * rather than over it, and a backward step is a no-op. null at either end (and
+ * with no prompts at all) so the caller leaves the viewport alone rather than
+ * bouncing it.
  */
 export const steppedPromptOffset = (
   offsets: ArrayLike<number>,
@@ -146,13 +151,7 @@ export const steppedPromptOffset = (
   sticky: boolean,
   dir: -1 | 1
 ): number | null => {
-  const active = activePromptIndex(offsets, rows, top, sticky)
-
-  if (active < 0) {
-    return null
-  }
-
-  const next = active + dir
+  const next = activePromptIndex(offsets, rows, top, sticky) + dir
 
   if (next < 0 || next >= rows.length) {
     return null

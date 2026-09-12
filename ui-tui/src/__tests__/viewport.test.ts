@@ -106,11 +106,16 @@ describe('prompt navigation', () => {
     expect(steppedPromptOffset(OFFSETS, ROWS, 0, false, -1)).toBeNull()
     expect(steppedPromptOffset(OFFSETS, ROWS, 100, false, 1)).toBeNull()
     expect(steppedPromptOffset(OFFSETS, [], 0, false, 1)).toBeNull()
-    // The prompt you are "on" is the last one at or above the viewport top, or
-    // the newest while the view is following the tail.
+    // Above the first prompt — the normal shape, an intro row above the first
+    // user message — the viewport is not ON a prompt yet, so the forward step
+    // lands on the FIRST one rather than stepping over it.
+    expect(steppedPromptOffset(OFFSETS, ROWS, 0, false, 1)).toBe(OFFSETS[ROWS[0]!])
+    // The prompt you are "on" is the last one at or above the viewport top, the
+    // newest while the view is following the tail, and none of them while the
+    // top is still above them all.
     expect(activePromptIndex(OFFSETS, ROWS, 50, false)).toBe(1)
     expect(activePromptIndex(OFFSETS, ROWS, 100, false)).toBe(2)
-    expect(activePromptIndex(OFFSETS, ROWS, 0, false)).toBe(0)
+    expect(activePromptIndex(OFFSETS, ROWS, 0, false)).toBe(-1)
     expect(activePromptIndex(OFFSETS, ROWS, -999, true)).toBe(2)
     expect(activePromptIndex(OFFSETS, [], 0, false)).toBe(-1)
   })

@@ -827,6 +827,23 @@ _NOTIFY_SUB_COLUMNS = (
     ("delivery_metadata", "delivery_metadata TEXT"),
 )
 
+_RUN_USAGE_COLUMNS = (
+    ("session_id", "session_id TEXT"),
+    ("input_tokens", "input_tokens INTEGER NOT NULL DEFAULT 0"),
+    ("output_tokens", "output_tokens INTEGER NOT NULL DEFAULT 0"),
+    ("cache_read_tokens", "cache_read_tokens INTEGER NOT NULL DEFAULT 0"),
+    ("cache_write_tokens", "cache_write_tokens INTEGER NOT NULL DEFAULT 0"),
+    ("reasoning_tokens", "reasoning_tokens INTEGER NOT NULL DEFAULT 0"),
+    ("api_call_count", "api_call_count INTEGER NOT NULL DEFAULT 0"),
+    ("turns", "turns INTEGER NOT NULL DEFAULT 0"),
+    ("estimated_cost_usd", "estimated_cost_usd REAL NOT NULL DEFAULT 0"),
+    ("auxiliary_estimated_cost_usd", "auxiliary_estimated_cost_usd REAL NOT NULL DEFAULT 0"),
+    ("actual_cost_usd", "actual_cost_usd REAL"),
+    ("model", "model TEXT"),
+    ("provider", "provider TEXT"),
+    ("usage_recorded_at", "usage_recorded_at INTEGER"),
+)
+
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -901,6 +918,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 )
 
     if _table_exists(conn, "task_runs"):
+        run_cols = _column_names(conn, "task_runs")
+        for name, ddl in _RUN_USAGE_COLUMNS:
+            if name not in run_cols:
+                _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
 
     # One-shot event-kind rename: old names still worked but were awkward on
@@ -1003,7 +1024,17 @@ _REBUILD_SPECS = {
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " error TEXT, session_id TEXT,"
+        " input_tokens INTEGER NOT NULL DEFAULT 0,"
+        " output_tokens INTEGER NOT NULL DEFAULT 0,"
+        " cache_read_tokens INTEGER NOT NULL DEFAULT 0,"
+        " cache_write_tokens INTEGER NOT NULL DEFAULT 0,"
+        " reasoning_tokens INTEGER NOT NULL DEFAULT 0,"
+        " api_call_count INTEGER NOT NULL DEFAULT 0,"
+        " turns INTEGER NOT NULL DEFAULT 0,"
+        " estimated_cost_usd REAL NOT NULL DEFAULT 0,"
+        " auxiliary_estimated_cost_usd REAL NOT NULL DEFAULT 0, actual_cost_usd REAL,"
+        " model TEXT, provider TEXT, usage_recorded_at INTEGER)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",

@@ -773,9 +773,24 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    session_id: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    api_call_count: int = 0
+    turns: int = 0
+    estimated_cost_usd: float = 0.0
+    auxiliary_estimated_cost_usd: float = 0.0
+    actual_cost_usd: Optional[float] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    usage_recorded_at: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
+        g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         return cls(
             **{
                 col: row[col] for col in (
@@ -787,6 +802,20 @@ class Run:
             started_at=int(row["started_at"]),
             ended_at=_opt_int(row["ended_at"]),
             metadata=_json_or(row["metadata"]),
+            session_id=g("session_id") or None,
+            input_tokens=int(g("input_tokens") or 0),
+            output_tokens=int(g("output_tokens") or 0),
+            cache_read_tokens=int(g("cache_read_tokens") or 0),
+            cache_write_tokens=int(g("cache_write_tokens") or 0),
+            reasoning_tokens=int(g("reasoning_tokens") or 0),
+            api_call_count=int(g("api_call_count") or 0),
+            turns=int(g("turns") or 0),
+            estimated_cost_usd=float(g("estimated_cost_usd") or 0.0),
+            auxiliary_estimated_cost_usd=float(g("auxiliary_estimated_cost_usd") or 0.0),
+            actual_cost_usd=(float(g("actual_cost_usd")) if g("actual_cost_usd") is not None else None),
+            model=g("model") or None,
+            provider=g("provider") or None,
+            usage_recorded_at=_opt_int(g("usage_recorded_at")),
         )
 
 
@@ -993,7 +1022,22 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- Immutable worker-session usage snapshot written when this run closes.
+    session_id           TEXT,
+    input_tokens         INTEGER NOT NULL DEFAULT 0,
+    output_tokens        INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens    INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens   INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens     INTEGER NOT NULL DEFAULT 0,
+    api_call_count       INTEGER NOT NULL DEFAULT 0,
+    turns                INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd   REAL NOT NULL DEFAULT 0,
+    auxiliary_estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    actual_cost_usd      REAL,
+    model                TEXT,
+    provider             TEXT,
+    usage_recorded_at    INTEGER
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -1855,6 +1899,7 @@ def _append_event(
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
+    usage: Optional[dict] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
     ``current_run_id``; None when no run was active (never-claimed task)."""
@@ -1862,6 +1907,9 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    from hermes_cli.kanban_usage import normalized_run_usage
+
+    run_usage = normalized_run_usage(usage)
     conn.execute(
         """
         UPDATE task_runs
@@ -1873,11 +1921,24 @@ def _end_run(
                ended_at      = ?,
                claim_lock    = NULL,
                claim_expires = NULL,
-               worker_pid    = NULL
+               worker_pid    = NULL,
+               session_id = ?, input_tokens = ?, output_tokens = ?,
+               cache_read_tokens = ?, cache_write_tokens = ?, reasoning_tokens = ?,
+               api_call_count = ?, turns = ?, estimated_cost_usd = ?, auxiliary_estimated_cost_usd = ?,
+               actual_cost_usd = ?,
+               model = ?, provider = ?, usage_recorded_at = ?
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (
+            status or outcome, outcome, summary, error, _json_or_null(metadata), now,
+            run_usage["session_id"], run_usage["input_tokens"], run_usage["output_tokens"],
+            run_usage["cache_read_tokens"], run_usage["cache_write_tokens"],
+            run_usage["reasoning_tokens"], run_usage["api_call_count"], run_usage["turns"],
+            run_usage["estimated_cost_usd"], run_usage["auxiliary_estimated_cost_usd"],
+            run_usage["actual_cost_usd"], run_usage["model"],
+            run_usage["provider"], run_usage["usage_recorded_at"], run_id,
+        ),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
@@ -1913,10 +1974,14 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
 def _end_or_synthesize_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, status: str,
     summary: Optional[str] = None, metadata: Optional[dict] = None, synthesize: bool,
+    usage: Optional[dict] = None,
 ) -> Optional[int]:
     """:func:`_end_run`; when no run was active and ``synthesize`` holds, record a
     zero-duration run instead so the handoff fields survive in attempt history."""
-    run_id = _end_run(conn, task_id, outcome=outcome, status=status, summary=summary, metadata=metadata)
+    run_id = _end_run(
+        conn, task_id, outcome=outcome, status=status, summary=summary, metadata=metadata,
+        usage=usage,
+    )
     if run_id is None and synthesize:
         run_id = _synthesize_ended_run(conn, task_id, outcome=outcome, summary=summary, metadata=metadata)
     return run_id
@@ -2530,7 +2595,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True,
+    fire_lifecycle_hook: bool = True, usage: Optional[dict] = None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2586,7 +2651,7 @@ def complete_task(
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(
             conn, task_id, outcome="completed", status="done", summary=handoff_summary,
-            metadata=metadata,
+            metadata=metadata, usage=usage,
         )
         # Never-claimed task: synthesize a run so the handoff fields survive.
         if run_id is None and (summary or metadata or result or prior_status == "review"):
@@ -2906,6 +2971,7 @@ def edit_completed_task_result(
 def block_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    usage: Optional[dict] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``transient`` still counts toward the loop breaker
@@ -2940,7 +3006,8 @@ def block_task(
         if conn.execute(sql, params).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(
-            conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
+            conn, task_id, outcome="blocked", status="blocked", summary=reason,
+            synthesize=bool(reason), usage=usage,
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
@@ -2998,6 +3065,7 @@ def request_review(
     conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None,
     metadata: Optional[dict] = None, reviewer: Optional[str] = None,
     expected_run_id: Optional[int] = None, force: bool = False, with_reason: bool = False,
+    usage: Optional[dict] = None,
 ):
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
@@ -3071,6 +3139,7 @@ def request_review(
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="review_requested", status="review",
             summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+            usage=usage,
         )
         _append_event(
             conn,
@@ -3108,6 +3177,7 @@ def _nonblank_str(value: Any) -> Optional[str]:
 
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
+    usage: Optional[dict] = None,
 ) -> tuple[bool, Optional[str]]:
     """Close an active reviewer run (claimed from ``review``) and hand the task
     back to the implementer from the latest ``review_requested`` event, parent
@@ -3160,6 +3230,7 @@ def request_changes(
             return False, "task changed during review handoff"
         run_id = _end_run(
             conn, task_id, outcome="changes_requested", status=new_status, summary=reason,
+            usage=usage,
         )
         _append_event(
             conn,

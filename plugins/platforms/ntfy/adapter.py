@@ -25,7 +25,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult, _custom_unit_to_cp
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
@@ -74,13 +74,26 @@ def _publish_headers(token: str, markdown: bool, *, auth_first: bool = True) -> 
     return headers
 
 
+def _utf8_len(s: str) -> int:
+    """UTF-8 bytes in *s* — ntfy's ``message-size-limit`` is a byte budget (Go's ``len()``
+    on the message), so a Cyrillic char costs two and an emoji four, unlike Python ``len()``."""
+    return len(s.encode("utf-8"))
+
+
 def _truncate_body(message: str, *, context: str) -> bytes:
-    """Apply the ntfy 4096-char limit, logging a warning (tagged ``context``) on truncation."""
-    if len(message) > MAX_MESSAGE_LENGTH:
+    """Apply the ntfy 4096-byte body limit, logging a warning (tagged ``context``) on truncation.
+
+    The cut lands on a character boundary so the published payload stays valid UTF-8."""
+    if _utf8_len(message) > MAX_MESSAGE_LENGTH:
+        cp = _custom_unit_to_cp(message, MAX_MESSAGE_LENGTH, _utf8_len)
         logger.warning(
-            "%s: truncating message from %d to %d chars (ntfy limit)",
-            context, len(message), MAX_MESSAGE_LENGTH)
-    return message[:MAX_MESSAGE_LENGTH].encode("utf-8")
+            "%s: truncating message from %d to %d bytes (ntfy limit)",
+            context,
+            _utf8_len(message),
+            _utf8_len(message[:cp]),
+        )
+        return message[:cp].encode("utf-8")
+    return message.encode("utf-8")
 
 
 def _response_message_id(resp) -> str:
@@ -119,6 +132,11 @@ class NtfyAdapter(BasePlatformAdapter):
     """ntfy adapter: HTTP-streaming subscription in, HTTP POST publish out."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+
+    @property
+    def message_len_fn(self):
+        """ntfy enforces its 4096 limit in UTF-8 bytes, not Python characters."""
+        return _utf8_len
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform("ntfy"))
@@ -289,11 +307,7 @@ class NtfyAdapter(BasePlatformAdapter):
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
         headers = _publish_headers(self._token, bool((self.config.extra or {}).get("markdown", False)))
-        if len(content) > self.MAX_MESSAGE_LENGTH:
-            logger.warning(
-                "[%s] Message truncated from %d to %d chars (ntfy limit)",
-                self.name, len(content), self.MAX_MESSAGE_LENGTH)
-        body = content[:self.MAX_MESSAGE_LENGTH].encode("utf-8")
+        body = _truncate_body(content, context=f"[{self.name}]")
         try:
             resp = await self._http_client.post(
                 f"{self._server}/{publish_topic}", content=body, headers=headers, timeout=15.0)
@@ -396,7 +410,7 @@ def register(ctx) -> None:
             "Use plain text by default — ntfy supports optional markdown "
             "(set markdown: true in config or NTFY_MARKDOWN=true). "
             "Keep responses concise; ntfy is a push notification service "
-            "with a 4096-character per-message limit."
+            "with a 4096-byte per-message limit."
         ))
 
 

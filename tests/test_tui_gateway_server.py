@@ -11769,6 +11769,83 @@ def test_input_detect_drop_path_with_spaces_and_remainder(tmp_path):
     assert server._sessions["sid"]["attached_images"][0] == str(img)
 
 
+def test_rollback_list_returns_every_field_the_manager_emits():
+    """`rollback.list` must surface the checkpoint shape the manager actually emits.
+
+    `CheckpointManager.list_checkpoints` emits
+    ``hash/short_hash/timestamp/reason/files_changed/insertions/deletions`` — it has
+    no ``message`` key, so mapping ``message`` left every Dashboard label blank and
+    silently dropped short_hash + the three diff-stat counters.
+    """
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [
+                {
+                    "hash": "aaa111bbb222ccc333",
+                    "short_hash": "aaa111b",
+                    "timestamp": "2026-05-08T12:34:56+00:00",
+                    "reason": "before risky edit",
+                    "files_changed": 3,
+                    "insertions": 12,
+                    "deletions": 4,
+                }
+            ]
+
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr())
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "rollback.list", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" not in resp
+    assert resp["result"]["checkpoints"] == [
+        {
+            "hash": "aaa111bbb222ccc333",
+            "short_hash": "aaa111b",
+            "timestamp": "2026-05-08T12:34:56+00:00",
+            "reason": "before risky edit",
+            "message": "before risky edit",  # legacy alias older TUI clients read
+            "files_changed": 3,
+            "insertions": 12,
+            "deletions": 4,
+        }
+    ]
+
+
+def test_rollback_list_label_falls_back_to_legacy_message_key():
+    """A producer that only emits the legacy ``message`` key still gets a label."""
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "bbb222", "message": "legacy checkpoint label"}]
+
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr())
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "rollback.list", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "error" not in resp
+    (cp,) = resp["result"]["checkpoints"]
+    assert cp["reason"] == "legacy checkpoint label"
+    assert cp["message"] == "legacy checkpoint label"
+    assert cp["short_hash"] == ""
+    assert (cp["files_changed"], cp["insertions"], cp["deletions"]) == (0, 0, 0)
+
+
 def test_rollback_restore_resolves_number_and_file_path():
     calls = {}
 

@@ -516,8 +516,16 @@ export interface BrowserManageResponse {
 }
 
 export interface RollbackCheckpoint {
+  /** Current diff-stat counters, so the row can show what the checkpoint captured. */
+  deletions?: number
+  files_changed?: number
   hash: string
+  insertions?: number
+  /** @deprecated alias of `reason`, kept for older gateway payloads. */
   message?: string
+  /** Human label the checkpoint manager emits (e.g. "before risky edit"). */
+  reason?: string
+  short_hash?: string
   timestamp?: string
 }
 

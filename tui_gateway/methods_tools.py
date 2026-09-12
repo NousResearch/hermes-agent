@@ -888,8 +888,23 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if not mgr.enabled:
             return _ok(rid, {"enabled": False, "checkpoints": []})
-        keys = ("hash", "timestamp", "message")
-        rows = [{k: c.get(k, "") for k in keys} for c in mgr.list_checkpoints(cwd)]
+        rows = []
+        for c in mgr.list_checkpoints(cwd):
+            # CheckpointManager.list_checkpoints emits
+            # hash/short_hash/timestamp/reason/files_changed/insertions/deletions.
+            # `reason` is the human label; `message` is kept as an alias for older
+            # TUI clients that still read it.
+            label = c.get("reason") or c.get("message") or ""
+            rows.append({
+                "hash": c.get("hash", ""),
+                "short_hash": c.get("short_hash", ""),
+                "timestamp": c.get("timestamp", ""),
+                "reason": label,
+                "message": label,
+                "files_changed": c.get("files_changed", 0),
+                "insertions": c.get("insertions", 0),
+                "deletions": c.get("deletions", 0),
+            })
         return _ok(rid, {"enabled": True, "checkpoints": rows})
     return _with_checkpoints(session, go)
 

@@ -226,10 +226,18 @@ export const opsCommands: SlashCommand[] = [
 
               ctx.transcript.panel('Rollback checkpoints', [
                 {
-                  rows: checkpoints.map((c, idx) => [
-                    `${idx + 1}. ${c.hash.slice(0, 10)}`,
-                    [c.timestamp, c.message].filter(Boolean).join(' · ') || '(no metadata)'
-                  ])
+                  rows: checkpoints.map((c, idx) => {
+                    const label = c.reason || c.message || ''
+
+                    const stats = c.files_changed
+                      ? `${c.files_changed} file${c.files_changed === 1 ? '' : 's'}, +${c.insertions ?? 0}/-${c.deletions ?? 0}`
+                      : ''
+
+                    return [
+                      `${idx + 1}. ${(c.short_hash || c.hash).slice(0, 10)}`,
+                      [c.timestamp, label, stats].filter(Boolean).join(' · ') || '(no metadata)'
+                    ]
+                  })
                 }
               ])
             })

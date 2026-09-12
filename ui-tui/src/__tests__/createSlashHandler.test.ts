@@ -752,6 +752,60 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('renders the checkpoint reason and diff stats from the gateway payload', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        checkpoints: [
+          {
+            deletions: 4,
+            files_changed: 3,
+            hash: 'aaa111bbb222ccc333',
+            insertions: 12,
+            reason: 'before risky edit',
+            short_hash: 'aaa111b',
+            timestamp: '2026-05-08T12:34:56+00:00'
+          }
+        ],
+        enabled: true
+      })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/rollback')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.panel).toHaveBeenCalledWith('Rollback checkpoints', [
+        {
+          rows: [['1. aaa111b', '2026-05-08T12:34:56+00:00 · before risky edit · 3 files, +12/-4']]
+        }
+      ])
+    })
+  })
+
+  it('falls back to the legacy checkpoint message when reason is absent', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        checkpoints: [{ hash: 'bbb222ccc', message: 'legacy label', timestamp: 't' }],
+        enabled: true
+      })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/rollback')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.panel).toHaveBeenCalledWith('Rollback checkpoints', [
+        { rows: [['1. bbb222ccc', 't · legacy label']] }
+      ])
+    })
+  })
+
   it('hot-swaps the live indicator when /indicator <style> succeeds', async () => {
     const rpc = vi.fn(() => Promise.resolve({ value: 'emoji' }))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })

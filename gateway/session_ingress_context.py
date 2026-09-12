@@ -96,8 +96,12 @@ def _binding(runner, source, profile):
             if name in homes or canonical in homes.values():
                 raise RuntimeStoreError('profile_mismatch')
             homes[name] = canonical
-        primary = getattr(runner, '_primary_profile_name', None)
-        if not primary:
+        # The primary is the reserved entry whose home IS the launch home (identity, not the
+        # display name: a custom HERMES_HOME reports 'custom' while its reservation says 'default').
+        from hermes_constants import get_process_hermes_home
+        launch = get_process_hermes_home().resolve()
+        primary = next((name for name, path in homes.items() if path == launch), None)
+        if primary is None:
             raise RuntimeStoreError('profile_mismatch')
         owner_name = profile or primary
         if homes.get(owner_name) != home:

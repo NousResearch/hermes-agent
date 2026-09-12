@@ -87,18 +87,12 @@ class SessionAuthorities:
 
 
 def served_profile_name(home) -> str:
-    """Canonical profile id of a served home (``default`` for the root, the directory name for
-    ``profiles/<name>``); the shape-only ``parent == 'profiles'`` guess mislabels a custom
-    HERMES_HOME outside ``profiles/`` as ``default`` and collides in rosters/relay selectors."""
+    """Canonical profile id of a served home: ``default`` for the root, the directory name for
+    ``profiles/<name>`` (via ``hermes_constants.profile_name_for_home``, the resolver main uses).
+    Any other custom HERMES_HOME is the process's own single profile and keeps the ``default``
+    label the CLI reports for it (``hermes -p`` never targets such a home by name)."""
     from hermes_constants import profile_name_for_home
-    name = profile_name_for_home(home)
-    if name is not None:
-        return name
-    from hermes_cli.profiles import get_active_profile_name
-    from hermes_constants import get_hermes_home
-    if Path(home).resolve() == get_hermes_home().resolve():
-        return get_active_profile_name() or 'default'
-    return Path(home).name
+    return profile_name_for_home(home) or 'default'
 
 
 def authority_for_home(runner, home):
@@ -134,13 +128,19 @@ def all_authorities(runner):
 
 
 def owner_scope(authority, *, hydrate_secrets=False):
-    """Runtime scope of the profile that owns *authority*.
+    """Runtime scope of the profile that owns *authority* — under multiplex only.
 
     Owner-side handlers (RPC dispatch, cron submit, admitted execution) must read config, jobs
-    and policy for the OWNING profile, never the launch profile's ambient scope. Test peers
-    build authorities with symbolic ids ('fixture'); those keep the ambient scope.
+    and policy for the OWNING profile, never the launch profile's ambient scope. A
+    single-profile gateway keeps its ambient scope byte-for-byte: entering a scope there
+    would read the profile's config/.env for every handler, including bypass (--safe-mode)
+    launches that must never touch the profile YAML. Test peers with symbolic ids ('fixture')
+    likewise keep the ambient scope.
     """
     from contextlib import nullcontext
+    runner = getattr(authority, 'runner', None)
+    if not getattr(getattr(runner, 'config', None), 'multiplex_profiles', False):
+        return nullcontext()
     home = Path(str(authority.profile_id))
     if not home.is_absolute() or not home.is_dir():
         return nullcontext()

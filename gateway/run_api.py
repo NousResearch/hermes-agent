@@ -157,9 +157,8 @@ class GatewayRuntimeAPI:
         # The ticket names the served profile; this connection binds to that home's authority.
         scope['hermes.session_authority'] = authority
         from tui_gateway.ws import handle_ws
-        from gateway.run import _profile_runtime_scope
-        from pathlib import Path
-        with _profile_runtime_scope(Path(authority.profile_id), hydrate_secrets=False):
+        from gateway.session_authorities import owner_scope
+        with owner_scope(authority):
             await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
                                               'profile_id': grant['profile_id'],
                                               'instance_id': grant['instance_id'],

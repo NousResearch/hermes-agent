@@ -67,12 +67,16 @@ def authorize_local_source(runner, source):
         return None
     # A forged profile must not miss this adapter and fall into a messaging
     # allow-all policy. Local source identity is owned by this authority alone.
+    from gateway.session_authorities import all_authorities
+    owners = all_authorities(runner)
     adapter = runner._adapters_for_profile(source.profile).get(Platform.LOCAL)
     if not isinstance(adapter, LocalSessionAdapter):
-        return None
-    from gateway.session_authorities import authority_for_profile_id
-    owner = authority_for_profile_id(runner, adapter.authority.profile_id)
-    if owner is None or adapter.authority is not owner:
+        # A LOCAL source naming a profile this runtime does not serve must fail closed rather
+        # than fall into a messaging allow-all policy; legacy runners (no authority) stay None.
+        return False if owners else None
+    # The adapter's authority must be one THIS runtime owns (the launch authority or a served
+    # secondary's), never a stale/foreign object that happens to carry a LOCAL adapter.
+    if not any(adapter.authority is owner for owner in owners):
         return False
     return adapter.authorize_source(source)
 

@@ -94,6 +94,14 @@ def _wrap_rows(wrap, items, width, indent) -> list[tuple[int, str]]:
 class CLITuiMixin:
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
+    def _tui_input_rule_fragments(self, width: Optional[int] = None):
+        """Render the active skin's first-line rule art, rereading the skin on each draw."""
+        if width is None:
+            width = self._get_tui_terminal_width()
+        from hermes_cli.skin_engine import get_active_skin
+        from hermes_cli.cli_input_rule import input_rule_fragments
+        return input_rule_fragments(get_active_skin().input_rule_art, width)
+
     def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
         """Visible height for the top/bottom input separator rules."""
         if position not in {"top", "bottom"}:
@@ -2071,7 +2079,8 @@ class CLITuiMixin:
             self._get_command_palette_display_fragments, "_command_palette_state")
         # Rules above/below the input; narrow terminals hide the bottom one to recover a row.
         input_rule_top = Window(
-            char='─', height=lambda: cli_ref._tui_input_rule_height("top"), style='class:input-rule',
+            FormattedTextControl(cli_ref._tui_input_rule_fragments),
+            height=lambda: cli_ref._tui_input_rule_height("top"),
         )
         input_rule_bot = Window(
             char='─', height=lambda: cli_ref._tui_input_rule_height("bottom"), style='class:input-rule',

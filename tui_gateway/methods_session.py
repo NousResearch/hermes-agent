@@ -5,6 +5,7 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -304,18 +305,52 @@ def _seed_row(record: dict) -> None:
         logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
-def _create_overrides(params: dict) -> tuple:
+def _profile_global_effort(profile_home) -> object:
+    """``agent.reasoning_effort`` of the profile a create TARGETS (fail-open → None). ``_load_cfg()``
+    resolves the ACTIVE profile and ``session.create`` is not profile-scoped, so a secondary-profile
+    echo would otherwise be compared against the LAUNCH profile's default — while the fall-through it
+    protects (:func:`_load_reasoning_config`) runs inside ``_profile_build_scope`` and reads the TARGET
+    profile. Same reason as ``_profile_configured_cwd`` (#40334), same config pipeline.
+    """
+    if profile_home is None:  # launch profile: the ambient read IS the target's config
+        return ((_load_cfg() or {}).get("agent") or {}).get("reasoning_effort")
+    with contextlib.suppress(Exception):
+        from hermes_cli.config import read_user_config_raw
+        p = Path(profile_home) / "config.yaml"
+        cfg = _expand_cfg(_apply_managed(read_user_config_raw(p))) if p.exists() else {}
+        return ((cfg or {}).get("agent") or {}).get("reasoning_effort")
+    return None
+
+
+def _create_overrides(params: dict, profile_home=None) -> tuple:
     """PER-SESSION (model, reasoning, service_tier) overrides from the composer — never a global config
-    write. ``fast`` presence is the contract: omitted inherits, true pins priority, false pins normal ("")."""
+    write. ``fast`` presence is the contract: omitted inherits, true pins priority, false pins normal ("").
+
+    A reasoning_effort that merely restates the global ``agent.reasoning_effort`` is NOT a
+    user choice — the Desktop composer seeds its effort atom from that default and ships it on every
+    session.create. Shipping it as a pin would shadow ``agent.reasoning_overrides`` per-model config
+    for the whole session (e.g. a gateway model that must run effort "none" with tools). Only an
+    effort that DIFFERS from the global default is a real pin — compared against the TARGET profile's
+    default (``profile_home``), which is the one the fall-through resolves.
+    """
     create_model = _str_param(params, "model")
     model_override = None
     if create_model:
         model_override = {"model": create_model, "provider": _str_param(params, "provider") or None}
     reasoning_override = None
     if effort := _str_param(params, "reasoning_effort"):
+        # A value semantically equal to the CURRENT global default is an echo, not a
+        # choice: drop it so config resolution (incl. agent.reasoning_overrides) applies.
+        # Compare PARSED forms — config.yaml may spell "disabled" as false/"none"/"off".
+        # Known protocol limitation: without a client dirty flag, a user cannot re-pin
+        # the global default over a per-model override from the composer (the echo is
+        # indistinguishable from that choice and is dropped either way).
         with contextlib.suppress(Exception):
             from hermes_constants import parse_reasoning_effort
-            reasoning_override = parse_reasoning_effort(effort)
+            parsed = parse_reasoning_effort(effort)
+            global_raw = _profile_global_effort(profile_home)
+            if parsed is not None and parsed != parse_reasoning_effort(global_raw):
+                reasoning_override = parsed
     service_tier_override = None
     if "fast" in params:
         service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""
@@ -336,7 +371,7 @@ def _(rid, params: dict) -> dict:
     _enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
-    session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params, profile_home)
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {

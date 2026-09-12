@@ -2422,6 +2422,23 @@ class TestSessionKwargs:
         assert "sampling_capabilities" in kwargs
         assert kwargs["sampling_callback"] is handler
 
+    def test_session_kwargs_carry_hermes_client_identity(self):
+        """ClientSession kwargs identify hermes-agent at its shipped version, not the SDK default."""
+        from tools.mcp_tool import MCPServerTask, _ensure_mcp_sdk
+        if not _ensure_mcp_sdk():
+            pytest.skip("mcp SDK not installed")
+        from hermes_cli import __version__ as hermes_version
+        kwargs = MCPServerTask("identity_test")._session_kwargs()
+        assert kwargs["client_info"].name == "hermes-agent"
+        assert kwargs["client_info"].version == hermes_version
+
+    def test_session_kwargs_omit_client_info_without_sdk_type(self, monkeypatch):
+        """SDK builds without mcp.types.Implementation get no client_info key (no NameError)."""
+        from tools import mcp_tool_transport
+        monkeypatch.setattr(mcp_tool_transport, "_hermes_client_info", lambda: None)
+        from tools.mcp_tool import MCPServerTask
+        assert "client_info" not in MCPServerTask("no_type_test")._session_kwargs()
+
 # ---------------------------------------------------------------------------
 # 14. MCPServerTask integration
 # ---------------------------------------------------------------------------

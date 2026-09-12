@@ -11,6 +11,8 @@ Covers:
 - extract dispatcher: whole-batch failure rescues; partial failure passes
   through untouched
 - rescue failure: original backend error survives, rescue note appended
+- a configured non-ring backend's rescue rotates ring vendors across calls
+  instead of pinning to exa (search and extract)
 """
 
 import json
@@ -169,6 +171,32 @@ class TestSearchRescue:
         assert out["success"] is False
         ring.assert_not_called()
 
+    def test_rescue_of_configured_non_ring_backend_rotates_vendors(self, monkeypatch):
+        """End-to-end regression: a configured backend that is NOT a ring vendor
+        (e.g. searxng) must not pin the rescue to exa on every call. Drives the
+        REAL search_with_failover / _ring_order, not a mocked one."""
+
+        class _SearxBoomProvider(_KeyedBoomProvider):
+            name = "searxng"
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda n: "auto")
+        monkeypatch.setattr(keyless_mcp, "_ring_cursor", 0)
+        for vendor in keyless_mcp._KEYLESS_RING:
+            monkeypatch.setitem(
+                keyless_mcp._KEYLESS_SEARCHERS, vendor,
+                lambda q, l, v=vendor: _ring_ok(v),
+            )
+
+        provider = _SearxBoomProvider()
+        out1 = self._dispatch(monkeypatch, provider)
+        out2 = self._dispatch(monkeypatch, provider)
+
+        assert out1["data"]["served_by"] == "exa"
+        assert out2["data"]["served_by"] == "parallel"
+        assert out1["data"]["rescued_from"] == "searxng"
+        assert out2["data"]["rescued_from"] == "searxng"
+
 
 class TestExtractRescue:
     async def _dispatch(self, monkeypatch, provider, urls):
@@ -246,3 +274,27 @@ class TestExtractRescue:
                 monkeypatch, _KeyedBoomProvider(), ["https://a", "https://b"]
             )
         assert all("HTTP 500" in r.get("error", "") for r in results)
+
+    def test_rescue_extract_of_configured_non_ring_backend_rotates_vendors(self, monkeypatch):
+        """End-to-end regression, extract side: a configured non-ring backend's
+        rescue must rotate vendors across calls, not pin to exa every time."""
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda n: "auto")
+        monkeypatch.setattr(keyless_mcp, "_ring_cursor", 0)
+        for vendor in keyless_mcp._KEYLESS_RING:
+            monkeypatch.setitem(
+                keyless_mcp._KEYLESS_EXTRACTORS, vendor,
+                lambda urls, v=vendor: [
+                    {"url": u, "title": v, "content": v, "metadata": {"sourceURL": u}}
+                    for u in urls
+                ],
+            )
+        failed = [{"url": "https://a", "title": "", "content": "", "error": "HTTP 500"}]
+
+        out1 = web_tools_rescue._rescue_extract("searxng", ["https://a"], failed)
+        out2 = web_tools_rescue._rescue_extract("searxng", ["https://a"], failed)
+
+        assert out1[0]["title"] == "exa"
+        assert out2[0]["title"] == "parallel"
+        assert out1[0]["metadata"]["rescued_from"] == "searxng"
+        assert out2[0]["metadata"]["rescued_from"] == "searxng"

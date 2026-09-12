@@ -97,3 +97,48 @@ class TestSwitchModelKeyEnvScope:
         finally:
             secret_scope.reset_secret_scope(token)
         assert captured["key"] == "this-profile-key"
+
+
+class TestPickerKeyEnvDotenvFallback:
+    """A ``key_env`` that lives only in ``$HERMES_HOME/.env`` must resolve for the
+    picker and the switch validation, matching the chat path's credential chain
+    (get_env_prefer_dotenv). Without the fallback the verification probe fires
+    unauthenticated and every switch prints a spurious "could not reach this
+    custom endpoint's model listing" note against a healthy endpoint."""
+
+    def _isolate_home(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ACME_RELAY_KEY", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.config import invalidate_env_cache
+
+        invalidate_env_cache()
+
+    def test_dotenv_only_key_resolves(self, monkeypatch, tmp_path):
+        self._isolate_home(monkeypatch, tmp_path)
+        (tmp_path / ".env").write_text("ACME_RELAY_KEY=from-dotenv\n")
+
+        assert _scoped_key_env("ACME_RELAY_KEY") == "from-dotenv"
+
+    def test_installed_scope_wins_over_dotenv(self, monkeypatch, tmp_path):
+        self._isolate_home(monkeypatch, tmp_path)
+        (tmp_path / ".env").write_text("ACME_RELAY_KEY=from-dotenv\n")
+        token = secret_scope.set_secret_scope({"ACME_RELAY_KEY": "this-profile-key"})
+        try:
+            assert _scoped_key_env("ACME_RELAY_KEY") == "this-profile-key"
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+    def test_absent_everywhere_stays_empty(self, monkeypatch, tmp_path):
+        self._isolate_home(monkeypatch, tmp_path)
+
+        assert _scoped_key_env("ACME_RELAY_KEY") == ""
+        assert _scoped_key_env("") == ""
+
+    def test_entry_configured_key_reads_dotenv_only_key(self, monkeypatch, tmp_path):
+        self._isolate_home(monkeypatch, tmp_path)
+        (tmp_path / ".env").write_text("ACME_RELAY_KEY=from-dotenv\n")
+        from hermes_cli.model_switch import _entry_configured_key
+
+        cfg = {"key_env": "ACME_RELAY_KEY", "base_url": "https://relay.example/v1"}
+
+        assert _entry_configured_key(cfg, _scoped_key_env) == "from-dotenv"

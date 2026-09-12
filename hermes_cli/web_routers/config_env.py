@@ -20,8 +20,9 @@ from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_ids,
 )
 from fastapi import HTTPException, Request
-from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_env_value, redact_key, _deep_merge
+from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_env_value, redact_key, _deep_merge, _ENV_REF_RE, _env_ref_var_name
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -327,57 +328,109 @@ def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
     return [model for model in models if model and not (model in seen or seen.add(model))]
 
 
-def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-    """Return ``(has_api_key, preview)`` for a provider or model config block.
+class _EndpointCredentials:
+    """Credential reads for the custom endpoints of ONE profile, from that profile's own files.
 
-    Keys live in ``.env`` behind ``key_env``; only older entries still carry a
-    plaintext ``api_key``. Checking both keeps the panel honest either way.
+    ``key_env`` and ``${VAR}`` refs resolve against ``<home>/.env`` (plus its external secret
+    sources, via ``build_profile_secret_scope``). Only the process's own profile also sees
+    ``os.environ`` — single-profile deployments inject credentials that way. A *requested*
+    profile (``?profile=worker``) never does: ``get_secret`` deliberately falls through to
+    ``os.environ`` when multiplexing is off, which is the right overlay for a turn but here
+    would send the parent profile's key to the worker's endpoint (or "find" a key the worker
+    never saved). Reads the RAW config so a hand-written ``api_key: ${VAR}`` is expanded here,
+    not by ``load_config()`` against the process environment.
 
-    See #69449.
+    Precedence is the runtime's (``runtime_provider_custom._match_new_style_provider``):
+    ``key_env`` first, the inline ``api_key`` only as a fallback. A different order here made
+    Test reject an entry that chat happily uses.
     """
-    plaintext = str(entry.get("api_key") or "").strip()
-    if plaintext:
-        return True, redact_key(plaintext)
-    key_env = str(entry.get("key_env") or "").strip()
-    if key_env:
-        # Show the masked value the var resolves to, not the bare ``${VAR}``
-        # template: after Save blanks the field, the template read as "the
-        # key is gone" even though it was sitting in .env. A var that does not
-        # resolve is reported as such so the row matches what requests do.
-        resolved = str(get_env_value(key_env) or "").strip()
-        if resolved:
-            return True, redact_key(resolved)
-        return False, f"${{{key_env}}} (not set)"
-    return False, None
 
+    def __init__(self, profile_dir: Optional[Path]):
+        from agent.secret_scope import build_profile_secret_scope
+        from hermes_constants import get_hermes_home
 
-def _stored_custom_endpoint_key(cfg: Dict[str, Any], endpoint_id: str) -> Optional[str]:
-    """The credential on file for a saved endpoint, or ``None``.
+        self._own_process = profile_dir is None
+        self._secrets = build_profile_secret_scope(Path(profile_dir) if profile_dir else get_hermes_home())
+        self._raw = read_raw_config()
 
-    Mirrors the runtime's precedence for a named custom provider: inline
-    ``api_key`` (legacy plaintext, or a hand-written ``${VAR}`` that
-    ``load_config()`` already expanded), then ``key_env`` resolved through
-    ``.env`` (what Save writes, #69449). The synthesized ``direct-config``
-    row has no ``providers`` entry, so it falls back to the ``model`` block.
-    """
-    _stored, entry = find_provider_entry(cfg.get("providers"), endpoint_id)
-    if not isinstance(entry, dict):
-        model_cfg = cfg.get("model")
+    def lookup(self, name: Any) -> Optional[str]:
+        name = str(name or "").strip()
+        if not name:
+            return None
+        val = self._secrets.get(name)
+        if val is None and self._own_process:
+            try:
+                val = get_env_value(name)
+            except Exception:  # fail-closed scope error under multiplexing: own files only
+                val = None
+        return str(val or "").strip() or None
+
+    def _expand(self, value: str) -> str:
+        def _sub(match):
+            var = _env_ref_var_name(match.group(1))
+            return (self.lookup(var) or "") if var else match.group(0)
+        return _ENV_REF_RE.sub(_sub, value)
+
+    def entry_key(self, entry: Dict[str, Any]) -> Optional[str]:
+        """The credential the runtime would use for a raw provider/model block, or ``None``."""
+        key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+        if key_env:
+            resolved = self.lookup(key_env)
+            if resolved:
+                return resolved
+        inline = str(entry.get("api_key") or "").strip()
+        return (self._expand(inline).strip() or None) if inline else None
+
+    def raw_entry(self, endpoint_id: str) -> Optional[Dict[str, Any]]:
+        """The on-disk block behind an endpoint id: ``providers.<id>``, else the ``model`` block
+        for the synthesized ``direct-config`` row (``provider: custom`` with no providers entry)."""
+        _stored, entry = find_provider_entry(self._raw.get("providers"), endpoint_id)
+        if isinstance(entry, dict):
+            return entry
+        model_cfg = self._raw.get("model")
         if (
             endpoint_id == "custom"
             and isinstance(model_cfg, dict)
             and str(model_cfg.get("provider") or "").strip().lower() == "custom"
         ):
-            entry = model_cfg
-        else:
-            return None
-    plaintext = str(entry.get("api_key") or "").strip()
-    if plaintext:
-        return plaintext
-    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
-    if key_env:
-        return str(get_env_value(key_env) or "").strip() or None
-    return None
+            return model_cfg
+        return None
+
+    def stored(self, endpoint_id: str) -> Tuple[Optional[str], str]:
+        """``(key, base_url)`` on file for a saved endpoint; ``(None, "")`` when unknown."""
+        entry = self.raw_entry(endpoint_id)
+        if entry is None:
+            return None, ""
+        base_url = str(entry.get("base_url") or entry.get("url") or entry.get("api") or "").strip()
+        return self.entry_key(entry), base_url
+
+    def display(self, endpoint_id: str, fallback_entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """``(has_api_key, preview)`` for the panel row.
+
+        Shows the masked value the entry resolves to (``sk-s...kI0c``), not the bare ``${VAR}``
+        template: after Save blanks the field, the template read as "the key is gone" even though
+        it was sitting in .env. A ``key_env`` that does not resolve is reported as such so the row
+        matches what a request would do. See #69449.
+        """
+        entry = self.raw_entry(endpoint_id) or fallback_entry
+        key = self.entry_key(entry)
+        if key:
+            return True, redact_key(key)
+        key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+        if key_env:
+            return False, f"${{{key_env}}} (not set)"
+        return False, None
+
+
+def _destination(url: str) -> Tuple[str, str, str]:
+    parsed = urllib.parse.urlparse((url or "").strip())
+    return parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/")
+
+
+def _same_destination(submitted: str, saved: str) -> bool:
+    """True when two base URLs name the same scheme, host[:port] and path (trailing slash and case
+    of the host ignored). The saved key is only ever attached to the destination it was saved for."""
+    return bool(submitted) and bool(saved) and _destination(submitted) == _destination(saved)
 
 
 def _raw_provider_api_key(endpoint_id: str) -> Any:
@@ -401,8 +454,9 @@ def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
 def _endpoint_row(
     endpoint_id: str, name: str, base_url: str, model: str, models: List[str], context_length,
     discover_models: bool, key_entry: Dict[str, Any], is_current: bool, source: str,
+    credentials: _EndpointCredentials,
 ) -> Dict[str, Any]:
-    has_api_key, api_key_preview = _api_key_display(key_entry)
+    has_api_key, api_key_preview = credentials.display(endpoint_id, key_entry)
     return {
         "id": endpoint_id, "name": name, "base_url": base_url, "model": model, "models": models,
         "context_length": context_length, "discover_models": discover_models,
@@ -411,7 +465,7 @@ def _endpoint_row(
     }
 
 
-def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
+def _custom_endpoint_response(cfg: Dict[str, Any], credentials: _EndpointCredentials) -> Dict[str, Any]:
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     current_provider = str(model_cfg.get("provider", "") or "")
     current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
@@ -432,13 +486,13 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 endpoint_id, str(raw_entry.get("name") or endpoint_id), base_url,
                 str(raw_entry.get("model") or raw_entry.get("default_model") or (models[0] if models else "")),
                 models, raw_entry.get("context_length"), bool(raw_entry.get("discover_models", True)),
-                raw_entry, endpoint_id == current_provider, "providers",
+                raw_entry, endpoint_id == current_provider, "providers", credentials,
             ))
 
     if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
         endpoints.insert(0, _endpoint_row(
             "custom", "Custom", current_base_url, current_model, [current_model] if current_model else [],
-            model_cfg.get("context_length"), True, model_cfg, True, "direct-config",
+            model_cfg.get("context_length"), True, model_cfg, True, "direct-config", credentials,
         ))
 
     return {
@@ -571,19 +625,19 @@ def list_custom_endpoints(profile: Optional[str] = None):
     rather than the process-level HERMES_HOME (mirrors ``/api/config``).
     """
     with http_failure("GET /api/providers/custom-endpoints failed", 500, detail="Failed to list custom endpoints"):
-        with _config_profile_scope(profile):
-            return _custom_endpoint_response(load_config())
+        with _config_profile_scope(profile) as profile_dir:
+            return _custom_endpoint_response(load_config(), _EndpointCredentials(profile_dir))
 
 
 @router.post("/api/providers/custom-endpoints")
 def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     with http_failure("POST /api/providers/custom-endpoints failed", 500, detail="Failed to save custom endpoint"):
-        with _config_profile_scope(profile):
+        with _config_profile_scope(profile) as profile_dir:
             cfg = load_config()
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
-            response = _custom_endpoint_response(cfg)
+            response = _custom_endpoint_response(cfg, _EndpointCredentials(profile_dir))
         response["ok"] = True
         response["id"] = endpoint_id
         return response
@@ -636,7 +690,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"DELETE /api/providers/custom-endpoints/{endpoint_id} failed", 500,
         detail="Failed to delete custom endpoint",
     ):
-        with _config_profile_scope(profile):
+        with _config_profile_scope(profile) as profile_dir:
             cfg = load_config()
             provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")
@@ -648,7 +702,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             _detach_main_model_from_provider(cfg, provider_key)
             remove_env_value(custom_endpoint_key_env(provider_key))
             save_config(cfg)
-            response = _custom_endpoint_response(cfg)
+            response = _custom_endpoint_response(cfg, _EndpointCredentials(profile_dir))
         response["ok"] = True
         return response
 
@@ -661,9 +715,13 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate, profile: Optional
     file", the same contract the form states ("Leave blank to keep current
     key"). Save writes the key to ``.env`` and clears the field, so without
     this the very next Test went out with no ``Authorization`` header and
-    reported "rejected the API key" for a key that works. Profile-scoped like
-    the other custom-endpoint routes so the key is read from the profile
-    that saved it.
+    reported "rejected the API key" for a key that works.
+
+    The saved key is read from the requested profile's own files
+    (``_EndpointCredentials``) and only attached when the submitted URL is the
+    destination it was saved for: the form keeps ``id`` while the URL is
+    edited, so Test-before-Save on a new URL must not forward the old host's
+    secret there.
     """
     base_url = (body.base_url or "").strip().rstrip("/")
     if not base_url:
@@ -673,9 +731,12 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate, profile: Optional
     key_source: Optional[str] = "submitted" if api_key else None
     endpoint_id = _custom_endpoint_id(body.id) if (body.id or "").strip() else ""
     if not api_key and endpoint_id:
-        with _config_profile_scope(profile):
-            api_key = _stored_custom_endpoint_key(load_config(), endpoint_id) or ""
-        key_source = "saved" if api_key else None
+        with _config_profile_scope(profile) as profile_dir:
+            stored_key, stored_url = _EndpointCredentials(profile_dir).stored(endpoint_id)
+        if stored_key and _same_destination(base_url, stored_url):
+            api_key, key_source = stored_key, "saved"
+        elif stored_key:
+            key_source = "destination-changed"
 
     url = base_url + "/models"
     headers = {"Accept": "application/json"}
@@ -691,6 +752,11 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate, profile: Optional
     if resp.status_code in (401, 403):
         if key_source is None:
             message = "The endpoint requires an API key and none is saved for it. Enter one and test again."
+        elif key_source == "destination-changed":
+            message = (
+                "The URL differs from the saved endpoint, so its saved key was not sent. "
+                "Enter the key for this URL to test it."
+            )
         elif key_source == "saved":
             message = "The endpoint rejected the saved API key. Enter a new one and save again."
         else:

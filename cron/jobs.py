@@ -728,6 +728,12 @@ def _cron_schedule(
 
 
 def _interval_schedule(minutes: int) -> Dict[str, Any]:
+    # A zero/negative interval (e.g. a "0m" typo) would make next_run_at <=
+    # now forever, so the job fires on every tick — fail creation loudly
+    # instead of busy-looping billable runs.
+    if minutes <= 0:
+        raise ValueError(
+            f"Invalid interval '{minutes}m': must be a positive duration like '30m' or '2h'.")
     return {"kind": "interval", "minutes": minutes, "display": f"every {minutes}m"}
 
 

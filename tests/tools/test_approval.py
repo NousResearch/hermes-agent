@@ -349,6 +349,44 @@ class TestHermesConfigWriteProtection:
             assert dangerous is False, cmd
 
 
+class TestHermesHomeHardline:
+    def test_destructive_operations_on_managed_state_are_blocked(self, monkeypatch, tmp_path):
+        home = tmp_path / "profile"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        commands = (
+            f"mv {home} /tmp/lost",
+            f"rm {home / 'state.db'}",
+            "> $HERMES_HOME/state.db",
+            "truncate -s0 ${HERMES_HOME}/state.db",
+            "shred -u ~/.hermes/state.db",
+            "unlink $HOME/.hermes/state.db",
+            "tee $HERMES_HOME/state.db </dev/null",
+            "cp /dev/null $HERMES_HOME/state.db",
+            "sqlite3 $HERMES_HOME/state.db 'delete from messages where 1=1'",
+        )
+        for command in commands:
+            blocked, description = detect_hardline_command(command)
+            assert blocked is True, command
+            assert "Hermes data directory" in description
+
+        result = approval_module.check_all_command_guards("rm $HERMES_HOME/state.db", "local")
+        assert result["approved"] is False
+        assert "BLOCKED" in result["message"]
+
+    def test_reads_backups_unrelated_paths_and_quoted_prose_stay_safe(self, monkeypatch, tmp_path):
+        home = tmp_path / "profile"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        for command in (
+            f"cat {home / 'state.db'}",
+            f"cp {home / 'state.db'} /tmp/state.db.backup",
+            f"mv /tmp/state.db {home / 'state.db'}",
+            "rm /tmp/state.db",
+            "truncate -s0 /tmp/state.db",
+            'git commit -m "do not rm $HERMES_HOME/state.db"',
+        ):
+            assert detect_hardline_command(command) == (False, None), command
+
+
 class TestFindExecFullPathRm:
     """Detect find -exec with full-path rm bypasses."""
 

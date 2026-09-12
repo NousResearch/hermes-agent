@@ -178,6 +178,8 @@ def detect_hardline_command(command: str) -> tuple:
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
+        if _detect_hermes_home_destruction(command_variant):
+            return (True, _HERMES_HOME_DESTRUCTION_DESCRIPTION)
         variant_lower = command_variant.lower()
         masked_lower: str | None = None
         for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
@@ -449,7 +451,7 @@ _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
 
 
 @functools.lru_cache(maxsize=64)
-def _home_prefix_fold_regex(path: str):
+def _home_prefix_fold_regex(path: str, include_bare: bool = False):
     """Compile a regex matching *path* as an absolute directory prefix.
     Components match with either separator so native Windows, forward-slash, and mixed forms all
     fold; the caller normalizes the tail's backslashes to ``/``. A non-empty tail is required, so a
@@ -459,16 +461,21 @@ def _home_prefix_fold_regex(path: str):
     if len(components) < 2:
         return None
     # Optional leading root separator; a Windows drive letter is a component.
-    return re.compile(r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
+    prefix = r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components)
+    if include_bare:
+        return re.compile(prefix + rf"(?:{_PATH_TAIL})?(?=[{_PATH_TOKEN_STOP}]|$)")
+    return re.compile(prefix + _PATH_TAIL)
 
 
-def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
+def _fold_home_prefixes(command: str, paths, replacement: str, *, include_bare: bool = False) -> str:
     """Fold each resolved home prefix in *command* to *replacement* (no trailing separator; the tail
     supplies it). Longest first so a deeper home folds before a shorter overlapping one that would clobber it."""
     for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
-        pattern = _home_prefix_fold_regex(path)
+        pattern = _home_prefix_fold_regex(path, include_bare)
         if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\", "/"), command)
+            command = pattern.sub(
+                lambda m: replacement + (m.group("tail") or "").replace("\\", "/"), command
+            )
     return command
 
 
@@ -492,7 +499,7 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         paths = [str(home), str(home.resolve(strict=False))]
     except Exception:
         return command
-    return _fold_home_prefixes(command, paths, "~/.hermes")
+    return _fold_home_prefixes(command, paths, "~/.hermes", include_bare=True)
 
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
@@ -1180,6 +1187,87 @@ def _shell_command_segment(command: str, start: int) -> str:
             end = i
             break
     return command[start:end].strip()
+
+
+_HERMES_HOME_DESTRUCTION_DESCRIPTION = "destructive operation on Hermes data directory"
+_HERMES_HOME_ROOTS = ("~/.hermes", "$hermes_home", "${hermes_home}", "$home/.hermes", "${home}/.hermes")
+_HERMES_DESTRUCTIVE_SQL_RE = re.compile(r"\b(?:delete\s+from|drop\s+(?:table|database))\b", re.IGNORECASE)
+_HERMES_OPTIONS_WITH_ARG = {
+    "mv": {"-S", "--suffix", "-t", "--target-directory"},
+    "cp": {"-S", "--suffix", "-t", "--target-directory"},
+    "truncate": {"-o", "--io-blocks", "-r", "--reference", "-s", "--size"},
+    "shred": {"-n", "--iterations", "-s", "--size", "--random-source"},
+    "sqlite3": {"-cmd", "-init", "-newline", "-nullvalue", "-separator"},
+}
+
+
+def _is_hermes_managed_path(word: str) -> bool:
+    path = word.lower().replace("\\", "/").rstrip("/")
+    return any(path == root or path.startswith(root + "/") for root in _HERMES_HOME_ROOTS)
+
+
+def _command_operands(argv: list[str], command_name: str) -> list[str]:
+    """Return positional operands while skipping the destructive command's value-taking options."""
+    operands, skip_next, options = [], False, True
+    with_arg = _HERMES_OPTIONS_WITH_ARG.get(command_name, set())
+    for arg in argv[1:]:
+        if skip_next:
+            skip_next = False
+        elif options and arg == "--":
+            options = False
+        elif options and arg.startswith("-") and arg != "-":
+            option = arg.split("=", 1)[0]
+            skip_next = "=" not in arg and option in with_arg
+        else:
+            operands.append(arg)
+    return operands
+
+
+def _has_hermes_redirect(command: str) -> bool:
+    """Detect an output redirection whose shell target is inside HERMES_HOME."""
+    for kind, index, _, quote in _scan_shell(command, subst="uq"):
+        if kind != "char" or quote is not None or command[index] != ">":
+            continue
+        if ((index and command[index - 1] in "<>")
+                or (index + 1 < len(command) and command[index + 1] == "&")):
+            continue
+        target_start = index + 1
+        while target_start < len(command) and command[target_start] in ">| \t":
+            target_start += 1
+        _, _, target = _read_shell_word(command, target_start)
+        if _is_hermes_managed_path(_deobfuscate_shell_word_for_detection(target)):
+            return True
+    return False
+
+
+def _detect_hermes_home_destruction(command: str) -> bool:
+    """Hard-block destructive verbs only when they target Hermes-managed state."""
+    if _has_hermes_redirect(command):
+        return True
+    destructive_names = {"rm", "mv", "truncate", "shred", "unlink", "tee", "cp", "sqlite3"}
+    for word_start, _, word in _iter_shell_command_word_spans(command):
+        name = os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
+        if name not in destructive_names:
+            continue
+        try:
+            argv = shlex.split(_shell_command_segment(command, word_start), posix=True)
+        except ValueError:
+            continue
+        operands = _command_operands(argv, name)
+        if name in {"rm", "truncate", "shred", "unlink", "tee"}:
+            if any(_is_hermes_managed_path(arg) for arg in operands):
+                return True
+        elif name == "mv":
+            sources = operands if len(operands) == 1 else operands[:-1]
+            if any(_is_hermes_managed_path(arg) for arg in sources):
+                return True
+        elif name == "cp" and len(operands) >= 2:
+            if operands[0] in {"/dev/null", "/dev/zero"} and _is_hermes_managed_path(operands[-1]):
+                return True
+        elif name == "sqlite3" and operands and _is_hermes_managed_path(operands[0]):
+            if _HERMES_DESTRUCTIVE_SQL_RE.search(" ".join(operands[1:])):
+                return True
+    return False
 
 
 def _split_env_string(payload: str) -> list[str] | None:

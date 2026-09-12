@@ -21,6 +21,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $sessionStates, $sessionTiles, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
+import { $sessionTranscriptViewGates, clearTranscriptViewGates, holdTranscriptView } from '@/store/session-transcript-view'
 
 import type { ClientSessionState } from '../../types'
 import { SessionStateCache } from '../session-state-cache'
@@ -128,7 +129,8 @@ export function useSessionStateCache({
   const sessionStateCache = sessionStateByRuntimeIdRef.current
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
-  const transcriptViewGateByRuntimeIdRef = useRef(new Map<string, symbol>())
+  const transcriptViewOwner = useRef(Symbol('session-cache')).current
+  useEffect(() => () => clearTranscriptViewGates(transcriptViewOwner), [transcriptViewOwner])
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
@@ -207,16 +209,10 @@ export function useSessionStateCache({
     }
   }, [])
 
-  const holdSessionTranscriptView = useCallback((runtimeId: string): (() => void) => {
-    const token = Symbol(runtimeId)
-    transcriptViewGateByRuntimeIdRef.current.set(runtimeId, token)
-
-    return () => {
-      if (transcriptViewGateByRuntimeIdRef.current.get(runtimeId) === token) {
-        transcriptViewGateByRuntimeIdRef.current.delete(runtimeId)
-      }
-    }
-  }, [])
+  const holdSessionTranscriptView = useCallback(
+    (runtimeId: string, storedSessionId?: string) => holdTranscriptView(runtimeId, transcriptViewOwner, storedSessionId),
+    [transcriptViewOwner]
+  )
 
   const flushPendingViewState = useCallback(() => {
     const pending = pendingViewStateRef.current
@@ -245,10 +241,13 @@ export function useSessionStateCache({
     // an out-of-funds error) onto this one — then cascade it everywhere as the
     // polluted view becomes the next switch's baseline. Only carry errors
     // across a same-session refresh; our cached state already keeps its own.
+    const transcriptHeld = Boolean($sessionTranscriptViewGates.get()[pending.sessionId])
+    const viewState = suppressTranscriptForView(pending.state, transcriptHeld, pending.sessionId)
+
     const nextMessages =
-      viewSessionIdRef.current === pending.sessionId
-        ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
-        : pending.state.messages
+      !transcriptHeld && viewSessionIdRef.current === pending.sessionId
+        ? preserveLocalAssistantErrors(viewState.messages, currentMessages)
+        : viewState.messages
 
     if (!chatMessageArraysEquivalent(nextMessages, currentMessages)) {
       setMessages(nextMessages)
@@ -281,7 +280,7 @@ export function useSessionStateCache({
         return
       }
 
-      const viewState = suppressTranscriptForView(state, transcriptViewGateByRuntimeIdRef.current.has(sessionId))
+      const viewState = suppressTranscriptForView(state, Boolean($sessionTranscriptViewGates.get()[sessionId]), sessionId)
 
       syncRuntimeMetadataToView(viewState)
       pendingViewStateRef.current = { sessionId, state: viewState }

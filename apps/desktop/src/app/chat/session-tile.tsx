@@ -61,6 +61,7 @@ import {
   type SessionTile,
   sessionTileDelegate
 } from '@/store/session-states'
+import { transcriptMessagesForView } from '@/store/session-transcript-view'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { SessionDragPayload } from './composer/inline-refs'
@@ -124,7 +125,7 @@ export function shouldResumeSessionTile(opts: {
 
 /** The tile's SessionView: the same atom shape the primary chat renders
  *  from, computed from this session's slice of `$sessionStates`. */
-function buildTileView(storedSessionId: string): SessionView {
+export function buildTileView(storedSessionId: string): SessionView {
   const $runtimeId = computed(
     $sessionTiles,
     tiles => tiles.find(t => t.storedSessionId === storedSessionId)?.runtimeId ?? null
@@ -134,7 +135,7 @@ function buildTileView(storedSessionId: string): SessionView {
     runtimeId ? states[runtimeId] : undefined
   )
 
-  const $messages = computed($state, state => state?.messages ?? NO_MESSAGES)
+  const $messages = transcriptMessagesForView($runtimeId, computed($state, state => state?.messages ?? NO_MESSAGES))
 
   return {
     kind: 'tile',

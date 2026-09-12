@@ -1,13 +1,20 @@
+import { AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { registryBackendScopeKey } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useRuntimeMessageRepository } from '@/app/chat/runtime-repository'
+import { buildTileView } from '@/app/chat/session-tile'
+import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { renderMessageStream } from '@/app/session/hooks/use-message-stream/test-harness'
+import { stubThreadEnvironment, stubThreadViewportSize } from '@/components/assistant-ui/test-utils'
+import { Thread } from '@/components/assistant-ui/thread'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import {
   deleteSession,
@@ -20,9 +27,11 @@ import {
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { clearInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { $gateway, requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
@@ -67,8 +76,11 @@ import {
 } from '@/store/session'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
-import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
+import { publishSessionState } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
+import { $sessionTranscriptViewGates } from '@/store/session-transcript-view'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
+import { dropTranscriptTailEverywhere } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -77,6 +89,12 @@ import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
+
+vi.mock('@/app/chat/index', () => ({ ChatView: () => null }))
+
+vi.mock('@/components/assistant-ui/wisdom-candidate-card', () => ({ WisdomCandidateCard: () => null }))
+vi.mock('@/components/assistant-ui/wisdom-notice-card', () => ({ WisdomNoticeCard: () => null }))
+vi.mock('@/components/wisdom-mediation-card', () => ({ WisdomMediationCard: () => null }))
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -1021,18 +1039,26 @@ function ResumeHarness({
 
 function ResumeTimerHarness({
   onReady,
+  onNavigationReady,
+  navigate = vi.fn(),
   requestGateway
 }: {
+  navigate?: ReturnType<typeof vi.fn>
+  onNavigationReady?: (
+    actions: ReturnType<typeof useSessionActions>,
+    cache: ReturnType<typeof useSessionStateCache>
+  ) => void
   onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const busyRef = useRef(false)
 
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
-    selectedStoredSessionId: null,
+    selectedStoredSessionId,
     setAwaitingResponse,
     setBusy,
     setMessages
@@ -1045,11 +1071,11 @@ function ResumeTimerHarness({
     creatingSessionRef: useRef(false),
     ensureSessionState: cache.ensureSessionState,
     getRouteToken: () => 'timer-contract',
-    navigate: vi.fn() as never,
+    navigate: navigate as never,
     requestGateway,
     resetViewSync: cache.resetViewSync,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
-    selectedStoredSessionId: null,
+    selectedStoredSessionId,
     selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: cache.sessionStateByRuntimeIdRef,
     holdSessionTranscriptView: cache.holdSessionTranscriptView,
@@ -1060,7 +1086,8 @@ function ResumeTimerHarness({
 
   useEffect(() => {
     onReady(actions.resumeSession)
-  }, [actions.resumeSession, onReady])
+    onNavigationReady?.(actions, cache)
+  }, [actions, cache, onNavigationReady, onReady])
 
   return null
 }
@@ -4529,5 +4556,692 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
     expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'session.close')).toEqual([])
     expect(ambientRequest).not.toHaveBeenCalledWith('session.close', expect.anything())
     expect(getSessionOwnerHint(STORED)).toEqual(route)
+  })
+})
+
+
+function NavigationThread() {
+  const messages = useStore(PRIMARY_SESSION_VIEW.$messages)
+  const busy = useStore(PRIMARY_SESSION_VIEW.$busy)
+  const sessionId = useStore(PRIMARY_SESSION_VIEW.$runtimeId)
+  const repository = useRuntimeMessageRepository(messages)
+
+  const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
+    messageRepository: repository, isRunning: busy, onNew: async () => {}
+  })
+
+  return <SessionViewProvider value={PRIMARY_SESSION_VIEW}>
+    <AssistantRuntimeProvider runtime={runtime}><Thread sessionId={sessionId} /></AssistantRuntimeProvider>
+  </SessionViewProvider>
+}
+
+describe('pending clarify navigation recovery', () => {
+  const runtimeId = 'rt-clarify-A'
+  const storedId = 'stored-clarify-A'
+  const requestId = 'req-navigation-batch'
+  const questions = [{ qid: 'q0', question: 'Choose a path', choices: ['Safe', 'Fast'], multi_select: false }]
+
+  const answerableRows = (messages: ClientSessionState['messages']) =>
+    messages.filter(message => message.pending && message.parts.some(part =>
+      part.type === 'tool-call' && part.toolName === 'clarify' && part.toolCallId === requestId
+    ))
+
+  beforeEach(() => {
+    stubThreadEnvironment()
+    stubThreadViewportSize()
+    vi.mocked(getLatestSessionMessages).mockReset()
+    clearClarifyRequest()
+    dropTranscriptTailEverywhere(storedId)
+    setResumeFailedSessionId(null)
+    setActiveSessionId('rt-clarify-B')
+    setSelectedStoredSessionId('stored-clarify-B')
+    setMessages([])
+    setSessions([storedSession({ id: storedId, message_count: 1 })])
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearClarifyRequest()
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    setMessages([])
+    setSessions([])
+    setBusy(false)
+    setAwaitingResponse(false)
+    setTurnStartedAt(null)
+    $sessionStates.set({})
+    $sessionTiles.set([])
+    vi.mocked(getLatestSessionMessages).mockReset()
+  })
+
+  it.each(['Unknown method: session.activate', 'Synthetic transport disconnected'])(
+    'keeps unverified warm fallback gated and answerable: %s', async error => {
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'session.activate') {throw new Error(error)}
+
+        return {} as never
+      })
+
+      let actions!: ReturnType<typeof useSessionActions>
+      let cache!: ReturnType<typeof useSessionStateCache>
+      render(<ResumeTimerHarness onNavigationReady={(a, c) => { actions = a; cache = c }} onReady={() => undefined}
+        requestGateway={requestGateway} />)
+      const state = clientState(storedId)
+      state.messages = [{ id: 'raw', role: 'assistant', parts: [{ type: 'text', text: 'UNVERIFIED synthetic history' }] }]
+      cache.runtimeIdByStoredSessionIdRef.current.set(storedId, runtimeId)
+      cache.sessionStateByRuntimeIdRef.current.set(runtimeId, state)
+      publishSessionState(runtimeId, state)
+      setClarifyRequest({ sessionId: runtimeId, requestId, question: 'Choose a path', choices: null,
+        multiSelect: false, questions: questions.map(question => ({ ...question, multiSelect: question.multi_select })) })
+      const { container } = render(<NavigationThread />)
+      await act(async () => { await actions.resumeSession(storedId, true) })
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+      act(() => cache.updateSessionState(runtimeId, current => ({ ...current, needsInput: true })))
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+      await waitFor(() => expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1))
+      const respond = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+      const gateway = $gateway.get()
+      act(() => $gateway.set({ request: respond } as never))
+
+      try {
+        fireEvent.click(within(container).getByRole('button', { name: /Safe/ }))
+        fireEvent.click(within(container).getByRole('button', { name: /Confirm and continue/ }))
+        await waitFor(() => expect(respond).toHaveBeenCalledWith('clarify.respond', {
+          request_id: requestId, question_id: 'q0', answer: 'Safe'
+        }))
+        expect(container.textContent).not.toContain('UNVERIFIED')
+      } finally { act(() => $gateway.set(gateway)) }
+    }
+  )
+
+  it.each([
+    ['failure', false], ['failure', true], ['empty', false], ['empty', true]
+  ] as const)('warm omitted history without a request stays gated after REST %s (delta=%s) until trusted recovery', async (rest, withDelta) => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(persisted.promise)
+
+    const requestGateway = vi.fn(async () => ({
+      session_id: runtimeId, session_key: storedId, resumed: storedId,
+      running: false, messages: [], messages_omitted: true, message_count: 1, info: {},
+      pending_clarify: null, inflight: null, queued: null
+    }) as never)
+
+    let actions!: ReturnType<typeof useSessionActions>
+    let cache!: ReturnType<typeof useSessionStateCache>
+    render(<ResumeTimerHarness onNavigationReady={(a, c) => { actions = a; cache = c }}
+      onReady={() => undefined} requestGateway={requestGateway} />)
+    const state = clientState(storedId)
+    state.messages = [{ id: 'untrusted-A', role: 'assistant', parts: [{ type: 'text', text: 'UNVERIFIED history' }] }]
+    cache.runtimeIdByStoredSessionIdRef.current.set(storedId, runtimeId)
+    cache.sessionStateByRuntimeIdRef.current.set(runtimeId, state)
+    publishSessionState(runtimeId, state)
+    const other = { requestId: 'B-request', sessionId: 'rt-clarify-B', question: 'B?', choices: null, multiSelect: false }
+    setClarifyRequest(other)
+    publishSessionState(other.sessionId, clientState('stored-clarify-B'))
+    const bState = $sessionStates.get()[other.sessionId]
+    const { container } = render(<NavigationThread />)
+    const tile = buildTileView(storedId)
+    const publications: string[] = []
+    const stop = PRIMARY_SESSION_VIEW.$messages.listen(messages => publications.push(JSON.stringify(messages)))
+    let navigation!: Promise<unknown>
+
+    try {
+      act(() => { navigation = actions.resumeSession(storedId, true) })
+      await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
+      expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.objectContaining({ session_id: runtimeId }))
+      act(() => $sessionTiles.set([{ storedSessionId: storedId, runtimeId }]))
+      expect(tile.$runtimeId.get()).toBe(runtimeId)
+      expect($clarifyRequests.get()[runtimeId]).toBeUndefined()
+      expect($sessionTranscriptViewGates.get()[runtimeId]).toBeDefined()
+
+      if (withDelta) {
+        act(() => cache.updateSessionState(runtimeId, current => ({ ...current,
+          messages: current.messages.map(message => ({ ...message, parts: [...message.parts,
+            { type: 'text' as const, text: 'Genuine new text' },
+            { type: 'tool-call' as const, toolName: 'terminal', toolCallId: 'live-tool', args: {}, argsText: '', result: 'Genuine tool result' }
+          ] }))
+        })))
+      }
+
+      const canonical = cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.messages
+      await act(async () => {
+        if (rest === 'failure') {persisted.reject(new Error('REST unavailable'))}
+        else {persisted.resolve({ session_id: storedId, messages: [] } as never)}
+
+        await navigation
+      })
+      expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([])
+      expect(tile.$messages.get()).toEqual([])
+      expect(container.textContent).not.toContain('UNVERIFIED')
+      expect(publications.every(value => !value.includes('UNVERIFIED'))).toBe(true)
+      expect(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.messages).toBe(canonical)
+      expect(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.transcriptProvenance).toBeUndefined()
+      expect($sessionTranscriptViewGates.get()[runtimeId]).toBeDefined()
+
+      if (withDelta) {
+        expect(JSON.stringify(canonical)).toContain('Genuine new text')
+        expect(JSON.stringify(canonical)).toContain('Genuine tool result')
+      }
+
+      vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({ session_id: storedId, messages: [
+        { role: 'user', content: 'Trusted recovered history' },
+        { role: 'assistant', content: 'Genuine new text', tool_calls: [
+          { id: 'live-tool', type: 'function', function: { name: 'terminal', arguments: '{}' } }
+        ] },
+        { role: 'tool', tool_call_id: 'live-tool', content: 'Genuine tool result' }
+      ] } as never)
+      await act(async () => { await actions.resumeSession(storedId, true) })
+      act(() => $sessionTiles.set([{ storedSessionId: storedId, runtimeId }]))
+      expect($sessionTranscriptViewGates.get()[runtimeId]).toBeUndefined()
+
+      for (const messages of [PRIMARY_SESSION_VIEW.$messages.get(), tile.$messages.get()]) {
+        expect(JSON.stringify(messages)).toContain('Trusted recovered history')
+        expect(JSON.stringify(messages)).toContain('Genuine new text')
+        expect(JSON.stringify(messages)).toContain('Genuine tool result')
+        expect(JSON.stringify(messages)).not.toContain('UNVERIFIED')
+      }
+
+      await waitFor(() => expect(container.textContent).toContain('Trusted recovered history'))
+      expect($clarifyRequests.get()[runtimeId]).toBeUndefined()
+      expect($clarifyRequests.get()[other.sessionId]).toBe(other)
+      expect($sessionStates.get()[other.sessionId]).toBe(bState)
+    } finally { stop() }
+  })
+
+  async function observeNavigation(
+    path: 'warm' | 'cold',
+    duringRest: (context: { cache: ReturnType<typeof useSessionStateCache>; actions: ReturnType<typeof useSessionActions>; container: HTMLElement }) => void | Promise<void>,
+    options: { oldStoredId?: string; restFails?: boolean; pending?: boolean; afterRest?: (context: { cache: ReturnType<typeof useSessionStateCache>; actions: ReturnType<typeof useSessionActions>; container: HTMLElement }) => void | Promise<void> } = {}
+  ) {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(persisted.promise)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: 'stored-clarify-B', messages: [{ role: 'user', content: 'B history' }] } as never)
+
+    const requestGateway = vi.fn(async (_method: string, params: unknown) => {
+      const isB = (params as { session_id: string }).session_id === 'rt-clarify-B'
+
+      return {
+        session_id: isB ? 'rt-clarify-B' : runtimeId, session_key: isB ? 'stored-clarify-B' : storedId,
+        resumed: isB ? 'stored-clarify-B' : storedId,
+        running: !isB, messages: [], messages_omitted: true, message_count: 1, info: {},
+        ...(!isB && options.pending !== false ? { pending_clarify: { request_id: requestId, questions, answers: {} } } : {})
+      } as never
+    })
+
+    let actions!: ReturnType<typeof useSessionActions>
+    let cache!: ReturnType<typeof useSessionStateCache>
+    const navigate = vi.fn()
+    render(<ResumeTimerHarness navigate={navigate} onNavigationReady={(nextActions, nextCache) => { actions = nextActions; cache = nextCache }}
+      onReady={() => undefined}
+      requestGateway={requestGateway} />)
+
+    {
+      const state = clientState(options.oldStoredId ?? storedId)
+      state.busy = true
+      state.turnLive = true
+      // A cached assistant can carry both a matching tool and unrelated text.
+      state.messages = [{ id: 'untrusted-A', role: 'assistant', parts: [
+        { type: 'text', text: 'UNVERIFIED private commentary' },
+        { type: 'tool-call', toolName: 'clarify', toolCallId: requestId, args: { questions }, argsText: '' }
+      ] }]
+
+      if (path === 'cold') {state.messages[0].parts = [{ type: 'text', text: 'UNVERIFIED private commentary' }]}
+
+      if (path === 'warm') {cache.runtimeIdByStoredSessionIdRef.current.set(storedId, runtimeId)}
+      cache.sessionStateByRuntimeIdRef.current.set(runtimeId, state)
+      publishSessionState(runtimeId, state)
+    }
+
+    const { container } = render(<NavigationThread />)
+    const observedViews: string[] = []
+    const stopObserving = PRIMARY_SESSION_VIEW.$messages.listen(messages => observedViews.push(JSON.stringify(messages)))
+    let navigation!: Promise<unknown>
+    let completed = false
+
+    try {
+      act(() => {
+        actions.selectSidebarItem({ id: storedId, label: 'Session A', icon: (() => null) as never, route: sessionRoute(storedId) })
+      })
+      expect(navigate.mock.calls[0]?.[0]).toBe(sessionRoute(storedId))
+      act(() => { navigation = actions.resumeSession(storedId, true).then(() => { completed = true }) })
+      await waitFor(() => expect(requestGateway).toHaveBeenCalledWith(
+        path === 'warm' ? 'session.activate' : 'session.resume',
+        expect.objectContaining({ session_id: path === 'warm' ? runtimeId : storedId })
+      ))
+
+      if (options.pending !== false) {
+        await waitFor(() => expect($clarifyRequests.get()[runtimeId]?.requestId).toBe(requestId))
+        expect($activeSessionId.get()).toBe(runtimeId)
+        expect($sessionStates.get()[runtimeId]).toMatchObject({ needsInput: true, awaitingResponse: false })
+      }
+
+      expect(completed).toBe(false)
+      expect($messages.get().flatMap(message => message.parts).filter(part => part.type === 'text')).toEqual([])
+      expect(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.transcriptProvenance).toBeUndefined()
+      await duringRest({ cache, actions, container })
+    } finally {
+      await act(async () => {
+        if (options.restFails) {persisted.reject(new Error('REST unavailable'))}
+        else {persisted.resolve({ session_id: storedId, messages: [{ role: 'user', content: 'Verified history', timestamp: 1 }] } as never)}
+
+        await navigation
+      })
+      stopObserving()
+    }
+
+    await options.afterRest?.({ cache, actions, container })
+    expect(observedViews.filter(view => view.includes('UNVERIFIED'))).toEqual([])
+  }
+
+  it.each(['warm', 'cold'] as const)('%s renders late and replacement requests through the full Thread while REST is pending', async path => {
+    let canonical: ClientSessionState['messages'] | undefined
+    await observeNavigation(path, async ({ container, cache }) => {
+      const other = { requestId: 'B-request', sessionId: 'rt-clarify-B', question: 'B?', choices: ['B'], multiSelect: false }
+      act(() => {
+        setClarifyRequest(other)
+        publishSessionState('rt-clarify-B', { ...clientState('stored-clarify-B'), busy: true,
+          messages: [{ id: 'B-history', role: 'user', parts: [{ type: 'text', text: 'B history' }] }] })
+      })
+      const bState = $sessionStates.get()['rt-clarify-B']
+      const raw = cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.messages
+      canonical = raw
+      const publications: string[] = []
+      const stop = PRIMARY_SESSION_VIEW.$messages.listen(messages => publications.push(JSON.stringify(messages)))
+
+      try {
+        act(() => setClarifyRequest({ ...other, sessionId: runtimeId, requestId,
+          questions: [{ qid: 'q0', question: 'Late batch?', choices: ['Late choice'], multiSelect: false }] }))
+        await waitFor(() => expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1))
+        expect(container.textContent).toContain('Late batch?')
+        expect(container.textContent).not.toContain('UNVERIFIED')
+        act(() => setClarifyRequest({ ...other, sessionId: runtimeId, requestId: 'replacement',
+          questions: [{ qid: 'q0', question: 'Replacement batch?', choices: ['Replacement choice'], multiSelect: false }] }))
+        await waitFor(() => expect(container.textContent).toContain('Replacement batch?'))
+        expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1)
+        expect(container.textContent).not.toContain('Late choice')
+        expect(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.messages).toBe(raw)
+        expect($clarifyRequests.get()['rt-clarify-B']).toBe(other)
+        expect($sessionStates.get()['rt-clarify-B']).toBe(bState)
+        expect(publications.every(view => !view.includes('UNVERIFIED'))).toBe(true)
+      } finally { stop() }
+    }, { pending: false, restFails: true, afterRest: async ({ cache, container }) => {
+      expect(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.messages).toBe(canonical)
+      expect($sessionStates.get()[runtimeId].messages).toBe(canonical)
+      act(() => cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: true })))
+      await waitFor(() => expect(container.textContent).toContain('Replacement batch?'))
+      expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1)
+      expect(container.textContent).not.toContain('UNVERIFIED')
+      act(() => clearClarifyRequest('replacement', runtimeId))
+      await waitFor(() => expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(0))
+      expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([])
+    } })
+  })
+
+  it.each(['warm', 'cold'] as const)('F3/F4 %s late clarify survives failed REST, heartbeat, clear and recovery', async path => {
+    const publications: string[] = []
+    const unsubscribe = PRIMARY_SESSION_VIEW.$messages.listen(messages => publications.push(JSON.stringify(messages)))
+
+    try {
+      await observeNavigation(path, ({ cache }) => {
+        act(() => {
+          setClarifyRequest({ requestId, sessionId: runtimeId, question: 'Late?', choices: null, multiSelect: false })
+          cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: true }))
+        })
+      }, { pending: false, restFails: true, afterRest: async ({ cache, actions, container }) => {
+        expect($activeSessionId.get()).toBe(runtimeId)
+        expect(answerableRows($messages.get())).toHaveLength(1)
+        expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+        expect(JSON.stringify($messages.get())).not.toContain('UNVERIFIED')
+        expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+        act(() => cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: true, messages: [
+          { id: 'raw-heartbeat', role: 'assistant', parts: [{ type: 'text', text: 'UNVERIFIED heartbeat cache' }] }
+        ] })))
+        expect(answerableRows($messages.get())).toHaveLength(1)
+        expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+        expect(JSON.stringify($messages.get())).not.toContain('UNVERIFIED')
+        expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+        act(() => {
+          clearClarifyRequest(requestId, runtimeId)
+          cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: false, busy: false }))
+        })
+        expect(answerableRows($messages.get())).toHaveLength(0)
+        expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([])
+        expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(0)
+        expect(JSON.stringify($messages.get())).not.toContain('UNVERIFIED')
+        expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+        expect(publications.every(view => !view.includes('UNVERIFIED'))).toBe(true)
+        vi.mocked(getLatestSessionMessages).mockResolvedValue({
+          session_id: storedId, messages: [{ role: 'user', content: 'Recovered history' }]
+        } as never)
+        await act(async () => { await actions.resumeSession(storedId, true) })
+        act(() => cache.syncSessionStateToView(runtimeId, cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!))
+        await waitFor(() => expect($messages.get().flatMap(message => message.parts)).toContainEqual({ type: 'text', text: 'Recovered history' }))
+      } })
+    } finally {
+      unsubscribe()
+    }
+  })
+
+  it.each([['warm', true], ['cold', true], ['warm', false], ['cold', false]] as const)(
+    'F1 %s does not revive a request cleared during RPC (present at start: %s)', async (path, atStart) => {
+      const snapshot = deferred<SessionResumeResponse>()
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        session_id: storedId, messages: [{ role: 'user', content: 'Verified history' }]
+      } as never)
+      const requestGateway = vi.fn(() => snapshot.promise as never)
+      let actions!: ReturnType<typeof useSessionActions>
+      let cache!: ReturnType<typeof useSessionStateCache>
+      render(<ResumeTimerHarness onNavigationReady={(a, c) => { actions = a; cache = c }}
+        onReady={() => undefined} requestGateway={requestGateway} />)
+
+      if (path === 'warm') {
+        const state = clientState(storedId)
+        state.messages = [{ id: 'history', role: 'user', parts: [{ type: 'text', text: 'History' }] }]
+        cache.runtimeIdByStoredSessionIdRef.current.set(storedId, runtimeId)
+        cache.sessionStateByRuntimeIdRef.current.set(runtimeId, state)
+      }
+
+      const request = { requestId, sessionId: runtimeId, question: 'Old?', choices: null, multiSelect: false }
+
+      if (atStart) {setClarifyRequest(request)}
+      const other = { ...request, requestId: 'other', sessionId: 'rt-clarify-B' }
+      setClarifyRequest(other)
+      let navigation!: Promise<unknown>
+      act(() => { navigation = actions.resumeSession(storedId, true) })
+      await waitFor(() => expect(requestGateway).toHaveBeenCalled())
+      act(() => {
+        if (!atStart) {setClarifyRequest(request)}
+        clearClarifyRequest(requestId, runtimeId)
+      })
+      await act(async () => {
+        snapshot.resolve({ session_id: runtimeId, resumed: storedId, session_key: storedId,
+          running: true, messages: [], messages_omitted: true, message_count: 1, info: {},
+          pending_clarify: { request_id: requestId, question: 'Old?' }
+        })
+        await navigation
+      })
+      expect($clarifyRequests.get()[runtimeId]).toBeUndefined()
+      await waitFor(() => expect($messages.get().flatMap(message => message.parts).filter(part =>
+        part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)).toHaveLength(0))
+      expect($clarifyRequests.get()['rt-clarify-B']).toBe(other)
+    }
+  )
+
+  it.each(['warm', 'cold'] as const)('%s projects exactly one answerable batch before REST and preserves history after it', async path => {
+    await observeNavigation(path, async ({ cache, container }) => {
+      await waitFor(() => expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1))
+      expect(container.textContent).toContain('Choose a path')
+      expect(container.textContent).not.toContain('UNVERIFIED')
+      expect(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.messages[0].id).toBe('untrusted-A')
+      expect($sessionStates.get()[runtimeId].messages[0].id).toBe('untrusted-A')
+      expect(answerableRows($messages.get())).toHaveLength(1)
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      expect(answerableRows($messages.get())[0].parts).toEqual([
+        expect.objectContaining({ type: 'tool-call', toolName: 'clarify', toolCallId: requestId,
+          args: { questions: [{ question: 'Choose a path', choices: ['Safe', 'Fast'], multi_select: undefined }] } })
+      ])
+    }, { afterRest: async ({ container }) => {
+      await waitFor(() => expect(container.textContent).toContain('Verified history'))
+      expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1)
+      expect(container.textContent).not.toContain('UNVERIFIED')
+      expect(answerableRows($messages.get())).toHaveLength(1)
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      expect($messages.get().flatMap(message => message.parts)).toContainEqual(expect.objectContaining({ type: 'text', text: 'Verified history' }))
+      expect($clarifyRequests.get()[runtimeId]?.requestId).toBe(requestId)
+    } })
+  })
+
+  it('cold paints REST first while the snapshot is pending, then adds the request using the real cache', async () => {
+    const snapshot = deferred<SessionResumeResponse>()
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: storedId, messages: [{ role: 'user', content: 'REST first history' }]
+    } as never)
+    const requestGateway = vi.fn(() => snapshot.promise as never)
+    let actions!: ReturnType<typeof useSessionActions>
+    render(<ResumeTimerHarness onNavigationReady={next => { actions = next }}
+      onReady={() => undefined} requestGateway={requestGateway} />)
+    let navigation!: Promise<unknown>
+    act(() => { navigation = actions.resumeSession(storedId, true) })
+    await waitFor(() => expect($messages.get().flatMap(message => message.parts)).toEqual([
+      { type: 'text', text: 'REST first history' }
+    ]))
+    expect($clarifyRequests.get()[runtimeId]).toBeUndefined()
+    await act(async () => {
+      snapshot.resolve({ session_id: runtimeId, resumed: storedId, session_key: storedId,
+        running: true, messages: [], messages_omitted: true, message_count: 1, info: {},
+        pending_clarify: { request_id: requestId, questions, answers: {} }
+      })
+      await navigation
+    })
+    expect(answerableRows($messages.get())).toHaveLength(1)
+    expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+    expect($messages.get().flatMap(message => message.parts)).toContainEqual({ type: 'text', text: 'REST first history' })
+  })
+
+  it.each(['warm', 'cold'] as const)('%s keeps the request answerable if REST fails', async path => {
+    await observeNavigation(path, () => {
+      expect(answerableRows($messages.get())).toHaveLength(1)
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+    }, {
+      restFails: true,
+      afterRest: async ({ cache, actions }) => {
+        expect($activeSessionId.get()).toBe(runtimeId)
+        expect(answerableRows($messages.get())).toHaveLength(1)
+        expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+        expect($clarifyRequests.get()[runtimeId]?.requestId).toBe(requestId)
+        expect($messages.get().flatMap(message => message.parts).filter(part => part.type === 'text')).toEqual([])
+        act(() => cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: true })))
+        expect(answerableRows($messages.get())).toHaveLength(1)
+        expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+        expect($messages.get().flatMap(message => message.parts).filter(part => part.type === 'text')).toEqual([])
+
+        if (path === 'cold') {expect($resumeFailedSessionId.get()).toBe(storedId)}
+        vi.mocked(getLatestSessionMessages).mockResolvedValue({
+          session_id: storedId, messages: [{ role: 'user', content: 'Recovered history' }]
+        } as never)
+        await act(async () => { await actions.resumeSession(storedId, true) })
+        act(() => cache.syncSessionStateToView(runtimeId, cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!))
+        expect($messages.get().flatMap(message => message.parts)).toContainEqual({ type: 'text', text: 'Recovered history' })
+        expect(answerableRows($messages.get())).toHaveLength(1)
+        expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      }
+    })
+  })
+
+  it.each(['warm', 'cold'] as const)('%s stale resume cannot retire the newer A gate after A-B-A navigation', async path => {
+    const latest = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    let second!: Promise<unknown>
+    await observeNavigation(path, async ({ cache, actions }) => {
+      const b = clientState('stored-clarify-B')
+      b.messages = [{ id: 'b', role: 'user', parts: [{ type: 'text', text: 'B history' }] }]
+      cache.runtimeIdByStoredSessionIdRef.current.set('stored-clarify-B', 'rt-clarify-B')
+      cache.sessionStateByRuntimeIdRef.current.set('rt-clarify-B', b)
+      await act(async () => { await actions.resumeSession('stored-clarify-B', true) })
+      vi.mocked(getLatestSessionMessages).mockReturnValueOnce(latest.promise)
+      act(() => { second = actions.resumeSession(storedId, true) })
+      await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(3))
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+    }, { afterRest: async ({ cache }) => {
+      try {
+        expect($activeSessionId.get()).toBe(runtimeId)
+        act(() => cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: true })))
+        expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+        expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+      } finally {
+        await act(async () => {
+          latest.resolve({ session_id: storedId, messages: [{ role: 'user', content: 'New verified history' }] } as never)
+          await second
+        })
+      }
+
+      expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).toContain('New verified history')
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+    } })
+  })
+
+  it('cold gates a runtime first discovered by stream events before the resume binding', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const snapshot = deferred<SessionResumeResponse>()
+    vi.mocked(getLatestSessionMessages).mockReturnValueOnce(persisted.promise)
+    let actions!: ReturnType<typeof useSessionActions>
+    let cache!: ReturnType<typeof useSessionStateCache>
+    render(<ResumeTimerHarness onNavigationReady={(a, c) => { actions = a; cache = c }} onReady={() => undefined}
+      requestGateway={() => snapshot.promise as never} />)
+
+    const stream = renderMessageStream(runtimeId, {
+      states: cache.sessionStateByRuntimeIdRef.current,
+      activeSessionIdRef: cache.activeSessionIdRef,
+      updateSessionState: cache.updateSessionState
+    })
+
+    let navigation!: Promise<unknown>
+    act(() => { navigation = actions.resumeSession(storedId, true) })
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+    act(() => {
+      stream.handleEvent({ type: 'clarify.request', session_id: runtimeId,
+        payload: { request_id: 'before-binding', question: 'UNVERIFIED synthetic old question', choices: ['Old'] } })
+      stream.handleEvent({ type: 'clarify.expire', session_id: runtimeId,
+        payload: { request_id: 'before-binding' } })
+      stream.handleEvent({ type: 'clarify.request', session_id: runtimeId,
+        payload: { request_id: requestId, questions } })
+    })
+    expect(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId).toBeNull()
+    const { container } = render(<NavigationThread />)
+
+    try {
+      await act(async () => {
+        snapshot.resolve({ session_id: runtimeId, resumed: storedId, session_key: storedId,
+          running: true, messages: [], messages_omitted: true, message_count: 1, info: {},
+          pending_clarify: { request_id: requestId, questions, answers: {} } })
+      })
+      await waitFor(() => expect($activeSessionId.get()).toBe(runtimeId))
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+      act(() => cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: true })))
+      expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+      await waitFor(() => expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1))
+    } finally {
+      await act(async () => {
+        persisted.resolve({ session_id: storedId, messages: [{ role: 'user', content: 'Verified history' }] } as never)
+        await navigation
+      })
+    }
+
+    expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+  })
+
+  it('cold preserves the new target gate across a nonempty stored binding and heartbeat', async () => {
+    clearInFlightTurnJournal(storedId)
+    const other = { requestId: 'B-request', sessionId: 'rt-clarify-B', question: 'B?', choices: null, multiSelect: false }
+    setClarifyRequest(other)
+    await observeNavigation('cold', async ({ cache, container }) => {
+      expect($sessionStates.get()[runtimeId].storedSessionId).toBe(storedId)
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      act(() => cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: true })))
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      expect(JSON.stringify(PRIMARY_SESSION_VIEW.$messages.get())).not.toContain('UNVERIFIED')
+      await waitFor(() => expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(1))
+      expect($clarifyRequests.get()['rt-clarify-B']).toBe(other)
+    }, { oldStoredId: 'old-A', afterRest: () => {
+      expect(answerableRows(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(1)
+      expect($clarifyRequests.get()['rt-clarify-B']).toBe(other)
+    } })
+  })
+
+  it('cold does not resurrect a newer request expired through the real stream while REST waits', async () => {
+    let tile!: ReturnType<typeof buildTileView>
+
+    const openNew = (messages: ClientSessionState['messages']) => messages.flatMap(message => message.parts)
+      .filter(part => part.type === 'tool-call' && part.toolCallId === 'new-expiring' && part.result === undefined)
+
+    await observeNavigation('cold', async ({ cache, container }) => {
+      const stream = renderMessageStream(runtimeId, {
+        states: cache.sessionStateByRuntimeIdRef.current,
+        activeSessionIdRef: cache.activeSessionIdRef,
+        updateSessionState: cache.updateSessionState
+      })
+
+      act(() => {
+        stream.handleEvent({ type: 'clarify.request', session_id: 'rt-clarify-B',
+          payload: { request_id: 'B-request', question: 'B synthetic question' } })
+        stream.handleEvent({ type: 'clarify.request', session_id: runtimeId,
+          payload: { request_id: 'new-expiring', questions: [{ qid: 'q0', question: 'New synthetic question', choices: ['New'] }] } })
+        $sessionTiles.set([{ storedSessionId: storedId, runtimeId }])
+      })
+      tile = buildTileView(storedId)
+      await waitFor(() => expect(container.textContent).toContain('New synthetic question'))
+      expect(openNew(tile.$messages.get())).toHaveLength(1)
+      act(() => stream.handleEvent({ type: 'clarify.expire', session_id: runtimeId,
+        payload: { request_id: 'new-expiring' } }))
+      expect($clarifyRequests.get()[runtimeId]).toBeUndefined()
+      expect(openNew(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages)).toHaveLength(0)
+      expect(openNew(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(0)
+    }, { afterRest: async ({ cache, container }) => {
+      expect($clarifyRequests.get()[runtimeId]).toBeUndefined()
+      expect($clarifyRequests.get()['rt-clarify-B']?.requestId).toBe('B-request')
+      expect(openNew(cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages)).toHaveLength(0)
+      expect(openNew($sessionStates.get()[runtimeId].messages)).toHaveLength(0)
+      expect(openNew(PRIMARY_SESSION_VIEW.$messages.get())).toHaveLength(0)
+      expect(openNew(tile.$messages.get())).toHaveLength(0)
+      await waitFor(() => expect(container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(0))
+    } })
+  })
+
+  it.each(['warm', 'cold'] as const)('%s does not re-arm an answered or expired request after REST', async path => {
+    await observeNavigation(path, ({ cache }) => {
+      act(() => {
+        clearClarifyRequest(requestId, runtimeId)
+        cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: false, busy: false, awaitingResponse: false }))
+      })
+      expect(answerableRows($messages.get())).toHaveLength(0)
+    }, { afterRest: () => {
+      expect($clarifyRequests.get()[runtimeId]).toBeUndefined()
+      expect(answerableRows($messages.get()).filter(message => message.parts.some(part => part.type === 'tool-call' && part.result === undefined))).toHaveLength(0)
+      expect($sessionStates.get()[runtimeId]).toMatchObject({ needsInput: false, busy: false })
+    } })
+  })
+
+  it.each([['warm', false], ['cold', false], ['warm', true], ['cold', true]] as const)('%s keeps a newer request instead of reviving the old snapshot (REST fails: %s)', async (path, restFails) => {
+    await observeNavigation(path, ({ cache }) => {
+      act(() => {
+        setClarifyRequest({ requestId: 'new-request', sessionId: runtimeId, question: 'New question?', choices: ['New'], multiSelect: false })
+        cache.updateSessionState(runtimeId, state => ({ ...state, needsInput: true }))
+      })
+    }, { restFails, afterRest: () => {
+      expect($clarifyRequests.get()[runtimeId]?.requestId).toBe('new-request')
+      const openCalls = $messages.get().flatMap(message => message.parts).filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+      expect(openCalls).toHaveLength(1)
+      expect(openCalls[0]).toMatchObject({ toolCallId: 'new-request', args: { question: 'New question?', choices: ['New'] } })
+    } })
+  })
+
+  it.each(['warm', 'cold'] as const)('%s cannot overwrite B with a late A transcript', async path => {
+    let tile!: ReturnType<typeof buildTileView>
+    await observeNavigation(path, async ({ cache, actions }) => {
+      act(() => $sessionTiles.set([{ storedSessionId: storedId, runtimeId }]))
+      tile = buildTileView(storedId)
+      const b = clientState('stored-clarify-B')
+      b.messages = [{ id: 'b', role: 'user', parts: [{ type: 'text', text: 'B history' }] }]
+      cache.runtimeIdByStoredSessionIdRef.current.set('stored-clarify-B', 'rt-clarify-B')
+      cache.sessionStateByRuntimeIdRef.current.set('rt-clarify-B', b)
+      await act(async () => { await actions.resumeSession('stored-clarify-B', true) })
+      expect($activeSessionId.get()).toBe('rt-clarify-B')
+    }, { afterRest: () => {
+      expect($activeSessionId.get()).toBe('rt-clarify-B')
+      expect($messages.get().flatMap(message => message.parts)).toEqual([{ type: 'text', text: 'B history' }])
+      expect($sessionStates.get()['rt-clarify-B']?.needsInput).toBe(false)
+      expect(answerableRows(tile.$messages.get())).toHaveLength(1)
+      expect(JSON.stringify(tile.$messages.get())).not.toContain('UNVERIFIED')
+    } })
+  })
+
+  it.each(['warm', 'cold'] as const)('%s does not invent a card from another session request', async path => {
+    setClarifyRequest({ requestId, sessionId: 'rt-clarify-B', question: 'B only', choices: null, multiSelect: false })
+    await observeNavigation(path, () => expect(answerableRows($messages.get())).toHaveLength(0), {
+      pending: false,
+      afterRest: () => expect($clarifyRequests.get()[runtimeId]).toBeUndefined()
+    })
   })
 })

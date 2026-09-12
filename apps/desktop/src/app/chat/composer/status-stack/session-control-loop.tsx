@@ -154,6 +154,7 @@ export const SessionControlLoopSection = memo(function SessionControlLoopSection
         <ContextMenuTrigger asChild>
           <div data-slot="session-control-loop">
             <StatusSection
+              stickyHeader
               accessory={
                 <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
                   <Tip label={ctrl.loopActions}>

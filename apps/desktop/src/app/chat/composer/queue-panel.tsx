@@ -49,6 +49,7 @@ export function QueuePanel({
 
   return (
     <StatusSection
+      stickyHeader
       accessory={
         parked ? (
           <Tip label={c.queueResumeTip}>

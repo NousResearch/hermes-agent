@@ -175,8 +175,8 @@
     "bippy": "0.5.43",
     "concurrently": "10.0.4",
     "cross-env": "10.1.0",
-    "electron": "40.10.2",
-    "electron-builder": "26.15.3",
+    "electron": "40.10.6",
+    "electron-builder": "26.16.1",
     "esbuild": "0.28.1",
     "jsdom": "29.1.1",
     "prettier": "3.9.5",
@@ -184,7 +184,7 @@
     "tsx": "4.23.1",
     "typescript": "6.0.3",
     "vite": "8.2.0",
-    "vitest": "4.1.10",
+    "vitest": "4.1.11",
     "wait-on": "9.0.10"
   },
   "build": {

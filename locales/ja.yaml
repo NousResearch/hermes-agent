@@ -20,6 +20,20 @@ approval:
   blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "こんにちは〜 まだあなたのことを認識していません！"
+    code:         "ペアリングコードはこちらです: `{code}`"
+    approve_hint: "ボットの所有者に次のコマンドを実行してもらってください:\n`{command}`"
+    rate_limited: "現在ペアリングリクエストが多すぎます〜 しばらくしてからもう一度お試しください！"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 {platform} にホームチャンネルが設定されていません。ホームチャンネルは {brand} が cron ジョブの結果やプラットフォーム間のメッセージを届ける場所です。\n\nこのチャットをホームチャンネルにするには {cmd} と入力してください。不要な場合は無視してかまいません。"
+
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining:         "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
   goal_cleared:     "✓ 目標をクリアしました。"

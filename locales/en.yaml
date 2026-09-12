@@ -30,6 +30,20 @@ approval:
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "Hi~ I don't recognize you yet!"
+    code:         "Here's your pairing code: `{code}`"
+    approve_hint: "Ask the bot owner to run:\n`{command}`"
+    rate_limited: "Too many pairing requests right now~ Please try again later!"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 No home channel is set for {platform}. A home channel is where {brand} delivers cron job results and cross-platform messages.\n\nType {cmd} to make this chat your home channel, or ignore to skip."
+
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."

@@ -20,6 +20,20 @@ approval:
   blocklist_message: "Cette commande est sur la liste de blocage inconditionnel et ne peut pas être approuvée."
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "Salut~ Je ne te reconnais pas encore !"
+    code:         "Voici ton code d'appairage : `{code}`"
+    approve_hint: "Demande au propriétaire du bot d'exécuter :\n`{command}`"
+    rate_limited: "Trop de demandes d'appairage pour le moment~ Réessaie plus tard !"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 Aucun canal principal n'est défini pour {platform}. Le canal principal est l'endroit où {brand} envoie les résultats des tâches planifiées et les messages inter-plateformes.\n\nTape {cmd} pour faire de cette conversation ton canal principal, ou ignore ce message."
+
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."
   draining:         "⏳ Vidage de {count} agent(s) actif(s) avant redémarrage..."
   goal_cleared:     "✓ Objectif effacé."

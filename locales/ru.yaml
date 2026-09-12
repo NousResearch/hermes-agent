@@ -20,6 +20,20 @@ approval:
   blocklist_message: "Эта команда находится в безусловном списке блокировки и не может быть одобрена."
 
 gateway:
+  # Pairing DM sent to an unknown sender. `{command}` is the literal CLI
+  # invocation the owner runs; keep it verbatim in every language.
+  pairing:
+    greeting:     "Привет~ Я тебя пока не знаю!"
+    code:         "Вот твой код сопряжения: `{code}`"
+    approve_hint: "Попроси владельца бота выполнить:\n`{command}`"
+    rate_limited: "Сейчас слишком много запросов на сопряжение~ Попробуй позже!"
+
+  # One-time notice when a platform has no home channel. `{brand}` is the
+  # active skin's agent name ("Hermes" for the stock skin); `{cmd}` is the
+  # platform's sethome command.
+  home_channel:
+    notice: "📬 Для {platform} не задан домашний канал. В домашний канал {brand} доставляет результаты cron-задач и сообщения с других платформ.\n\nВведи {cmd}, чтобы сделать этот чат домашним каналом, или просто проигнорируй это сообщение."
+
   approval_expired: "⚠️ Срок одобрения истёк (агент больше не ожидает). Попросите агента повторить попытку."
   draining:         "⏳ Ожидание завершения {count} активных агент(ов) перед перезапуском..."
   goal_cleared:     "✓ Цель очищена."

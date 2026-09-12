@@ -144,6 +144,8 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 在途消息字节�
 python -m plugins.platforms.google_chat.oauth --install-deps
 ```
 
+在 Docker / hosted 镜像中 `/opt/hermes/.venv` 只读。该安装程序通过 `tools.lazy_deps` 写入 `HERMES_LAZY_INSTALL_TARGET`（官方镜像为 `/opt/data/lazy-packages`），而不是 site-packages。完成后重启 gateway。发布镜像也会预装 `[google-chat]` extra，新容器不必在首次启动时再装。
+
 启动 gateway（网关）：
 
 ```bash

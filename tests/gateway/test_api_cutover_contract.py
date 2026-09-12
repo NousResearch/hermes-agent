@@ -54,7 +54,10 @@ async def test_structured_content_bypasses_text_parser_without_losing_parts(api,
         turn = object.__new__(TurnRunner)
         turn._ctx = SimpleNamespace(message=event.text, session_key=owner.sessions[ref.session_id].route)
         turn._runner = SimpleNamespace(_consume_pending_native_image_paths=lambda key: [])
-        assert turn._native_image_run_message() == content
+        # The transient image survives; the text part now carries the durable reference hint.
+        message = turn._native_image_run_message()
+        assert message[1] == content[1]
+        assert message[0]['text'] == '/literal prompt\n\n[Image attached: https://example.com/image.png]'
         assert api_execution.get()['history'] == []
         execution_result.get()['result'] = {'final_response': 'ok'}
         return 'ok'

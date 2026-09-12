@@ -725,6 +725,7 @@ class GatewayTurnProgressMixin:
         """Compose the voice ack + native task-card start consumers."""
         self._publish_execution("tool.start", {
             "tool_call_id": str(call_id or ""), "tool_name": str(tool_name or "tool")})
+        self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
         if self._ctx._native_slack_task_cards:
@@ -736,6 +737,7 @@ class GatewayTurnProgressMixin:
         self._publish_execution("tool.complete", {
             "tool_call_id": str(call_id or ""), "tool_name": str(tool_name or "tool"),
             "is_error": bool(is_error)})
+        self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 

@@ -34,7 +34,7 @@ def check_api_turn(authority, ref, payload):
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
-        if (set(data) - {'history', 'settings', 'turn_author'}
+        if (set(data) - {'history', 'settings', 'turn_author', 'media'}
                 or not {'history', 'settings'} <= set(data)
                 or (data['history'] is not None and not isinstance(data['history'], list))):
             raise RuntimeStoreError('invalid_params')
@@ -101,6 +101,9 @@ def admit_api_turn(adapter, **kwargs):
         settings['route'] = {k: v for k, v in route.items() if k != 'api_key'}
     payload = json.loads(_json({'text': kwargs['user_message'], 'api_turn_v1': {
         'history': None if kwargs.get('history_from_session') else kwargs['conversation_history'], 'settings': settings}}))
+    if isinstance(kwargs['user_message'], list):
+        from gateway.session_api_media import commit_api_images
+        payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
     if kwargs.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         author = parse_turn_author(kwargs['turn_author'])
@@ -187,6 +190,29 @@ async def observe_api_turn(admitted, **kwargs):
     return saved['result'], saved['usage']
 
 
+_CONTROL_EVENTS = frozenset({'approval.request', 'approval.settled', 'clarify.request', 'clarify.settled'})
+
+
+@contextmanager
+def observe_api_controls(admitted, sink):
+    """Project the same approval/clarify prompts WS viewers receive to ``sink(type, payload)``
+    for the admission's lifetime; ``sink`` runs on the publishing thread under the stream lock."""
+    authority, ref, row = admitted
+    events = authority.sessions[ref.session_id].event_stream
+
+    def observer(frame):
+        params = frame['params']
+        if params.get('admission_id') == row['admission_id'] and params.get('type') in _CONTROL_EVENTS:
+            sink(params['type'], params.get('payload') or {})
+    with events.lock:
+        events.observers.add(observer)
+    try:
+        yield
+    finally:
+        with events.lock:
+            events.observers.discard(observer)
+
+
 def prepare_api_execution(authority, ref, payload):
     adapter = check_api_turn(authority, ref, payload)
     data = payload.get('api_turn_v1')
@@ -198,27 +224,47 @@ def prepare_api_execution(authority, ref, payload):
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (_SETTINGS_PREFIX + ref.session_id, _json(settings)))
         authority.db._execute_write(write)
+    content = payload['text']
+    if data and isinstance(content, list):
+        from gateway.session_api_media import restore_api_images
+        content = restore_api_images(content, data.get('media') or [])
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
-            'content': payload['text'], 'turn_author': data.get('turn_author') if data else None}
+            'content': content, 'turn_author': data.get('turn_author') if data else None}
+
+
+def _api_observers(authority, session_id):
+    execution = authority.sessions[session_id].event_stream.execution
+    admission_id = execution.get('admission_id') if execution else None
+    return tuple(getattr(authority, 'api_observers', {}).get(admission_id, ()))
 
 
 def publish_api_event(authority, session_id, event_type, payload):
-    execution = authority.sessions[session_id].event_stream.execution
-    admission_id = execution.get('admission_id') if execution else None
-    observers = getattr(authority, 'api_observers', {}).get(admission_id, ())
-    for observer in tuple(observers):
-        if event_type == 'message.delta':
-            callback = observer.get('stream_delta_callback')
-            if callback:
-                callback(payload['text'])
-        elif event_type == 'tool.start':
-            callback = observer.get('tool_start_callback')
-            if callback:
-                callback(payload['tool_call_id'], payload['tool_name'], {})
-        elif event_type == 'tool.complete':
-            callback = observer.get('tool_complete_callback')
-            if callback:
-                callback(payload['tool_call_id'], payload['tool_name'], {}, {})
+    if event_type != 'message.delta':
+        return
+    for observer in _api_observers(authority, session_id):
+        callback = observer.get('stream_delta_callback')
+        if callback:
+            callback(payload['text'])
+
+
+def publish_api_tool_event(authority, session_id, generation, event_type, call_id, tool_name, args, result=None):
+    """Real tool arguments/results for the admission's API observers (Responses streaming,
+    runs SSE); never part of the shared viewer event stream."""
+    live = authority.sessions[session_id]
+    with live.event_stream.lock:
+        try:
+            authority.check_approval_generation(session_id, generation)
+        except RuntimeStoreError:
+            return
+        for observer in _api_observers(authority, session_id):
+            if event_type == 'tool.start':
+                callback = observer.get('tool_start_callback')
+                if callback:
+                    callback(call_id, tool_name, args or {})
+            elif event_type == 'tool.complete':
+                callback = observer.get('tool_complete_callback')
+                if callback:
+                    callback(call_id, tool_name, args or {}, result)
 
 
 def prepare_api_runtime(model, runtime_kwargs):

@@ -72,6 +72,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             return authority.publish_execution(session_id, generation, event_type, payload)
         return False
 
+    def _publish_api_tool(self, event_type, call_id, tool_name, args, result=None):
+        """The retained tool payload reaches the API observers of this exact admission only;
+        the shared viewer stream keeps its ID-correlated frames."""
+        if self._approval_owner is not None:
+            from gateway.session_api_turn import publish_api_tool_event
+            authority, session_id, generation = self._approval_owner
+            publish_api_tool_event(authority, session_id, generation, event_type,
+                                   str(call_id or ""), str(tool_name or "tool"), args, result)
+
     # ── stream consumer / interim commentary wiring ─────────────────────────────────────────
 
     def _setup_stream_consumer(self, platform_key):

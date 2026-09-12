@@ -1763,23 +1763,36 @@ def _run_agent_with_watchdog(
 
 
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
-    """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
-    `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
-    be delivered as the reply with the job marked ok."""
+    """Return a deliverable response, rejecting agent and guardrail failures.
+
+    ``run_conversation`` can synthesize a final response when a hard tool-loop guardrail stops
+    the turn. That text explains the failure; it is not successful job output.
+    """
     # If the agent itself reported failure (e.g. all retries exhausted on API errors, model abort, mid-run
     # interrupt), do not silently mark the job as successful. run_agent populates
     # `failed=True`/`completed=False` on these paths and may put the error into `final_response`, which
     # would otherwise be delivered as if it were the agent's reply and the job's `last_status` set to "ok".
+    # A hard tool guardrail is another abnormal terminal even though the generic agent result remains
+    # completed=True/failed=False for interactive surfaces. Cron must route its synthesized explanation
+    # through the failure-delivery lane instead of recording completed/delivered.
     # Raise so the except handler below builds the proper failure tuple. (issue #17855)
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
     final_response_text = (result.get("final_response") or "").strip()
+    guardrail = result.get("guardrail")
+    guardrail_halt = turn_exit_reason == "guardrail_halt" or (
+        isinstance(guardrail, dict) and guardrail.get("action") == "halt"
+    )
     max_iteration_summary = (
         result.get("failed") is not True
         and result.get("completed") is False
         and turn_exit_reason.startswith("max_iterations_reached(")
         and bool(final_response_text)
     )
-    if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
+    if (
+        guardrail_halt
+        or result.get("failed") is True
+        or (result.get("completed") is False and not max_iteration_summary)
+    ):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
     if max_iteration_summary:
         logger.warning(

@@ -6536,6 +6536,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
+    if "show_all_providers" in telegram_cfg:
+        extras.setdefault("show_all_providers", telegram_cfg["show_all_providers"])
     # Pass through telegram-specific extra keys but EXCLUDE generic shared-config keys: _merge_platform_map
     # already applied top-level-over-nested precedence and re-emitting them via dict.update() would undo it.
     _GENERIC_MERGE_KEYS = {

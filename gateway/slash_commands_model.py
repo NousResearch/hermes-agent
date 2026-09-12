@@ -166,6 +166,17 @@ def _model_provider_listing_lines(providers) -> list[str]:
     return lines
 
 
+def _telegram_uses_explicit_provider_listing(source, adapter) -> bool:
+    """Opt in only for Telegram's exact boolean config; malformed config fails open."""
+    platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
+    extra = getattr(getattr(adapter, "config", None), "extra", None)
+    return (
+        platform == "telegram"
+        and isinstance(extra, dict)
+        and extra.get("show_all_providers") is False
+    )
+
+
 class GatewayModelCommandsMixin:
     """Model-route slash commands (/model, /codex-runtime, /reasoning, /fast, /personality)."""
 
@@ -370,6 +381,21 @@ class GatewayModelCommandsMixin:
             providers = await asyncio.to_thread(
                 list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
             )
+            if _telegram_uses_explicit_provider_listing(source, adapter):
+                from hermes_cli.inventory import ConfigContext, filter_explicit_provider_rows
+
+                providers = await asyncio.to_thread(
+                    filter_explicit_provider_rows,
+                    providers,
+                    ConfigContext(
+                        current_provider=listing_kwargs["current_provider"],
+                        current_model=listing_kwargs["current_model"],
+                        current_base_url=listing_kwargs["current_base_url"],
+                        user_providers=listing_kwargs["user_providers"],
+                        custom_providers=listing_kwargs["custom_providers"],
+                        excluded_providers=listing_kwargs["excluded_providers"],
+                    ),
+                )
         except Exception:
             providers = []
         if not providers:

@@ -1724,6 +1724,9 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
+        # Retry an auto-blocked card once after this cooldown so transient infrastructure failures
+        # cannot abandon work forever. A failed probe trips the breaker again. 0 = manual retry only.
+        "failure_retry_seconds": 86400,
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

@@ -37,6 +37,7 @@ class _DispatcherSettings:
     max_spawn: Any
     max_in_progress: Optional[int]
     failure_limit: int
+    failure_retry_seconds: int
     stale_timeout_seconds: int
     reconcile_orphans: bool
     default_assignee: Optional[str]
@@ -82,6 +83,18 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
                        raw_failure_limit, kb.DEFAULT_FAILURE_LIMIT)
         failure_limit = kb.DEFAULT_FAILURE_LIMIT
 
+    raw_failure_retry = kanban_cfg.get(
+        "failure_retry_seconds", _kbd().DEFAULT_FAILURE_RETRY_SECONDS,
+    )
+    try:
+        failure_retry_seconds = max(int(raw_failure_retry or 0), 0)
+    except (TypeError, ValueError):
+        logger.warning(
+            "kanban dispatcher: invalid kanban.failure_retry_seconds=%r; using default %d",
+            raw_failure_retry, _kbd().DEFAULT_FAILURE_RETRY_SECONDS,
+        )
+        failure_retry_seconds = _kbd().DEFAULT_FAILURE_RETRY_SECONDS
+
     # 0 disables stale detection.
     raw_stale = kanban_cfg.get("dispatch_stale_timeout_seconds", 0)
     try:
@@ -106,6 +119,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         max_spawn=max_spawn,
         max_in_progress=effective_max_in_progress,
         failure_limit=failure_limit,
+        failure_retry_seconds=failure_retry_seconds,
         stale_timeout_seconds=stale_timeout_seconds,
         # Requeue 'running' cards with broken claim bookkeeping (zombie-card
         # reconciliation); false keeps orphans frozen for manual forensics.

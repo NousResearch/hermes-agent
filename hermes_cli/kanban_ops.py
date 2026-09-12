@@ -78,9 +78,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
+        failure_retry_seconds = max(int(
+            _kanban_cfg.get("failure_retry_seconds", kbd.DEFAULT_FAILURE_RETRY_SECONDS) or 0
+        ), 0)
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        failure_retry_seconds = kbd.DEFAULT_FAILURE_RETRY_SECONDS
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -88,6 +92,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
+            failure_retry_seconds=failure_retry_seconds,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
@@ -230,10 +235,20 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             )
 
     try:
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        failure_retry_seconds = max(int(
+            _kanban_cfg.get("failure_retry_seconds", kbd.DEFAULT_FAILURE_RETRY_SECONDS) or 0
+        ), 0)
+    except Exception:
+        failure_retry_seconds = kbd.DEFAULT_FAILURE_RETRY_SECONDS
+    try:
         kbd.run_daemon(
             interval=args.interval,
             max_spawn=args.max,
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
+            failure_retry_seconds=failure_retry_seconds,
             on_tick=_on_tick,
         )
     finally:

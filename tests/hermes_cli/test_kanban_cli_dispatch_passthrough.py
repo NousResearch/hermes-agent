@@ -42,6 +42,7 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
         "kanban": {
             "max_in_progress": 3,
             "max_spawn": 5,
+            "failure_retry_seconds": 7200,
             "default_assignee": "default",
             "max_in_progress_per_profile": 2,
         }
@@ -68,6 +69,7 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     assert captured.get("max_spawn") == 5, (
         f"CLI must pass kanban.max_spawn from config when --max is not provided; got {captured.get('max_spawn')!r}"
     )
+    assert captured.get("failure_retry_seconds") == 7200
     assert captured.get("default_assignee") == "default"
     assert captured.get("max_in_progress_per_profile") == 2
 

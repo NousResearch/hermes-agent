@@ -435,6 +435,62 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
         assert kb.get_task(conn, t2).status == "blocked"
 
 
+def test_dispatch_retries_aged_failure_breaker_once_per_cooldown(kanban_home, monkeypatch):
+    """A breaker trip is a cooldown, not permanent task abandonment."""
+    now = 2_000_000
+    cooldown = 3600
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="transient upstream", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=2, "
+            "last_failure_error='pid 42 not alive' WHERE id=?",
+            (tid,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', ?, ?)",
+            (tid, '{"retry_status":"ready"}', now),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(kbd.time, "time", lambda: now + cooldown - 1)
+        result = kbd.dispatch_once(
+            conn, max_spawn=0, failure_limit=2, failure_retry_seconds=cooldown,
+        )
+        assert result.promoted == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        monkeypatch.setattr(kbd.time, "time", lambda: now + cooldown)
+        result = kbd.dispatch_once(
+            conn, max_spawn=0, failure_limit=2, failure_retry_seconds=cooldown,
+        )
+        task = kb.get_task(conn, tid)
+        assert result.promoted == 1
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+        retry_events = [e for e in kb.list_events(conn, tid) if e.kind == "breaker_retry"]
+        assert len(retry_events) == 1
+        assert retry_events[0].payload["previous_failures"] == 2
+
+        # A failed probe consumes the normal budget and parks again until a
+        # fresh cooldown; it does not create a per-tick retry storm.
+        kb.claim_task(conn, tid)
+        assert not kbd._record_task_failure(
+            conn, tid, "pid 43 not alive", outcome="spawn_failed",
+            failure_limit=2, release_claim=True, end_run=True,
+        )
+        kb.claim_task(conn, tid)
+        assert kbd._record_task_failure(
+            conn, tid, "pid 44 not alive", outcome="spawn_failed",
+            failure_limit=2, release_claim=True, end_run=True,
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kbd.dispatch_once(
+            conn, max_spawn=0, failure_limit=2, failure_retry_seconds=cooldown,
+        ).promoted == 0
+
+
 
 
 # ---------------------------------------------------------------------------

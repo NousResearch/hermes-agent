@@ -2,7 +2,7 @@ import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 
 import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
-import { HOTKEYS } from '../../../content/hotkeys.js'
+import { getHotkeys } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
@@ -14,6 +14,7 @@ import type {
   SessionUndoResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
+import { getTranslations } from '../../../i18n/index.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import {
@@ -117,7 +118,7 @@ export const coreCommands: SlashCommand[] = [
           ],
           title: 'TUI'
         },
-        { rows: HOTKEYS, title: 'Hotkeys' }
+        { rows: getHotkeys(), title: getTranslations().help.hotkeys }
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)

@@ -1,17 +1,20 @@
+import { getTranslations } from '../i18n/index.js'
 import type { PanelSection } from '../types.js'
 
+// Retained for existing consumers that need the English constant.
 export const SETUP_REQUIRED_TITLE = 'Setup Required'
+export const setupRequiredTitle = () => getTranslations().setup.title
 
 export const buildSetupRequiredSections = (): PanelSection[] => [
   {
-    text: 'Hermes needs a model provider before the TUI can start a session.'
+    text: getTranslations().setup.description
   },
   {
     rows: [
-      ['/model', 'configure provider + model in-place'],
-      ['/setup', 'run full first-time setup wizard in-place'],
-      ['Ctrl+C', 'exit and run `hermes setup` manually']
+      ['/model', getTranslations().setup.model],
+      ['/setup', getTranslations().setup.wizard],
+      ['Ctrl+C', getTranslations().setup.exit]
     ],
-    title: 'Actions'
+    title: getTranslations().setup.actions
   }
 ]

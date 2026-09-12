@@ -1,3 +1,4 @@
+import { getTranslations } from '../i18n/index.js'
 import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
@@ -39,3 +40,9 @@ export const HOTKEYS: [string, string][] = [
   ['!<cmd>', 'run a shell command (e.g. !ls, !git status)'],
   ['{!<cmd>}', 'interpolate shell output inline (e.g. "branch is {!git branch --show-current}")']
 ]
+
+export function getHotkeys(): [string, string][] {
+  const copy = getTranslations().hotkeys
+
+  return HOTKEYS.map(([key, description]) => [key, copy[description as keyof typeof copy] ?? description])
+}

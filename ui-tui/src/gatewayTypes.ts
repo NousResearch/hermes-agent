@@ -77,6 +77,7 @@ export type CommandDispatchResponse =
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
+  language?: string
   battery?: boolean
   bell_on_complete?: boolean
   bell_on_prompt?: boolean
@@ -133,6 +134,8 @@ export interface ConfigApprovalsConfig {
 }
 
 export interface ConfigFullResponse {
+  /** Effective profile language, resolved by the backend (including environment overrides). */
+  ui_language?: string
   config?: {
     approvals?: ConfigApprovalsConfig
     display?: ConfigDisplayConfig

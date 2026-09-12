@@ -6,6 +6,7 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
+import { getTranslations, setTuiLanguage } from '../i18n/index.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -60,6 +61,7 @@ const buildCtx = (appended: Msg[]) =>
 
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
+    setTuiLanguage('en')
     resetOverlayState()
     resetUiState()
     resetTurnState()
@@ -2204,5 +2206,47 @@ describe('createGatewayEventHandler', () => {
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
     })
+  })
+})
+
+describe('gateway UI language', () => {
+  it('uses the backend-resolved language and resets on failed reconnect', async () => {
+    const ctx = buildCtx([])
+    ctx.gateway.rpc.mockImplementation(async (method: string) =>
+      method === 'config.get' ? { ui_language: 'sv', config: { display: { language: 'en' } } } : null
+    )
+    const handle = createGatewayEventHandler(ctx)
+    handle({ type: 'gateway.ready' })
+    await vi.waitFor(() => expect(getTranslations().confirm.yes).toBe('Ja'))
+    ctx.gateway.rpc.mockRejectedValue(new Error('disconnected'))
+    handle({ type: 'gateway.ready' })
+    expect(getTranslations().confirm.yes).toBe('Yes')
+    await Promise.resolve()
+    setTuiLanguage('en')
+  })
+
+  it('does not apply a stale language reply after reconnect', async () => {
+    const ctx = buildCtx([])
+    let resolveOld!: (value: unknown) => void
+    let count = 0
+    ctx.gateway.rpc.mockImplementation(async (method: string) => {
+      if (method !== 'config.get') {
+        return null
+      }
+
+      count += 1
+
+      return count === 1
+        ? new Promise(resolve => {
+            resolveOld = resolve
+          })
+        : { ui_language: 'en' }
+    })
+    const handle = createGatewayEventHandler(ctx)
+    handle({ type: 'gateway.ready' })
+    handle({ type: 'gateway.ready' })
+    resolveOld({ ui_language: 'sv' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(getTranslations().confirm.yes).toBe('Yes')
   })
 })

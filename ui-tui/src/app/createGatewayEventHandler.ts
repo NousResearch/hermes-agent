@@ -4,7 +4,7 @@ import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -13,6 +13,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { setTuiLanguage } from '../i18n/index.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { relativeLuminance } from '../lib/color.js'
 import { isTodoDone } from '../lib/liveProgress.js'
@@ -770,10 +771,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     switch (ev.type) {
-      case 'gateway.ready':
+      case 'gateway.ready': {
+        // Re-read after reconnect so the previous backend's language cannot leak.
+        fullConfigPromise = null
+        setTuiLanguage('en')
+        const languageConfig = getFullConfigOnce()
+        void languageConfig.then(config => {
+          if (languageConfig === fullConfigPromise) {
+            setTuiLanguage(config?.ui_language ?? config?.config?.display?.language)
+          }
+        })
         handleReady(ev.payload?.skin)
 
         return
+      }
 
       case 'skin.changed':
         if (ev.payload) {
@@ -1539,7 +1550,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           turnController.pushActivity(message, 'error')
 
           if (NO_PROVIDER_RE.test(message)) {
-            panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+            panel(setupRequiredTitle(), buildSetupRequiredSections())
             setStatus('setup required')
 
             return

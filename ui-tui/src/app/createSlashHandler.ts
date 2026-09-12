@@ -120,10 +120,13 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       // the TUI spawns its gateway from this same checkout, so the two can't
       // version-skew (unlike the desktop, which can meet an older backend).
       const sendDispatch = (display: string | undefined, message: string) => {
-        const shown = display?.trim() || undefined
-        const attachments = submission?.attachments.length ? { attachments: submission.attachments } : undefined
+        const shown = display?.trim()
 
-        return send(message, true, shown, submission?.expand, attachments)
+        if (submission) {
+          return send(message, true, shown || undefined, submission.expand, { attachments: submission.attachments })
+        }
+
+        return shown ? send(message, true, shown) : send(message)
       }
 
       if (d.type === 'skill') {

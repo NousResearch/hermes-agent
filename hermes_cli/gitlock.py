@@ -253,6 +253,13 @@ class _ShallowLock:
             pass
 
 
+def _write_shallow(shallow_path: Path, content: str, *, suffix: str) -> None:
+    """Atomically replace ``.git/shallow`` (temp file + os.replace)."""
+    tmp_path = shallow_path.with_name(shallow_path.name + suffix)
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, shallow_path)
+
+
 def repair_broken_shallow_boundaries(repo_root: Path) -> int:
     """Re-append shallow boundaries for reflog-reachable commits whose parents
     were never fetched (#108286).
@@ -286,7 +293,10 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
             # fetch-recorded tips is what keeps unrelated object loss (a deleted parent
             # of a locally-created commit) from being re-labelled as shallow history.
             # On an already-corrupted repo a rev-list --reflog walk is exactly what
-            # fails, so read the reflog hash list directly.
+            # fails, so read the reflog hash list directly. Scope: fetch-by-SHA
+            # installs (scripts/install.sh) record their tip only in HEAD's reflog
+            # and are NOT candidates — new corruption of that shape is prevented by
+            # the prune's reflog fail-safe instead.
             reflog = _git_stdout_lines(
                 repo_root, ["reflog", "show", "--all", "--format=%H%x00%gD"])
             candidates = sorted({
@@ -299,14 +309,14 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
             repaired = broken - existing
             if not repaired:
                 return 0
-            tmp_path = shallow_path.with_name(shallow_path.name + ".hermes-repair")
-            tmp_path.write_text("\n".join(sorted(existing | repaired)) + "\n", encoding="utf-8")
-            os.replace(tmp_path, shallow_path)
-        if not _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"]):
-            with _ShallowLock(shallow_path):
+            _write_shallow(shallow_path, "\n".join(sorted(existing | repaired)) + "\n",
+                           suffix=".hermes-repair")
+            # Self-check under the same lock hold (rev-list never takes
+            # shallow.lock): the rollback cannot be defeated by lock contention.
+            if not _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"]):
                 shallow_path.write_text(original, encoding="utf-8")
-            logger.debug("shallow boundary repair self-check failed; file restored")
-            return 0
+                logger.debug("shallow boundary repair self-check failed; file restored")
+                return 0
         logger.info("Restored %d broken shallow boundary(ies) in %s", len(repaired), repo_root)
         return len(repaired)
     except Exception:
@@ -344,19 +354,18 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
             if len(keep) == len(lines):
                 return 0
             original = shallow_path.read_text(encoding="utf-8")
-            tmp_path = shallow_path.with_name(shallow_path.name + ".hermes-prune")
-            tmp_path.write_text("\n".join(sorted(keep)) + "\n", encoding="utf-8")
-            os.replace(tmp_path, shallow_path)
-        # Fail-safe: if any reachable walk now crosses a boundary we wrongly removed,
-        # put the grafts back — a growing file beats a broken repo.
-        still_walks = _git_stdout_lines(repo_root, ["rev-list", "--count", "HEAD"]) and \
-            _git_stdout_lines(repo_root, ["rev-list", "--count", "--all"]) and \
-            _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"])
-        if not still_walks:
-            with _ShallowLock(shallow_path):
+            _write_shallow(shallow_path, "\n".join(sorted(keep)) + "\n", suffix=".hermes-prune")
+            # Fail-safe: if any reachable walk now crosses a boundary we wrongly
+            # removed, put the grafts back — a growing file beats a broken repo.
+            # Runs under the same lock hold (rev-list never takes shallow.lock) so
+            # the rollback cannot be defeated by lock contention.
+            still_walks = _git_stdout_lines(repo_root, ["rev-list", "--count", "HEAD"]) and \
+                _git_stdout_lines(repo_root, ["rev-list", "--count", "--all"]) and \
+                _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"])
+            if not still_walks:
                 shallow_path.write_text(original, encoding="utf-8")
-            logger.debug("shallow prune self-check failed; grafts restored")
-            return 0
+                logger.debug("shallow prune self-check failed; grafts restored")
+                return 0
         logger.info("Pruned %d stale shallow graft(s) in %s", len(lines) - len(keep), repo_root)
         return len(lines) - len(keep)
     except Exception:

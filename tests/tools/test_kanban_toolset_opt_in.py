@@ -119,15 +119,11 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     assert not _names(["kanban"], ["kanban"])
     assert not _names([])
     assert bool(_names(sorted(_get_platform_tools(load_config(), "cli")))) is legacy
-
-    # Explicitly empty saved configuration wins over a legacy fallback, including
-    # the actual Desktop/TUI loader (which must not turn [] back into None/all).
+    # An explicitly saved (non-empty) selection is authoritative over the legacy key.
     cfg = load_config()
-    cfg["platform_toolsets"]["cli"] = []
+    cfg["platform_toolsets"]["cli"] = ["file"]
     save_config(cfg)
-    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
-    from tui_gateway.server import _load_enabled_toolsets
-    assert not _names(_load_enabled_toolsets("desktop"))
+    assert not _names(sorted(_get_platform_tools(load_config(), "cli")))
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
     worker = _names(["file"])

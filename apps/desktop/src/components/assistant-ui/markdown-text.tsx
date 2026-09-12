@@ -8,7 +8,7 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, type ClipboardEvent as ReactClipboardEvent, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -18,6 +18,7 @@ import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
+import { selectionTextWithLatex } from '@/lib/latex-copy'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
@@ -591,6 +592,29 @@ function MarkdownTextSurface({
   const code = useCodePlugin()
   const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
 
+  const copyWithLatex = (event: ReactClipboardEvent<HTMLDivElement>) => {
+    containerProps?.onCopy?.(event)
+
+    if (event.defaultPrevented) {
+      return
+    }
+
+    const selection = window.getSelection()
+
+    if (!selection) {
+      return
+    }
+
+    const copiedText = selectionTextWithLatex(event.currentTarget, selection)
+
+    if (copiedText === null) {
+      return
+    }
+
+    event.preventDefault()
+    event.clipboardData.setData('text/plain', copiedText)
+  }
+
   const components = useMemo(
     () =>
       ({
@@ -727,7 +751,7 @@ function MarkdownTextSurface({
       <StreamdownTextPrimitive
         components={components}
         containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
-        containerProps={containerProps}
+        containerProps={{ ...containerProps, onCopy: copyWithLatex }}
         defer={defer}
         lineNumbers={false}
         mode="streaming"

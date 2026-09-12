@@ -64,6 +64,13 @@ function joinPath(base: string, rel: string) {
   return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
 }
 
+// Absolute local paths are not POSIX-only: Windows drive letters (`C:\`, `C:/`) and UNC
+// shares (`\\server\share`) are absolute too. Testing only for a leading `/` treated them as
+// relative, so joinPath prefixed the cwd onto an already-absolute path — a path that cannot
+// exist, surfacing as "Text preview failed: file does not exist" from hermes:readFileText.
+// Kept in sync with the Windows detection in pathToFileUrl below.
+const ABSOLUTE_LOCAL_PATH = /^(?:\/|[a-z]:[\\/]|\\\\)/i
+
 function pathToFileUrl(path: string) {
   const isWindowsUnc = path.startsWith('\\\\')
   const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
@@ -197,7 +204,7 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }
-  } else if (!raw.startsWith('/') && cwd) {
+  } else if (!ABSOLUTE_LOCAL_PATH.test(raw) && cwd) {
     path = joinPath(cwd, raw)
   }
 

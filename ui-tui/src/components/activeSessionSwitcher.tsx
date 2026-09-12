@@ -11,6 +11,7 @@ import type {
   SessionListItem,
   SessionListResponse
 } from '../gatewayTypes.js'
+import { getTranslations, useTranslations } from '../i18n/index.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -31,24 +32,17 @@ const STATUS_GLYPH: Record<string, string> = {
   working: '▶'
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  idle: 'idle',
-  starting: 'starting',
-  waiting: 'waiting',
-  working: 'working'
-}
-
 const CTRL_OFFSET = 96
 
-const shortModel = (model = '') => model.replace(/^.*\//, '') || 'model?'
+const shortModel = (model = '') => model.replace(/^.*\//, '') || getTranslations().sessions.unknownModel
 const ctrlChar = (letter: string) => String.fromCharCode(letter.charCodeAt(0) - CTRL_OFFSET)
 
 export const fixedSessionColumnStyle = () => ({ flexShrink: 0 })
 
-export const activeSessionCountLabel = (count: number) => `${count} live ${count === 1 ? 'session' : 'sessions'}`
+export const activeSessionCountLabel = (count: number) => getTranslations().sessions.liveCount(count)
 
 export const sessionsCountLabel = (liveCount: number, resumableCount: number) =>
-  `${liveCount} live · ${resumableCount} resumable`
+  getTranslations().sessions.counts(liveCount, resumableCount)
 
 export type SessionRowKind = 'history' | 'live' | 'new'
 
@@ -73,14 +67,14 @@ export const relativeSessionAge = (ts?: number) => {
   const days = (Date.now() / 1000 - ts) / 86400
 
   if (days < 1) {
-    return 'today'
+    return getTranslations().sessions.today
   }
 
   if (days < 2) {
-    return 'yesterday'
+    return getTranslations().sessions.yesterday
   }
 
-  return `${Math.floor(days)}d ago`
+  return getTranslations().sessions.daysAgo(Math.floor(days))
 }
 
 /** Drop already-live sessions from the resumable history list (dedupe by id). */
@@ -238,7 +232,7 @@ export const draftModelNameFromArg = (value: string) => {
 export const draftModelDisplayLabel = (value: string) => {
   const modelName = draftModelNameFromArg(value)
 
-  return modelName ? shortModel(modelName) : 'current/default'
+  return modelName ? shortModel(modelName) : getTranslations().sessions.currentDefault
 }
 
 export type OrchestratorRowClickAction = { action: 'activate'; sessionId: string } | { action: 'select-new' }
@@ -265,11 +259,15 @@ export const draftTitleFromPrompt = (prompt: string, max = TITLE_MAX) => {
 }
 
 function OrchestratorHintSegments({ segments, t }: OrchestratorHintTextProps) {
+  const copy = useTranslations()
+
   return (
     <>
       {segments.map((segment, index) => (
         <Text color={orchestratorHintSegmentColor(t, segment.role)} key={`${segment.role}-${index}`}>
-          {segment.text}
+          {segment.role === 'hotkey'
+            ? segment.text
+            : (copy.sessionHints[segment.text as keyof typeof copy.sessionHints] ?? segment.text)}
         </Text>
       ))}
     </>
@@ -296,6 +294,7 @@ export function ActiveSessionSwitcher({
   onSelect,
   t
 }: ActiveSessionSwitcherProps) {
+  const copy = useTranslations()
   const [items, setItems] = useState<SessionActiveItem[]>([])
   const [history, setHistory] = useState<SessionListItem[]>([])
   const [err, setErr] = useState('')
@@ -360,7 +359,7 @@ export function ActiveSessionSwitcher({
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
 
         if (!r) {
-          setErr('invalid response: session.active_list')
+          setErr(getTranslations().sessions.invalidResponse)
           setLoading(false)
 
           return []
@@ -380,10 +379,10 @@ export function ActiveSessionSwitcher({
             if (parsedHist) {
               rawHistoryRef.current = parsedHist.sessions ?? []
             } else {
-              histError = 'invalid response: session.list'
+              histError = getTranslations().sessions.invalidHistory
             }
           } else {
-            histError = 'could not load resumable sessions'
+            histError = getTranslations().sessions.historyFailed
           }
         }
 
@@ -478,7 +477,7 @@ export function ActiveSessionSwitcher({
       const closed = Boolean(result?.closed ?? result?.ok)
 
       if (!closed) {
-        setErr('session was already closed')
+        setErr(getTranslations().sessions.alreadyClosed)
 
         return
       }
@@ -514,7 +513,7 @@ export function ActiveSessionSwitcher({
           const r = asRpcResult<SessionDeleteResponse>(raw)
 
           if (!r || r.deleted !== target.id) {
-            setErr('invalid response: session.delete')
+            setErr(getTranslations().sessions.invalidDelete)
             setDeleting(false)
 
             return
@@ -671,7 +670,7 @@ export function ActiveSessionSwitcher({
   }
 
   if (loading) {
-    return <Text color={t.color.muted}>loading sessions…</Text>
+    return <Text color={t.color.muted}>{copy.sessions.loading}</Text>
   }
 
   // The "+ new" row (sel 0) is pinned at the top so it's always visible; the
@@ -685,16 +684,16 @@ export function ActiveSessionSwitcher({
   const newRowStyle = newSelectedRow ? selectedSessionRowStyle(t) : null
   const newRowTextColor = newRowStyle?.color
   const newRowMarkerColor = newSessionMarkerColor(t, newSelectedRow)
-  const promptTitle = draftTitleFromPrompt(draft) || 'Start a new live session'
+  const promptTitle = draftTitleFromPrompt(draft) || copy.sessions.start
 
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Sessions
+        {copy.sessions.title}
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
 
-      {err && <Text color={t.color.label}>error: {err}</Text>}
+      {err && <Text color={t.color.label}>{copy.model.error(err)}</Text>}
 
       <Box backgroundColor={newRowStyle?.backgroundColor} flexDirection="row" onClick={handleRowClick(0)} width="100%">
         <Text bold={newSelectedRow} color={newRowTextColor ?? t.color.muted}>
@@ -709,13 +708,13 @@ export function ActiveSessionSwitcher({
 
         <Box {...fixedSessionColumnStyle()} width={11}>
           <Text bold={newSelectedRow} color={newRowMarkerColor} wrap="truncate-end">
-            new
+            {copy.sessions.new}
           </Text>
         </Box>
 
         <Box {...fixedSessionColumnStyle()} width={11}>
           <Text color={newRowTextColor ?? t.color.muted} wrap="truncate-end">
-            ✎ draft
+            {copy.sessions.draft}
           </Text>
         </Box>
 
@@ -732,8 +731,8 @@ export function ActiveSessionSwitcher({
         </Box>
       </Box>
 
-      {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
-      {!listLen && <Text color={t.color.muted}>no other sessions — Enter on +new to start one</Text>}
+      {offset > 0 && <Text color={t.color.muted}>{copy.model.moreAbove(offset)}</Text>}
+      {!listLen && <Text color={t.color.muted}>{copy.sessions.none}</Text>}
 
       {visibleRows.map(i => {
         const selected = sel === i
@@ -746,10 +745,10 @@ export function ActiveSessionSwitcher({
           const pendingDelete = confirmDelete === h.id
 
           const title = pendingDelete
-            ? 'press d again to delete'
+            ? copy.sessions.confirmDelete
             : deleting && selected
-              ? 'deleting…'
-              : h.title || h.preview || '(untitled)'
+              ? copy.sessions.deleting
+              : h.title || h.preview || copy.sessions.untitled
 
           return (
             <Box
@@ -783,7 +782,7 @@ export function ActiveSessionSwitcher({
 
               <Box {...fixedSessionColumnStyle()} width={18}>
                 <Text color={rowTextColor ?? t.color.muted} wrap="truncate-end">
-                  {h.message_count} msgs
+                  {copy.sessions.messages(h.message_count)}
                 </Text>
               </Box>
 
@@ -803,7 +802,7 @@ export function ActiveSessionSwitcher({
         const s = items[i - 1]!
         const status = s.status ?? 'idle'
         const current = s.current || s.id === currentSessionId
-        const title = closingId === s.id ? 'closing…' : s.title || s.preview || '(untitled)'
+        const title = closingId === s.id ? copy.sessions.closing : s.title || s.preview || copy.sessions.untitled
 
         return (
           <Box
@@ -829,7 +828,7 @@ export function ActiveSessionSwitcher({
                 color={rowTextColor ?? (current ? t.color.label : t.color.muted)}
                 wrap="truncate-end"
               >
-                {current ? 'current' : s.id}
+                {current ? copy.sessions.current : s.id}
               </Text>
             </Box>
 
@@ -841,7 +840,7 @@ export function ActiveSessionSwitcher({
                 }
                 wrap="truncate-end"
               >
-                {STATUS_GLYPH[status] ?? '·'} {STATUS_LABEL[status] ?? status}
+                {STATUS_GLYPH[status] ?? '·'} {copy.sessionStatus[status as keyof typeof copy.sessionStatus] ?? status}
               </Text>
             </Box>
 
@@ -860,12 +859,14 @@ export function ActiveSessionSwitcher({
         )
       })}
 
-      {offset + VISIBLE < listLen && <Text color={t.color.muted}> ↓ {listLen - offset - VISIBLE} more</Text>}
+      {offset + VISIBLE < listLen && (
+        <Text color={t.color.muted}>{copy.model.moreBelow(listLen - offset - VISIBLE)}</Text>
+      )}
 
       {newSelected ? (
         <>
           <Box marginTop={1}>
-            <Text color={t.color.label}>prompt › </Text>
+            <Text color={t.color.label}>{copy.sessions.prompt}</Text>
             <TextInput
               color={t.color.text}
               columns={promptColumns}
@@ -876,7 +877,7 @@ export function ActiveSessionSwitcher({
           </Box>
           <OrchestratorHintText segments={orchestratorContextHintSegments(true)} t={t} />
           <Text color={t.color.muted} wrap="truncate-end">
-            model: {draftModelDisplayLabel(draftModel)}
+            {copy.sessions.model(draftModelDisplayLabel(draftModel))}
           </Text>
         </>
       ) : (
@@ -888,7 +889,8 @@ export function ActiveSessionSwitcher({
             t={t}
           />
           <Text color={t.color.muted} wrap="truncate-end">
-            Select <Text color={newSessionMarkerColor(t, false)}>+new</Text> to type a prompt
+            {copy.sessions.selectNew} <Text color={newSessionMarkerColor(t, false)}>{copy.sessions.newMarker}</Text>{' '}
+            {copy.sessions.toType}
           </Text>
         </Box>
       )}

@@ -69,14 +69,18 @@ describe('Swedish TUI', () => {
         expect(typeof translated).toBe(typeof value)
 
         if (typeof value === 'function') {
-          for (const count of [0, 1, 2]) {
-            const args = [count, 7]
+          const cases: unknown[][] = [
+            ...[0, 1, 2].map(count => Array.from({ length: value.length }, (_, index) => count + index * 7)),
+            Array.from({ length: value.length }, (_, index) => `ARG_${index}_END`)
+          ]
+
+          for (const args of cases) {
             const source = (value as (...args: unknown[]) => string)(...args)
             const target = (translated as (...args: unknown[]) => string)(...args)
 
-            for (const number of args) {
-              if (source.includes(String(number))) {
-                expect(target).toContain(String(number))
+            for (const argument of args) {
+              if (source.includes(String(argument))) {
+                expect(target).toContain(String(argument))
               }
             }
           }

@@ -2075,7 +2075,7 @@ Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditio
 
 You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
 
-For Swedish static messages, set `display.language: sv`. Regional values `sv-SE`, `sv-FI`, `sv_SE`, and `sv_FI` use the same Swedish catalog. This setting is separate from the web and desktop interface language selectors; the Ink TUI also uses it for approval and confirmation prompts, clarification questions, password prompts, agent guidance, queued messages, quick help, hotkeys, and setup-required notices. Other TUI panels and the full installation wizard still contain English text.
+For Swedish static messages, set `display.language: sv`. Regional values `sv-SE`, `sv-FI`, `sv_SE`, and `sv_FI` use the same Swedish catalog. This setting is separate from the web and desktop interface language selectors; the Ink TUI also uses it for approval and confirmation prompts, clarification questions, password prompts, agent guidance, queued messages, quick help, hotkeys, setup-required notices, model/session pickers, billing, and subscriptions. Other TUI panels and the full installation wizard still contain English text. Desktop forwards its selected interface language to native file, update, plugin-compatibility, and quit dialogs for that window; before the renderer loads its preference, native dialogs use the system locale.
 
 ```yaml
 display:

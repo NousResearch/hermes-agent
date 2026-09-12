@@ -5,6 +5,7 @@ import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
+import { getTranslations, useTranslations } from '../i18n/index.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
 import { modelSearchText } from '../lib/model-search-text.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -42,6 +43,7 @@ export function ModelPicker({
   sessionId,
   t
 }: ModelPickerProps) {
+  const copy = useTranslations()
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [err, setErr] = useState('')
@@ -79,7 +81,7 @@ export function ModelPicker({
         const r = asRpcResult<ModelOptionsResponse>(raw)
 
         if (!r) {
-          setErr('invalid response: model.options')
+          setErr(getTranslations().model.invalidResponse)
           setLoading(false)
 
           return
@@ -218,7 +220,7 @@ export function ModelPicker({
             const r = asRpcResult<{ provider?: ModelOptionProvider }>(raw)
 
             if (!r?.provider) {
-              setKeyError('failed to save key')
+              setKeyError(copy.model.saveFailed)
               setKeySaving(false)
 
               return
@@ -442,14 +444,14 @@ export function ModelPicker({
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading models…</Text>
+    return <Text color={t.color.muted}>{copy.model.loading}</Text>
   }
 
   if (err) {
     return (
       <Box flexDirection="column">
-        <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <Text color={t.color.label}>{copy.model.error(err)}</Text>
+        <OverlayHint t={t}>{copy.model.cancelHint}</OverlayHint>
       </Box>
     )
   }
@@ -457,8 +459,8 @@ export function ModelPicker({
   if (!providers.length) {
     return (
       <Box flexDirection="column">
-        <Text color={t.color.muted}>no providers available</Text>
-        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
+        <Text color={t.color.muted}>{copy.model.noProviders}</Text>
+        <OverlayHint t={t}>{copy.model.cancelHint}</OverlayHint>
       </Box>
     )
   }
@@ -470,11 +472,11 @@ export function ModelPicker({
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.accent} wrap="truncate-end">
-          Configure {provider.name}
+          {copy.model.configure(provider.name)}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          Paste your API key below (saved to ~/.hermes/.env)
+          {copy.model.pasteKey}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
@@ -487,7 +489,7 @@ export function ModelPicker({
 
         <Text color={t.color.accent} wrap="truncate-end">
           {'  '}
-          {masked || '(empty)'}
+          {masked || copy.model.empty}
           {keySaving ? '' : '▎'}
         </Text>
 
@@ -497,11 +499,11 @@ export function ModelPicker({
 
         {keyError ? (
           <Text color={t.color.label} wrap="truncate-end">
-            error: {keyError}
+            {copy.model.error(keyError)}
           </Text>
         ) : keySaving ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            saving…
+            {copy.model.saving}
           </Text>
         ) : (
           <Text color={t.color.muted} wrap="truncate-end">
@@ -509,7 +511,7 @@ export function ModelPicker({
           </Text>
         )}
 
-        <OverlayHint t={t}>Enter save · Ctrl+U clear · Esc back</OverlayHint>
+        <OverlayHint t={t}>{copy.model.saveHint}</OverlayHint>
       </Box>
     )
   }
@@ -519,7 +521,7 @@ export function ModelPicker({
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.accent} wrap="truncate-end">
-          Disconnect {provider.name}?
+          {copy.model.disconnect(provider.name)}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
@@ -527,11 +529,11 @@ export function ModelPicker({
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          This removes saved credentials for {provider.name}.
+          {copy.model.removesCredentials(provider.name)}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          You can re-authenticate later by selecting it again.
+          {copy.model.reauthenticate}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
@@ -540,10 +542,10 @@ export function ModelPicker({
 
         {keySaving ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            disconnecting…
+            {copy.model.disconnecting}
           </Text>
         ) : (
-          <OverlayHint t={t}>y/Enter confirm · n/Esc cancel</OverlayHint>
+          <OverlayHint t={t}>{copy.model.disconnectHint}</OverlayHint>
         )}
       </Box>
     )
@@ -556,7 +558,11 @@ export function ModelPicker({
       const modelCount = p.total_models ?? p.models?.length ?? 0
 
       const suffix =
-        p.authenticated === false ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)') : `${modelCount} models`
+        p.authenticated === false
+          ? p.auth_type === 'api_key'
+            ? copy.model.noKey
+            : copy.model.needsSetup
+          : copy.model.modelCount(modelCount)
 
       return `${authMark} ${name} · ${suffix}`
     })
@@ -567,29 +573,29 @@ export function ModelPicker({
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.accent} wrap="truncate-end">
-          Select provider (step 1/2)
+          {copy.model.selectProvider}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          Full model IDs on the next step · Enter to continue
+          {copy.model.nextStep}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          Current: {currentModel || '(unknown)'}
+          {copy.model.current(currentModel || copy.model.unknown)}
         </Text>
         <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
-          {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
+          {filter ? copy.model.filter(filter) : copy.model.filterHint}
         </Text>
         <Text color={t.color.label} wrap="truncate-end">
-          {provider?.warning ? `warning: ${provider.warning}` : ' '}
+          {provider?.warning ? copy.model.warning(provider.warning) : ' '}
         </Text>
         <Text color={t.color.muted} wrap="truncate-end">
-          {offset > 0 ? ` ↑ ${offset} more` : ' '}
+          {offset > 0 ? copy.model.moreAbove(offset) : ' '}
         </Text>
 
         {noMatches ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            no providers match
+            {copy.model.noProviderMatches}
           </Text>
         ) : (
           Array.from({ length: VISIBLE }, (_, i) => {
@@ -617,14 +623,14 @@ export function ModelPicker({
         )}
 
         <Text color={t.color.muted} wrap="truncate-end">
-          {offset + VISIBLE < rows.length ? ` ↓ ${rows.length - offset - VISIBLE} more` : ' '}
+          {offset + VISIBLE < rows.length ? copy.model.moreBelow(rows.length - offset - VISIBLE) : ' '}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
-          persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
-          {allowPersistGlobal ? ' · ^g toggle' : ' only'}
+          {copy.model.persist(allowPersistGlobal && persistGlobal)}
+          {allowPersistGlobal ? copy.model.toggle : copy.model.only}
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close</OverlayHint>
+        <OverlayHint t={t}>{copy.model.providerHint}</OverlayHint>
       </Box>
     )
   }
@@ -636,20 +642,20 @@ export function ModelPicker({
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent} wrap="truncate-end">
-        Select model (step 2/2)
+        {copy.model.selectModel}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {filteredProviderRows[providerIdx]?.name || '(unknown provider)'} · Esc back
+        {copy.model.backToProvider(filteredProviderRows[providerIdx]?.name || copy.model.unknownProvider)}
       </Text>
       <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
-        {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
+        {filter ? copy.model.filter(filter) : copy.model.filterHint}
       </Text>
       <Text color={t.color.label} wrap="truncate-end">
-        {provider?.warning ? `warning: ${provider.warning}` : ' '}
+        {provider?.warning ? copy.model.warning(provider.warning) : ' '}
       </Text>
       <Text color={t.color.muted} wrap="truncate-end">
-        {offset > 0 ? ` ↑ ${offset} more` : ' '}
+        {offset > 0 ? copy.model.moreAbove(offset) : ' '}
       </Text>
 
       {Array.from({ length: VISIBLE }, (_, i) => {
@@ -659,7 +665,7 @@ export function ModelPicker({
         if (!row) {
           return (!allModels.length || noModelMatches) && i === 0 ? (
             <Text color={t.color.muted} key="empty" wrap="truncate-end">
-              {noModelMatches ? 'no models match filter' : 'no models listed for this provider'}
+              {noModelMatches ? copy.model.noModelMatches : copy.model.noModels}
             </Text>
           ) : (
             <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -684,16 +690,14 @@ export function ModelPicker({
       })}
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {offset + VISIBLE < models.length ? ` ↓ ${models.length - offset - VISIBLE} more` : ' '}
+        {offset + VISIBLE < models.length ? copy.model.moreBelow(models.length - offset - VISIBLE) : ' '}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
-        {allowPersistGlobal ? ' · ^g toggle' : ' only'}
+        {copy.model.persist(allowPersistGlobal && persistGlobal)}
+        {allowPersistGlobal ? copy.model.toggle : copy.model.only}
       </Text>
-      <OverlayHint t={t}>
-        {models.length ? '↑/↓ select · Enter switch · Esc clear/back · q close' : 'Esc back · q close'}
-      </OverlayHint>
+      <OverlayHint t={t}>{models.length ? copy.model.modelHint : copy.model.backHint}</OverlayHint>
     </Box>
   )
 }

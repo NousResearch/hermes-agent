@@ -1,3 +1,5 @@
+import { nativeMessages, type NativeMessages } from './native-i18n'
+
 // Quitting with a turn in flight kills the backend mid-tool-call: the work is
 // lost, and anything the agent had half-written to disk stays half-written.
 // Renderers publish what they're running; the main process asks before it lets
@@ -65,7 +67,11 @@ export interface QuitPrompt {
  * are the app replacing itself, not the user walking away, and a modal there
  * would strand the detached script waiting on a PID that never exits.
  */
-export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): null | QuitPrompt {
+export function quitPromptFor(
+  work: ActiveWork,
+  quittingForHandoff: boolean,
+  copy: NativeMessages = nativeMessages('en')
+): null | QuitPrompt {
   if (quittingForHandoff || work.count < 1) {
     return null
   }
@@ -75,18 +81,14 @@ export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): nu
   const lines = listed.map(title => `• ${title}`)
 
   if (remaining > 0) {
-    lines.push(remaining === 1 ? '• 1 more' : `• ${remaining} more`)
+    lines.push(copy.quitMore(remaining))
   }
 
   return {
-    detail: [
-      lines.join('\n'),
-      lines.length > 0 ? '' : null,
-      'Quitting stops the agent mid-turn. Any work it has not finished writing is lost.'
-    ]
+    detail: [lines.join('\n'), lines.length > 0 ? '' : null, copy.quitWarning]
       .filter(line => line !== null)
       .join('\n')
       .trim(),
-    message: work.count === 1 ? 'Hermes is still working on 1 chat.' : `Hermes is still working on ${work.count} chats.`
+    message: copy.quitMessage(work.count)
   }
 }

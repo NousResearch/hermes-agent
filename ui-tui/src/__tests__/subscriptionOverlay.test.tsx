@@ -24,6 +24,7 @@ vi.mock('@hermes/ink', async importOriginal => {
 import type { SubscriptionOverlayState } from '../app/interfaces.js'
 import { SubscriptionOverlay } from '../components/subscriptionOverlay.js'
 import type { SubscriptionStateResponse } from '../gatewayTypes.js'
+import { setTuiLanguage } from '../i18n/index.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -631,6 +632,39 @@ describe('SubscriptionOverlay — upgrade response mapping', () => {
       mounted.cleanup()
     } finally {
       vi.useRealTimers()
+    }
+  })
+})
+
+describe('Swedish subscription', () => {
+  it('distinguishes a charge now from cancellation at the end of the period', () => {
+    setTuiLanguage('sv')
+
+    try {
+      const immediate = render(
+        at('confirm', subscriber(), {
+          pending: {
+            kind: 'upgrade',
+            targetTierId: 'ultra',
+            preview: { ok: true, effect: 'charge_now', target_tier_name: 'Ultra', amount_due_now_cents: 1234 }
+          }
+        })
+      )
+
+      expect(immediate).toContain('Betala $12.34 och uppgradera nu')
+      expect(immediate).toContain('Du debiteras $12.34 nu')
+
+      const cancellation = render(
+        at('confirm', subscriber(), {
+          pending: { kind: 'cancellation', targetTierId: null, preview: null }
+        })
+      )
+
+      expect(cancellation).toContain('Bekräfta uppsägning')
+      expect(cancellation).toContain('förnyas sedan inte')
+      expect(cancellation).not.toContain('debiteras nu')
+    } finally {
+      setTuiLanguage('en')
     }
   })
 })

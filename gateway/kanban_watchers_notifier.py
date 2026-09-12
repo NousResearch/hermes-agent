@@ -304,6 +304,23 @@ def _first_line(text: str, limit: int) -> str:
     return lines[0][:limit] if lines else text[:limit]
 
 
+def _follow_ups_block(ev: Any) -> str:
+    """Render ``payload["follow_ups"]`` as a labelled bullet list, or ``""``.
+
+    A terminal notification is the last point at which unfinished work is cheap
+    to act on. Without this the only carrier is the first line of ``summary``,
+    so "what I left for you" reached a human only if they went and read the
+    board -- which is exactly what a notification exists to make unnecessary.
+    """
+    items = _payload(ev, "follow_ups")
+    if not isinstance(items, (list, tuple)):
+        return ""
+    lines = [f"  • {str(item).strip()}" for item in items if isinstance(item, str) and str(item).strip()]
+    if not lines:
+        return ""
+    return "\n⚠ Needs you:\n" + "\n".join(lines)
+
+
 def _fmt_completed(ev, n) -> tuple:
     # Prefer the run summary from the event payload; fall back to task.result for legacy rows.
     wake_handoff = None
@@ -313,7 +330,14 @@ def _fmt_completed(ev, n) -> tuple:
     elif n.task and n.task.result:
         wake_handoff = _first_line(n.task.result, 160)
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
-    return f"✔ {n.head} done — {n.title}{handoff}", wake_handoff, None
+    follow_ups = _follow_ups_block(ev)
+    # The wake text carries the follow-ups too: an agent woken by this event
+    # must be able to act on the gaps without re-reading the board.
+    if follow_ups and wake_handoff is not None:
+        wake_handoff += follow_ups
+    elif follow_ups:
+        wake_handoff = follow_ups.lstrip("\n")
+    return f"✔ {n.head} done — {n.title}{handoff}{follow_ups}", wake_handoff, None
 
 
 def _fmt_review_requested(ev, n) -> tuple:
@@ -326,7 +350,10 @@ def _fmt_review_requested(ev, n) -> tuple:
         summary = str(summary)
         handoff = f"\n{summary[:200]}"
         wake_handoff = _first_line(summary, 200)
-    return f"👀 {n.head} ready for review — {n.title}{handoff}", wake_handoff, None
+    follow_ups = _follow_ups_block(ev)
+    if follow_ups:
+        wake_handoff = (wake_handoff or "") + follow_ups
+    return f"👀 {n.head} ready for review — {n.title}{handoff}{follow_ups}", wake_handoff, None
 
 
 def _fmt_changes_requested(ev, n) -> tuple:
@@ -347,7 +374,9 @@ def _fmt_changes_requested(ev, n) -> tuple:
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
+    "blocked": lambda ev, n: (
+        f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}{_follow_ups_block(ev)}", None, None,
+    ),
     "gave_up": lambda ev, n: (
         f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
     ),

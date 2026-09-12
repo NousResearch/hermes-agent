@@ -122,6 +122,14 @@ def is_fts_scoped_corruption_error(exc_or_str) -> bool:
     return any(marker in text for marker in _DB_CORRUPTION_MARKERS)
 
 
+class CheckpointRestoreRejected(ValueError):
+    """A durable checkpoint failed an explicit rewind admission check."""
+
+    def __init__(self, reason: str, message: str):
+        self.reason = reason
+        super().__init__(message)
+
+
 class CompressionSessionClosedError(RuntimeError):
     """A durable write targeted a parent already closed by compression."""
 

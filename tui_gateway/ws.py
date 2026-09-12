@@ -20,6 +20,19 @@ from tui_gateway.event_replay import replay_epoch
 
 _log = logging.getLogger(__name__)
 
+def _append_ws_crash(header: str) -> None:
+    """Best-effort crash-log append for WS-side disconnects (mirrors entry._log_exit)."""
+    try:
+        from tui_gateway.server import _CRASH_LOG
+        import os
+        from contextlib import suppress
+        with suppress(Exception):
+            os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+            with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+                f.write(f"\n=== {header} ===\n")
+    except Exception:
+        pass
+
 # Scale-to-zero: tell the (separate) gateway process a dashboard/desktop/TUI client is attached via
 # the mtime of a marker file it reads in its idle predicate (gateway/scale_to_zero.py). Clients ping
 # every 15s; one write per 5s per process is plenty.
@@ -403,3 +416,16 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
             peer, disconnect_reason, messages, parse_errors, dispatch_crashes, send_failures, reaped_sessions, detached_sessions,
         )
+        # Mirror entry._log_exit: record abnormal closes to the crash log so hosted-dashboard
+        # diagnostics have a durable trail (entry's stdio path already does; the WS sidecar
+        # previously left code=1006 closes unrecorded — see #108534).
+        _is_abnormal = (
+            disconnect_reason not in {"connected", "not_connected"}
+            and "client_disconnect(code=1000" not in disconnect_reason
+            and "client_disconnect(code=1001" not in disconnect_reason
+        )
+        if _is_abnormal or dispatch_crashes or send_failures:
+            _append_ws_crash(
+                f"ws exit · {time.strftime('%Y-%m-%d %H:%M:%S')} · peer={peer} · reason={disconnect_reason} "
+                f"· messages={messages} parse_errors={parse_errors} dispatch_crashes={dispatch_crashes} send_failures={send_failures}"
+            )

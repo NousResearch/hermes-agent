@@ -903,6 +903,39 @@ def _read_script_for_scanning(script_path: str) -> str:
 
 # --- recursive walk ---------------------------------------------------------------------------
 
+def _uses_non_shell_interpreter(text: str) -> bool:
+    """Recognize runtime shebangs, not filename extensions (which shells ignore)."""
+    if not text.startswith("#!"):
+        return False
+    first_line = text.partition("\n")[0]
+    if len(first_line) > 4096:
+        return False
+    try:
+        argv = shlex.split(first_line[2:])
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    if _executable_name(argv[0]) == "env":
+        argv = argv[1:]
+        if argv and argv[0] == "-S":
+            argv = argv[1:]
+    return bool(argv) and bool(re.fullmatch(
+        r"(?:bun|node|nodejs|deno|python(?:\d+(?:\.\d+)?)?|ruby|perl)",
+        _executable_name(argv[0]),
+    ))
+
+
+def _explicit_shell_references(command: str, cwd: Optional[str]) -> set[Path]:
+    # Shell invocation overrides the shebang, including for files named *.ts.
+    paths = set()
+    for segment in _iter_command_segments(command):
+        index = _executed_command_index(segment)
+        if index is not None and _executable_name(segment[index]) in _SHELL_EXECUTABLES | {".", "source"}:
+            paths.update(_resolve_lenient(p) for p in _references_at(segment, index, cwd))
+    return paths
+
+
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
@@ -925,6 +958,7 @@ def _contains_unsafe_gateway_action(
         if recurse(payload, cwd):
             return True
 
+    shell_references = _explicit_shell_references(command, cwd)
     for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
@@ -951,6 +985,14 @@ def _contains_unsafe_gateway_action(
             if unsafe:
                 return True
         if not script_text:
+            continue
+        if resolved not in shell_references and _uses_non_shell_interpreter(script_text):
+            # Preserve literal lifecycle checks without treating imports and language
+            # operators as shell commands and recursively executable paths.
+            if not budget.charge_text(script_text):
+                return _budget_exhausted("text", depth + 1)
+            if _direct_lifecycle_scan(script_text):
+                return True
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):

@@ -2,6 +2,8 @@
 across process replacement so ``hermes sessions browse`` / post-setup relaunch keep the user's mode."""
 
 import os
+import re
+import shlex
 import shutil
 import sys
 from typing import Optional, Sequence
@@ -80,12 +82,37 @@ def resolve_hermes_bin() -> Optional[str]:
     return shutil.which("hermes") or None
 
 
+def _env_python_args(bin_path: str) -> Optional[list[str]]:
+    """Interpreter flags for an env-resolved Python script; None for other launchers."""
+    try:
+        with open(bin_path, "rb") as launcher:
+            shebang = launcher.readline(256)
+        if not shebang.startswith(b"#!"):
+            return None
+        words = shlex.split(shebang[2:].decode("utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not words or os.path.basename(words.pop(0)) != "env":
+        return None
+    if words[:1] == ["-S"]:
+        words.pop(0)
+    if words and re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", words[0]):
+        return words[1:]
+    return None
+
+
 def build_relaunch_argv(
     extra_args: Sequence[str], *, preserve_inherited: bool = True, original_argv: Optional[Sequence[str]] = None
 ) -> list[str]:
     """Construct an argv list for replacing the current process with hermes."""
     bin_path = resolve_hermes_bin()
     argv = [bin_path] if bin_path else [sys.executable, "-m", "hermes_cli.main"]
+    if bin_path:
+        python_args = _env_python_args(bin_path)
+        if python_args is not None:
+            # Installer shims enter the venv without activating it on PATH.
+            # Re-executing an env-python shebang would leave that environment.
+            argv = [sys.executable, *python_args, bin_path]
     src = list(original_argv) if original_argv is not None else list(sys.argv[1:])
     if preserve_inherited:
         argv.extend(_extract_inherited_flags(src))

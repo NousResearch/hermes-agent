@@ -74,7 +74,14 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         if isinstance(file_content, bytes):
             file_dest.write_bytes(file_content)
         else:
-            file_dest.write_text(file_content, encoding="utf-8")
+            # newline="" disables universal-newline translation. Without it,
+            # Python rewrites every "\n" to os.linesep when writing, so on
+            # Windows the installed bytes differ from the bundle bytes and
+            # content_hash(install_dir) can never equal
+            # bundle_content_hash(bundle) -- leaving every text skill
+            # permanently reported as "update_available" by
+            # check_for_skill_updates(), with reinstalling unable to clear it.
+            file_dest.write_text(file_content, encoding="utf-8", newline="")
     return dest
 
 

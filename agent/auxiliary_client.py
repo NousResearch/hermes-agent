@@ -6748,7 +6748,7 @@ _PreparedAuxRequest = NamedTuple("_PreparedAuxRequest", [
     ("resolved_provider", str), ("request_provider", str), ("resolved_model", Optional[str]),
     ("resolved_base_url", Optional[str]), ("resolved_api_key", Optional[str]),
     ("resolved_api_mode", Optional[str]), ("effective_timeout", float),
-    ("effective_extra_body", Dict[str, Any]), ("base_info", str)])
+    ("effective_extra_body", Dict[str, Any]), ("base_info", str), ("fallback_policy_is_auto", bool)])
 
 
 def _prepare_aux_request(
@@ -6764,6 +6764,9 @@ def _prepare_aux_request(
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    # Vision resolution replaces the policy with a concrete backend. Keep the original
+    # policy for fallback eligibility, and the concrete identity for auth and requests.
+    fallback_policy_is_auto = _normalize_aux_provider(resolved_provider) == "auto"
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -6809,7 +6812,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, base_info, fallback_policy_is_auto)
 
 
 class _LadderStep(NamedTuple):
@@ -7035,7 +7038,9 @@ def _next_fallback_after_quarantine(
     return fb
 
 
-def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
+def _ladder_provider_fallback(
+    first_err: Exception, route: _LadderRoute, *, fallback_policy_is_auto: bool,
+):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
     Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
@@ -7048,7 +7053,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # (429 + "too many tokens per day") must fall back just like a 402 credit error.
     # Rate limits are included: after retries are exhausted, a 429 means the provider is at capacity. See
     # #52228. See #26803: daily token quota must fall back like a 402 credit error.
-    is_auto = resolved_provider in {"auto", "", None}
+    is_auto = fallback_policy_is_auto
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
     is_capacity_error = any(
         predicate(first_err) for predicate, label in _FALLBACK_REASONS if label != "auth error")
@@ -7117,6 +7122,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[Dict[str, Any]], route_info: Optional[Dict[str, str]],
+    fallback_policy_is_auto: bool,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -7137,7 +7143,8 @@ def _aux_recovery_ladder(
     resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous)
     if first_err is None:
         return resp
-    resp = yield from _ladder_provider_fallback(first_err, route)
+    resp = yield from _ladder_provider_fallback(
+        first_err, route, fallback_policy_is_auto=fallback_policy_is_auto)
     if resp is not None:
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
@@ -7328,7 +7335,8 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info,
+        fallback_policy_is_auto=req.fallback_policy_is_auto)
 
 
 def _call_llm_impl(

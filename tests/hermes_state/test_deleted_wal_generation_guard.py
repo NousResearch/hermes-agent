@@ -432,6 +432,48 @@ def test_renamed_wal_generation_survives_close_and_clean_process_exit(tmp_path):
     _assert_new_generation_survives_retirement_and_exit(tmp_path, rename_sidecars=True)
 
 
+# A setconfig that exists but raises on the quarantined handle must retire it unclosed exactly as a
+# runtime without setconfig does -- through hermes_state_registry.release_or_close, which swallows
+# close() errors, and a normal interpreter exit, whether or not the capture succeeded.
+
+
+def _assert_new_generation_survives_setconfig_failure(tmp_path, *, rename_sidecars, capture_fails):
+    with gateway_writer(tmp_path) as gw:
+        path = gw.path
+        gw.next_event("ready")
+        for command in ("break-setconfig", "break-capture")[: 2 if capture_fails else 1]:
+            gw.send(command)
+            gw.next_event("broken")
+        lose_sidecars(path, rename=rename_sidecars)
+        expected = write_second_generation(path, n_rows=400)
+
+        gw.send("release")
+        assert gw.next_event("released")["open"] is capture_fails
+        assert integrity_ok_path(path), "release checkpointed the stale WAL over the main file"
+        assert message_count(path) == expected, "release rolled back the newer rows"
+
+        gw.send("quit")
+        assert gw.wait_exit(timeout=20) == 0, gw.stderr_text()
+        assert integrity_ok_path(path), "normal exit checkpointed the stale WAL over the main file"
+        assert message_count(path) == expected, "normal exit rolled back the newer rows"
+
+
+@pytest.mark.linux_only
+@pytest.mark.skipif(not _close_time_checkpoint_configurable(),
+                    reason="no setconfig: the retirement tests above cover this runtime")
+@pytest.mark.parametrize("capture_fails", [False, True], ids=["captured", "capture-failed"])
+def test_setconfig_failure_retires_unclosed_through_release_and_exit(tmp_path, capture_fails):
+    _assert_new_generation_survives_setconfig_failure(tmp_path, rename_sidecars=False, capture_fails=capture_fails)
+
+
+@pytest.mark.macos_only
+@pytest.mark.skipif(not _close_time_checkpoint_configurable(),
+                    reason="no setconfig: the retirement tests above cover this runtime")
+@pytest.mark.parametrize("capture_fails", [False, True], ids=["captured", "capture-failed"])
+def test_setconfig_failure_retires_renamed_generation_unclosed_through_release_and_exit(tmp_path, capture_fails):
+    _assert_new_generation_survives_setconfig_failure(tmp_path, rename_sidecars=True, capture_fails=capture_fails)
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="deleted-WAL /proc scan is Linux-only",

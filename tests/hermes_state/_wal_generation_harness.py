@@ -158,6 +158,24 @@ _GATEWAY_CHILD = textwrap.dedent(
                 emit(event="closed", error=repr(exc))
             del db
             gc.collect()
+        elif cmd == "break-setconfig":
+            # A setconfig call that raises (in the field: an already-invalid handle) via an op SQLite rejects.
+            import sqlite3
+            sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE = -1
+            emit(event="broken", what=cmd)
+        elif cmd == "break-capture":
+            import hermes_state
+            from hermes_state_dbfile import RetiredGenerationCaptureError
+
+            def refuse(*args, **kwargs):
+                raise RetiredGenerationCaptureError("no space left on device")
+
+            hermes_state.capture_retired_wal_generation = refuse
+            emit(event="broken", what=cmd)
+        elif cmd == "release":
+            from hermes_state_registry import release_or_close
+            release_or_close(db)  # the production close path: swallows close() errors
+            emit(event="released", open=db._conn is not None)
         elif cmd == "quit":
             break
     """

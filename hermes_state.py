@@ -488,11 +488,15 @@ class SessionDB(
             if read_only:
                 self._open_read_only()
             else:
-                # Where SQLite's close-time checkpoint cannot be switched off, a lost-generation handle
-                # is retired unclosed (see close()). Resolve that capability before opening a writer:
-                # late cleanup must not import ctypes or look up it in a cleared module dictionary.
-                if not _close_time_checkpoint_configurable():
+                # Wherever SQLite's close-time checkpoint is not switched off -- no setconfig before
+                # 3.12, or a setconfig call that raises -- a lost-generation handle is retired unclosed
+                # (see close()). Resolve that capability before opening a writer: late cleanup must not
+                # import ctypes or look it up in a cleared module dictionary.
+                try:
                     self._retire_connection = _prepare_connection_retirement()
+                except RuntimeError:
+                    if not _close_time_checkpoint_configurable():
+                        raise  # nothing else could keep a lost-generation close from checkpointing
                 self._open_writer()
             self._record_db_file_identity()
             initialization_complete = True
@@ -1148,27 +1152,28 @@ class SessionDB(
         close() otherwise runs the internal last-connection checkpoint that wrote
         the incident's pages under wrong page numbers (see StateDbCorruptError and
         the generation-loss halts).
-        <3.12 has no setconfig, so a lost-generation handle is retired unclosed
-        instead (see close()): closing its last descriptor could both run that
-        checkpoint and discard committed data present only in an unlinked WAL."""
+        Where this returns False (no setconfig before 3.12, or a setconfig call
+        that raised) a lost-generation handle is retired unclosed instead (see
+        close()): closing its last descriptor could both run that checkpoint and
+        discard committed data present only in an unlinked WAL."""
         flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
         conn = self._conn
         setconfig = getattr(conn, "setconfig", None)
         if flag is None or setconfig is None:
             # Same predicate as _close_time_checkpoint_configurable() plus the per-instance
-            # getattr: __init__ binds no retirement capability when either half is missing,
-            # and close() must agree with that decision or the lost handle would neither
-            # setconfig nor pin.
+            # getattr; close() then retires the handle unclosed with the capability __init__ bound.
             return False
         try:
             setconfig(flag, True)
         except Exception:
-            # No retention capability is bound on this runtime, so close() will let SQLite run the
-            # checkpoint over the newer generation: say so where an operator can see it.
+            # close() falls back to retiring the handle unclosed; only without a bound retention
+            # capability (non-CPython) can SQLite still checkpoint, so say which case this is.
             logger.error(
-                "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s; "
-                "closing it may checkpoint retired frames over the newer generation.",
-                self.db_path, exc_info=True,
+                "Could not disable SQLite's close-time checkpoint on the quarantined handle for %s; %s",
+                self.db_path,
+                "retaining it unclosed instead." if self._retire_connection is not None
+                else "closing it may checkpoint retired frames over the newer generation.",
+                exc_info=True,
             )
             return False
         return True
@@ -1185,12 +1190,12 @@ class SessionDB(
     def _settle_lost_generation_locked(self) -> bool:
         """Capture the retired generation; return whether the handle must be retired unclosed.
 
-        Where SQLite's close-time checkpoint cannot be switched off (no setconfig, Python < 3.12),
-        sqlite3_close would write the retired frames over the newer generation, so the exact
-        connection is retired unclosed instead. A failed capture leaves the handle open for a retry
-        -- but the pin is taken FIRST on such a runtime: every production caller reaches close()
-        through hermes_state_registry.release_or_close, which swallows the error, so an interpreter
-        exit before the retry must not be able to checkpoint the stale frames either."""
+        Where SQLite's close-time checkpoint is not switched off (no setconfig before Python 3.12, or
+        a setconfig call that raised), sqlite3_close would write the retired frames over the newer
+        generation, so the exact connection is retired unclosed instead. A failed capture leaves the
+        handle open for a retry -- but the pin is taken FIRST in that case: every production caller
+        reaches close() through hermes_state_registry.release_or_close, which swallows the error, so
+        an interpreter exit before the retry must not be able to checkpoint the stale frames either."""
         self._db_wal_generation_lost = True
         retire_without_close = not self._disable_close_time_checkpoint() and self._retire_connection is not None
         try:
@@ -1211,8 +1216,8 @@ class SessionDB(
         )
         if retire_without_close:
             logger.warning(
-                "Retaining the quarantined connection for %s unclosed: this runtime cannot "
-                "switch off SQLite's close-time checkpoint.", self.db_path,
+                "Retaining the quarantined connection for %s unclosed: SQLite's close-time "
+                "checkpoint could not be switched off on it.", self.db_path,
             )
         return retire_without_close
 

@@ -64,6 +64,13 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "the model produced no follow-up text. Send `continue` to "
         "let it summarize."
     ),
+    # #102806 (defect 1): a direct_result-style tool promoted its raw output to the
+    # reply with no model-composed text behind it. The finalizer withholds it.
+    "uncomposed_tool_output": (
+        "the model produced no reply text, so the last tool's raw output "
+        "was withheld instead of being sent as the answer. Send `continue` "
+        "to have the model compose the reply."
+    ),
 }
 
 # Parameterised reasons (``max_iterations_reached(3/3)`` …) matched by prefix.

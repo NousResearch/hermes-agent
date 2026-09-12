@@ -416,7 +416,10 @@ class GatewayConfigLoadersMixin:
         try:
             # Canonical gateway loader (fail-open): managed overlay + ${VAR} expansion apply here too.
             return get_fallback_chain(_load_gateway_runtime_config()) or None
-        except Exception:
+        except Exception as exc:
+            from hermes_cli.model_presets import ModelPresetError
+            if isinstance(exc, ModelPresetError):
+                raise
             return None
 
     def _refresh_fallback_model(self) -> list | None:
@@ -460,7 +463,12 @@ class GatewayConfigLoadersMixin:
                 expanded = _expand_env_vars(cfg)
                 if isinstance(expanded, dict):
                     cfg = expanded
-        except Exception:
+            from hermes_cli.model_presets import expand_model_presets
+            cfg = expand_model_presets(cfg)
+        except Exception as exc:
+            from hermes_cli.model_presets import ModelPresetError
+            if isinstance(exc, ModelPresetError):
+                raise
             logger.debug("fallback_providers refresh: config.yaml read failed; keeping last known-good chain", exc_info=True)
             self._fallback_model = by_home.get(home_key, self._fallback_model)
             return self._fallback_model

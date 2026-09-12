@@ -438,7 +438,9 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         return None
 
 
-def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:
+def _resolve_job_reasoning_config(
+    job: dict, cfg: dict, model: str, fallback_entry: dict | None = None,
+) -> dict | None:
     """Effective reasoning config for a cron run. A per-job ``reasoning_effort`` pin beats global
     and per-model config and is model-independent by design (also governs an auth-fallback swap);
     clamping stays with provider transports. An unparseable pin warns and falls back to config."""
@@ -458,6 +460,13 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
             job.get("id", "?"),
             pinned,
             job.get("id", "?"))
+    if isinstance(fallback_entry, dict) and "reasoning_effort" in fallback_entry:
+        parsed = parse_reasoning_effort(fallback_entry["reasoning_effort"])
+        if parsed is not None:
+            logger.info("Job '%s': using startup fallback reasoning_effort '%s'", job.get("id", "?"), fallback_entry["reasoning_effort"])
+            return parsed
+        logger.warning("Job '%s': invalid startup fallback reasoning_effort %r; retaining primary reasoning",
+                       job.get("id", "?"), fallback_entry["reasoning_effort"])
     return resolve_reasoning_config(cfg if isinstance(cfg, dict) else {}, str(model))
 
 
@@ -1370,6 +1379,8 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                 from hermes_cli import managed_scope
                 _cfg = managed_scope.apply_managed_overlay(_cfg)
             _cfg = _expand_env_vars(_cfg)
+            from hermes_cli.model_presets import expand_model_presets
+            _cfg = expand_model_presets(_cfg)
             # Coerce null to {} so a falsy default never clobbers a resolved env value.
             _model_cfg = _cfg.get("model") or {}
             _cron_cfg_for_model = _cfg.get("cron") or {}
@@ -1385,6 +1396,9 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                         _cfg, environ={"HERMES_MODEL": cron_env_setting("HERMES_MODEL")})
                     model = _snapshot_pin(job, "model", _global_model, job_id) or _global_model or model
     except Exception as e:
+        from hermes_cli.model_presets import ModelPresetError
+        if isinstance(e, ModelPresetError):
+            raise
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
     # Fail fast: an empty model otherwise reaches the provider as an opaque 400.
@@ -1545,6 +1559,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 logger.info(
                     "Job '%s': fallback resolved to %s model %s",
                     job_id, runtime.get("provider"), fb_model)
+                runtime["_hermes_fallback_entry"] = entry
                 return runtime, fb_model
             except Exception as fb_exc:
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
@@ -2138,10 +2153,18 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     if setup.blocked is not None:
         return setup
 
+    # A startup auth fallback retains the resolved primary setting unless its own concrete
+    # fallback route selects a reasoning_effort.
+    primary_reasoning = _resolve_job_reasoning_config(
+        job, _cfg if isinstance(_cfg, dict) else {}, str(jc.model)
+    )
     setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
     setup.reasoning_config = _resolve_job_reasoning_config(
-        job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
+        job, _cfg if isinstance(_cfg, dict) else {}, str(jc.model),
+        setup.runtime.get("_hermes_fallback_entry"),
     )
+    if "_hermes_fallback_entry" not in setup.runtime:
+        setup.reasoning_config = primary_reasoning
     setup.fallback_model = get_fallback_chain(_cfg) or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
@@ -2152,7 +2175,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup, *, workdir, session_id, session_db):
     runtime = setup.runtime
     pr = _cfg.get("provider_routing") or {}
-    return AIAgent(
+    agent = AIAgent(
         model=setup.model,
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -2184,6 +2207,11 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         session_id=session_id,
         session_db=session_db,
     )
+    # Later agent-level failovers honour an explicit cron pin over a route fallback.
+    from hermes_constants import parse_reasoning_effort
+    if parse_reasoning_effort(job.get("reasoning_effort")) is not None:
+        agent._reasoning_effort_pinned = True
+    return agent
 
 
 class _FireAudit:

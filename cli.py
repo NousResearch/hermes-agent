@@ -475,10 +475,15 @@ def load_cli_config() -> Dict[str, Any]:
                 from hermes_cli.config import _normalize_root_model_keys
 
                 file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
+                from hermes_cli.model_presets import expand_model_presets
+                file_config = expand_model_presets(file_config)
 
-            _file_has_terminal_config = "terminal" in file_config
+                _file_has_terminal_config = "terminal" in file_config
             _merge_file_config(defaults, file_config)
         except Exception as e:
+            from hermes_cli.model_presets import ModelPresetError
+            if isinstance(e, ModelPresetError):
+                raise
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
     # Expand ${ENV_VAR} references before bridging to env vars.

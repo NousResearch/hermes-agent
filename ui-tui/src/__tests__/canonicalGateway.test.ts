@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 
-import { canonicalRequest, canonicalResult, sharedControlParams } from '../canonicalGateway.js'
+import { canonicalRequest, canonicalResult, localCreationOptions, sharedControlParams } from '../canonicalGateway.js'
 
 it('retains prepared identity and rejects unsupported TUI launch policy instead of impersonating CLI', () => {
   const contract = { sources: ['tui'], parameters: ['request_id', 'source', 'model', 'cwd', 'toolsets'] }
@@ -11,4 +11,10 @@ it('retains prepared identity and rejects unsupported TUI launch policy instead 
   expect(sharedControlParams({ sharedControl: { session_id: 'sid', execution_generation: 9, prompt_id: 'approval-9' } })).toEqual({ session_id: 'sid', execution_generation: 9, prompt_id: 'approval-9' })
   const receipt = canonicalResult('prompt.submit', { admission_id: 'server-admission', ref: { profile_id: '/tmp/profile', session_id: 'sid' }, status: 'queued' }, { input_id: 'prepared-id' })
   expect(receipt).toMatchObject({ admission_id: 'server-admission', input_id: 'prepared-id', target_profile_home: '/tmp/profile', target_session_id: 'sid' })
+})
+
+it('rebuilds --max-turns from the launcher environment as the integer the session policy requires', () => {
+  const options = localCreationOptions({ HERMES_TUI_MAX_TURNS: '5', HERMES_MODEL: 'local-model' } as NodeJS.ProcessEnv)
+  expect(options.max_turns).toBe(5)
+  expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('max_turns')
 })

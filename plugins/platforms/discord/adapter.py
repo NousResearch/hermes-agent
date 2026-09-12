@@ -4774,6 +4774,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             keys.add(f"#{parent_name}")
         return keys
 
+    def _discord_force_thread_channels(self) -> set:
+        """Return Discord channel IDs where auto-threads are forced.
+
+        Channels in this list will always get auto-threads, even if they
+        are also in ``free_response_channels`` (which normally skips
+        auto-threading). A single ``"*"`` entry acts as wildcard.
+        """
+        raw = self.config.extra.get("force_thread_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_FORCE_THREAD_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
     def _discord_thread_require_mention(self) -> bool:
         """Whether threads still require @mention after the bot has participated (default False).
         Set True when multiple bots share a thread to avoid bot-to-bot loops."""
@@ -5730,7 +5747,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            force_thread_channels = self._discord_force_thread_channels()
+            skip_thread = bool(channel_keys & no_thread_channels) or (
+                is_free_channel
+                and not (
+                    bool(channel_keys & force_thread_channels)
+                    or "*" in force_thread_channels
+                )
+            )
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -7011,6 +7035,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("ignored_channels", "DISCORD_IGNORED_CHANNELS", from_platform_extra=False)
     _gate("allowed_channels", "DISCORD_ALLOWED_CHANNELS", from_platform_extra=False)
     _gate("no_thread_channels", "DISCORD_NO_THREAD_CHANNELS", from_platform_extra=False)
+    _gate("force_thread_channels", "DISCORD_FORCE_THREAD_CHANNELS", from_platform_extra=False)
     # history_backfill: recover mention-gated channel messages between bot turns.
     if "history_backfill" in discord_cfg:
         seeded_extra["history_backfill"] = discord_cfg["history_backfill"]

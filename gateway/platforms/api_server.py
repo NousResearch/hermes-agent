@@ -2982,9 +2982,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         # CLI /branch semantics: create the child, then end the original as branched (child first, so
         # a failed create never leaves the source ended with no fork, #11030).
+        # ``_branched_from`` is the durable branch marker (same as CLI /branch): with the child created
+        # first, the timestamp fallback in _BRANCH_CHILD_SQL (child.started_at >= parent.ended_at) no
+        # longer holds, and an unmarked child would vanish from default session listings.
         await asyncio.to_thread(
             db.create_session, fork_id, "api_server", model=source.get("model"),
-            system_prompt=source.get("system_prompt"), parent_session_id=source_id)
+            system_prompt=source.get("system_prompt"), parent_session_id=source_id,
+            model_config={"_branched_from": source_id})
         await asyncio.to_thread(db.end_session, source_id, "branched")
         messages = await asyncio.to_thread(db.get_messages, source_id)
         await asyncio.to_thread(db.replace_messages, fork_id, messages)

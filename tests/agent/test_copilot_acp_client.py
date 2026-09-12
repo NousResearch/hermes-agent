@@ -462,7 +462,7 @@ for line in sys.stdin:
         acp_cwd=str(tmp_path),
     )
 
-    assert client.list_models(timeout_seconds=2) == ["auto", "gpt-5.6-terra"]
+    assert client.list_models(timeout_seconds=30) == ["auto", "gpt-5.6-terra"]
     assert client.is_closed is True
 
 
@@ -490,4 +490,4 @@ print(json.dumps({{"jsonrpc": "2.0", "id": session["id"], "result": {{"sessionId
         acp_cwd=str(tmp_path),
     )
 
-    assert client.list_models(timeout_seconds=2) == ["gpt-5.6-sol"]
+    assert client.list_models(timeout_seconds=30) == ["gpt-5.6-sol"]

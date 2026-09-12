@@ -73,6 +73,18 @@ logger = logging.getLogger(__name__)
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
 _CAPTURE_TEXT = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
+# SCM service-name prefixes that ``find_windows_gateway_services`` may treat as an owned gateway.
+# Only Hermes-supervised SCM services fall in this set; Windows-shipped system services (``Schedule``,
+# ``RpcSs``, ``W32Time``, ``BFE``, ...) must NEVER match — the SCM host-PID check alone is not enough,
+# because a gateway's ancestor chain can include a ``services.exe``-owned svchost that *also* hosts an
+# unrelated system service on the same PID (which our shared-host guard already rejects) — but a
+# host-pid that maps to exactly one system service (no shared host) was previously misidentified, and
+# ``sc.exe stop`` would then target the system service in the updater pause path, requiring SYSTEM.
+# Match by case-insensitive prefix; covers the legacy ``HermesGateway`` name and the per-profile
+# ``HermesGateway-<profile>`` form. Task Scheduler uses ``Hermes_Gateway`` (underscore) and is handled
+# separately by ``gateway_windows``; we never touch Task Scheduler through this path.
+_HERMES_SCM_SERVICE_NAME_PREFIXES: tuple[str, ...] = ("HermesGateway", "HermesAgent")
+
 # =============================================================================
 # Process Management (for manual gateway runs)
 # =============================================================================
@@ -783,6 +795,27 @@ def find_profile_gateway_processes(exclude_pids: set | None = None, *, strict: b
     return processes
 
 
+def _is_hermes_owned_service_name(name: str) -> bool:
+    """True iff *name* looks like a Hermes-supervised SCM service.
+
+    Windows ships dozens of system services whose SCM host-PID may transiently coincide with a
+    gateway's ancestor chain — most visibly ``Schedule`` (Task Scheduler), ``RpcSs``, ``W32Time``,
+    ``BFE`` — and ``sc.exe stop`` against them requires SYSTEM and aborts the update with a
+    misleading error. ``find_windows_gateway_services`` previously trusted the SCM host-PID alone
+    plus a "single service on this host PID" guard, but that guard does not protect against a
+    system service that is the *only* SCM entry on a host PID the gateway traverses (the bug class
+    behind the "sc.exe stop Schedule fails during hermes update" reports). The prefix match here
+    is the belt; the host-PID guard below is the suspenders.
+    """
+    if not name:
+        return False
+    lowered = name.casefold()
+    return any(
+        lowered == prefix.casefold() or lowered.startswith(prefix.casefold() + "-")
+        for prefix in _HERMES_SCM_SERVICE_NAME_PREFIXES
+    )
+
+
 def find_windows_gateway_services(
     *, psutil_module=None, profile_processes: list[ProfileGatewayProcess] | None = None
 ) -> list[WindowsGatewayService]:
@@ -817,6 +850,15 @@ def find_windows_gateway_services(
                 raise RuntimeError("SCM service inspection failed") from exc
             if not service_name:
                 raise RuntimeError("SCM service has an empty name")
+            # Name whitelist: SCM host-PID ancestry is necessary but not sufficient — a svchost
+            # that happens to host a Windows system service (``Schedule``, ``RpcSs``, ...) can
+            # transiently appear in a gateway's ancestor chain without owning the gateway. The
+            # host-PID + descendants check below is the structural proof; this guard rejects
+            # names that no Hermes install would ever create before they enter ANY of the
+            # cross-checks below — including the indeterminate-status path, so a system service
+            # mid-transition cannot abort the update on a gateway it does not own.
+            if not _is_hermes_owned_service_name(service_name):
+                continue
             if service_status == "stopped":
                 continue
             if service_status != "running":

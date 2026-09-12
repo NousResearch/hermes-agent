@@ -712,6 +712,15 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('/stop interrupts the active turn before stopping background processes', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/stop')).toBe(true)
+    expect(ctx.turn.interrupt).toHaveBeenCalledWith('sid-abc')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('process.stop', {})
+  })
+
   it('renders browser connect progress messages from the gateway', async () => {
     const rpc = vi.fn(() =>
       Promise.resolve({
@@ -1145,6 +1154,7 @@ const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
   gateway: { ...buildGateway(), ...overrides.gateway },
   local: { ...buildLocal(), ...overrides.local },
   session: { ...buildSession(), ...overrides.session },
+  turn: { interrupt: vi.fn(), ...overrides.turn },
   transcript: { ...buildTranscript(), ...overrides.transcript },
   voice: { ...buildVoice(), ...overrides.voice }
 })
@@ -1209,6 +1219,7 @@ interface Ctx {
   gateway: ReturnType<typeof buildGateway>
   local: ReturnType<typeof buildLocal>
   session: ReturnType<typeof buildSession>
+  turn: { interrupt: ReturnType<typeof vi.fn> }
   transcript: ReturnType<typeof buildTranscript>
   voice: ReturnType<typeof buildVoice>
 }

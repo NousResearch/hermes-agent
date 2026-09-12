@@ -66,12 +66,19 @@ class TestCreateSession:
         assert fetched is state
 
 
-    def test_make_agent_stamps_session_cwd_for_codex_runtime(self, monkeypatch):
+    def test_make_agent_uses_session_cwd_during_init_and_stamps_runtime(
+        self, monkeypatch, tmp_path
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        observed = {}
+
         class FakeAgent:
             model = "fake-model"
 
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
+                observed["cwd"] = kwargs.get("cwd")
 
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
@@ -106,9 +113,10 @@ class TestCreateSession:
         )
         monkeypatch.setattr("acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
 
-        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+        state = SessionManager(db=None).create_session(cwd=str(workspace))
 
-        assert state.agent.session_cwd == "/tmp/project"
+        assert observed["cwd"] == str(workspace)
+        assert state.agent.session_cwd == str(workspace)
 
 
 

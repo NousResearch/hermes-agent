@@ -303,7 +303,7 @@ def test_resume_keeps_profile_db_open_after_ownership_transfer(profile_dbs, monk
     monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": "test"})
@@ -350,7 +350,7 @@ def test_resume_drops_half_built_session_when_init_session_raises(
         server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="test")
     )
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
 
@@ -394,7 +394,7 @@ def test_resume_eager_never_transfers_shared_launch_db(profile_dbs, monkeypatch)
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(
         server, "_stored_session_runtime_overrides", lambda _found: {}

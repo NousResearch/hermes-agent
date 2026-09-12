@@ -36,6 +36,7 @@ from gateway.platforms.api_server import (
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    _request_response_rendering,
     _request_relay_metadata,
     check_api_server_requirements,
     cors_middleware,
@@ -288,6 +289,12 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+        assert agent._response_rendering == "plain_text"
+
+        markdown_agent = adapter._create_agent(
+            session_id="api-markdown-session", response_rendering="markdown"
+        )
+        assert markdown_agent._response_rendering == "markdown"
 
 
 # ---------------------------------------------------------------------------
@@ -974,6 +981,12 @@ class TestCapabilitiesEndpoint:
                 "retention_seconds": 86400,
             }
             assert data["features"]["model_options"] is True
+            assert data["features"]["response_rendering"] == {
+                "field": "response_rendering",
+                "modes": ["plain_text", "markdown"],
+                "default": "plain_text",
+                "scope": "request",
+            }
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
@@ -1095,6 +1108,60 @@ class TestChatCompletionsEndpoint:
             data = await resp.json()
             assert "messages" in data["error"]["message"]
 
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [(None, "plain_text"), ("plain_text", "plain_text"), ("markdown", "markdown")],
+    )
+    def test_request_response_rendering_accepts_bounded_modes(self, value, expected):
+        body = {} if value is None else {"response_rendering": value}
+        assert _request_response_rendering(body) == expected
+
+    @pytest.mark.parametrize("value", [None, True, 1, "html", "Markdown", {"markdown": True}])
+    def test_request_response_rendering_rejects_unknown_values(self, value):
+        with pytest.raises(ValueError, match="response_rendering"):
+            _request_response_rendering({"response_rendering": value})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("endpoint", "payload"),
+        [
+            ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}),
+            ("/v1/responses", {"input": "hi"}),
+        ],
+    )
+    async def test_openai_routes_forward_response_rendering(self, adapter, endpoint, payload):
+        app = _create_app(adapter)
+        payload["response_rendering"] = "markdown"
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (
+                {"final_response": "ok", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(endpoint, json=payload)
+                assert response.status == 200
+
+        assert mock_run.call_args.kwargs["response_rendering"] == "markdown"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("endpoint", "payload"),
+        [
+            ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}),
+            ("/v1/responses", {"input": "hi"}),
+        ],
+    )
+    async def test_openai_routes_reject_invalid_response_rendering(self, adapter, endpoint, payload):
+        app = _create_app(adapter)
+        payload["response_rendering"] = "html"
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(endpoint, json=payload)
+                body = await response.json()
+        assert response.status == 400
+        assert body["error"]["code"] == "invalid_response_rendering"
+        mock_run.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_chat_completions_stream_passes_request_model_provider_options(self, adapter):
@@ -1154,6 +1221,7 @@ class TestChatCompletionsEndpoint:
                         "model": "MiniMax-M3",
                         "provider": "minimax",
                         "model_options": model_options,
+                        "response_rendering": "markdown",
                     },
                 )
                 assert resp.status == 200
@@ -1164,6 +1232,7 @@ class TestChatCompletionsEndpoint:
         assert kwargs["requested_model"] == "MiniMax-M3"
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
+        assert kwargs["response_rendering"] == "markdown"
 
 
     @pytest.mark.asyncio

@@ -423,6 +423,11 @@ class OpenAICompatRoutesMixin:
             return _error_response("Invalid JSON in request body", 400)
         from gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
+        from gateway.platforms.api_server import _request_response_rendering
+        try:
+            response_rendering = _request_response_rendering(body)
+        except ValueError as exc:
+            return _error_response(str(exc), 400, code="invalid_response_rendering")
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return _invalid_request("Missing or invalid 'messages' field")
@@ -503,6 +508,7 @@ class OpenAICompatRoutesMixin:
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
+            response_rendering=response_rendering,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
             relay_metadata=relay_metadata,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
@@ -554,7 +560,8 @@ class OpenAICompatRoutesMixin:
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
-            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
+                              "response_rendering"],
             route="chat_completions",
         )
         if err is not None:
@@ -781,6 +788,11 @@ class OpenAICompatRoutesMixin:
             return _invalid_request("Invalid JSON in request body")
         from gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
+        from gateway.platforms.api_server import _request_response_rendering
+        try:
+            response_rendering = _request_response_rendering(body)
+        except ValueError as exc:
+            return _error_response(str(exc), 400, code="invalid_response_rendering")
         raw_input = body.get("input")
         if raw_input is None:
             return _error_response("Missing 'input' field", 400)
@@ -860,6 +872,7 @@ class OpenAICompatRoutesMixin:
         run_kwargs = dict(
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
+            response_rendering=response_rendering,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
             **agent_overrides, route=route, relay_metadata=relay_metadata)
         if stream:
@@ -893,7 +906,8 @@ class OpenAICompatRoutesMixin:
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
-            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
+            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider",
+                              "model_options", "tools", "response_rendering"],
             route="responses",
         )
         if err is not None:

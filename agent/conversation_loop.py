@@ -809,6 +809,13 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
         current = str(getattr(agent, attr, "") or "").strip()
         if stored and current and stored != current:
             return False
+    if str(getattr(agent, "platform", "") or "").lower().strip() == "api_server":
+        # API clients default to plain text for compatibility. An opt-in rendering mode is
+        # prompt identity: switching it must replace the contradictory cached platform hint once.
+        stored_rendering = identity_line_value(prompt, "Response rendering") or "plain_text"
+        current_rendering = str(getattr(agent, "_response_rendering", "plain_text") or "plain_text")
+        if stored_rendering != current_rendering:
+            return False
     # Compare against resolve_agent_cwd() — the SAME resolver used to build the
     # prompt — so TERMINAL_CWD sessions are not falsely rejected.
     stored_cwd = host_info_value("Current working directory")

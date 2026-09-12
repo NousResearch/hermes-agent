@@ -1613,7 +1613,17 @@ SEND_ERROR_KINDS = frozenset(
 
 # ``not_found`` substrings by blast radius: chat-level = target dead; thread/topic/message-level
 # leaves the parent chat reachable.
-_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found",)
+#
+# ``channel_not_found`` (Slack) is unambiguously chat-level: unlike Discord, a Slack thread is a
+# message field (``thread_ts``) inside its parent channel, not a separately-addressable object, so
+# this code can never mean "just the thread is gone" — it always means the channel/DM itself does
+# not exist. A Discord-side "Unknown Channel" (10003) equivalent is deliberately NOT added here:
+# Discord threads ARE their own channel ids, so the identical error text also fires when only a
+# THREAD was deleted and the parent channel is still very much alive — adding it here would risk
+# permanently blacklisting a live channel over one dead thread (self-healing can't recover it: the
+# dead-target check short-circuits every future send before it is attempted). See classify_send_error's
+# module docs / the PR that added this comment for the full reasoning.
+_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS = ("chat not found", "channel_not_found")
 _SUBCHAT_NOT_FOUND_SUBSTRINGS = (
     "message to edit not found", "message to reply not found", "thread not found", "topic_deleted",
     "message_id_invalid")
@@ -1641,7 +1651,11 @@ _SEND_ERROR_CLASSIFIERS: Tuple[Tuple[str, Callable[[str], bool]], ...] = (
         or ("bad request" in b and "entit" in b))),
     ("forbidden", lambda b: _any_in(
         b, "forbidden", "bot was blocked", "blocked by the user", "user is deactivated",
-        "not enough rights", "have no rights", "not a member")),
+        "not enough rights", "have no rights", "not a member",
+        # Slack: the channel exists but is archived, so posting to it is permanently blocked
+        # until someone unarchives it -- same "bot cannot reach this chat" shape as the other
+        # forbidden markers above, not a target-doesn't-exist (not_found) condition.
+        "is_archived")),
     ("not_found", lambda b: _any_in(b, *_CHAT_LEVEL_NOT_FOUND_SUBSTRINGS, *_SUBCHAT_NOT_FOUND_SUBSTRINGS)),
     ("rate_limited", lambda b: _any_in(b, "flood", "too many requests", "retry after", "rate limit")),
     ("transient", lambda b: _any_in(b, *_RETRYABLE_ERROR_PATTERNS, "connecttimeout")))

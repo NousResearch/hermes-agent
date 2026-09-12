@@ -2069,11 +2069,13 @@ If writes to Hermes state (cron jobs, skills, scripts under `~/.hermes/`) are fa
 
 ### UI language for static messages
 
-The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
+The `display.language` setting translates the cataloged static user-facing messages — the CLI approval prompt and gateway slash-command replies, including model selection, session management, goals, usage, voice settings, and Kanban notifications. It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
 
-Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian). Unknown values fall back to English.
+Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian), `ar` (Arabic), `sv` (Swedish). Unknown values fall back to English.
 
 You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
+
+For Swedish static messages, set `display.language: sv`. Regional values `sv-SE`, `sv-FI`, `sv_SE`, and `sv_FI` use the same Swedish catalog. This setting is separate from the web and desktop interface language selectors; it does not translate the Ink TUI or the installation wizard.
 
 ```yaml
 display:

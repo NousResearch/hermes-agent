@@ -6,6 +6,7 @@ import base64
 import json
 import math
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 MOA_MARKER_PREFIX = "__HERMES_MOA_TURN_V1__"
@@ -19,6 +20,37 @@ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
     "provider": "openrouter", "model": "anthropic/claude-opus-4.8"}
 
 DEFAULT_MOA_REFERENCE_TIMEOUT: float | None = None
+
+# Per-tool-result char budget for the advisory (reference-model) view. Config-driven so a preset
+# can widen it (e.g. for PDF/vision-heavy tool loops) without editing agent/moa_loop.py source,
+# which would not survive `hermes update` (git pull). Clamped to [1000, 32000]: too low loses all
+# tool-result context, too high risks flooding a reference model's window across many tool calls
+# in one advisory turn (per-result budget, not a per-turn total).
+DEFAULT_MOA_REFERENCE_TOOL_RESULT_BUDGET = 4000
+_MIN_REFERENCE_TOOL_RESULT_BUDGET = 1000
+_MAX_REFERENCE_TOOL_RESULT_BUDGET = 32000
+
+
+def _coerce_reference_tool_result_budget(value: Any) -> int:
+    """Normalize a positive numeric budget, or use 4000 for invalid/non-finite input.
+
+    Finite values are truncated toward zero, then clamped to [1000, 32000]. Decimal parsing keeps
+    huge finite strings distinct from infinities, so they safely clamp to the upper bound.
+    """
+    if isinstance(value, bool):  # bool is an int subclass: True would clamp to the minimum
+        return DEFAULT_MOA_REFERENCE_TOOL_RESULT_BUDGET
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return DEFAULT_MOA_REFERENCE_TOOL_RESULT_BUDGET
+    if not number.is_finite() or number <= 0:
+        return DEFAULT_MOA_REFERENCE_TOOL_RESULT_BUDGET
+    if number >= _MAX_REFERENCE_TOOL_RESULT_BUDGET:
+        return _MAX_REFERENCE_TOOL_RESULT_BUDGET
+    result = int(number)
+    if result <= 0:
+        return DEFAULT_MOA_REFERENCE_TOOL_RESULT_BUDGET
+    return max(_MIN_REFERENCE_TOOL_RESULT_BUDGET, min(result, _MAX_REFERENCE_TOOL_RESULT_BUDGET))
 
 
 def _default_reference_models() -> list[dict[str, Any]]:
@@ -227,6 +259,10 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # Failed-advisor disclosure policy; unknown values fail loud.
         "degraded_reference_policy": policy if policy in {"loud", "silent"} else "loud",
 
+        # Per-tool-result char budget for the advisory view (head+tail preview); config-driven
+        # so PDF/vision-heavy tool loops can widen it without editing moa_loop.py source.
+        "reference_tool_result_budget": _coerce_reference_tool_result_budget(raw.get("reference_tool_result_budget")),
+
         # "user_turn" (default, cheapest): advisors run ONCE per user turn; "per_iteration": every
         # tool iteration; "every_n:<N>": first iteration of each turn and every Nth after.
         "fanout": _coerce_fanout(raw.get("fanout"))}
@@ -235,7 +271,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 _FLAT_PRESET_KEYS = (
     "reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
     "reference_timeout", "degraded_reference_policy",
-    "fanout", "enabled")
+    "fanout", "enabled", "reference_tool_result_budget")
 
 
 # When the reference fan-out runs. "user_turn" (default) runs the advisors ONCE per user turn (the original

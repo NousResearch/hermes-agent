@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, SecretStr, StrictBool, field_validator
 
+from hermes_cli.moa_config import (
+    DEFAULT_MOA_REFERENCE_TOOL_RESULT_BUDGET,
+    _coerce_reference_tool_result_budget,
+)
+
 
 class ConfigUpdate(BaseModel):
     config: dict
@@ -115,6 +120,7 @@ class MoaModelSlot(BaseModel):
 class _MoaReferenceControls(BaseModel):
     # None = no per-preset override; inherits auxiliary.moa_reference.timeout (900s default).
     reference_timeout: Optional[float] = None
+    reference_tool_result_budget: int = DEFAULT_MOA_REFERENCE_TOOL_RESULT_BUDGET
     degraded_reference_policy: Literal["loud", "silent"] = "loud"
 
     @field_validator("reference_timeout", mode="before")
@@ -130,6 +136,11 @@ class _MoaReferenceControls(BaseModel):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("reference_timeout must be a finite positive number")
         return timeout
+
+    @field_validator("reference_tool_result_budget", mode="before")
+    @classmethod
+    def _normalize_reference_tool_result_budget(cls, value: Any) -> int:
+        return _coerce_reference_tool_result_budget(value)
 
 class MoaPresetPayload(_MoaReferenceControls):
     reference_models: list[MoaModelSlot] = []

@@ -487,6 +487,26 @@ def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:
         return None
 
 
+def _validate_external_process(req: _Request) -> Optional[dict[str, Any]]:
+    """Process providers have no HTTP listing: their declared catalog is the whole truth, so a
+    declared id is accepted outright and an undeclared one gets the catalog verdict without the
+    misleading "endpoint was unreachable" note."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(req.normalized)
+    if profile is None or profile.auth_type != "external_process":
+        return None
+    catalog = list(profile.fallback_models)
+    if req.lookup.lower() in {k.lower() for k in profile.model_aliases}:
+        return _accept()
+    match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
+    if match.exact:
+        return _accept()
+    return match.verdict(req, keep_suffix=True) or _soft_accept(
+        f"Note: `{req.requested}` is not declared by {profile.display_name or profile.name}."
+        f"{match.suggestion_text}\n  The model may still work if the local client accepts it.")
+
+
 def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
     """/models unreachable: validate against the curated ``provider_model_ids()`` list so gateway
     /model switches keep working while a provider's endpoint is down (otherwise switch_model() would
@@ -525,7 +545,7 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
 # BEHAVIOR: moa → whitespace → OpenRouter preset parse → LM Studio → Ollama native → custom →
-# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → live listing → Bedrock →
+# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → external process → live listing → Bedrock →
 # curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
@@ -538,6 +558,7 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (_for("minimax", "minimax-cn"), _validate_minimax),
     (_for("anthropic"), _validate_anthropic),
     (lambda req: req.api_mode == "anthropic_messages", _validate_anthropic_messages),
+    (lambda req: True, _validate_external_process),
     (lambda req: True, _validate_live_listing),
     # API unreachable — accept and persist, but warn so typos don't silently break things.
     (_for("bedrock"), _validate_bedrock),

@@ -2764,6 +2764,7 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        reasoning_details: list = []
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
@@ -2831,6 +2832,8 @@ class _StreamingCall(StreamingWaitMonitor):
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
+            # Opaque records are deltas, not text: retain order and signed payloads verbatim.
+            reasoning_details.extend(getattr(delta, "reasoning_details", None) or [])
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
@@ -2873,7 +2876,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return self._adopt_final_response(stream.final_response)
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
-            response_id=response_id, upstream_provider=upstream_provider)
+            response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details)
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -2922,7 +2925,7 @@ class _StreamingCall(StreamingWaitMonitor):
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None):
+        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -2956,7 +2959,8 @@ class _StreamingCall(StreamingWaitMonitor):
         if provider_stream_error is not None:
             raise provider_stream_error
         flush_pending()
-        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning)
+        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls,
+            reasoning_content=full_reasoning, reasoning_details=reasoning_details or None)
         # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
         # look a request up. Fabricated only when the stream never sent one.
         return SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,

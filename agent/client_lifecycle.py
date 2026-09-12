@@ -409,6 +409,10 @@ class ClientLifecycleMixin:
             if cache["client"] is client:
                 cache["poisoned"] = True
         try:
+            # Non-HTTP providers cancel without closing owner-thread file descriptors.
+            if callable(getattr(type(client), "cancel", None)):
+                client.cancel()
+                return
             shutdown_count = self._force_close_tcp_sockets(client)
             # Zero sockets shut down means the worker stays blocked — WARN, not success.
             # tcp_force_closed=0 means the stranger-thread abort found no sockets to shut down — the worker

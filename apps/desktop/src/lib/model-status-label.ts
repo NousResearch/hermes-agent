@@ -55,7 +55,9 @@ const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.t
 
 function prettifyBase(base: string): string {
   if (/^claude-/i.test(base)) {
-    return titleCase(base.replace(/^claude-/i, '').replace(/-/g, ' '))
+    // Anthropic ids spell the version with hyphens (`haiku-4-5`, `fable-5-1`);
+    // the human name is dotted ("Haiku 4.5"), not "Haiku 4 5".
+    return titleCase(base.replace(/^claude-/i, '').replace(/(\d)-(?=\d)/g, '$1.').replace(/-/g, ' '))
   }
 
   if (/^gpt-/i.test(base)) {
@@ -96,6 +98,16 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
         break
       }
     }
+  }
+
+  // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
+  // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
+  // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]").
+  const contextWindow = base.match(/\[(\d+[mk])\]$/i)
+
+  if (contextWindow) {
+    tag = tag ? `${tag} ${contextWindow[1].toUpperCase()}` : contextWindow[1].toUpperCase()
+    base = base.slice(0, -contextWindow[0].length)
   }
 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.

@@ -71,11 +71,31 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
         shutdown(); the real close() must land on the owning thread in the
         adapter's ``finally``."""
 
+        stream_entered = threading.Event()
+        watchdog_finished = threading.Event()
+        clock = SimpleNamespace(monotonic=lambda: 0.0)
+        timers = []
+        real_timer = threading.Timer
+
+        def _timer(_delay, callback):
+            def _fire():
+                stream_entered.wait()
+                try:
+                    callback()
+                finally:
+                    watchdog_finished.set()
+
+            timer = real_timer(0, _fire)
+            timers.append(timer)
+            return timer
+
         def _stalled():
-            deadline = time.monotonic() + 30.0
-            while time.monotonic() < deadline:
-                time.sleep(0.02)
-                yield SimpleNamespace(type="response.in_progress")
+            # Keep the initial owner check before the deadline, then let the
+            # real Timer finish timeout cleanup before the next owner event.
+            clock.monotonic = lambda: 0.3
+            stream_entered.set()
+            assert watchdog_finished.wait(timeout=10), "watchdog did not finish"
+            yield SimpleNamespace(type="response.in_progress")
 
         adapter, events = _adapter_with_recording_client(_stalled())
         owner_tid = threading.get_ident()
@@ -88,17 +108,25 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
 
         with (
             patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("agent.auxiliary_client.time", clock),
+            patch("agent.auxiliary_client.threading.Timer", _timer),
             patch("agent.auxiliary_client._evict_cached_client_instance"),
             patch("agent.codex_runtime._consume_codex_event_stream", _consume),
-            pytest.raises(TimeoutError),
         ):
-            adapter.create(
-                messages=[{"role": "user", "content": "summarize"}],
-                timeout=300,
-            )
+            try:
+                with pytest.raises(TimeoutError):
+                    adapter.create(
+                        messages=[{"role": "user", "content": "summarize"}],
+                        timeout=300,
+                    )
+            finally:
+                clock.monotonic = lambda: 0.3
+                stream_entered.set()
+                for timer in timers:
+                    timer.cancel()
+                    timer.join(timeout=10)
+                    assert not timer.is_alive(), "watchdog did not settle"
 
-        # Give the daemon Timer thread a beat to finish its callback.
-        time.sleep(0.2)
         actions = [a for a, _ in events]
         # Stranger thread (Timer) only shut the sockets down.
         shutdown_tids = {tid for a, tid in events if a == "shutdown"}

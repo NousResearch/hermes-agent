@@ -1967,6 +1967,11 @@ def get_model_context_length(
     endpoint_context = _endpoint_scoped_context_length(model, base_url)
     if endpoint_context is not None:
         return endpoint_context
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider)
+    context = profile.get_model_context_length(model) if profile else None
+    if type(context) is int and context > 0:
+        return context
     is_bedrock_context = provider == "bedrock" or (
         base_url and base_url_hostname(base_url).startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com")
     )

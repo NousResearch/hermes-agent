@@ -2009,8 +2009,12 @@ def select_provider_and_model(args=None):
     # _model_flow_* names at call time so test monkeypatches on
     # hermes_cli.main keep intercepting.
     flow = _PROVIDER_MODEL_FLOWS.get(selected_provider)
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
     if flow is not None:
         flow(config, current_model, args)
+    elif _is_external_process_provider(selected_provider):
+        from hermes_cli.model_setup_flows import _model_flow_external_process
+        _model_flow_external_process(config, selected_provider, current_model)
     elif (
         selected_provider.startswith("custom:")
         or selected_provider in _custom_provider_map

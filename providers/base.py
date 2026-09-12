@@ -78,6 +78,11 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
+    # Private replay carriers use a namespaced '<provider>.native_assistant' type
+    # in reasoning_details. Only this profile may receive its matching carrier;
+    # other providers (including an unregistered fallback) get ordinary details only.
+    native_reasoning_details_type: str | None = None
+
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
     # describe how to launch it; hermes_cli/auth.py's
@@ -93,6 +98,9 @@ class ProviderProfile:
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
     fallback_models: tuple = ()
+    # model_aliases: short name -> id in fallback_models, for providers whose catalog is not
+    # in models.dev (external processes); `/model <alias>` resolves here before core guessing.
+    model_aliases: dict = field(default_factory=dict)
 
     # hostname: base hostname for URL→provider reverse-mapping in model_metadata.py
     # e.g. "api.gmi-serving.com". Derived from base_url when empty.
@@ -199,6 +207,14 @@ class ProviderProfile:
         """
         return None
 
+    def get_model_context_length(self, model: str) -> int | None:
+        """Provider-qualified context bound; explicit user overrides take precedence."""
+        return None
+
+    def get_usage_cost(self, model: str, usage: Any) -> Any | None:
+        """Optional CostResult from canonical usage; distinguish estimates from invoices."""
+        return None
+
     def get_max_tokens(self, model: str | None) -> int | None:
         """Return the default max_tokens cap for *model*.
 
@@ -265,6 +281,16 @@ class ProviderProfile:
         pip entry point can supply its own transport without any core edit. See
         ``plugins/model-providers/copilot-acp/`` for the in-tree example.
         """
+        return None
+
+    def setup_status(self, **kwargs: Any) -> dict[str, Any] | None:
+        """External-process providers: ``{available, logged_in, plan, detail, login_command}`` from the
+        CLI itself so setup can gate on login. ``None`` = nothing to report beyond executable presence."""
+        return None
+
+    def discover_models(self, **kwargs: Any) -> list[dict[str, Any]] | None:
+        """External-process providers: the account's live picker as ``[{id, label, note}]`` without
+        any inference request; ``None`` falls back to ``fallback_models``."""
         return None
 
     def fetch_models(
@@ -338,3 +364,4 @@ class ProviderProfile:
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None
+

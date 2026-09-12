@@ -353,13 +353,13 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
 # so a new provider reaches the picker, /model and every downstream consumer without edits here.
-# Non-api-key flows need bespoke picker UX and are skipped.
+# OAuth/SDK login flows need bespoke picker UX; external processes own their login.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
 try:
     from providers import list_providers as _list_providers_for_canonical
     for _pp in _list_providers_for_canonical():
         if _pp.name in _canonical_slugs or _pp.auth_type in {
-            "oauth_device_code", "oauth_external", "external_process", "aws_sdk", "copilot", "vertex",
+            "oauth_device_code", "oauth_external", "aws_sdk", "copilot", "vertex",
         }:
             continue
         _label = _pp.display_name or _pp.name

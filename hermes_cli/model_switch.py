@@ -725,11 +725,23 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
         if da.model.lower() == key:
             return (da.provider, da.model, alias_name)
 
+    process_catalog, process_aliases = _external_process_catalog(current_provider)
+    if process_catalog:
+        # Process providers own their model IDs and aliases (models.dev knows nothing about
+        # them); a typed id or family alias that they declare must not leave the provider.
+        declared = _external_process_match(process_catalog, process_aliases, key, provider=current_provider)
+        if declared is not None:
+            return (current_provider, declared, key)
+
     identity = MODEL_ALIASES.get(key)
     if identity is None:
         return None
 
     vendor, family = identity
+
+    if process_catalog:
+        declared = _external_process_match(process_catalog, process_aliases, family, provider=current_provider)
+        return (current_provider, declared, key) if declared else None
 
     # models.dev catalog merged with static _PROVIDER_MODELS entries it may be missing.
     catalog = list_provider_models(current_provider)
@@ -752,6 +764,30 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
     if len(matches) > 1:
         raise AmbiguousAliasError(key, current_provider, matches)
     return (current_provider, matches[0], key)
+
+
+def _external_process_catalog(provider: str) -> tuple[list[str], dict[str, str]]:
+    """``(declared model ids, own aliases)`` of an ``external_process`` profile, else empty."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider)
+    if profile is None or profile.auth_type != "external_process":
+        return [], {}
+    return list(profile.fallback_models), {k.lower(): v for k, v in profile.model_aliases.items()}
+
+
+def _external_process_match(catalog: list[str], aliases: dict[str, str], typed: str, *, provider: str) -> str | None:
+    """Provider alias, exact id, else the single declared id that extends it (``claude-opus-5``
+    -> ``claude-opus-5[1m]``); several candidates raise so nothing is picked silently."""
+    wanted = typed.strip().lower()
+    if wanted in aliases:
+        return aliases[wanted]
+    exact = next((m for m in catalog if m.lower() == wanted), None)
+    if exact is not None:
+        return exact
+    matches = [m for m in catalog if m.lower().startswith(wanted)]
+    if len(matches) > 1:
+        raise AmbiguousAliasError(wanted, provider, matches)
+    return matches[0] if matches else None
 
 
 def get_authenticated_provider_slugs(

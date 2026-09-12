@@ -1399,6 +1399,17 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     from providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
+    if profile and profile.auth_type == "external_process":
+        # Process providers have no HTTP /models endpoint. Prefer the account's own picker
+        # (CLI handshake, no inference request); else their pinned ids, never another
+        # provider's Claude catalog.
+        try:
+            live = profile.discover_models()
+        except Exception:
+            live = None
+        if live:
+            return [row["id"] for row in live]
+        return list(profile.fallback_models) or None
     if not (profile and profile.auth_type == "api_key" and profile.base_url):
         return None
     api_key, base_url = _api_key_credentials(normalized)

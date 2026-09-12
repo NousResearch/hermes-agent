@@ -164,7 +164,14 @@ export function useRouteResume({
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
       // a dead id ("session not found"). An explicit plugin reselect similarly
       // bypasses the warm-id skip when the focused transcript disappeared.
-      if ((gatewayBecameOpen || explicitlyRequested || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
+      //
+      // Also bypass `alreadyActive` on an explicit pathname navigation
+      // (pathnameChanged): a sidebar click in SSH/remote mode can arrive with a
+      // stale runtime id cached from before the previous disconnect, making
+      // `alreadyActive=true` even though the session runtime no longer exists on
+      // the gateway.  Trusting the cache in that case silently skips the RPC and
+      // leaves the user staring at the loading spinner forever (#97809).
+      if ((gatewayBecameOpen || explicitlyRequested || !alreadyActive || pathnameChanged) && shouldResume && !creatingSessionRef.current) {
         if (explicitlyRequested) {
           handledResumeRequestRef.current = sessionResumeRequest.sequence
         }

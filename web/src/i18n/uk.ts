@@ -202,6 +202,7 @@ export const uk: Translations = {
   },
 
   models: {
+    lastUsedModels: "Last 5 Models",
     modelsUsed: "Використано моделей",
     estimatedCost: "Орієнт. вартість",
     tokens: "токени",

@@ -202,6 +202,7 @@ export const af: Translations = {
   },
 
   models: {
+    lastUsedModels: "Last 5 Models",
     modelsUsed: "Modelle Gebruik",
     estimatedCost: "Geskatte Koste",
     tokens: "tokens",

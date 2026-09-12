@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Brain,
@@ -6,6 +6,7 @@ import {
   Cpu,
   DollarSign,
   Eye,
+  History,
   RefreshCw,
   Settings2,
   Star,
@@ -365,6 +366,61 @@ function UseAsMenu({
 /* ──────────────────────────────────────────────────────────────────── */
 /*  ModelCard                                                           */
 /* ──────────────────────────────────────────────────────────────────── */
+
+/* ──────────────────────────────────────────────────────────────────── */
+/*  "Last 5 Models" strip: most recently used models, mixed providers  */
+/* ──────────────────────────────────────────────────────────────────── */
+
+function LastUsedModels({ models }: { models: ModelsAnalyticsModelEntry[] }) {
+  const { t } = useI18n();
+
+  const recent = useMemo(
+    () =>
+      [...models]
+        .sort((a, b) => (b.last_used_at || 0) - (a.last_used_at || 0))
+        .slice(0, 5),
+    [models],
+  );
+
+  if (recent.length === 0) return null;
+
+  return (
+    <Card className="min-w-0 max-w-full">
+      <CardContent className="min-w-0 py-4">
+        <div className="flex items-center gap-2 mb-3">
+          <History className="h-4 w-4 text-text-secondary" />
+          <h2 className="text-sm font-medium">{t.models.lastUsedModels}</h2>
+        </div>
+        <div className="grid min-w-0 gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {recent.map((entry) => {
+            const provider = entry.provider || modelVendor(entry.model);
+            return (
+              <div
+                key={`${entry.model}:${entry.provider}`}
+                className="flex min-w-0 items-center gap-2 rounded-md border border-border/60 px-3 py-2"
+              >
+                <span
+                  className="text-sm font-mono-ui truncate"
+                  title={entry.model}
+                >
+                  {shortModelName(entry.model)}
+                </span>
+                {provider && (
+                  <Badge tone="secondary" className="text-xs shrink-0">
+                    {provider}
+                  </Badge>
+                )}
+                <span className="ml-auto shrink-0 text-xs text-text-tertiary">
+                  {entry.last_used_at > 0 ? timeAgo(entry.last_used_at) : ""}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function ModelCard({
   entry,
@@ -1242,6 +1298,8 @@ export default function ModelsPage() {
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <PluginSlot name="models:top" />
+
+      {data && data.models.length > 0 && <LastUsedModels models={data.models} />}
 
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         <ModelSettingsPanel

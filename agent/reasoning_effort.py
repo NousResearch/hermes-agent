@@ -148,6 +148,50 @@ def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
     return str(reasoning_config.get("effort") or "").strip().lower() or None
 
 
+#: Sentinal effort requesting per-turn adaptive resolution (resolved before the wire,
+#: never sent to a provider).
+AUTO_EFFORT = "auto"
+
+# Adaptive thresholds: deliberately coarse, deterministic, and cheap to reason about.
+# They gate a THINKING BUDGET, not a routing decision — the cost of a near-miss is a
+# slightly over/under-thought answer, so three bands suffice until data says otherwise.
+_AUTO_TRIVIAL_USER_CHARS = 160      # short ask ...
+_AUTO_TRIVIAL_CTX_TOKENS = 4_000    # ... with an empty context
+_AUTO_HEAVY_CTX_TOKENS = 60_000     # long-horizon session context
+_AUTO_HEAVY_TOOL_RESULTS = 6        # multi-step tool work already in flight
+_AUTO_HEAVY_USER_CHARS = 4_000      # a long, dense single ask
+
+
+def resolve_auto_effort(
+    *, user_chars: int, est_ctx_tokens: int, tool_results: int, turn_depth: int,
+) -> str:
+    """Deterministic request-shape signals → an internal effort level.
+
+    Signals (all cheap, all measured at request-build time, no LLM judgment):
+    ``user_chars`` length of the triggering user message; ``est_ctx_tokens``
+    estimated whole-request context; ``tool_results`` tool results already in the
+    message list; ``turn_depth`` requests since the last user message (1 = first).
+
+    Mapping: trivial ask (short prompt, near-empty context, no tool loop) → ``low``;
+    heavy work (large context, deep tool loop, or a very long ask) → ``high``;
+    everything else → ``medium``. Returns a concrete ladder level — never ``auto``.
+    """
+    if (
+        user_chars <= _AUTO_TRIVIAL_USER_CHARS
+        and est_ctx_tokens <= _AUTO_TRIVIAL_CTX_TOKENS
+        and tool_results == 0
+        and turn_depth <= 1
+    ):
+        return "low"
+    if (
+        est_ctx_tokens >= _AUTO_HEAVY_CTX_TOKENS
+        or tool_results >= _AUTO_HEAVY_TOOL_RESULTS
+        or user_chars >= _AUTO_HEAVY_USER_CHARS
+    ):
+        return "high"
+    return "medium"
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).

@@ -1202,6 +1202,79 @@ def _reasoning_config_for_wire(agent):
     return cfg
 
 
+def _turn_signature(messages: list) -> tuple | None:
+    """Stable identity of the user turn a request belongs to: (position, length) of the
+    LAST user message. Stable across a tool loop (nothing is appended after it but
+    assistant/tool messages); changes when a new user message arrives. Position alone
+    breaks when history is pruned; length alone collides; together they are cheap."""
+    last_pos, last_len = None, 0
+    for pos, msg in enumerate(messages or []):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        if role == "user":
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+            last_pos, last_len = pos, len(content or "")
+    return (last_pos, last_len) if last_pos is not None else None
+
+
+def _auto_effort_signals(messages: list) -> dict:
+    """Deterministic request-shape signals for THIS user turn, measured from the
+    request payload about to ship: the triggering user message length, the whole-request
+    context estimate, tool results accumulated in the turn, and requests already sent
+    in the turn (assistant rounds since the last user message + 1)."""
+    import json as _json
+
+    msgs = [
+        m if isinstance(m, dict) else {"role": getattr(m, "role", ""), "content": getattr(m, "content", "")}
+        for m in (messages or [])
+    ]
+    last_user_pos = -1
+    for pos, msg in enumerate(msgs):
+        if msg.get("role") == "user":
+            last_user_pos = pos
+    user_chars = len(msgs[last_user_pos].get("content") or "") if last_user_pos >= 0 else 0
+    turn_tail = msgs[last_user_pos + 1:] if last_user_pos >= 0 else msgs
+    tool_results = sum(1 for m in turn_tail if m.get("role") == "tool")
+    turn_depth = 1 + sum(1 for m in turn_tail if m.get("role") == "assistant")
+    est_ctx_tokens = int(len(_json.dumps(msgs, default=str)) / 4)
+    return {
+        "user_chars": user_chars,
+        "est_ctx_tokens": est_ctx_tokens,
+        "tool_results": tool_results,
+        "turn_depth": turn_depth,
+    }
+
+
+def _auto_effort_for_request(agent, messages: list | None = None) -> str | None:
+    """Resolve ``effort: "auto"`` to a concrete ladder level for the request about to
+    ship, pinned per user turn — or None when the agent's config is not ``auto``.
+
+    Pinning matters for the prompt cache: a reasoning-config change costs a cold
+    prefix write on config-sensitive providers, so the level is resolved once when
+    the turn's first request is built and held through the tool loop (same turn
+    signature), then re-resolved when the next user message arrives.
+    """
+    cfg = getattr(agent, "reasoning_config", None)
+    if not (isinstance(cfg, dict) and cfg.get("enabled") is not False and cfg.get("effort") == "auto"):
+        return None
+    from agent.reasoning_effort import resolve_auto_effort
+
+    if messages is None:
+        messages = getattr(agent, "conversation_history", None) or []
+    sig = _turn_signature(messages)
+    if sig is not None and getattr(agent, "_adaptive_effort_turn_sig", None) == sig:
+        return agent._adaptive_effort_level
+    level = resolve_auto_effort(**_auto_effort_signals(messages))
+    agent._adaptive_effort_turn_sig = sig
+    agent._adaptive_effort_level = level
+    return level
+
+
+def _reset_auto_effort_pin(agent) -> None:
+    """Drop the per-turn pin (model switch, session resume — signals may differ)."""
+    agent._adaptive_effort_turn_sig = None
+    agent._adaptive_effort_level = None
+
+
 def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
     """xAI chat-completions reserves ``tool_search`` and 400s when the bridge declares
     it (#95003): rename the wire declaration; ``normalize_response`` maps calls back
@@ -1382,6 +1455,10 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # One-shot continuation override — consumed exactly once, on the FIRST
     # request this call builds (only one api_mode branch runs per invocation).
     reasoning_config = _reasoning_config_for_wire(agent)
+    auto_level = _auto_effort_for_request(agent, api_messages)
+    if auto_level is not None:
+        base = reasoning_config if isinstance(reasoning_config, dict) else {}
+        reasoning_config = {**base, "effort": auto_level}
     if tools_for_api is None:
         tools_for_api = agent.tools
     # The one place request_overrides are consumed: static /fast values are already pinned

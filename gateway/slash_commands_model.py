@@ -697,6 +697,8 @@ class GatewayModelCommandsMixin:
             title=t("gateway.reasoning.picker_title", level=level, scope=scope, display=display_state),
             choices=[
                 {"value": "none", "label": t("gateway.reasoning.choice_none"), "is_current": current_effort == "none"},
+                {"value": "auto", "label": t("gateway.reasoning.choice_auto", default="auto (adaptive)"),
+                 "is_current": current_effort == "auto"},
                 *({"value": lv, "label": lv, "is_current": lv == current_effort} for lv in VALID_REASONING_EFFORTS),
                 *({"value": v, "label": t(f"gateway.reasoning.choice_{v}"), "is_current": False}
                   for v in ("reset", "show", "hide")),

@@ -1090,6 +1090,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Reply threading mode: "off", "first" (default; first chunk only), "all" (every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        self._disable_link_previews: bool = bool(
+            self.config.extra.get("disable_link_previews", False)
+        )
         # Bot's last message ID per channel: lets history backfill skip the full channel.history() scan.
         self._last_self_message_id: Dict[str, str] = {}
         # Bot-authored lifecycle/status message IDs that must not bound history after restart.
@@ -2867,7 +2870,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    msg = await channel.send(
+                        content=chunk,
+                        reference=chunk_reference,
+                        suppress_embeds=self._disable_link_previews,
+                    )
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -2875,7 +2882,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await channel.send(
+                            content=chunk,
+                            reference=None,
+                            suppress_embeds=self._disable_link_previews,
+                        )
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -2922,7 +2933,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         thread_name = _derive_forum_thread_name(content)
         starter_content = chunks[0] if chunks else thread_name
         try:
-            thread = await forum_channel.create_thread(name=thread_name, content=starter_content)
+            thread = await forum_channel.create_thread(
+                name=thread_name,
+                content=starter_content,
+                suppress_embeds=self._disable_link_previews,
+            )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
@@ -2931,7 +2946,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(
+                    content=chunk,
+                    suppress_embeds=self._disable_link_previews,
+                )
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -3109,7 +3127,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # Prior message without to_reference (duck-typed): build the reference from ids.
                 reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
-                sent = await channel.send(content=chunk, reference=reference)
+                sent = await channel.send(
+                    content=chunk,
+                    reference=reference,
+                    suppress_embeds=self._disable_link_previews,
+                )
             except Exception as send_err:
                 # Drop the reply anchor and retry once: deleted anchor (10008) / system message (50035).
                 logger.warning(
@@ -3117,7 +3139,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     self.name, send_err,
                 )
                 try:
-                    sent = await channel.send(content=chunk, reference=None)
+                    sent = await channel.send(
+                        content=chunk,
+                        reference=None,
+                        suppress_embeds=self._disable_link_previews,
+                    )
                 except Exception as retry_err:
                     logger.warning(
                         "[%s] Overflow split: stopped at %d/%d chunks delivered: %s",
@@ -6715,6 +6741,10 @@ async def _standalone_send(
         token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
         return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
+    disable_link_previews = bool(
+        (getattr(pconfig, "extra", None) or {}).get("disable_link_previews", False)
+    )
+    suppress_embeds_flag = 1 << 2
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
@@ -6746,6 +6776,8 @@ async def _standalone_send(
                             for idx, path in enumerate(valid_media)
                         ]
                         starter_message = {"content": (caption or message), "attachments": attachments_meta}
+                        if disable_link_previews:
+                            starter_message["flags"] = suppress_embeds_flag
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
                         form = aiohttp.FormData()
                         form.add_field("payload_json", payload_json, content_type="application/json")
@@ -6764,9 +6796,12 @@ async def _standalone_send(
                             return {"error": _standalone_sanitize_error(f"Discord forum thread upload failed: {e}")}
                     else:
                         # No media: JSON POST creates the thread with the text starter.
+                        starter_message = {"content": message}
+                        if disable_link_previews:
+                            starter_message["flags"] = suppress_embeds_flag
                         async with session.post(
                             thread_url, headers=json_headers,
-                            json={"name": thread_name, "message": {"content": message}}, **_req_kw,
+                            json={"name": thread_name, "message": starter_message}, **_req_kw,
                         ) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord forum thread creation error")
                             if err:
@@ -6783,7 +6818,10 @@ async def _standalone_send(
             url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                text_payload = {"content": message}
+                if disable_link_previews:
+                    text_payload["flags"] = suppress_embeds_flag
+                async with session.post(url, headers=json_headers, json=text_payload, **_req_kw) as resp:
                     last_data, err = await _standalone_response_json_or_error(resp, "Discord API error")
                     if err:
                         return err
@@ -6795,8 +6833,11 @@ async def _standalone_send(
                     warnings.append(_standalone_warn_missing_media(media_path))
                     if caption_pending:
                         try:
+                            caption_payload = {"content": caption}
+                            if disable_link_previews:
+                                caption_payload["flags"] = suppress_embeds_flag
                             async with session.post(
-                                url, headers=json_headers, json={"content": caption}, **_req_kw,
+                                url, headers=json_headers, json=caption_payload, **_req_kw,
                             ) as resp:
                                 if resp.status in {200, 201}:
                                     last_data = await _standalone_read_json_limited(

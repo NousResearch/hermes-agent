@@ -383,6 +383,13 @@ class TestHermesHomeHardline:
             "busybox rm $HERMES_HOME/state.db",
             "xargs rm $HERMES_HOME/state.db",
             "find $HERMES_HOME -exec rm {} \\;",
+            "find $HERMES_HOME -delete",
+            "dd if=/dev/zero of=$HERMES_HOME/state.db",
+            "rsync /tmp/replacement $HERMES_HOME/state.db",
+            "cmd.exe /c del $HERMES_HOME/state.db",
+            "powershell Remove-Item $HERMES_HOME/state.db",
+            'rm -rf "$HERMES_HOME"*',
+            "rm -rf ~/.hermes*",
             'printf x >&"$HERMES_HOME/state.db"',
             'printf x 3<>"$HERMES_HOME/state.db" >&3',
             "cp -at$HERMES_HOME /tmp/replacement",
@@ -410,6 +417,12 @@ class TestHermesHomeHardline:
             "sqlite3 $HERMES_HOME/state.db 'select count(*) from messages'",
             "sqlite3 $HERMES_HOME/state.db \"select 'a;b'\"",
             "sqlite3 $HERMES_HOME/state.db '/* read */ select 1; -- more\nselect 2'",
+            "sqlite3 $HERMES_HOME/state.db 'with row as (select 1) select * from row'",
+            "sqlite3 $HERMES_HOME/state.db 'pragma table_info(messages)'",
+            "sqlite3 -cmd '.mode json' $HERMES_HOME/state.db 'select 1'",
+            "busybox cp $HERMES_HOME/state.db /tmp/backup",
+            "find $HERMES_HOME -exec cp {} /tmp/backup \\;",
+            "busybox sqlite3 $HERMES_HOME/state.db 'select 1'",
         ):
             assert detect_hardline_command(command) == (False, None), command
 
@@ -430,6 +443,12 @@ class TestHermesHomeHardline:
         replay = json.loads(terminal_module.terminal_tool(command=command, force=True))
         assert replay["status"] == "blocked"
         assert replay["exit_code"] == -1
+
+    def test_relative_targets_are_blocked_inside_managed_cwd(self, monkeypatch, tmp_path):
+        home = tmp_path / "profile"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert detect_hardline_command("cd $HERMES_HOME && rm state.db")[0] is True
+        assert detect_hardline_command("truncate -s0 state.db", cwd=str(home))[0] is True
 
 
 class TestFindExecFullPathRm:

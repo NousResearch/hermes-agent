@@ -142,7 +142,8 @@ def refresh_local_runtime() -> bool:
 
 
 def _generate_presets(mdir: Path, preset_path: Path,
-                      launch_overrides: dict[str, object] | None = None) -> Path | None:
+                      launch_overrides: dict[str, object] | None = None, *,
+                      engine_tag: str | None = None) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
     Priced against CAPACITY, not live free VRAM: this runs while the outgoing server instance may
@@ -158,7 +159,7 @@ def _generate_presets(mdir: Path, preset_path: Path,
 
     try:
         for entry in generate_presets(mdir, probe_budget(planning=True), preset_path,
-                                      launch_overrides=launch_overrides):
+                                      launch_overrides=launch_overrides, engine_tag=engine_tag):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -209,7 +210,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
     try:
         from hermes_cli.local_runtime.binaries import (
-            default_tag, ensure_runtime_installed, installed_tags, select_backend)
+            active_tag, default_tag, ensure_runtime_installed, installed_tags, select_backend)
         from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
         backend = section.get("backend", "auto")
@@ -220,22 +221,23 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         # endpoint reports the pending update — the download is a deliberate click in the pane,
         # not a boot-path surprise (a multi-minute inline download here is exactly how the
         # onboarding bounce returns).
-        tag = section.get("tag") or default_tag()
+        configured_tag = section.get("tag") or default_tag()
         have = installed_tags()
-        if tag not in have:
+        tag = active_tag(section)
+        if configured_tag not in have:
             if not have:
                 logger.info("local runtime enabled but no build installed; "
                             "install happens in the Local Models pane")
                 return None
             logger.info("configured tag %s not installed; serving %s "
-                        "(update is a click in Local Models)", tag, have[0])
-            tag = have[0]
+                        "(update is a click in Local Models)", configured_tag, tag)
         install_dir = ensure_runtime_installed(tag, backend)
 
         mdir = models_dir()
         mdir.mkdir(parents=True, exist_ok=True)
-        preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini",
-                                        section.get("launch_overrides") or {})
+        preset_path = _generate_presets(
+            mdir, runtimes_root() / "presets.ini", section.get("launch_overrides") or {},
+            engine_tag=tag)
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),

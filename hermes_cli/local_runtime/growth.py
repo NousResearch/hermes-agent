@@ -79,13 +79,15 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     sup = get_supervisor()
     if sup is None or not is_managed_endpoint(base_url):
         return None
+    install_dir = getattr(sup, "install_dir", None)
+    engine_tag = install_dir.parent.name if install_dir is not None else None
 
     gguf = next((p for p in staged_models() if p.stem.startswith(model_id) or model_id in p.stem), None)
     if gguf is None:
         return None
 
     try:
-        profile = profile_from_gguf(read_gguf_header(gguf))
+        profile = profile_from_gguf(read_gguf_header(gguf), engine_tag=engine_tag)
     except (ValueError, OSError) as exc:
         logger.debug("growth skip %s: unreadable gguf (%s)", model_id, exc)
         return None

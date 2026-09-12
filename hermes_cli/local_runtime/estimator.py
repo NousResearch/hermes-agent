@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from hermes_cli.local_runtime.gguf import GGUFHeader
+from hermes_cli.local_runtime.gguf import GGUFHeader, supports_automatic_lazy_lookup
 
 # q8_0: 34-byte blocks of 32 f16-equivalent elements (exact).
 _Q8_BYTES_PER_ELEM = 34 / 32
@@ -50,6 +50,18 @@ class ModelProfile:
     # postures): the draft adds ~17% to per-token KV; 1.2 rounds up so the error stays on the safe
     # side (+250 MiB at 256K, never negative).
     kv_scale: float = 1.0
+    # Bytes in llama.cpp's automatic mmap-backed PLE lookup table. This is nonzero only after
+    # the active engine build has been checked; total weights stay intact for download/speed math.
+    lazy_table_bytes: int = 0
+
+    @property
+    def resident_weights_bytes(self) -> int:
+        """Weights that must be budgeted as resident GPU/ordinary-host allocation.
+
+        The disk-backed lookup table is not ordinary host spill and must not create a CPU tensor
+        override. Clamp defensively so a malformed catalog cannot turn a footprint negative.
+        """
+        return max(0, int(self.weights_bytes) - max(0, int(self.lazy_table_bytes)))
 
     @property
     def per_token_kv_f16(self) -> int:
@@ -73,7 +85,7 @@ class HardwareBudget:
     uma: bool = False
 
 
-def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
+def profile_from_gguf(header: GGUFHeader, *, engine_tag: str | None = None) -> ModelProfile:
     kv_heads = header.head_counts_kv()
     dk, dv = header.head_dim_k, header.head_dim_v
     swa_fraction = _SWA_LAYER_FRACTION.get(header.architecture, 0.0)
@@ -97,7 +109,9 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
     return ModelProfile(
         name=header.path, weights_bytes=header.tensor_bytes, embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
-        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab)
+        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
+        lazy_table_bytes=(header.lazy_table_bytes
+                          if supports_automatic_lazy_lookup(engine_tag) else 0))
 
 
 def kv_dtype_factor(flash_attention: bool) -> float:
@@ -131,11 +145,18 @@ class PhysicsRefusal:
     message: str
 
 
+def footprint_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = True,
+                    overhead_bytes: int = 0) -> int:
+    """Complete resident footprint; the hardware budget already excludes its reserve."""
+    return (profile.resident_weights_bytes + ctx_bytes(profile, window, flash_attention=flash_attention)
+            + max(0, overhead_bytes))
+
+
 def physics_check(profile: ModelProfile, budget: HardwareBudget,
-                  floor: int, *, flash_attention: bool = True) -> PhysicsRefusal | None:
-    needed = (profile.weights_bytes
-              + ctx_bytes(profile, min(floor, profile.n_ctx_train or floor),
-                          flash_attention=flash_attention))
+                  floor: int, *, flash_attention: bool = True,
+                  overhead_bytes: int = 0) -> PhysicsRefusal | None:
+    needed = footprint_bytes(profile, min(floor, profile.n_ctx_train or floor),
+                             flash_attention=flash_attention, overhead_bytes=overhead_bytes)
     available = budget.usable_vram_bytes + budget.ram_available_bytes
     if needed <= available:
         return None

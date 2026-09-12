@@ -33,6 +33,7 @@ from hermes_cli.local_runtime.catalog import (
 from hermes_cli.local_runtime.estimator import HardwareBudget
 
 _GIB = 1 << 30
+_ENGINE_TAG = "b10679"
 
 
 def _discrete(size_gb: int) -> HardwareBudget:
@@ -60,8 +61,8 @@ def _unified(size_gb: int) -> HardwareBudget:
 #    24  | qwen3.8-27b             | (none fits)
 #    32  | qwen3.8-27b             | qwen3.6-35b-a3b
 #    48  | qwen3.8-27b             | qwen3.6-35b-a3b
-#    96  | qwen3.8-27b             | qwen3.6-35b-a3b
-#   128  | qwen3.8-flash-next      | qwen3.6-35b-a3b
+#    96  | qwen3.8-flash-next      | qwen3.6-35b-a3b
+#   128  | qwen3.8-flash-next      | qwen3.8-flash-next
 #   256  | qwen3.8-flash-next      | qwen3.8-flash-next
 #   512  | qwen3.8-flash-next      | qwen3.8-flash-next
 #
@@ -69,13 +70,14 @@ def _unified(size_gb: int) -> HardwareBudget:
 # - Discrete <=16 GB: nothing runs resident; the 35B MoE is the least
 #   painful spill (active slice streams from host; a dense spill reads
 #   every weight over the bus).
-# - Discrete 24-96 GB: the 27B is the flagship experience — dense reads
+# - Discrete 24-48 GB: the 27B is the flagship experience — dense reads
 #   at ~1 TB/s clear the floor easily, so quality decides.
-# - Discrete/unified where Flash Next fits resident (128 GB discrete,
-#   256+ GB unified): the frontier model is the pick — highest quality,
+# - Discrete/unified where Flash Next's resident core fits (96 GB discrete,
+#   128+ GB unified): the frontier model is the pick — highest quality,
+#   while its 26.8 GiB PLE lookup table stays disk-backed under b10679+;
 #   and its sparse decode clears the floor even at UMA bandwidth
 #   (~24 tok/s predicted at 210 GB/s).
-# - Unified 32-128 GB — the Spark class, the reason this resolver
+# - Unified 32-96 GB — the Spark class, the reason this resolver
 #   exists: the dense 27B predicts ~13 tok/s at UMA bandwidth (below
 #   the pleasant floor), so the 35B-A3B (~60 tok/s) wins.
 # - Unified <=24 GB: no entry passes the physics check inside the UMA
@@ -93,10 +95,10 @@ DECISION_TABLE = [
     (32, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
     (48, "discrete", "qwen3.8-27b", "best-quality-resident"),
     (48, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
-    (96, "discrete", "qwen3.8-27b", "best-quality-resident"),
+    (96, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
     (96, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
     (128, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
-    (128, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
+    (128, "unified", "qwen3.8-flash-next", "best-quality-resident"),
     (256, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
     (256, "unified", "qwen3.8-flash-next", "best-quality-resident"),
     (512, "discrete", "qwen3.8-flash-next", "best-quality-resident"),
@@ -113,7 +115,7 @@ def test_recommendation_decision_table(size_gb, kind, expected, expected_reason)
     (the Recommended badge's tooltip), so a cell whose rationale flips
     without the pick flipping is still a review-worthy change."""
     budget = _discrete(size_gb) if kind == "discrete" else _unified(size_gb)
-    picked = recommended_entry(budget)
+    picked = recommended_entry(budget, engine_tag=_ENGINE_TAG)
     if expected is None:
         assert picked is None
     else:
@@ -142,14 +144,14 @@ def test_unified_never_recommends_a_below_floor_dense_model():
     predicted decode is below the pleasant floor while a resident
     alternative clears it."""
     budget = _unified(128)
-    pick = recommended_entry(budget)[0].id
+    pick = recommended_entry(budget, engine_tag=_ENGINE_TAG)[0].id
     assert pick is not None
     entry = next(e for e in CATALOG if e.id == pick)
-    choice = select_variant(entry, budget)
+    choice = select_variant(entry, budget, engine_tag=_ENGINE_TAG)
     assert choice is not None and choice.zero_spill
     clears = [
         e for e in CATALOG
-        if (c := select_variant(e, budget)) is not None and c.zero_spill
+        if (c := select_variant(e, budget, engine_tag=_ENGINE_TAG)) is not None and c.zero_spill
         and predicted_decode_tok_s(e, c.variant, budget) >= PLEASANT_FLOOR_TOK_S
     ]
     if clears:
@@ -161,9 +163,9 @@ def test_quality_decides_where_speed_permits():
     the pick must be the highest-quality fitting entry — the axis that
     justifies carrying an editorial field at all."""
     budget = _discrete(512)
-    pick = recommended_entry(budget)[0].id
+    pick = recommended_entry(budget, engine_tag=_ENGINE_TAG)[0].id
     resident = [
         e for e in CATALOG
-        if (c := select_variant(e, budget)) is not None and c.zero_spill
+        if (c := select_variant(e, budget, engine_tag=_ENGINE_TAG)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id

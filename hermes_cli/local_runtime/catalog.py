@@ -19,7 +19,7 @@ from pathlib import PurePosixPath
 from hermes_cli.local_runtime.context_policy import (
     FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, ctx_bytes
-from hermes_cli.local_runtime.gguf import model_id_from_stem
+from hermes_cli.local_runtime.gguf import model_id_from_stem, supports_automatic_lazy_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,9 @@ class QuantVariant:
     quant: str                  # e.g. "UD-Q4_K_M"
     files: tuple                # AssetFile, first = the load target
     validated: bool = False     # proven end-to-end on real hardware
+    # Exact bytes in an automatic mmap-backed lookup tensor. Catalog planning knows this before
+    # download; the parsed header remains authoritative after download.
+    lazy_table_bytes: int = 0
 
     @property
     def model_id(self) -> str:
@@ -106,14 +109,16 @@ class CatalogEntry:
     # recommendation.
     decode_fraction: float = 1.0
 
-    def profile(self, variant: QuantVariant) -> ModelProfile:
+    def profile(self, variant: QuantVariant, *, engine_tag: str | None = None) -> ModelProfile:
         layers = ([(LayerKind.FULL, self.per_layer_f16)] * self.full_layers
                   + [(LayerKind.SWA, self.per_layer_f16)] * self.swa_layers
                   + [(LayerKind.RECURRENT, 0)] * self.recurrent_layers)
         return ModelProfile(
             name=variant.model_id, weights_bytes=variant.weights_bytes, embd_table_bytes=0,
             n_ctx_train=self.n_ctx_train, layers=layers, swa_window=self.swa_window, moe=self.moe,
-            n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp else 1.0)
+            n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp else 1.0,
+            lazy_table_bytes=(variant.lazy_table_bytes
+                              if supports_automatic_lazy_lookup(engine_tag) else 0))
 
     def download_files(self, variant: QuantVariant) -> tuple:
         """Everything a download job fetches for this variant, in order."""
@@ -134,7 +139,8 @@ class VariantChoice:
     reason_key: str  # "best-large-window" | "best-fits" | "smallest-fits-spilled"
 
 
-def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice | None:
+def select_variant(entry: CatalogEntry, budget: HardwareBudget, *,
+                   engine_tag: str | None = None) -> VariantChoice | None:
     """Fit the entry's one Q4-class build to this machine; headroom buys a bigger window, never a
     bigger quant.
 
@@ -146,8 +152,8 @@ def select_variant(entry: CatalogEntry, budget: HardwareBudget) -> VariantChoice
                 + ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
     native = entry.n_ctx_train or FLOOR
     variant = entry.variants[-1]
-    profile = entry.profile(variant)
-    need = variant.weights_bytes + overhead
+    profile = entry.profile(variant, engine_tag=engine_tag)
+    need = profile.resident_weights_bytes + overhead
     vram = budget.usable_vram_bytes
     if need + ctx_bytes(profile, min(TARGET_WINDOW, native)) <= vram:
         return VariantChoice(variant, zero_spill=True, reason_key="best-large-window")
@@ -189,7 +195,8 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: H
 
 
 def recommended_entry(budget: HardwareBudget,
-                      entries: "tuple[CatalogEntry, ...] | None" = None
+                      entries: "tuple[CatalogEntry, ...] | None" = None, *,
+                      engine_tag: str | None = None,
                       ) -> "tuple[CatalogEntry, str] | None":
     """The catalog's default pick for THIS machine, with its reason key.
 
@@ -200,7 +207,8 @@ def recommended_entry(budget: HardwareBudget,
     (nothing runs resident; fastest from host memory — MoE by construction).
     """
     pool = CATALOG if entries is None else entries
-    fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
+    fitting = [(e, c) for e in pool
+               if (c := select_variant(e, budget, engine_tag=engine_tag)) is not None]
     if not fitting:
         return None
 
@@ -260,6 +268,7 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
     entries = []
     for m in doc["models"]:
         variants = tuple(QuantVariant(quant=v["quant"], validated=bool(v.get("validated")),
+                                      lazy_table_bytes=int(v.get("lazy_table_bytes", 0)),
                                       files=tuple(_asset_from(f) for f in v["files"]))
                          for v in m["variants"])
         scalars = {k: coerce(m[k] if default is None else m.get(k, default))
@@ -345,7 +354,8 @@ def find_variant(entry_id: str, model_id: str) -> QuantVariant | None:
     return next((v for v in entry.variants if v.model_id == model_id), None)
 
 def recommended_id(budget: HardwareBudget,
-                   entries: "tuple[CatalogEntry, ...] | None" = None) -> str | None:
-    picked = recommended_entry(budget, entries)
+                   entries: "tuple[CatalogEntry, ...] | None" = None, *,
+                   engine_tag: str | None = None) -> str | None:
+    picked = recommended_entry(budget, entries, engine_tag=engine_tag)
     return picked[0].id if picked is not None else None
 # ---- END PLUGIN-COMPAT ----

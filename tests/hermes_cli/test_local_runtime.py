@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -24,6 +25,33 @@ from hermes_cli.local_runtime.binaries import (
     select_backend,
 )
 from hermes_cli.local_runtime.detect import DetectedServer, probe_port
+
+
+def _gguf_string(value: str) -> bytes:
+    raw = value.encode("utf-8")
+    return struct.pack("<Q", len(raw)) + raw
+
+
+def _write_binary_gguf(path: Path, *, metadata: dict[str, int | str] | None = None,
+                       tensors: list[tuple[str, list[int], int]] | None = None) -> None:
+    """Write a real GGUF header/table fixture without allocating tensor payload bytes."""
+    metadata = metadata or {}
+    tensors = tensors or []
+    body = [b"GGUF", struct.pack("<IQQ", 3, len(tensors), len(metadata))]
+    for key, value in metadata.items():
+        body.append(_gguf_string(key))
+        if isinstance(value, str):
+            body.extend((struct.pack("<I", 8), _gguf_string(value)))
+        else:
+            body.extend((struct.pack("<I", 10), struct.pack("<Q", value)))
+    for name, dims, tensor_type in tensors:
+        body.extend((
+            _gguf_string(name), struct.pack("<I", len(dims)),
+            struct.pack(f"<{len(dims)}Q", *dims), struct.pack("<I", tensor_type),
+            struct.pack("<Q", 0),
+        ))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"".join(body))
 
 
 # ── stub llama-server ────────────────────────────────────────
@@ -606,6 +634,137 @@ def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     (mdir / "Partial-Q4-00001-of-00003.gguf").touch()
 
     assert bs.staged_model_ids() == ["Single-Q4_K_M", "Whole-Q4"]
+
+
+def test_split_gguf_reader_aggregates_ple_outside_first_shard(tmp_path):
+    """A metadata-only first shard must account for tensors stored by later shards."""
+    from hermes_cli.local_runtime.estimator import profile_from_gguf
+    from hermes_cli.local_runtime.gguf import (
+        AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES,
+        read_gguf_header,
+        supports_automatic_lazy_lookup,
+    )
+
+    first = tmp_path / "Toy-00001-of-00002.gguf"
+    second = tmp_path / "Toy-00002-of-00002.gguf"
+    metadata = {
+        "general.architecture": "toy",
+        "toy.block_count": 1,
+        "toy.context_length": 65536,
+        "toy.embedding_length": 16,
+        "toy.attention.head_count": 1,
+        "toy.attention.head_count_kv": 1,
+    }
+    lazy = AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES + 1
+    _write_binary_gguf(first, metadata=metadata)  # exact shape of Qwen's shard one: metadata, no tensors
+    _write_binary_gguf(second, tensors=[
+        ("token_embd.weight", [32], 24),
+        ("per_layer_token_embd.weight", [lazy], 24),
+    ])
+
+    header = read_gguf_header(first)
+    assert header.n_tensors == 2
+    assert header.tensor_bytes == 32 + lazy
+    assert header.embd_table_bytes == 32
+    assert header.lazy_table_bytes == lazy
+    # Continuation paths receive the same aggregate, not just their local table.
+    assert read_gguf_header(second).tensor_bytes == header.tensor_bytes
+
+    assert supports_automatic_lazy_lookup("b10678") is False
+    assert supports_automatic_lazy_lookup("b10679") is True
+    old = profile_from_gguf(header, engine_tag="b10678")
+    new = profile_from_gguf(header, engine_tag="b10679")
+    assert old.lazy_table_bytes == 0
+    assert old.resident_weights_bytes == header.tensor_bytes
+    assert new.lazy_table_bytes == lazy
+    assert new.resident_weights_bytes == 32
+
+
+def test_automatic_lazy_ple_threshold_is_strict(tmp_path):
+    from hermes_cli.local_runtime.gguf import AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES, read_gguf_header
+
+    path = tmp_path / "Boundary.gguf"
+    _write_binary_gguf(path, tensors=[
+        ("per_layer_token_embd.weight", [AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES], 24),
+    ])
+    assert read_gguf_header(path).lazy_table_bytes == 0
+
+
+def test_only_the_named_oversized_ple_tensor_is_lazy(tmp_path):
+    """Size alone is insufficient: unrelated oversized weights remain ordinary residency."""
+    from hermes_cli.local_runtime.gguf import AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES, read_gguf_header
+
+    oversized = AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES + 1
+    path = tmp_path / "Other-Lookup.gguf"
+    _write_binary_gguf(path, tensors=[("some_other_lookup.weight", [oversized], 24)])
+    header = read_gguf_header(path)
+    assert header.tensor_bytes == oversized
+    assert header.lazy_table_bytes == 0
+
+
+def test_split_reader_rejects_incomplete_tensor_sets(tmp_path):
+    """Partial downloads must not be priced as a metadata-only, zero-byte model."""
+    from hermes_cli.local_runtime.gguf import read_gguf_header
+
+    first = tmp_path / "Partial-00001-of-00004.gguf"
+    _write_binary_gguf(first, metadata={"general.architecture": "toy"})
+    with pytest.raises(ValueError, match="incomplete split GGUF"):
+        read_gguf_header(first)
+
+
+def test_catalog_and_preset_agree_on_real_split_ple_header(tmp_path, monkeypatch):
+    """The pre-download catalog and post-download split parser must reach the same placement."""
+    from hermes_cli.local_runtime.catalog import AssetFile, CatalogEntry, QuantVariant, select_variant
+    from hermes_cli.local_runtime.estimator import HardwareBudget, profile_from_gguf
+    from hermes_cli.local_runtime.gguf import AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES, read_gguf_header
+    from hermes_cli.local_runtime.presets import generate_presets, read_preset_decisions
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    first = tmp_path / "Toy-00001-of-00002.gguf"
+    second = tmp_path / "Toy-00002-of-00002.gguf"
+    lazy = AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES + 1
+    _write_binary_gguf(first, metadata={
+        "general.architecture": "toy",
+        "toy.block_count": 1,
+        "toy.context_length": 65536,
+        "toy.embedding_length": 16,
+        "toy.attention.head_count": 1,
+        "toy.attention.head_count_kv": 1,
+    })
+    _write_binary_gguf(second, tensors=[
+        ("token_embd.weight", [32], 24),
+        ("per_layer_token_embd.weight", [lazy], 24),
+    ])
+    variant = QuantVariant(
+        quant="Q4", lazy_table_bytes=lazy,
+        files=(AssetFile(first.name, 0), AssetFile(second.name, lazy + 32)),
+    )
+    entry = CatalogEntry(
+        id="toy", display_name="Toy", description="split fixture", repo="fixture",
+        variants=(variant,), n_ctx_train=65536, full_layers=1, recurrent_layers=0,
+        per_layer_f16=64,
+    )
+    parsed = profile_from_gguf(read_gguf_header(first), engine_tag="b10679")
+    catalog_profile = entry.profile(variant, engine_tag="b10679")
+    assert (parsed.weights_bytes, parsed.lazy_table_bytes, parsed.resident_weights_bytes) == (
+        catalog_profile.weights_bytes, catalog_profile.lazy_table_bytes,
+        catalog_profile.resident_weights_bytes,
+    )
+
+    budget = HardwareBudget(usable_vram_bytes=2 << 30, total_device_bytes=2 << 30,
+                            ram_available_bytes=0)
+    choice = select_variant(entry, budget, engine_tag="b10679")
+    assert choice is not None and choice.zero_spill
+    preset_path = tmp_path / "presets.ini"
+    generated = generate_presets(tmp_path, budget, preset_path, engine_tag="b10679")
+    assert len(generated) == 1
+    preset = generated[0]
+    assert preset.lazy_table_bytes == lazy
+    assert not preset.spilled
+    assert preset.keys is not None and "override-tensor" not in preset.keys
+    reread = read_preset_decisions(preset_path)[preset.model_id]
+    assert (reread.window, reread.spilled, reread.lazy_table_bytes) == (
+        preset.window, preset.spilled, lazy)
 
 
 def test_bootstrap_skips_boot_with_no_staged_models(tmp_path, monkeypatch):

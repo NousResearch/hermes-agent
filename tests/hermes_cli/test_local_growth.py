@@ -133,7 +133,7 @@ def test_preset_generation_for_catalog_model_with_mmproj(hermes_home, tmp_path, 
 
     monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
     monkeypatch.setattr(presets_mod, "profile_from_gguf",
-                        lambda h: _tiny_profile(variant.model_id))
+                        lambda h, **kwargs: _tiny_profile(variant.model_id))
 
     gib = 1 << 30
     budget = HardwareBudget(usable_vram_bytes=24 * gib,
@@ -158,7 +158,7 @@ def test_preset_restores_grown_window_capped_at_native(hermes_home, tmp_path, mo
     _stage_fake_gguf(mdir, "tiny-dense")
     monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
     monkeypatch.setattr(presets_mod, "profile_from_gguf",
-                        lambda h: _tiny_profile("tiny-dense"))
+                        lambda h, **kwargs: _tiny_profile("tiny-dense"))
 
     gib = 1 << 30
     budget = HardwareBudget(usable_vram_bytes=24 * gib,
@@ -187,7 +187,7 @@ def test_preset_ignores_override_below_launch_window(hermes_home, tmp_path, monk
     _stage_fake_gguf(mdir, "tiny-dense")
     monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
     monkeypatch.setattr(presets_mod, "profile_from_gguf",
-                        lambda h: _tiny_profile("tiny-dense"))
+                        lambda h, **kwargs: _tiny_profile("tiny-dense"))
     save_window_override("tiny-dense", 65536)
 
     gib = 1 << 30
@@ -216,7 +216,7 @@ def test_preset_restores_grown_window_midladder(hermes_home, tmp_path, monkeypat
     mdir = tmp_path / "models"
     _stage_fake_gguf(mdir, "big-dense")
     monkeypatch.setattr(presets_mod, "read_gguf_header", lambda p: _header_stub())
-    monkeypatch.setattr(presets_mod, "profile_from_gguf", lambda h: profile)
+    monkeypatch.setattr(presets_mod, "profile_from_gguf", lambda h, **kwargs: profile)
 
     budget = HardwareBudget(usable_vram_bytes=28 * gib,
                             total_device_bytes=32 * gib,
@@ -261,7 +261,7 @@ def test_sampling_ladder_file_beats_catalog_beats_nothing(hermes_home, tmp_path,
 
     monkeypatch.setattr(presets_mod, "read_gguf_header", fake_header)
     monkeypatch.setattr(presets_mod, "profile_from_gguf",
-                        lambda h: _tiny_profile("x"))
+                        lambda h, **kwargs: _tiny_profile("x"))
 
     out = tmp_path / "presets.ini"
     presets_mod.generate_presets(mdir, budget, out)

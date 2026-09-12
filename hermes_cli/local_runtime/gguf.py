@@ -17,10 +17,29 @@ _GGUF_MAGIC = b"GGUF"
 SPLIT_PART_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 _PART_SUFFIX_RE = re.compile(r"-\d{5}-of-\d{5}$")
 
+# llama.cpp b10679 added automatic, mmap-backed lookup for a large PLE table. The engine chooses
+# this only when the individual tensor is strictly larger than 4 GiB; at or below the boundary it
+# remains an ordinary resident tensor. Keep the parser's fact separate from the engine capability
+# check below — an older installed build must price the same file normally.
+AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES = 4 << 30
+LAZY_LOOKUP_MIN_ENGINE_BUILD = 10679
+_LAZY_LOOKUP_TENSOR_NAME = "per_layer_token_embd.weight"
+
 
 def model_id_from_stem(stem: str) -> str:
     """Model id from a GGUF file stem (split-part suffix stripped)."""
     return _PART_SUFFIX_RE.sub("", stem)
+
+
+def supports_automatic_lazy_lookup(engine_tag: str | None) -> bool:
+    """Whether this exact llama.cpp build uses the automatic PLE mmap path.
+
+    ``engine_tag`` is deliberately supplied by the caller rather than read from configuration:
+    boot can fall back to an older installed build while a newer configured build is pending.
+    Unknown or malformed tags take the safe, resident path.
+    """
+    match = re.search(r"(\d+)", engine_tag or "")
+    return bool(match and int(match.group(1)) >= LAZY_LOOKUP_MIN_ENGINE_BUILD)
 
 
 # ggml tensor type sizes: type_id -> (block_bytes, block_elems). IQ-family verified against
@@ -57,6 +76,7 @@ class GGUFHeader:
     n_tensors: int = 0
     tensor_bytes: int = 0          # exact sum over the tensor table
     embd_table_bytes: int = 0      # token_embd.weight (duplicated host-side when fully offloaded)
+    lazy_table_bytes: int = 0      # large per_layer_token_embd.weight, eligible for automatic mmap lookup
 
     # ── typed accessors ──────────────────────────────────────
 
@@ -149,8 +169,8 @@ class GGUFHeader:
         return self.head_dim_k
 
 
-def read_gguf_header(path: str | Path) -> GGUFHeader:
-    path = Path(path)
+def _read_gguf_part(path: Path) -> GGUFHeader:
+    """Read one GGUF header. Split aggregation belongs in ``read_gguf_header``."""
 
     def read(f, fmt: str):
         return struct.unpack(fmt, f.read(struct.calcsize(fmt)))
@@ -180,6 +200,7 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
 
         tensor_bytes = 0
         embd_bytes = 0
+        lazy_bytes = 0
         for _ in range(n_tensors):
             name = read_str(f)
             (n_dims,) = read(f, "<I")
@@ -197,7 +218,47 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
             tensor_bytes += nbytes
             if name == "token_embd.weight":
                 embd_bytes = nbytes
+            if name == _LAZY_LOOKUP_TENSOR_NAME and nbytes > AUTOMATIC_LAZY_TENSOR_THRESHOLD_BYTES:
+                lazy_bytes += nbytes
 
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
-                      embd_table_bytes=embd_bytes)
+                      embd_table_bytes=embd_bytes, lazy_table_bytes=lazy_bytes)
+
+
+def _split_parts(path: Path) -> tuple[Path, ...]:
+    """Return every part for a split GGUF, refusing an incomplete set.
+
+    A caller may hand us any continuation part, but the model's metadata lives in part one and
+    accounting only makes sense with the complete set. Silently reading one shard would make a
+    metadata-only first shard look like a zero-byte model.
+    """
+    match = SPLIT_PART_RE.search(path.name)
+    if match is None:
+        return (path,)
+    stem = path.name[:match.start()]
+    total = int(match.group(2))
+    parts = tuple(path.with_name(f"{stem}-{index:05d}-of-{total:05d}.gguf")
+                  for index in range(1, total + 1))
+    missing = [part.name for part in parts if not part.is_file()]
+    if missing:
+        raise ValueError(f"incomplete split GGUF for {path.name}: missing {', '.join(missing)}")
+    return parts
+
+
+def read_gguf_header(path: str | Path) -> GGUFHeader:
+    """Read metadata and tensor tables for one GGUF or every shard of a complete split model."""
+    path = Path(path)
+    headers = [_read_gguf_part(part) for part in _split_parts(path)]
+    first = headers[0]
+    if any(header.version != first.version for header in headers[1:]):
+        raise ValueError(f"split GGUF parts disagree on version: {path}")
+    if len(headers) == 1:
+        return first
+    return GGUFHeader(
+        path=str(path), version=first.version, metadata=first.metadata,
+        n_tensors=sum(header.n_tensors for header in headers),
+        tensor_bytes=sum(header.tensor_bytes for header in headers),
+        embd_table_bytes=sum(header.embd_table_bytes for header in headers),
+        lazy_table_bytes=sum(header.lazy_table_bytes for header in headers),
+    )

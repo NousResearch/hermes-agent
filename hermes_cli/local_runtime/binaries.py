@@ -87,6 +87,17 @@ def installed_tags() -> list[str]:
     return sorted(found, key=_release_number, reverse=True)
 
 
+def active_tag(section: dict | None = None) -> str:
+    """The tag boot will actually serve: configured when installed, else newest installed.
+
+    Planning must use this rather than the configured default because an update can be pending
+    while an older engine continues serving staged and sideloaded GGUFs.
+    """
+    configured = str((section or {}).get("tag") or default_tag())
+    have = installed_tags()
+    return configured if configured in have else (have[0] if have else configured)
+
+
 def _host_os_arch() -> tuple[str, str]:
     """(os, arch) normalized to release-asset vocabulary. PITFALL: PROCESSOR_ARCHITECTURE lies
     under x64 emulation on ARM64 Windows, and platform.machine() reads the same env on some

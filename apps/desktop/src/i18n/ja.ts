@@ -1083,9 +1083,12 @@ export const ja = defineLocale({
       loadedPill: '読み込み済み',
       placementResident: 'すべて GPU 上',
       placementSpilled: '一部 RAM 上',
+      placementDiskBacked: 'ディスク参照テーブル',
       placementResidentTip: 'このコンテキストウィンドウで GPU メモリ内で完全に動作しています — フルスピード。',
       placementSpilledTip:
         'モデルの一部がシステム RAM から動作しています — 動作しますが遅くなります。よりコンパクトなビルドか小さいコンテキストなら完全に収まります。',
+      placementDiskBackedTip: size =>
+        `${size} の参照テーブルは必要に応じてディスクから読み込まれます。システム RAM へのスピルではありませんが、モデル全体が GPU 常駐ではありません。`,
       loadingPill: '読み込み中…',
       ejectTip: 'GPU メモリを解放（必要時に再読み込み）',
       ejected: 'モデルをアンロードしました——GPU メモリを解放しました。',
@@ -1104,6 +1107,9 @@ export const ja = defineLocale({
       downloadFailed: model => `${model} のダウンロードに失敗しました`,
       pillFitsGpu: 'GPU に完全に収まります',
       pillUsesRam: 'システム RAM を使用',
+      pillDiskBacked: 'ディスク参照テーブル',
+      pillDiskBackedTip: size =>
+        `${size} の参照テーブルは必要に応じてディスクから読み込まれます。コアの重みは GPU に収まり、システム RAM へのスピルとは別です。`,
       pillTooBig: 'このマシンには大きすぎます',
       browseTitle: 'さらにモデルを探す',
       browseHint:

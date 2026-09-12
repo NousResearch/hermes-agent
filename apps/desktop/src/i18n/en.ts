@@ -1190,9 +1190,12 @@ export const en: Translations = {
       loadedPill: 'In memory',
       placementResident: 'all on GPU',
       placementSpilled: 'partly in RAM',
+      placementDiskBacked: 'disk-backed lookup',
       placementResidentTip: 'Running entirely in GPU memory at this context window — full speed.',
       placementSpilledTip:
         'Part of this model runs from system RAM — it works, but slower. A more compact build or a smaller context would fit fully.',
+      placementDiskBackedTip: size =>
+        `${size} lookup table is read from disk on demand. It is not system-RAM spill, but the model is not fully resident on the GPU.`,
       loadingPill: 'Loading…',
       ejectTip: 'Free GPU memory (loads again on the next message)',
       ejected: 'Model unloaded — GPU memory freed.',
@@ -1211,6 +1214,9 @@ export const en: Translations = {
       downloadFailed: model => `Download of ${model} failed`,
       pillFitsGpu: 'Fits your GPU',
       pillUsesRam: 'Uses system RAM',
+      pillDiskBacked: 'Disk-backed lookup',
+      pillDiskBackedTip: size =>
+        `${size} lookup table is read from disk on demand; core weights fit the GPU. This is separate from system-RAM spill.`,
       pillTooBig: 'Too big for this machine',
       browseTitle: 'Find more models',
       browseHint:

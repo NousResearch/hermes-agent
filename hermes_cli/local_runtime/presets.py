@@ -4,6 +4,7 @@ launch decisions.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -32,6 +33,7 @@ class PresetEntry:
     spilled: bool
     refusal: str | None = None
     keys: dict[str, str] | None = None
+    lazy_table_bytes: int = 0
 
 
 def _args_to_keys(args: list[str]) -> dict[str, str]:
@@ -94,7 +96,7 @@ def _restore_grown_window(model_id: str, profile: ModelProfile, budget: Hardware
             # launch planner; otherwise two slots could restore a one-slot
             # window that no longer fits.
             kv = ctx_bytes(profile, target, flash_attention=flash_attention)
-            need = profile.weights_bytes + fixed_overhead + slots * (kv + logits_bytes)
+            need = profile.resident_weights_bytes + fixed_overhead + slots * (kv + logits_bytes)
             if need <= budget.usable_vram_bytes + budget.ram_available_bytes:
                 return WindowDecision(
                     window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
@@ -106,14 +108,15 @@ def _restore_grown_window(model_id: str, profile: ModelProfile, budget: Hardware
 
 
 def _preset_for(gguf: Path, budget: HardwareBudget, mtp_capable: set[str],
-                launch_overrides: dict[str, object]) -> PresetEntry | None:
+                launch_overrides: dict[str, object], *,
+                engine_tag: str | None = None) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable."""
     from hermes_cli.local_runtime.catalog import entry_for_model
 
     model_id = model_id_from_stem(gguf.stem)
     try:
         header = read_gguf_header(gguf)
-        profile = profile_from_gguf(header)
+        profile = profile_from_gguf(header, engine_tag=engine_tag)
     except (ValueError, OSError) as exc:
         logger.warning("preset skip %s: %s", gguf.name, exc)
         return None
@@ -138,13 +141,15 @@ def _preset_for(gguf: Path, budget: HardwareBudget, mtp_capable: set[str],
     overhead = fixed_overhead + logits_bytes
     decision = initial_window(profile, budget, overhead_bytes=overhead)
     if isinstance(decision, PhysicsRefusal):
-        return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
+        return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message,
+                           lazy_table_bytes=profile.lazy_table_bytes)
     planned = plan_launch(
         profile, budget, request, default_context_tokens=decision.window,
         mtp_supported=is_mtp, default_mtp_depth=entry.mtp_draft_depth if entry is not None else 3,
         fixed_overhead_bytes=fixed_overhead)
     if not planned.fits:
-        return PresetEntry(model_id=model_id, window=0, spilled=False, refusal="; ".join(planned.reasons))
+        return PresetEntry(model_id=model_id, window=0, spilled=False, refusal="; ".join(planned.reasons),
+                           lazy_table_bytes=profile.lazy_table_bytes)
     is_mtp = planned.mtp_enabled
     if not is_mtp and profile.kv_scale != 1.0:
         profile = replace(profile, kv_scale=1.0)
@@ -186,12 +191,14 @@ def _preset_for(gguf: Path, budget: HardwareBudget, mtp_capable: set[str],
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
             keys["spec-draft-n-max"] = "3"
     return PresetEntry(model_id=model_id, window=decision.window,
-                       spilled=decision.spilled, keys=keys)
+                       spilled=decision.spilled, keys=keys,
+                       lazy_table_bytes=profile.lazy_table_bytes)
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
                      mtp_capable: set[str] | None = None,
-                     launch_overrides: dict[str, object] | None = None) -> list[PresetEntry]:
+                     launch_overrides: dict[str, object] | None = None, *,
+                     engine_tag: str | None = None) -> list[PresetEntry]:
     """Walk the staged models, run the launch decision per model, and write one INI. Refused
     models get no section (the picker surfaces the refusal from the returned entries)."""
     from hermes_cli.local_runtime.bootstrap import staged_in
@@ -199,10 +206,16 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
     entries: list[PresetEntry] = []
     sections: list[str] = []
     for gguf in staged_in(models_dir, require_complete=False):
-        entry = _preset_for(gguf, budget, mtp_capable or set(), launch_overrides or {})
+        entry = _preset_for(gguf, budget, mtp_capable or set(), launch_overrides or {},
+                            engine_tag=engine_tag)
         if entry is None:
             continue
         entries.append(entry)
+        # INI comments preserve non-flag facts atomically with the launch policy.
+        sections.append("# hermes-decision: " + json.dumps({
+            "model_id": entry.model_id, "window": entry.window,
+            "spilled": entry.spilled, "lazy_table_bytes": entry.lazy_table_bytes,
+            "refusal": entry.refusal}) + "\n")
         if entry.keys is not None:
             body = "\n".join(f"{k} = {v}" for k, v in entry.keys.items())
             sections.append(f"[{entry.model_id}]\n{body}\n")
@@ -224,12 +237,23 @@ def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEn
         preset_path = runtimes_root() / "presets.ini"
     out: dict[str, PresetEntry] = {}
     try:
-        parser = configparser.ConfigParser()
-        parser.read(preset_path, encoding="utf-8")
+        parser = configparser.ConfigParser(interpolation=None)
+        text = preset_path.read_text(encoding="utf-8")
+        parser.read_string(text)
+        recorded = {}
+        for line in text.splitlines():
+            if line.startswith("# hermes-decision: "):
+                fact = json.loads(line.removeprefix("# hermes-decision: "))
+                recorded[fact["model_id"]] = fact
+                if fact.get("refusal"):
+                    out[fact["model_id"]] = PresetEntry(**fact)
         for section in parser.sections():
             out[section] = PresetEntry(
                 model_id=section, window=parser.getint(section, "ctx-size", fallback=0),
-                spilled=parser.has_option(section, "override-tensor"))
+                spilled=recorded.get(section, {}).get(
+                    "spilled", parser.has_option(section, "override-tensor")),
+                lazy_table_bytes=int(recorded.get(section, {}).get("lazy_table_bytes", 0)),
+                keys=dict(parser[section]))
     except Exception as exc:  # noqa: BLE001
         logger.debug("preset read-back failed: %s", exc)
     return out

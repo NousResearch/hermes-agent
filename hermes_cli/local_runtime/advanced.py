@@ -131,7 +131,7 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, request: LaunchRe
     planned_profile = replace(profile, kv_scale=1.2 if mtp_enabled else 1.0)
     kv = ctx_bytes(planned_profile, context, flash_attention=request.kv_cache == "q8_0")
     logits = ub_logits_bytes(profile.n_vocab, mtp_capable=mtp_enabled)
-    estimated = profile.weights_bytes + fixed_overhead_bytes + slots * (kv + logits)
+    estimated = profile.resident_weights_bytes + fixed_overhead_bytes + slots * (kv + logits)
     available = budget.usable_vram_bytes + budget.ram_available_bytes
     reasons = list(problems)
     if not problems and estimated > available:

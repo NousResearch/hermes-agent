@@ -46,6 +46,7 @@
       "variants": [
         {
           "quant": "UD-Q4_K_XL",
+          "lazy_table_bytes": 28800138240,
           "files": [
             {
               "path": "UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",

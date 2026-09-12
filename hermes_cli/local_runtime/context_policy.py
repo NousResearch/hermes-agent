@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from hermes_cli.local_runtime.estimator import (
-    HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, physics_check)
+    HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes, physics_check)
 
 FLOOR = 64 * 1024                     # = target; one internal constant
 _LADDER_GROWTH = 1.5
@@ -64,7 +64,8 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
     everywhere, capped at native. ``overhead_bytes`` is runtime cost beyond weights+KV; zero keeps
     this pure physics for decision-table tests, production callers pass it.
     """
-    refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention)
+    refusal = physics_check(profile, budget, FLOOR, flash_attention=flash_attention,
+                            overhead_bytes=overhead_bytes)
     if refusal:
         return refusal
 
@@ -74,9 +75,13 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
     def kv(rung: int) -> int:
         return ctx_bytes(profile, rung, flash_attention=flash_attention)
 
+    def need(rung: int) -> int:
+        return footprint_bytes(profile, rung, flash_attention=flash_attention,
+                               overhead_bytes=overhead_bytes)
+
     best_zero_spill: int | None = None
     for rung in rungs:
-        if profile.weights_bytes + overhead_bytes + kv(rung) > budget.usable_vram_bytes:
+        if need(rung) > budget.usable_vram_bytes:
             break
         best_zero_spill = rung
 
@@ -91,15 +96,16 @@ def initial_window(profile: ModelProfile, budget: HardwareBudget, *, flash_atten
         for rung in rungs:
             if rung < window:
                 continue
-            if kv(rung) > cap:
+            if (kv(rung) > cap
+                    or need(rung) > budget.usable_vram_bytes + budget.ram_available_bytes):
                 break
             window = rung
         reason = f"floor held at {window // 1024}K; weights spill (deliberate price of the guarantee)"
 
     kv_bytes = kv(window)
     return WindowDecision(window=window, reasons=[reason],
-                          spill_bytes=max(0, profile.weights_bytes + kv_bytes - budget.usable_vram_bytes),
-                          kv_on_gpu=kv_bytes <= budget.usable_vram_bytes)
+                          spill_bytes=max(0, need(window) - budget.usable_vram_bytes),
+                          kv_on_gpu=kv_bytes + overhead_bytes <= budget.usable_vram_bytes)
 
 
 @dataclass
@@ -143,7 +149,7 @@ def growth_decision(profile: ModelProfile, budget: HardwareBudget, *,
     # Re-fit against live free memory: allocation beyond residency is the slow path, so a rung
     # that no longer fits doesn't get granted.
     kv = ctx_bytes(profile, next_rung, flash_attention=flash_attention)
-    if profile.weights_bytes + kv > budget.usable_vram_bytes + budget.ram_available_bytes:
+    if profile.resident_weights_bytes + kv > budget.usable_vram_bytes + budget.ram_available_bytes:
         return GrowthDecision("compress-default", reason="next rung exceeds physics; compression instead")
 
     return GrowthDecision("grow", next_window=next_rung,

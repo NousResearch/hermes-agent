@@ -63,6 +63,11 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     monkeypatch.setattr(
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
         lambda tag, backend, progress=None: calls.append("install"))
+    # Asset availability is platform/release-specific; this route contract is sequencing, not
+    # the binary resolver (which has its own table tests).
+    monkeypatch.setattr(
+        "hermes_cli.web_routers.local_models._resolve_assets_or_400",
+        lambda tag, backend: None)
 
     # Leg 2: nothing staged; the download writes the files the plan names.
     def _fake_download(url, dest, job, *, base_done=0, keep_totals=False):
@@ -164,9 +169,9 @@ def quickstart_ready(monkeypatch):
         "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
     monkeypatch.setattr(
         "hermes_cli.local_runtime.catalog.select_variant",
-        lambda entry, budget: VariantChoice(variant=entry.variants[0],
-                                            zero_spill=True,
-                                            reason_key="best-fits"))
+        lambda entry, budget, **kwargs: VariantChoice(variant=entry.variants[0],
+                                                       zero_spill=True,
+                                                       reason_key="best-fits"))
     monkeypatch.setattr(
         "hermes_cli.web_routers.local_models._engine_too_old",
         lambda min_engine: False)

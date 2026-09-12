@@ -30,6 +30,30 @@ def test_slot_plan_charges_weights_once_and_request_state_per_slot():
     assert 0 < two.estimated_bytes - one.estimated_bytes < _profile().weights_bytes
 
 
+def test_advanced_plan_excludes_disk_backed_lookup_from_residency():
+    profile = ModelProfile(
+        name="ple", weights_bytes=12 << 30, embd_table_bytes=0, n_ctx_train=64 * 1024,
+        layers=[], lazy_table_bytes=8 << 30,
+    )
+    budget = HardwareBudget(usable_vram_bytes=6 << 30, total_device_bytes=6 << 30,
+                            ram_available_bytes=0)
+    lazy = plan_launch(profile, budget, LaunchRequest(context_tokens=64 * 1024),
+                       default_context_tokens=64 * 1024, mtp_supported=False,
+                       fixed_overhead_bytes=0)
+    ordinary = plan_launch(
+        ModelProfile(
+            name="ordinary", weights_bytes=12 << 30, embd_table_bytes=0, n_ctx_train=64 * 1024,
+            layers=[],
+        ),
+        budget, LaunchRequest(context_tokens=64 * 1024),
+        default_context_tokens=64 * 1024, mtp_supported=False, fixed_overhead_bytes=0,
+    )
+
+    assert lazy.fits
+    assert lazy.estimated_bytes == 4 << 30
+    assert not ordinary.fits
+
+
 def test_mtp_is_rejected_when_no_validated_recipe_exists():
     plan = plan_launch(_profile(), _budget(), LaunchRequest(speculation="mtp"),
                        default_context_tokens=64 * 1024, mtp_supported=False)

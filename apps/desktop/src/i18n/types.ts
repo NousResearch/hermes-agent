@@ -1023,8 +1023,10 @@ export interface Translations {
       loadedPill: string
       placementResident: string
       placementSpilled: string
+      placementDiskBacked: string
       placementResidentTip: string
       placementSpilledTip: string
+      placementDiskBackedTip: (size: string) => string
       loadingPill: string
       ejectTip: string
       ejected: string
@@ -1042,6 +1044,8 @@ export interface Translations {
       downloadFailed: (model: string) => string
       pillFitsGpu: string
       pillUsesRam: string
+      pillDiskBacked: string
+      pillDiskBackedTip: (size: string) => string
       pillTooBig: string
       browseTitle: string
       browseHint: string

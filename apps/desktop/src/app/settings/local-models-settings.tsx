@@ -77,8 +77,8 @@ function gbLabel(bytes: number | null | undefined): string {
   return `${(bytes / (1 << 30)).toFixed(1)} GB`
 }
 
-// Catalog display order: what runs well leads. Resident (all on GPU)
-// first, then spilled (works, slower), then doesn't-fit; catalog order
+// Catalog display order: what runs well leads. Ordinary-resident models (including an explicit
+// disk-backed lookup table) come first, then RAM-spilled models, then doesn't-fit; catalog order
 // (recommended first) holds within each band.
 function fitRank(model: LocalCatalogModel): number {
   if (model.fits && !model.spilled) {
@@ -144,10 +144,14 @@ export function LocalModelsSettings() {
   }, [advancedModelId, status])
 
   const refreshGatewayRoutes = useCallback(() => {
-    void getLocalGatewayRoutes().then(data => setGatewayRoutes(data.routes)).catch(() => setGatewayRoutes([]))
+    void getLocalGatewayRoutes()
+      .then(data => setGatewayRoutes(data.routes))
+      .catch(() => setGatewayRoutes([]))
   }, [])
 
-  useEffect(() => { refreshGatewayRoutes() }, [refreshGatewayRoutes])
+  useEffect(() => {
+    refreshGatewayRoutes()
+  }, [refreshGatewayRoutes])
 
   // The pane is LIVE while visible: residency changes without user action
   // (boot warm finishing, idle sweep unloading, another surface ejecting),
@@ -295,7 +299,9 @@ export function LocalModelsSettings() {
   })
 
   async function handlePreviewAdvanced() {
-    if (!advancedModelId) {return}
+    if (!advancedModelId) {
+      return
+    }
     setAdvancedBusy(true)
 
     try {
@@ -303,38 +309,69 @@ export function LocalModelsSettings() {
     } catch (err) {
       setAdvancedPlan(null)
       notifyError(err, 'Could not validate these local-model settings.')
-    } finally { setAdvancedBusy(false) }
+    } finally {
+      setAdvancedBusy(false)
+    }
   }
 
   async function handleApplyAdvanced() {
-    if (!advancedModelId) {return}
+    if (!advancedModelId) {
+      return
+    }
     setAdvancedBusy(true)
 
     try {
       const result = await applyLocalAdvancedLaunch(advancedModelId, advancedRequest())
       setAdvancedPlan(result.plan)
-      notify({ durationMs: 3_500, kind: 'success', message: result.restarted ? 'Applied and restarted the local runtime.' : 'Settings apply on the next local-runtime start.', title: copy.title })
+      notify({
+        durationMs: 3_500,
+        kind: 'success',
+        message: result.restarted
+          ? 'Applied and restarted the local runtime.'
+          : 'Settings apply on the next local-runtime start.',
+        title: copy.title
+      })
       refresh()
-    } catch (err) { notifyError(err, 'Could not apply these local-model settings.') } finally { setAdvancedBusy(false) }
+    } catch (err) {
+      notifyError(err, 'Could not apply these local-model settings.')
+    } finally {
+      setAdvancedBusy(false)
+    }
   }
 
   async function handlePublishGateway() {
-    if (!gatewayAlias.trim() || !advancedModelId) {return}
+    if (!gatewayAlias.trim() || !advancedModelId) {
+      return
+    }
 
     try {
       await publishLocalGatewayRoute(gatewayAlias.trim(), advancedModelId, gatewayMode)
       setGatewayAlias('')
       refreshGatewayRoutes()
-      notify({ durationMs: 4_000, kind: 'success', message: 'Gateway route saved. Restart the gateway to activate it.', title: copy.title })
-    } catch (err) { notifyError(err, 'Could not save the gateway route.') }
+      notify({
+        durationMs: 4_000,
+        kind: 'success',
+        message: 'Gateway route saved. Restart the gateway to activate it.',
+        title: copy.title
+      })
+    } catch (err) {
+      notifyError(err, 'Could not save the gateway route.')
+    }
   }
 
   async function handleUnpublishGateway(alias: string) {
     try {
       await unpublishLocalGatewayRoute(alias)
       refreshGatewayRoutes()
-      notify({ durationMs: 4_000, kind: 'success', message: 'Gateway route removed. Restart the gateway to apply the change.', title: copy.title })
-    } catch (err) { notifyError(err, 'Could not remove the gateway route.') }
+      notify({
+        durationMs: 4_000,
+        kind: 'success',
+        message: 'Gateway route removed. Restart the gateway to apply the change.',
+        title: copy.title
+      })
+    } catch (err) {
+      notifyError(err, 'Could not remove the gateway route.')
+    }
   }
 
   // Setup flows end at the action, not the settings pane: when quickstart
@@ -633,43 +670,105 @@ export function LocalModelsSettings() {
         <SettingsSection icon={Zap} title="Advanced local runtime">
           <div className="grid gap-3 py-1 text-[0.8rem]">
             <p className="text-muted-foreground">
-              Choose an exact staged model, its per-request context, slots, and speculative mode. Hermes validates
-              the aggregate allocation before it writes configuration or restarts the runtime.
+              Choose an exact staged model, its per-request context, slots, and speculative mode. Hermes validates the
+              aggregate allocation before it writes configuration or restarts the runtime.
             </p>
             <div className="grid gap-2 sm:grid-cols-5">
               <label className="grid gap-1">
                 <span className="text-muted-foreground">Model</span>
-                <select className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => { setAdvancedModelId(event.target.value); setAdvancedPlan(null) }} value={advancedModelId}>
-                  {status.models.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}
+                <select
+                  className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2"
+                  onChange={event => {
+                    setAdvancedModelId(event.target.value)
+                    setAdvancedPlan(null)
+                  }}
+                  value={advancedModelId}
+                >
+                  {status.models.map(model => (
+                    <option key={model.id} value={model.id}>
+                      {model.id}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="grid gap-1">
                 <span className="text-muted-foreground">Context per request (K)</span>
-                <input className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" min="1" onChange={event => { setAdvancedContext(event.target.value); setAdvancedPlan(null) }} placeholder="Automatic" type="number" value={advancedContext} />
+                <input
+                  className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2"
+                  min="1"
+                  onChange={event => {
+                    setAdvancedContext(event.target.value)
+                    setAdvancedPlan(null)
+                  }}
+                  placeholder="Automatic"
+                  type="number"
+                  value={advancedContext}
+                />
               </label>
               <label className="grid gap-1">
                 <span className="text-muted-foreground">Inference slots</span>
-                <input className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" max="16" min="1" onChange={event => { setAdvancedSlots(Number(event.target.value)); setAdvancedPlan(null) }} type="number" value={advancedSlots} />
+                <input
+                  className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2"
+                  max="16"
+                  min="1"
+                  onChange={event => {
+                    setAdvancedSlots(Number(event.target.value))
+                    setAdvancedPlan(null)
+                  }}
+                  type="number"
+                  value={advancedSlots}
+                />
               </label>
               <label className="grid gap-1">
                 <span className="text-muted-foreground">Speculation</span>
-                <select className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => { setAdvancedSpeculation(event.target.value as 'auto' | 'off' | 'mtp'); setAdvancedPlan(null) }} value={advancedSpeculation}>
-                  <option value="auto">Automatic</option><option value="off">Off</option><option value="mtp">MTP</option>
+                <select
+                  className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2"
+                  onChange={event => {
+                    setAdvancedSpeculation(event.target.value as 'auto' | 'off' | 'mtp')
+                    setAdvancedPlan(null)
+                  }}
+                  value={advancedSpeculation}
+                >
+                  <option value="auto">Automatic</option>
+                  <option value="off">Off</option>
+                  <option value="mtp">MTP</option>
                 </select>
               </label>
               <label className="grid gap-1">
                 <span className="text-muted-foreground">KV cache</span>
-                <select className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => { setAdvancedKvCache(event.target.value as 'q8_0' | 'f16'); setAdvancedPlan(null) }} value={advancedKvCache}>
-                  <option value="q8_0">Q8_0</option><option value="f16">F16</option>
+                <select
+                  className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2"
+                  onChange={event => {
+                    setAdvancedKvCache(event.target.value as 'q8_0' | 'f16')
+                    setAdvancedPlan(null)
+                  }}
+                  value={advancedKvCache}
+                >
+                  <option value="q8_0">Q8_0</option>
+                  <option value="f16">F16</option>
                 </select>
               </label>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button disabled={advancedBusy} onClick={() => void handlePreviewAdvanced()} size="sm" variant="outline">{advancedBusy ? <Loader2 className="animate-spin" /> : <Search />} Preview capacity</Button>
-              <Button disabled={advancedBusy || advancedPlan?.fits === false} onClick={() => void handleApplyAdvanced()} size="sm">Apply settings</Button>
-              {advancedPlan && <span className={cn('text-[0.75rem]', advancedPlan.fits ? 'text-muted-foreground' : 'text-destructive')}>
-                {advancedPlan.fits ? `${gbLabel(advancedPlan.estimated_bytes)} of ${gbLabel(advancedPlan.available_bytes)} planned · ${advancedPlan.effective_context_tokens / 1024}K × ${advancedPlan.request.slots} slots` : advancedPlan.reasons.join('; ')}
-              </span>}
+              <Button disabled={advancedBusy} onClick={() => void handlePreviewAdvanced()} size="sm" variant="outline">
+                {advancedBusy ? <Loader2 className="animate-spin" /> : <Search />} Preview capacity
+              </Button>
+              <Button
+                disabled={advancedBusy || advancedPlan?.fits === false}
+                onClick={() => void handleApplyAdvanced()}
+                size="sm"
+              >
+                Apply settings
+              </Button>
+              {advancedPlan && (
+                <span
+                  className={cn('text-[0.75rem]', advancedPlan.fits ? 'text-muted-foreground' : 'text-destructive')}
+                >
+                  {advancedPlan.fits
+                    ? `${gbLabel(advancedPlan.estimated_bytes)} of ${gbLabel(advancedPlan.available_bytes)} planned · ${advancedPlan.effective_context_tokens / 1024}K × ${advancedPlan.request.slots} slots`
+                    : advancedPlan.reasons.join('; ')}
+                </span>
+              )}
             </div>
           </div>
         </SettingsSection>
@@ -678,14 +777,62 @@ export function LocalModelsSettings() {
       {status.runtime_installed && status.models.length > 0 && (
         <SettingsSection icon={Package} title="Gateway endpoints">
           <div className="grid gap-3 py-1 text-[0.8rem]">
-            <p className="text-muted-foreground">Agent routes use Hermes sessions and tools. Raw routes forward only chat completions to the registered local runtime.</p>
+            <p className="text-muted-foreground">
+              Agent routes use Hermes sessions and tools. Raw routes forward only chat completions to the registered
+              local runtime.
+            </p>
             <div className="flex flex-wrap items-end gap-2">
-              <label className="grid gap-1"><span className="text-muted-foreground">Alias</span><input className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => setGatewayAlias(event.target.value)} placeholder="my-local-model" value={gatewayAlias} /></label>
-              <label className="grid gap-1"><span className="text-muted-foreground">Endpoint</span><select className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2" onChange={event => setGatewayMode(event.target.value as 'agent' | 'raw')} value={gatewayMode}><option value="agent">Hermes agent</option><option value="raw">Raw model</option></select></label>
-              <Button disabled={!gatewayAlias.trim() || !advancedModelId} onClick={() => void handlePublishGateway()} size="sm">Publish</Button>
+              <label className="grid gap-1">
+                <span className="text-muted-foreground">Alias</span>
+                <input
+                  className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2"
+                  onChange={event => setGatewayAlias(event.target.value)}
+                  placeholder="my-local-model"
+                  value={gatewayAlias}
+                />
+              </label>
+              <label className="grid gap-1">
+                <span className="text-muted-foreground">Endpoint</span>
+                <select
+                  className="h-8 rounded-md border border-(--ui-border) bg-transparent px-2"
+                  onChange={event => setGatewayMode(event.target.value as 'agent' | 'raw')}
+                  value={gatewayMode}
+                >
+                  <option value="agent">Hermes agent</option>
+                  <option value="raw">Raw model</option>
+                </select>
+              </label>
+              <Button
+                disabled={!gatewayAlias.trim() || !advancedModelId}
+                onClick={() => void handlePublishGateway()}
+                size="sm"
+              >
+                Publish
+              </Button>
             </div>
-            {gatewayRoutes.length > 0 && <div className="flex flex-wrap gap-2">{gatewayRoutes.map(route => <span className="inline-flex items-center gap-1" key={`${route.mode}:${route.alias}`}><Pill>{route.alias} · {route.mode} · {route.model_id}</Pill><Button aria-label={`Remove ${route.alias} gateway route`} onClick={() => void handleUnpublishGateway(route.alias)} size="icon" variant="ghost"><Trash2 className="size-3.5" /></Button></span>)}</div>}
-            <p className="text-[0.72rem] text-muted-foreground">Saving a route does not restart the gateway or change your default/fallback model. Restart the selected gateway when you are ready to activate it.</p>
+            {gatewayRoutes.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {gatewayRoutes.map(route => (
+                  <span className="inline-flex items-center gap-1" key={`${route.mode}:${route.alias}`}>
+                    <Pill>
+                      {route.alias} · {route.mode} · {route.model_id}
+                    </Pill>
+                    <Button
+                      aria-label={`Remove ${route.alias} gateway route`}
+                      onClick={() => void handleUnpublishGateway(route.alias)}
+                      size="icon"
+                      variant="ghost"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <p className="text-[0.72rem] text-muted-foreground">
+              Saving a route does not restart the gateway or change your default/fallback model. Restart the selected
+              gateway when you are ready to activate it.
+            </p>
           </div>
         </SettingsSection>
       )}
@@ -702,6 +849,24 @@ export function LocalModelsSettings() {
             const isLoaded = residency === 'loaded' || residency === 'ready'
             const isLoadingNow = residency === 'loading'
             const livePlacement = activateTarget ? status.placement?.[activateTarget] : undefined
+            const diskBackedLookup = livePlacement?.disk_backed_lookup_bytes ?? 0
+            const placementIsDiskBacked = diskBackedLookup > 0
+            const placementLabel = [
+              livePlacement?.spilled ? copy.placementSpilled : null,
+              placementIsDiskBacked ? copy.placementDiskBacked : null,
+              !livePlacement?.spilled && !placementIsDiskBacked ? copy.placementResident : null
+            ]
+              .filter(Boolean)
+              .join(' · ')
+            const placementTip = [
+              livePlacement?.spilled ? copy.placementSpilledTip : null,
+              placementIsDiskBacked ? copy.placementDiskBackedTip(gbLabel(diskBackedLookup)) : null,
+              !livePlacement?.spilled && !placementIsDiskBacked ? copy.placementResidentTip : null
+            ]
+              .filter(Boolean)
+              .join(' ')
+            const placementTone = livePlacement?.spilled ? 'warn' : placementIsDiskBacked ? 'muted' : 'success'
+            const hasDiskBackedLookup = (model.disk_backed_lookup_bytes ?? 0) > 0
 
             const aJob = jobs.find(
               j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === activateTarget
@@ -715,12 +880,12 @@ export function LocalModelsSettings() {
                   model.downloaded ? (
                     <div className="flex items-center justify-end gap-2">
                       {isLoaded && livePlacement && (
-                        <Tip label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}>
-                          <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
+                        <Tip label={placementTip}>
+                          <Pill tone={placementTone}>
                             <Cpu className="mr-1 size-3" />
                             {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
                             {' · '}
-                            {livePlacement.spilled ? copy.placementSpilled : copy.placementResident}
+                            {placementLabel}
                           </Pill>
                         </Tip>
                       )}
@@ -805,10 +970,10 @@ export function LocalModelsSettings() {
                     {model.description}
 
                     <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                      {/* Memory: the traffic light. Green = runs fully on
-                          the GPU; amber = spills to system RAM (works,
-                          slower); red = doesn't fit this machine at all.
-                          Detail prose lives in the tooltip. */}
+                      {/* Placement: green = ordinary weights on GPU; amber = system-RAM spill;
+                          a muted disk pill = mmap-backed lookup table; red = no viable fit.
+                          The disk-backed path is deliberately not presented as either full GPU
+                          residency or system-RAM spill. */}
                       {!model.fits ? (
                         <Tip label={model.fit_detail ?? model.fit_summary}>
                           <Pill tone="destructive">
@@ -823,27 +988,33 @@ export function LocalModelsSettings() {
                             {copy.pillUsesRam}
                           </Pill>
                         </Tip>
-                      ) : (
+                      ) : !hasDiskBackedLookup ? (
                         <Tip label={model.quant_reason ?? model.fit_summary}>
                           <Pill tone="success">
                             <Cpu className="mr-1 size-3" />
                             {copy.pillFitsGpu}
                           </Pill>
                         </Tip>
+                      ) : null}
+
+                      {model.fits && hasDiskBackedLookup && (
+                        <Tip label={copy.pillDiskBackedTip(gbLabel(model.disk_backed_lookup_bytes))}>
+                          <Pill tone="muted">
+                            <Cpu className="mr-1 size-3" />
+                            {copy.pillDiskBacked}
+                          </Pill>
+                        </Tip>
                       )}
 
                       {/* Context: one pill. Green 'Full X context' only when
-                          the model earned its complete window resident on the
-                          GPU — a big context served from system RAM is slow,
-                          and a green badge there would sell exactly the wrong
-                          model, so a spilled full window goes gray. Anything
-                          starting below its native window gets one quiet
-                          'Up to' pill instead of a start/grow pair. */}
+                          all placement is ordinary GPU residency. A RAM spill
+                          or disk-backed lookup table gets a muted full-window
+                          pill instead of claiming full GPU residency. */}
                       {model.fits &&
                         model.start_window_label &&
                         (model.start_window && model.start_window >= model.native_context ? (
                           <Tip label={copy.pillFullContextTip}>
-                            <Pill tone={model.spilled ? 'muted' : 'success'}>
+                            <Pill tone={model.spilled || hasDiskBackedLookup ? 'muted' : 'success'}>
                               {copy.pillFullContext(model.native_context_label)}
                             </Pill>
                           </Tip>
@@ -893,6 +1064,23 @@ export function LocalModelsSettings() {
               const isLoaded = residency === 'loaded' || residency === 'ready'
               const isLoadingNow = residency === 'loading'
               const livePlacement = status.placement?.[m.id]
+              const diskBackedLookup = livePlacement?.disk_backed_lookup_bytes ?? 0
+              const placementIsDiskBacked = diskBackedLookup > 0
+              const placementLabel = [
+                livePlacement?.spilled ? copy.placementSpilled : null,
+                placementIsDiskBacked ? copy.placementDiskBacked : null,
+                !livePlacement?.spilled && !placementIsDiskBacked ? copy.placementResident : null
+              ]
+                .filter(Boolean)
+                .join(' · ')
+              const placementTip = [
+                livePlacement?.spilled ? copy.placementSpilledTip : null,
+                placementIsDiskBacked ? copy.placementDiskBackedTip(gbLabel(diskBackedLookup)) : null,
+                !livePlacement?.spilled && !placementIsDiskBacked ? copy.placementResidentTip : null
+              ]
+                .filter(Boolean)
+                .join(' ')
+              const placementTone = livePlacement?.spilled ? 'warn' : placementIsDiskBacked ? 'muted' : 'success'
 
               const aJob = jobs.find(j => j.kind === 'model-activate' && j.status === 'running' && j.model_id === m.id)
 
@@ -903,12 +1091,12 @@ export function LocalModelsSettings() {
                   action={
                     <div className="flex items-center justify-end gap-2">
                       {isLoaded && livePlacement && (
-                        <Tip label={livePlacement.spilled ? copy.placementSpilledTip : copy.placementResidentTip}>
-                          <Pill tone={livePlacement.spilled ? 'warn' : 'success'}>
+                        <Tip label={placementTip}>
+                          <Pill tone={placementTone}>
                             <Cpu className="mr-1 size-3" />
                             {livePlacement.granted_window_label ?? livePlacement.window_label ?? ''}
                             {' · '}
-                            {livePlacement.spilled ? copy.placementSpilled : copy.placementResident}
+                            {placementLabel}
                           </Pill>
                         </Tip>
                       )}

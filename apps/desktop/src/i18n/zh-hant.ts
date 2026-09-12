@@ -1039,9 +1039,12 @@ export const zhHant = defineLocale({
       loadedPill: '已載入',
       placementResident: '全部在 GPU',
       placementSpilled: '部分在記憶體',
+      placementDiskBacked: '磁碟支援查找表',
       placementResidentTip: '完全在 GPU 記憶體中以此上下文視窗執行——全速。',
       placementSpilledTip:
         '模型的一部分從系統記憶體執行——可用但較慢。更緊湊的版本或更小的上下文可以完全放入顯示記憶體。',
+      placementDiskBackedTip: size =>
+        `${size} 查找表會按需從磁碟讀取。這不是系統記憶體溢出，但模型並非完全駐留在 GPU。`,
       loadingPill: '載入中…',
       ejectTip: '釋放顯示記憶體（需要時重新載入）',
       ejected: '模型已卸載——顯示記憶體已釋放。',
@@ -1059,6 +1062,8 @@ export const zhHant = defineLocale({
       downloadFailed: model => `${model} 下載失敗`,
       pillFitsGpu: '完全在 GPU 上執行',
       pillUsesRam: '使用系統記憶體',
+      pillDiskBacked: '磁碟支援查找表',
+      pillDiskBackedTip: size => `${size} 查找表會按需從磁碟讀取；核心權重可放入 GPU。這與系統記憶體溢出不同。`,
       pillTooBig: '超出本機記憶體',
       browseTitle: '發現更多模型',
       browseHint: '搜尋整個 Hugging Face。在這裡下載的模型會自動適配你的機器，但未經我們測試。',

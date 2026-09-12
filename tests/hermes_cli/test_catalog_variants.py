@@ -151,6 +151,17 @@ def test_find_entry_for_model_resolves_split_ids():
     assert variant.quant == "UD-Q4_K_XL"
 
 
+def test_flash_next_catalog_declares_exact_capability_gated_ple_bytes():
+    entry = catalog_by_id()["qwen3.8-flash-next"]
+    variant = entry.variants[0]
+
+    assert variant.lazy_table_bytes == 28_800_138_240
+    assert entry.profile(variant, engine_tag="b10678").lazy_table_bytes == 0
+    profile = entry.profile(variant, engine_tag="b10679")
+    assert profile.lazy_table_bytes == 28_800_138_240
+    assert profile.resident_weights_bytes == variant.weights_bytes - 28_800_138_240
+
+
 def test_hybrid_long_context_stays_cheap():
     """The reason Nemotron/Qwen3.6 headline the catalog: their priced
     64K-floor KV must be a small fraction of a dense model's."""

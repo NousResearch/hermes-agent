@@ -252,11 +252,11 @@ def _resolve_assets_or_400(tag: str, backend: str):
 def _engine_too_old(min_engine: str) -> bool:
     """True when the installed llama.cpp predates a model's requirement. Tags are release numbers (b10362);
     no engine installed compares as too old only when the model states a requirement."""
-    def newest_installed() -> int:
-        tags = binaries.installed_tags() or [binaries.default_tag()]
-        return max(int(t.lstrip("b")) for t in tags if t.lstrip("b").isdigit())
+    def active_installed() -> int:
+        tag = binaries.active_tag(_runtime_section())
+        return int(tag.lstrip("b"))
 
-    return bool(min_engine) and _quiet(lambda: newest_installed() < int(min_engine.lstrip("b")), False)
+    return bool(min_engine) and _quiet(lambda: active_installed() < int(min_engine.lstrip("b")), False)
 
 
 def _eligible_entries():
@@ -282,7 +282,8 @@ def _advanced_plan(model_id: str, value: object):
     if gguf is None:
         raise HTTPException(status_code=404, detail=f"{model_id} is not downloaded")
     with _http_error(422, "unable to inspect model: "):
-        profile = profile_from_gguf(read_gguf_header(gguf))
+        profile = profile_from_gguf(
+            read_gguf_header(gguf), engine_tag=binaries.active_tag(_runtime_section()))
     entry = catalog.entry_for_model(model_id)
     mtp_supported = bool(entry and entry.mtp)
     default_depth = entry.mtp_draft_depth if entry is not None else 3
@@ -467,6 +468,11 @@ def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, 
         plan = decisions.get(model_id)
         if plan is not None:
             facts.update(window=plan.window, window_label=_k_label(plan.window), spilled=plan.spilled)
+            if plan.lazy_table_bytes:
+                facts.update(
+                    disk_backed_lookup_bytes=plan.lazy_table_bytes,
+                    disk_backed_lookup_label=_human_gb(plan.lazy_table_bytes),
+                )
         n_ctx = state in ("loaded", "ready") and _quiet(
             lambda: _router_request(running, f"/props?model={model_id}", timeout=3)
             .get("default_generation_settings", {}).get("n_ctx"), None)
@@ -512,7 +518,7 @@ def local_models_status():
     configured_tag = section.get("tag") or binaries.default_tag()
     have = binaries.installed_tags()
     # The tag actually serving (boot ladder: configured if installed, else newest installed).
-    tag = configured_tag if configured_tag in have else (have[0] if have else configured_tag)
+    tag = binaries.active_tag(section)
     runtime_backend = _installed_backend(tag)
     mdir = bootstrap.models_dir()
     running = _state_endpoint()
@@ -575,8 +581,9 @@ _QUANT_REASONS = {
 _QUANT_REASON_COMPACT = "Compact build sized for this machine ({quant}) — larger than GPU memory, runs slower"
 
 
-def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> Dict[str, Any]:
-    choice = catalog.select_variant(entry, budget)
+def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids, *,
+                 engine_tag: str | None = None) -> Dict[str, Any]:
+    choice = catalog.select_variant(entry, budget, engine_tag=engine_tag)
     # Any variant of this family on disk counts as downloaded.
     dl = next((v for v in entry.variants if v.model_id in staged_ids), None)
     row: Dict[str, Any] = {
@@ -608,23 +615,46 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
     overhead = (context_policy.RUNTIME_OVERHEAD_BYTES
                 + (entry.mmproj.size_bytes if entry.mmproj else 0)
                 + context_policy.ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
-    decision = context_policy.initial_window(entry.profile(variant), budget, overhead_bytes=overhead)
+    profile = entry.profile(variant, engine_tag=engine_tag)
+    decision = context_policy.initial_window(profile, budget, overhead_bytes=overhead)
     download_total = entry.download_bytes(variant)
+    if profile.lazy_table_bytes:
+        if choice.zero_spill:
+            quant_reason = (
+                f"Recommended build ({variant.quant}) — core weights fit your GPU; a "
+                f"{_human_gb(profile.lazy_table_bytes)} disk-backed lookup table is read on demand")
+        else:
+            quant_reason = (
+                f"Compact build sized for this machine ({variant.quant}) — "
+                f"{_human_gb(profile.lazy_table_bytes)} uses a disk-backed lookup table; "
+                "ordinary weights still exceed GPU memory")
+    else:
+        quant_reason = _QUANT_REASONS.get(choice.reason_key, _QUANT_REASON_COMPACT).format(quant=variant.quant)
     row.update({
         "fits": True, "model_id": variant.model_id, "quant": variant.quant,
         "quant_validated": variant.validated, "size_bytes": download_total,
         "size_label": _human_gb(download_total), "variant_count": len(entry.variants),
-        "quant_reason": _QUANT_REASONS.get(choice.reason_key, _QUANT_REASON_COMPACT).format(quant=variant.quant),
+        "quant_reason": quant_reason,
     })
     if isinstance(decision, estimator.PhysicsRefusal):
         row["fit_summary"] = row["quant_reason"]
         return row
     row.update(start_window=decision.window, start_window_label=_k_label(decision.window), spilled=decision.spilled)
+    if profile.lazy_table_bytes:
+        row.update(
+            disk_backed_lookup_bytes=profile.lazy_table_bytes,
+            disk_backed_lookup_label=_human_gb(profile.lazy_table_bytes),
+        )
     if decision.window >= entry.n_ctx_train:
         shape = f"runs at its full {row['native_context_label']} context"
     else:
         shape = f"starts at {row['start_window_label']} and grows toward {row['native_context_label']} as you use it"
-    row["fit_summary"] = shape + (" (larger than your GPU memory — runs slower)" if decision.spilled else "")
+    notes = []
+    if decision.spilled:
+        notes.append("larger than your GPU memory — runs slower")
+    if profile.lazy_table_bytes:
+        notes.append(f"uses a {_human_gb(profile.lazy_table_bytes)} disk-backed lookup table")
+    row["fit_summary"] = shape + (f" ({'; '.join(notes)})" if notes else "")
     return row
 
 
@@ -639,14 +669,19 @@ def local_models_catalog():
     catalog.refresh_catalog_soon()
     # Planning budget: machine capacity, not live-free VRAM — a loaded model must not make every row unaffordable.
     budget = hardware.probe_budget(planning=True)
+    engine_tag = binaries.active_tag(_runtime_section())
     # The reason key ships with the row so the Recommended badge's tooltip is the branch that actually
     # fired, not a re-derivation that can drift.
-    recommended, recommended_reason = catalog.recommended_entry(budget, _eligible_entries()) or (None, None)
+    recommended, recommended_reason = (
+        catalog.recommended_entry(budget, _eligible_entries(), engine_tag=engine_tag) or (None, None))
     recommended_id = recommended.id if recommended is not None else None
     # Completeness-checked staging (split parts all present) — same answer the picker and router see, so a
     # mid-download model never reads as downloaded.
     staged_ids = set(bootstrap.staged_model_ids())
-    return {"models": [_catalog_row(e, budget, recommended_id, recommended_reason, staged_ids) for e in catalog.CATALOG]}
+    return {"models": [
+        _catalog_row(e, budget, recommended_id, recommended_reason, staged_ids, engine_tag=engine_tag)
+        for e in catalog.CATALOG
+    ]}
 
 
 @router.post("/api/local-models/advanced/plan")
@@ -825,7 +860,9 @@ def _download_target(model_id: str):
     if _engine_too_old(entry.min_engine):
         raise HTTPException(status_code=409, detail=(
             f"{entry.display_name} needs llama.cpp {entry.min_engine} or newer — update the engine first"))
-    choice = catalog.select_variant(entry, hardware.probe_budget(planning=True))
+    choice = catalog.select_variant(
+        entry, hardware.probe_budget(planning=True),
+        engine_tag=binaries.active_tag(_runtime_section()))
     if choice is None:
         raise HTTPException(status_code=409, detail=f"no variant of {entry.id} fits this machine")
     return entry, choice.variant
@@ -864,13 +901,14 @@ async def local_models_delete(model_id: str):
 # ── quickstart: one click from nothing to a working default ──
 def _quickstart_target(body: QuickstartBody, budget):
     """(entry, variant) to set up: explicit id, else this machine's recommendation, else the first servable entry."""
+    engine_tag = binaries.active_tag(_runtime_section())
     if body.model_id:
         candidates = [_entry_or_404(body.model_id)]
     else:
-        picked = catalog.recommended_entry(budget, _eligible_entries())
+        picked = catalog.recommended_entry(budget, _eligible_entries(), engine_tag=engine_tag)
         candidates = ([picked[0]] if picked else []) + [e for e in catalog.CATALOG if not picked or e.id != picked[0].id]
     for candidate in candidates:
-        choice = catalog.select_variant(candidate, budget)
+        choice = catalog.select_variant(candidate, budget, engine_tag=engine_tag)
         if choice is not None and not _engine_too_old(candidate.min_engine):
             return candidate, choice.variant
     raise HTTPException(status_code=409, detail=(

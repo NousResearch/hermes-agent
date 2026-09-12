@@ -91,6 +91,16 @@ const SPILLED_MODEL: LocalCatalogModel = {
   fit_summary: 'starts at 64K and grows toward 256K as you use it (larger than your GPU memory — runs slower)'
 }
 
+const DISK_BACKED_MODEL: LocalCatalogModel = {
+  ...FITTING_MODEL,
+  id: 'Disk-Backed-Model',
+  display_name: 'Disk-backed Model',
+  recommended: false,
+  disk_backed_lookup_bytes: 28_800_138_240,
+  disk_backed_lookup_label: '26.8 GB',
+  fit_summary: 'runs at its full 256K context (uses a 26.8 GB disk-backed lookup table)'
+}
+
 const REFUSED_MODEL: LocalCatalogModel = {
   ...FITTING_MODEL,
   id: 'Huge-Model',
@@ -208,6 +218,28 @@ describe('LocalModelsSettings', () => {
     await screen.findByText('Spilled Full')
 
     expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
+  })
+
+  it('renders a disk-backed lookup separately from system-RAM spill', async () => {
+    mocked.getLocalCatalog.mockResolvedValue({ models: [DISK_BACKED_MODEL] })
+    await renderFullPane()
+
+    expect(await screen.findByText('Disk-backed Model')).toBeTruthy()
+    expect(screen.getByText('Disk-backed lookup')).toBeTruthy()
+    expect(screen.queryByText('Uses system RAM')).toBeNull()
+    expect(screen.queryByText('Fits your GPU')).toBeNull()
+    expect(screen.getByText('Full 256K context').className).not.toContain('emerald')
+  })
+
+  it('keeps disk-backed lookup visible alongside a genuine RAM spill', async () => {
+    mocked.getLocalCatalog.mockResolvedValue({
+      models: [{ ...DISK_BACKED_MODEL, id: 'Disk-Backed-Spilled', display_name: 'Disk-backed Spilled', spilled: true }]
+    })
+    await renderFullPane()
+
+    expect(await screen.findByText('Disk-backed Spilled')).toBeTruthy()
+    expect(screen.getByText('Uses system RAM')).toBeTruthy()
+    expect(screen.getByText('Disk-backed lookup')).toBeTruthy()
   })
 
   it('explains the Recommended pick on hover', async () => {

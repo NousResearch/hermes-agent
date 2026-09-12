@@ -1266,6 +1266,9 @@ export interface LocalModelPlacement {
   window?: number
   window_label?: string
   spilled?: boolean
+  /** Lookup-table bytes read from disk on demand; distinct from system-RAM spill. */
+  disk_backed_lookup_bytes?: number
+  disk_backed_lookup_label?: string
   granted_window?: number
   granted_window_label?: string
 }
@@ -1335,6 +1338,9 @@ export interface LocalCatalogModel {
   start_window?: number
   start_window_label?: string
   spilled?: boolean
+  /** A large PLE/Engram-style table is mmap-backed by the active local engine. */
+  disk_backed_lookup_bytes?: number
+  disk_backed_lookup_label?: string
 }
 
 export interface LocalRuntimeJob {

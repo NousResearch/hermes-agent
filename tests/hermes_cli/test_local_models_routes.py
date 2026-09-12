@@ -66,6 +66,96 @@ def test_status_lists_staged_models_with_labels(client, tmp_path):
     assert row["size_label"].endswith("GB")
 
 
+def test_status_reports_disk_backed_lookup_separately_from_spill(client, monkeypatch):
+    """The API must not turn llama.cpp's mmap lookup path into ordinary host spill."""
+    from hermes_cli.local_runtime import presets
+    from hermes_cli.local_runtime.presets import PresetEntry
+    from hermes_cli.web_routers import local_models
+
+    model_id = "ple-mmap-model"
+    lazy_bytes = 28_800_138_240
+    monkeypatch.setattr(local_models, "_state_endpoint", lambda: {"base_url": "http://127.0.0.1:1/v1"})
+    monkeypatch.setattr(
+        presets, "read_preset_decisions",
+        lambda: {model_id: PresetEntry(model_id, 65536, spilled=False, lazy_table_bytes=lazy_bytes)},
+    )
+
+    def router_response(running, route, **kwargs):
+        if route == "/models":
+            return {"data": [{"id": model_id, "status": {"value": "loaded"}}]}
+        assert route == f"/props?model={model_id}"
+        return {"default_generation_settings": {"n_ctx": 65536}}
+
+    monkeypatch.setattr(local_models, "_router_request", router_response)
+    placement = client.get("/api/local-models/status").json()["placement"][model_id]
+    assert placement["spilled"] is False
+    assert placement["disk_backed_lookup_bytes"] == lazy_bytes
+    assert placement["disk_backed_lookup_label"].endswith("GB")
+
+
+def test_catalog_prices_ple_against_the_active_engine(client, monkeypatch):
+    """A configured new tag cannot enable lazy pricing while an old build still boots."""
+    from hermes_cli.local_runtime import binaries, catalog, hardware
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.web_routers import local_models
+
+    gib = 1 << 30
+    # 96 GiB discrete planning shape: PLE core weights fit, but total file bytes must spill.
+    budget = HardwareBudget(usable_vram_bytes=96 * gib - int(96 * gib * 0.09),
+                            total_device_bytes=96 * gib, ram_available_bytes=64 * gib)
+    monkeypatch.setattr(hardware, "probe_budget", lambda **kwargs: budget)
+    monkeypatch.setattr(catalog, "refresh_catalog_soon", lambda: None)
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    old_rows = client.get("/api/local-models/catalog").json()["models"]
+    old = next(row for row in old_rows if row["id"] == "qwen3.8-flash-next")
+    assert old["spilled"] is True
+    assert "disk_backed_lookup_bytes" not in old
+
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10679"])
+    new_rows = client.get("/api/local-models/catalog").json()["models"]
+    new = next(row for row in new_rows if row["id"] == "qwen3.8-flash-next")
+    assert new["spilled"] is False
+    assert new["disk_backed_lookup_bytes"] == 28_800_138_240
+    assert "disk-backed lookup table" in new["fit_summary"]
+    assert "fully on your GPU" not in new["quant_reason"]
+
+
+def test_advanced_plan_uses_the_active_engine_for_sideloaded_models(monkeypatch):
+    """Sideloaded files have no catalog min-engine gate, so their parser must receive the boot tag."""
+    from pathlib import Path
+
+    from hermes_cli.local_runtime import binaries, bootstrap, estimator, gguf, hardware
+    from hermes_cli.local_runtime.estimator import HardwareBudget, ModelProfile
+    from hermes_cli.web_routers import local_models
+
+    path = Path("Sideloaded.gguf")
+    seen = {}
+    profile = ModelProfile(
+        name="Sideloaded", weights_bytes=12 << 30, embd_table_bytes=0,
+        n_ctx_train=65536, layers=[], lazy_table_bytes=8 << 30,
+    )
+
+    def profile_from_header(_, *, engine_tag=None):
+        seen["engine_tag"] = engine_tag
+        return profile
+
+    monkeypatch.setattr(bootstrap, "staged_models", lambda: [path])
+    monkeypatch.setattr(gguf, "read_gguf_header", lambda _: object())
+    monkeypatch.setattr(estimator, "profile_from_gguf", profile_from_header)
+    monkeypatch.setattr(binaries, "installed_tags", lambda: ["b10678"])
+    monkeypatch.setattr(local_models, "_runtime_section", lambda: {"tag": "b10679"})
+    monkeypatch.setattr(
+        hardware, "probe_budget",
+        lambda **kwargs: HardwareBudget(usable_vram_bytes=6 << 30, total_device_bytes=6 << 30,
+                                        ram_available_bytes=0))
+
+    local_models._advanced_plan("Sideloaded", {})
+    assert binaries.active_tag({"tag": "b10679"}) == "b10678"
+    assert seen["engine_tag"] == "b10678"
+
+
 # ── hardware ─────────────────────────────────────────────────
 
 

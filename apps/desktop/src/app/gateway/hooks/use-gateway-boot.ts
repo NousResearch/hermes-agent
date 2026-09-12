@@ -754,6 +754,32 @@ export function useGatewayBoot({
       }
 
       applyDesktopBootProgress(payload)
+
+      // #96743: a `backend.ready` reaching us while the boot overlay is still
+      // latched from EXHAUSTED retries (e.g. the remote-update gate held boot
+      // for minutes, main only connected afterwards) is main's authoritative
+      // "the blocker is gone". Re-drive boot() off it — nothing else will,
+      // and the window otherwise sits on the failure overlay until a manual
+      // relaunch. Guarded against early-arrival (retries still pending → the
+      // normal loop owns recovery), against the initial snapshot pull (a
+      // snapshot is not news — only a latched failure may be re-driven), and
+      // against double-fire inside an in-flight boot (boot's own awaits
+      // supersede redundant progress events). The error latch is load-bearing:
+      // main serves a stale `backend.ready / retryable:false` snapshot on
+      // reload, and that snapshot must never classify the renderer-owned dial
+      // (see the RETRY CONTRACT tests) — only a failure surface may be.
+      if (
+        payload.phase === 'backend.ready' &&
+        !payload.error &&
+        !cancelled &&
+        !bootRetryTimer &&
+        !$gatewaySwitching.get() &&
+        !bootCompleted &&
+        $desktopBoot.get().error
+      ) {
+        resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))
+        void boot()
+      }
     }
 
     let bootSnapshotSuperseded = false

@@ -373,6 +373,7 @@ class TelegramAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    final_caption_media_limit = 1024  # sendPhoto caption cap, in UTF-16 units
     RICH_MESSAGE_MAX_CHARS = 32768  # Bot API 10.1 rich cap; above it use legacy chunking
     _SPLIT_THRESHOLD = 4000  # chunk near this length ⇒ a client-side split continuation is almost certain
     MEDIA_GROUP_WAIT_SECONDS = 0.8
@@ -4741,6 +4742,37 @@ class TelegramAdapter(BasePlatformAdapter):
         return await self._send_local_file(
             "Image", image_path, chat_id, reply_to, metadata, "photo",
             lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed)
+
+    async def send_final_captioned_image(
+        self, chat_id: str, image_path: str, caption: str, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Final prose + its lone image as one photo message, caption rendered as MarkdownV2 (same
+        reason as the #32029 voice-caption ladder: an unformatted agent reply shows literal
+        asterisks). Overflow, a formatting failure or a rejected entity list falls back to the
+        plain-caption photo path."""
+        formatted = None
+        if self._bot and caption:
+            try:
+                _rendered = self.format_message(caption)
+                formatted = _rendered if utf16_len(_rendered) <= 1024 else None
+            except Exception:
+                logger.debug("[%s] photo caption MarkdownV2 formatting failed; sending plain caption",
+                             self.name, exc_info=True)
+        if not formatted or not os.path.exists(image_path):
+            return await super().send_final_captioned_image(
+                chat_id, image_path, caption, reply_to, metadata=metadata)
+        try:
+            with open(image_path, "rb") as f:
+                msg = await self._send_media(
+                    self._bot.send_photo, chat_id, reply_to, metadata, "photo",
+                    reset_media=lambda: f.seek(0), photo=f, caption=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] captioned photo MarkdownV2 send failed, retrying plain: %s",
+                           self.name, _redact_telegram_error_text(e))
+            return await super().send_final_captioned_image(
+                chat_id, image_path, caption, reply_to, metadata=metadata)
 
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,

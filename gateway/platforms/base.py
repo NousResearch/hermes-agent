@@ -1826,6 +1826,9 @@ class BasePlatformAdapter(ABC):
     # answer, and an acknowledgement would silently abandon the task (#57056). Read generically via
     # ``getattr(adapter, "interactive_resume", True)`` — no per-platform branching at the call site.
     interactive_resume: bool = True
+    # UTF-16 caption budget for merging the final prose INTO a lone image attachment (one photo
+    # message instead of text + photo). 0 disables the merge; see ``_final_caption_media_path``.
+    final_caption_media_limit: int = 0
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
@@ -3818,16 +3821,69 @@ class BasePlatformAdapter(ABC):
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter
 
+    async def send_final_captioned_image(
+        self, chat_id: str, image_path: str, caption: str, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Deliver the final prose and its lone image as ONE message. Default: a photo with a plain
+        caption; adapters with rich captions override (Telegram renders MarkdownV2)."""
+        return await self.send_image_file(
+            chat_id=chat_id, image_path=image_path, caption=caption, reply_to=reply_to,
+            metadata=metadata)
+
+    def _final_caption_media_path(self, extracted: "_ExtractedResponse") -> Optional[str]:
+        """The lone image MEDIA attachment that may carry the final prose as its caption, so the
+        turn lands as ONE photo message instead of text + photo. ``None`` — keep the standalone
+        text-then-attachment path — for every other shape: no/over-long caption, more than one
+        attachment of any kind, voice, a non-image extension, or ``[[as_document]]``."""
+        limit = getattr(self, "final_caption_media_limit", 0)
+        text = extracted.text_content
+        if not limit or not text or extracted.force_document_attachments:
+            return None
+        if extracted.images or extracted.local_files or len(extracted.media_files) != 1:
+            return None
+        path, is_voice = extracted.media_files[0]
+        if is_voice or Path(path).suffix.lower() not in _IMAGE_EXTS:
+            return None
+        return path if utf16_len(text) <= limit else None
+
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
-        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
-        result, delivery_adapter = await self.send_final_ledgered(
-            event, session_key, text_content, metadata,
-            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable,
+        caption_media_path: Optional[str] = None) -> bool:
+        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete.
+
+        With ``caption_media_path`` the text rides as that image's caption (one photo message);
+        returns True only when THAT send succeeded — a refusal falls back to the plain text send
+        and leaves the image to the normal attachment lane."""
+        combined = False
+        if not caption_media_path:
+            result, delivery_adapter = await self.send_final_ledgered(
+                event, session_key, text_content, metadata,
+                reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
+        else:
+            delivery_adapter = self._final_delivery_adapter(event.source)
+            logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                        len(text_content), event.source.chat_id)
+            _obligation_id = await self._record_delivery_obligation(
+                event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+            _reply_to = _reply_anchor_for_event(event)
+            result = await delivery_adapter.send_final_captioned_image(
+                chat_id=event.source.chat_id, image_path=caption_media_path,
+                caption=text_content, reply_to=_reply_to, metadata=metadata)
+            combined = bool(getattr(result, "success", False))
+            if not combined:
+                logger.warning("[%s] Captioned photo send failed (%s); falling back to text + "
+                               "standalone attachment", delivery_adapter.name,
+                               getattr(result, "error", None))
+                result = await delivery_adapter._send_with_retry(
+                    chat_id=event.source.chat_id, content=text_content,
+                    reply_to=_reply_to, metadata=metadata)
+            if _obligation_id is not None:
+                await self._finalize_delivery_obligation(_obligation_id, result, event, delivery_adapter)
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
+        return combined
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
@@ -4012,9 +4068,12 @@ class BasePlatformAdapter(ABC):
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
                 if text_content and not _tts_caption_delivered:
-                    await self._send_final_text(
+                    _combined = await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                        is_ephemeral_response, _ephemeral_ttl, _record_delivery,
+                        caption_media_path=self._final_caption_media_path(extracted))
+                    if _combined:
+                        extracted = dataclasses.replace(extracted, media_files=[])
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,

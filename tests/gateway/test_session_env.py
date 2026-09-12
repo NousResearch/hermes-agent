@@ -273,3 +273,46 @@ def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
     reset_session_vars()
     assert get_session_env("HERMES_CRON_SESSION") == "1"
 
+
+@pytest.mark.asyncio
+async def test_plugin_slash_command_sees_session_env(monkeypatch):
+    """A plugin-registered slash command handler must see the same HERMES_SESSION_*
+    contextvars an agent turn would for that event (#108698): the agent-turn path binds
+    them via _set_session_env before running, but plugin command dispatch is a separate,
+    earlier path that previously called the handler with nothing bound."""
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
+    runner._draining = False
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", user_id="u1", user_name="tester", chat_type="dm",
+    )
+    event = MessageEvent(text="/gsd bind", source=source, message_id="m1")
+
+    seen = {}
+
+    def _handler(raw_args):
+        seen["session_key"] = get_session_env("HERMES_SESSION_KEY")
+        seen["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID")
+        return f"Bound: {raw_args}"
+
+    from hermes_cli import plugins as _plugins_mod
+    monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler",
+                         lambda name: _handler if name == "gsd-bind" else None)
+
+    handled, result, command = await runner._hm_dispatch_quick_and_plugin_commands(event, source, "gsd_bind")
+
+    assert handled is True
+    assert result == "Bound: bind"
+    assert seen["session_key"] == runner._session_key_for_source(source)
+    assert seen["session_key"] != ""
+    assert seen["chat_id"] == "c1"
+    # Bound only for the handler call, not leaked past dispatch
+    assert get_session_env("HERMES_SESSION_KEY") == ""
+

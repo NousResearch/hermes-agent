@@ -22,7 +22,8 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
 from gateway.session import (
-    SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
+    SessionSource, build_session_context, is_shared_multi_user_session,
+    neutralize_untrusted_inline_text,
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
@@ -995,9 +996,17 @@ class GatewayInboundMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                    # The agent-turn path binds HERMES_SESSION_* via _set_session_env before running;
+                    # this dispatch sits outside that path, so a handler reading get_session_env()
+                    # (directly, or through code it calls: message delivery, cron, kanban, approvals)
+                    # would otherwise see an empty/stale session (#108698). No session_entry exists
+                    # yet here, so session_key is resolved from source instead of a persisted one.
+                    _plugin_context = build_session_context(source, self.config)
+                    _plugin_context.session_key = self._session_key_for_source(source)
+                    with self._session_env_scope(_plugin_context):
+                        result = plugin_handler(event.get_command_args().strip())
+                        if asyncio.iscoroutine(result):
+                            result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)

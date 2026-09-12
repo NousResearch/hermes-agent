@@ -53,6 +53,19 @@ _LIKE_COALESCED_COLUMN_SQL = (
     "COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\' OR "
     "COALESCE(m.tool_calls, '') LIKE ? ESCAPE '\\')"
 )
+# Reasoning traces are stored on the row but absent from every FTS index, so an explicit
+# search for them answers from canonical rows (same class as the role='tool' fallback route).
+_LIKE_REASONING_COLUMN_SQL = (
+    "(COALESCE(m.reasoning, '') LIKE ? ESCAPE '\\' "
+    "OR COALESCE(m.reasoning_content, '') LIKE ? ESCAPE '\\')"
+)
+# Reasoning-first snippet: anchor inside the reasoning text when the term is there, so a hit
+# whose match lives only in a thought shows that thought rather than an unrelated reply head.
+_LIKE_REASONING_SNIPPET_SQL = (
+    "substr(COALESCE(NULLIF(m.reasoning, ''), NULLIF(m.reasoning_content, ''), m.content, ''), "
+    "max(1, instr(COALESCE(NULLIF(m.reasoning, ''), NULLIF(m.reasoning_content, ''), m.content, ''), ?) - 40), "
+    "120) AS snippet"
+)
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
@@ -909,13 +922,18 @@ class SessionSearchMixin:
                 fail_open, exc)
             return None
 
-    def _like_rows(self, where: List[str], params: list, *, order_by: str, limit_sql: str) -> List[Dict[str, Any]]:
+    def _like_rows(
+        self, where: List[str], params: list, *, order_by: str, limit_sql: str,
+        snippet_sql: str = _LIKE_SNIPPET_SQL, snippet_params: int = 1,
+    ) -> List[Dict[str, Any]]:
         """Canonical-table LIKE scan; ``params[0]`` is the snippet anchor term."""
-        sql = _search_select_sql(_LIKE_SNIPPET_SQL, "messages m", where, order_by, limit_sql)
+        sql = _search_select_sql(snippet_sql, "messages m", where, order_by, limit_sql)
         return [dict(row) for row in self._read_all(sql, params)]
 
     @staticmethod
-    def _compile_like_boolean_query(query: str) -> Tuple[str, List[Any], Optional[str]]:
+    def _compile_like_boolean_query(
+        query: str, column_sql: str = _LIKE_COALESCED_COLUMN_SQL, params_per_term: int = 3,
+    ) -> Tuple[str, List[Any], Optional[str]]:
         """Compile the supported FTS boolean subset into LIKE predicates: terms within an OR
         group are ANDed (FTS5's implicit conjunction) and ``NOT`` negates the next term."""
         groups: List[List[Tuple[str, bool]]] = [[]]
@@ -945,24 +963,40 @@ class SessionSearchMixin:
                 continue
             clauses: List[str] = []
             for term, negated in group:
-                clauses.append(f"NOT {_LIKE_COALESCED_COLUMN_SQL}" if negated else _LIKE_COALESCED_COLUMN_SQL)
-                params.extend(_like_params(term))
+                clauses.append(f"NOT {column_sql}" if negated else column_sql)
+                params.extend(_like_params(term)[:params_per_term])
                 if snippet_term is None and not negated:
                     snippet_term = term
             compiled_groups.append(f"({' AND '.join(clauses)})")
         return " OR ".join(compiled_groups), params, snippet_term
 
     def _search_messages_like_fallback(
-        self, query: str, *, limit: int, offset: int, sort: Optional[str], **filters) -> List[Dict[str, Any]]:
+        self, query: str, *, limit: int, offset: int, sort: Optional[str],
+        include_reasoning: bool = False, **filters,
+    ) -> List[Dict[str, Any]]:
         """Search canonical messages while derived FTS state is stale."""
-        predicate, params, snippet_term = self._compile_like_boolean_query(query)
+        if include_reasoning:
+            predicate, params, snippet_term = self._compile_like_boolean_query(
+                query, _LIKE_REASONING_COLUMN_SQL, 2
+            )
+        else:
+            predicate, params, snippet_term = self._compile_like_boolean_query(query)
         if not predicate or snippet_term is None:
             return []
         where = [f"({predicate})"]
+        if include_reasoning:
+            where.append(
+                "TRIM(COALESCE(m.reasoning, '') || COALESCE(m.reasoning_content, '')) <> ''"
+            )
         _search_filter_clauses(where, params, **filters)
         order = "ASC" if isinstance(sort, str) and sort.strip().lower() == "oldest" else "DESC"
-        return self._like_rows(where, [snippet_term, *params, limit, offset],
-                               order_by=f"ORDER BY m.timestamp {order}, m.id {order}", limit_sql="LIMIT ? OFFSET ?")
+        snippet_params = 1
+        return self._like_rows(
+            where, [snippet_term] * snippet_params + [*params, limit, offset],
+            order_by=f"ORDER BY m.timestamp {order}, m.id {order}", limit_sql="LIMIT ? OFFSET ?",
+            snippet_sql=_LIKE_REASONING_SNIPPET_SQL if include_reasoning else _LIKE_SNIPPET_SQL,
+            snippet_params=snippet_params,
+        )
 
     def _refresh_fts_stale_state(self) -> None:
         """Observe fail-open initiated by another process sharing state.db."""
@@ -1011,6 +1045,7 @@ class SessionSearchMixin:
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        include_reasoning: bool = False,
     ) -> List[Dict[str, Any]]:
         """:meth:`_search_messages_impl` plus one log line per slow search with the routing
         path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
@@ -1019,7 +1054,8 @@ class SessionSearchMixin:
         try:
             rows = self._search_messages_impl(
                 query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter,
-                limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields)
+                limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields,
+                include_reasoning=include_reasoning)
             return rows
         finally:
             elapsed_ms = (time.time() - started) * 1000.0
@@ -1032,6 +1068,7 @@ class SessionSearchMixin:
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        include_reasoning: bool = False,
     ) -> List[Dict[str, Any]]:
         """FTS5 search across session messages (keywords, ``"phrases"``, AND/OR/NOT, ``prefix*``).
         Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
@@ -1050,6 +1087,11 @@ class SessionSearchMixin:
         # opt-in full-body path and scans canonical rows via LIKE.
         if role_filter and "tool" in role_filter:
             matches = self._search_messages_like_fallback(query, limit=limit, offset=offset, sort=sort, **filters)
+            return self._finalize_search_matches(matches, result_fields=result_fields)
+        if include_reasoning:
+            matches = self._search_messages_like_fallback(
+                query, limit=limit, offset=offset, sort=sort, include_reasoning=True, **filters
+            )
             return self._finalize_search_matches(matches, result_fields=result_fields)
         self._refresh_fts_stale_state()
         if self._fts_stale:

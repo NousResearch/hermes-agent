@@ -211,11 +211,31 @@ class WSTransport:
                     _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
                     return
 
-    def close(self) -> None:  # loop thread (handle_ws finally), so the TimerHandle is safe
+    def close(self) -> None:
+        # Latch first so heartbeats/writes fail immediately. Fanout overflow may
+        # call this off-loop; TimerHandle.cancel and ws.close belong on the loop.
         self._closed = True
-        if self._token_flush_handle is not None:
-            self._token_flush_handle.cancel()
+
+        def _finish_close() -> None:  # loop thread
+            handle = self._token_flush_handle
             self._token_flush_handle = None
+            if handle is not None:
+                handle.cancel()
+            # SocketClient tests pass ``self`` as the ASGI ws; skip that stand-in.
+            if self._ws is not None and self._ws is not self:
+                self._loop.create_task(self._close_stalled_socket())
+
+        try:
+            on_loop = asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            _finish_close()
+            return
+        try:
+            self._loop.call_soon_threadsafe(_finish_close)
+        except RuntimeError:
+            pass
 
     async def _close_stalled_socket(self) -> None:
         """Close the peer socket after a send deadline so ``handle_ws``'s ``receive_text`` unblocks and its

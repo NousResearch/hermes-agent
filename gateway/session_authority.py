@@ -274,11 +274,20 @@ class SessionAuthority:
         return self._receipt(row)
 
     async def cancel_queued(self, actor, ref, admission_id):
-        await self.receipt(actor, ref, admission_id)
+        before = await self.receipt(actor, ref, admission_id)
         row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
         from gateway.session_ingress_media import release_admission_media
         release_admission_media(self.db, admission_id)
         self._publish_pending(ref)
+        if before.status != 'queued' or row['status'] != 'terminal':
+            return self._receipt(row)
+        # The only place a queued row becomes terminal: the delivery waiters that wait on
+        # the admission (native ingress, API/webhook/hosted) settle here, or a cancelled row
+        # that never reaches _drain blocks them forever.
+        self.native_waiters.discard(admission_id)
+        waiter = self.waiters.pop(admission_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(None)
         return self._receipt(row)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):

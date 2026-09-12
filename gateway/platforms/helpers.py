@@ -569,7 +569,14 @@ class TextBatchAggregator:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending[key] = event
         else:
+            _pre_batch_text = existing.text
             existing.text = f"{existing.text}\n{event.text}"
+            try:
+                from plugins.source_context import rebase_event_fragments
+                rebase_event_fragments(existing, event, existing.text,
+                                       old_text=_pre_batch_text)
+            except Exception:
+                logger.debug("tool source context rebase failed", exc_info=True)
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
 
         # Cancel prior flush timer, start a new one

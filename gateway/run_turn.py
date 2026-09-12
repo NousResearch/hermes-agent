@@ -471,7 +471,14 @@ class GatewayTurnMixin:
                     _loaded_names.append(_sname)
             if _combined_parts:
                 _combined_parts.append(event.text)  # user's original text after the payloads
+                _pre_skill_text = event.text or ""
                 event.text = "\n\n".join(_combined_parts)
+                # Injected skill payloads shift (not erase) user provenance.
+                try:
+                    from plugins.source_context import shift_event_fragments
+                    shift_event_fragments(event, len(event.text) - len(_pre_skill_text))
+                except Exception:
+                    logger.debug("tool source context shift failed", exc_info=True)
                 logger.info("[Gateway] Auto-loaded skill(s) %s for session %s", _loaded_names, session_key)
         except Exception as e:
             logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
@@ -1909,6 +1916,21 @@ class GatewayTurnMixin:
         if _is_new_session and _auto:
             self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
 
+        # Execution-scoped original-message context for native plugins
+        # (#103941): bound AFTER auto-skill prefix shift so the hash/spans
+        # describe the presented text; the lease travels with the
+        # session-env tokens so every turn exit through
+        # _clear_session_env releases it.
+        try:
+            from plugins.source_context import bind_execution_for_event
+
+            _source_ctx_token, _ = bind_execution_for_event(
+                event=event, session_key=session_key,
+                run_generation=int(run_generation or 0))
+            _session_env_tokens.append(("hermes_tool_source_context", _source_ctx_token))
+        except Exception:
+            logger.debug("tool source context bind failed", exc_info=True)
+
         await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
 
         # A turn becomes durable recovery work only after it owns the per-session lease; marking
@@ -1943,6 +1965,7 @@ class GatewayTurnMixin:
             event=event, source=source, history=history, session_key=session_key,
         )
         if message_text is None:
+            self._clear_session_env(_session_env_tokens)
             return None, _session_env_tokens
 
         message_text, persist_user_message, persist_user_timestamp = (

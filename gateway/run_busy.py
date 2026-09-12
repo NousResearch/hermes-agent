@@ -454,6 +454,11 @@ class GatewayBusySessionMixin:
                     # event.get_command_args(). Always a literal "/": is_command()/get_command_args()
                     # don't recognize per-platform display prefixes ("!" on Slack/Matrix).
                     event.text = f"/{_verb} {_normalized_args}".rstrip()
+                    try:
+                        from plugins.source_context import invalidate_source_fragments
+                        invalidate_source_fragments(event)
+                    except Exception:
+                        logger.debug("tool source context invalidate failed", exc_info=True)
                     _reply = await _approval_handler(event)
                     logger.info(
                         "Approval response via plain text: session=%s verb=%s args=%r",

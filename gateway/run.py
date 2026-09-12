@@ -4214,6 +4214,13 @@ class GatewayRunner(
         """Restore session context variables to their pre-handler values."""
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
+        for token in list(tokens or []):
+            if isinstance(token, tuple) and len(token) == 2 and token[0] == "hermes_tool_source_context":
+                try:
+                    from plugins.source_context import clear_execution
+                    clear_execution(token[1])
+                except Exception:
+                    logger.debug("tool source context clear failed", exc_info=True)
 
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""

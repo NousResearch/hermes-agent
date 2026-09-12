@@ -1157,6 +1157,11 @@ class RelayAdapter(BasePlatformAdapter):
                 }
                 event.text = f"/{option_id}"
                 event.message_type = MessageType.COMMAND
+                try:
+                    from plugins.source_context import invalidate_source_fragments
+                    invalidate_source_fragments(event)
+                except Exception:
+                    logger.debug("tool source context invalidate failed", exc_info=True)
         return event
 
     @staticmethod

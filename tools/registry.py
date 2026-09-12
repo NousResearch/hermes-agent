@@ -810,16 +810,23 @@ class ToolRegistry:
     def dispatch(
         self, name: str, args: dict, *, scope: Optional[str] = None, **kwargs) -> str | dict:
         """Execute a tool handler by name: async handlers bridged via ``_run_async()``,
-        results normalized, every exception returned as ``{"error": ...}``."""
+        results normalized, every exception returned as ``{"error": ...}``.
+
+        The handler runs inside the narrow tool-call scope for
+        execution-scoped source context (``plugins.source_context``): the
+        getter resolves only here, never from ambient session state.
+        """
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
-            if entry.is_async:
-                from model_tools import _run_async
-                result = _run_async(entry.handler(args, **kwargs))
-            else:
-                result = entry.handler(args, **kwargs)
+            from plugins.source_context import scoped_tool_call
+            with scoped_tool_call():
+                if entry.is_async:
+                    from model_tools import _run_async
+                    result = _run_async(entry.handler(args, **kwargs))
+                else:
+                    result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
             # exc_info already renders the exception, so keep the message copy bounded.

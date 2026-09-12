@@ -30,6 +30,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from plugins.source_context import note_single_source
 from utils import env_float
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
@@ -467,6 +468,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, BasePl
             text=text, message_type=message_type, source=source, raw_message=payload, message_id=msg_id, media_urls=media_urls, media_types=media_types,
             reply_to_message_id=f"quote:{msg_id}" if has_reply_context else None, reply_to_text=reply_text if has_reply_context else None, timestamp=datetime.now(tz=timezone.utc),
         )
+        note_single_source(event, namespace="wecom", message_id=msg_id,
+                           reference=str(req_id) if req_id else None)
         # Only plain text is batched, EXCEPT attachment-only messages, which are held so the
         # trailing text callback merges instead of "interrupting" a run the attachment spawned.
         has_pending_batch = self._text_batch_key(event) in self._pending_text_batches

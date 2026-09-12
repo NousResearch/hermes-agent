@@ -381,8 +381,7 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
                 if piece is not None:
                     output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
         elif os.name == "nt":
-            while chunk := os.read(fd, 4096):
-                output.append(decoder.decode(chunk))
+            _drain_fd_windows(proc, fd, output, decoder, stop)
         else:
             _drain_fd_select(proc, fd, output, decoder, stop)
     except Exception:
@@ -395,6 +394,46 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
                 output.append(tail)
         except Exception:
             pass
+
+
+def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+    """Windows drain: PeekNamedPipe poll (select() doesn't work on pipe fds on Windows),
+    mirrors _drain_fd_select's stop-event + idle-after-exit protection against a
+    grandchild process holding the pipe open after bash exits."""
+    import ctypes
+    import msvcrt
+
+    kernel32 = ctypes.windll.kernel32
+    try:
+        handle = msvcrt.get_osfhandle(fd)
+    except OSError:
+        return
+    avail = ctypes.c_ulong(0)
+    idle_after_exit = 0
+    while True:
+        if stop is not None and stop.is_set():
+            return
+        try:
+            ok = kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None)
+        except OSError:
+            return
+        if not ok:
+            return  # pipe broken/closed
+        if avail.value > 0:
+            try:
+                chunk = os.read(fd, min(int(avail.value), 4096))
+            except (ValueError, OSError):
+                return
+            if not chunk:
+                return
+            output.append(decoder.decode(chunk))
+            idle_after_exit = 0
+            continue
+        if proc.poll() is not None:
+            idle_after_exit += 1
+            if idle_after_exit >= 3:
+                return
+        time.sleep(0.1)
 
 
 def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:

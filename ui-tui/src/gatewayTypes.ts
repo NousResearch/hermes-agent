@@ -98,6 +98,10 @@ export interface ConfigDisplayConfig {
   /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
    *  honors on its user/assistant labels (#41531). */
   timestamps?: boolean
+  /** Where a message's reasoning/tool trail renders relative to its text:
+   *  'above' (default, today's shape) or 'below'. Raw YAML — unknown values
+   *  fall back to 'above' via parseToolTrailPosition. */
+  tool_trail_position?: string
   /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a
    * turn starts delegating, via a one-time transient activity hint.  Opens

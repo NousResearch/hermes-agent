@@ -342,6 +342,10 @@ def _word_setters() -> dict:
         # 'light'/'dark' pin beats background auto-detection (xterm.js hosts misreport OSC 11).
         "theme": (_word, {"auto", "light", "dark"}, "unknown theme value: {value} (use auto|light|dark)",
                   lambda w: _write_config_key("display.tui_theme", w)),
+        # Where a message's reasoning/tool trail renders relative to its own text.
+        # Position only — section visibility stays with details_mode.
+        "tool_trail_position": (_word, {"above", "below"}, "unknown tool_trail_position: {value}",
+                                lambda w: _write_config_key("display.tool_trail_position", w)),
         # _raw_word: 0/False/[] keep their text so the error names what was sent.
         "indicator": (_raw_word, INDICATOR_STYLES, "unknown indicator: {raw!r}; pick one of " + "|".join(INDICATOR_STYLES),
                       lambda w: _write_config_key("display.tui_status_indicator", w))}
@@ -458,6 +462,7 @@ _CONFIG_SETTERS = {
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
+    "tool_trail_position": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}

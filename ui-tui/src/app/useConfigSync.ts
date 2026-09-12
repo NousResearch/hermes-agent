@@ -2,6 +2,7 @@ import type { MouseTrackingMode } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
+import { parseToolTrailPosition } from '../domain/toolTrail.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
@@ -311,7 +312,8 @@ export const applyDisplay = (
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
-    timestamps: d.timestamps === true
+    timestamps: d.timestamps === true,
+    toolTrailPosition: parseToolTrailPosition(d.tool_trail_position)
   })
 }
 

@@ -18,7 +18,7 @@ import {
   stripAnsi
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
+import type { ActiveTool, DetailsMode, Msg, SectionVisibility, ToolTrailPosition } from '../types.js'
 
 import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
@@ -61,6 +61,7 @@ export const MessageLine = memo(function MessageLine({
   sections,
   t,
   timestamps = false,
+  toolTrailPosition = 'above',
   tools = []
 }: MessageLineProps) {
   // Per-section overrides win over the global mode, so resolve each section
@@ -171,7 +172,32 @@ export const MessageLine = memo(function MessageLine({
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
 
-  const showResponseSeparator = shouldShowResponseSeparator(msg, showDetails)
+  const showResponseSeparator = shouldShowResponseSeparator(msg, showDetails, toolTrailPosition)
+
+  // The trail block itself is identical in both positions — only the margin
+  // that separates it from the body text flips sides, so the block keeps the
+  // same row count either way (`below` is shorter by exactly the separator
+  // it drops; see lib/virtualHeights.ts).
+  const detailsBlock = showDetails ? (
+    <Box
+      flexDirection="column"
+      {...(toolTrailPosition === 'below' ? { marginTop: 1 } : { marginBottom: 1 })}
+      key="details"
+    >
+      <ToolTrail
+        commandOverride={detailsModeCommandOverride}
+        detailsMode={detailsMode}
+        preferExpandedThinking={liveDetails}
+        reasoning={thinking}
+        reasoningActive={reasoningActive}
+        reasoningTokens={msg.thinkingTokens}
+        sections={sections}
+        t={t}
+        toolTokens={msg.toolTokens}
+        trail={msg.tools}
+      />
+    </Box>
+  ) : null
 
   const content = (() => {
     if (msg.kind === 'slash') {
@@ -271,22 +297,7 @@ export const MessageLine = memo(function MessageLine({
       marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment || leadGap ? 1 : 0}
     >
-      {showDetails && (
-        <Box flexDirection="column" marginBottom={1}>
-          <ToolTrail
-            commandOverride={detailsModeCommandOverride}
-            detailsMode={detailsMode}
-            preferExpandedThinking={liveDetails}
-            reasoning={thinking}
-            reasoningActive={reasoningActive}
-            reasoningTokens={msg.thinkingTokens}
-            sections={sections}
-            t={t}
-            toolTokens={msg.toolTokens}
-            trail={msg.tools}
-          />
-        </Box>
-      )}
+      {toolTrailPosition === 'above' && detailsBlock}
 
       {showResponseSeparator && (
         <Box marginBottom={1}>
@@ -319,12 +330,22 @@ export const MessageLine = memo(function MessageLine({
 
         <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
+
+      {toolTrailPosition === 'below' && detailsBlock}
     </Box>
   )
 })
 
-export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
-  msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
+// The "Response" rule exists to announce where the answer starts *after* a
+// trail has pushed it down the screen. Under `tool_trail_position: below`
+// the answer starts immediately, and the trail underneath already carries
+// ToolTrail's own "Thinking" / "Tool calls" headers — so a separator there
+// would label the answer as following something that is no longer above it.
+export const shouldShowResponseSeparator = (
+  msg: Msg,
+  showDetails: boolean,
+  toolTrailPosition: ToolTrailPosition = 'above'
+): boolean => msg.role === 'assistant' && showDetails && toolTrailPosition === 'above' && /\S/.test(msg.text)
 
 // A MoA reference block (msg.isMoaReference) is the user-facing
 // mixture-of-agents process the user opted into, not private model
@@ -355,5 +376,12 @@ interface MessageLineProps {
   t: Theme
   /** `display.timestamps` — dim [HH:MM] label on user/assistant rows. */
   timestamps?: boolean
+  /**
+   * `display.tool_trail_position` — 'above' (default) renders this message's
+   * reasoning/tool trail before its text, 'below' renders it after. Purely
+   * positional: what the trail contains, and whether each section is
+   * hidden/collapsed/expanded, still comes from `detailsMode`/`sections`.
+   */
+  toolTrailPosition?: ToolTrailPosition
   tools?: ActiveTool[]
 }

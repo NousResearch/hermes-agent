@@ -1,5 +1,5 @@
 import { TERMUX_TUI_MODE } from '../config/env.js'
-import type { Msg } from '../types.js'
+import type { Msg, ToolTrailPosition } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
 
@@ -76,6 +76,7 @@ export const estimatedMsgHeight = (
     thinkingVisible = details,
     thinkingExpanded = thinkingVisible,
     toolsVisible = details,
+    toolTrailPosition = 'above',
     userPrompt = '',
     withSeparator = false
   }: {
@@ -85,6 +86,7 @@ export const estimatedMsgHeight = (
     thinkingExpanded?: boolean
     thinkingVisible?: boolean
     toolsVisible?: boolean
+    toolTrailPosition?: ToolTrailPosition
     userPrompt?: string
     withSeparator?: boolean
   }
@@ -128,7 +130,13 @@ export const estimatedMsgHeight = (
         (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) +
         (hasVisibleThinking ? (thinkingExpanded ? wrappedLines(msg.thinking ?? '', bodyWidth) : 1) : 0)
 
-      if (msg.role === 'assistant' && /\S/.test(msg.text)) {
+      // "Response" rule + its bottom margin. Only `above` draws it — under
+      // `below` MessageLine trades those two rows for the trail's top margin,
+      // which replaces the trail's bottom margin one-for-one, so the block is
+      // exactly 2 rows shorter. Mirrors shouldShowResponseSeparator(); if that
+      // gate changes, this one has to move with it or the virtualizer's
+      // pre-mount offsets drift by 2 rows per detailed assistant turn.
+      if (msg.role === 'assistant' && toolTrailPosition === 'above' && /\S/.test(msg.text)) {
         h += 2
       }
     }

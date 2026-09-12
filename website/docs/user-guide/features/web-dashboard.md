@@ -295,6 +295,18 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 - **Trigger now** — immediately execute a job outside its normal schedule
 - **Delete** — permanently remove a cron job
 
+#### Timeline
+
+The **Timeline** tab plots every job as a lane of past and upcoming firings on a
+shared axis, with a live "now" line and a window selector (24h / 48h / 7d / 30d).
+Drag to pan across time, scroll to move across lanes, and click a marker for that
+firing's detail card (schedule, last and next run, trigger / pause / edit).
+
+Recurrence is matched in your configured Hermes timezone, not the browser's, so
+the markers line up with the times the scheduler actually fires.
+
+![Cron timeline view — one lane per job, a live now line, and the detail card for a selected firing](/img/dashboard/cron-timeline.png)
+
 ### Profiles
 
 Create and manage [profiles](../profiles.md) — isolated Hermes instances with their own config, skills, and sessions.

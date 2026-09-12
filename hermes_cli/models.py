@@ -1177,10 +1177,22 @@ def _resolve_copilot_catalog_api_key() -> str:
     return ""
 
 
-def _model_dedup_key(model_id: str) -> str:
+def _model_dedup_key(model_id: str, provider: str = "") -> str:
     """Case-insensitive dedup key folded through the picker-search alias table, so a bare live wire
-    id and its curated public slug (Kimi ``k3`` / ``kimi-k3``) don't both survive a merge."""
+    id and its curated public slug (Kimi ``k3`` / ``kimi-k3``) don't both survive a merge.
+
+    With *provider*, the key is additionally folded to that provider's WIRE spelling. Anthropic
+    rewrites dots to hyphens on the wire, so curated ``claude-fable-5.1`` and the live/models.dev
+    ``claude-fable-5-1`` are ONE model; without the fold both survive and every picker lists it
+    twice. Folding is keyed off the provider's own normalizer, so a provider that does not rewrite
+    ids is unaffected."""
     key = str(model_id).strip().lower()
+    if provider:
+        try:
+            from hermes_cli.model_normalize import normalize_model_for_provider
+            key = normalize_model_for_provider(key, provider).strip().lower() or key
+        except Exception:
+            pass
     try:
         from hermes_cli.model_search import model_alias_canonical
         return model_alias_canonical(key)
@@ -1198,7 +1210,25 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
         mdev = []
     if not mdev:
         return list(curated)
-    return _merge_unique(_merge_unique([], mdev), curated)
+    # Provider-aware key: models.dev publishes Anthropic ids in WIRE spelling (claude-fable-5-1)
+    # while the curated catalog carries the public slug (claude-fable-5.1). A plain lowercase key
+    # treats the pair as two models and every picker lists it twice.
+    def key(model_id: str) -> str:
+        return _model_dedup_key(model_id, provider)
+
+    # On a collision, prefer the curated SPELLING but never override mere casing: models.dev casing
+    # wins for same-characters ids (``MiniMax-M2.7`` over curated ``minimax-m2.7``), while a genuine
+    # respelling (dot vs hyphen) resolves to the curated public slug — the picker renders that, and a
+    # saved selection keyed on the slug would otherwise break.
+    curated_by_key = {key(m): m for m in reversed(curated)}
+
+    def pick(mdev_id: str) -> str:
+        slug = curated_by_key.get(key(mdev_id))
+        if slug is None or slug.lower() == str(mdev_id).lower():
+            return mdev_id
+        return slug
+
+    return _merge_unique(_merge_unique([], [pick(m) for m in mdev], key=key), curated, key=key)
 
 
 def _openai_discovery_base_url(provider: str) -> str:
@@ -1294,8 +1324,11 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     if not live:
         return curated
     # The live /v1/models dump lags newly-routed curated aliases (reachable before enumerated):
-    # curated first, then live-only extras, so a fresh curated model never disappears.
-    return live if cfg_base_url else _merge_unique(curated, live)
+    # curated first, then live-only extras, so a fresh curated model never disappears. The key is
+    # provider-aware because Anthropic's live listing uses wire spelling (claude-fable-5-1) for the
+    # curated public slug (claude-fable-5.1) — a bare lowercase key lists that model twice.
+    return live if cfg_base_url else _merge_unique(
+        curated, live, key=lambda m: _model_dedup_key(m, "anthropic"))
 
 
 def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:

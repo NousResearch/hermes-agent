@@ -105,7 +105,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
     gate = tmp_path / 'background-exit'
     if worker_action == 'background':
         # A session-owned background process is a turn-boundary survivor, not turn litter (F24).
-        peer.command = f'printf MANAGED_TOOL_EFFECT; while [ ! -e {gate} ]; do sleep .1; done'
+        peer.command = f'printf MANAGED_TOOL_EFFECT; while test ! -e {gate}; do sleep .1; done'
         peer.tool_args = {'background': True}
     peer.blocked, peer.release = threading.Event(), threading.Event()
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
@@ -116,6 +116,9 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         'model': {'provider': 'custom', 'default': 'managed-model', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}},
         'approvals': {'mode': 'manual'},
+        # The scanner otherwise downloads its latest release into the temp home on every run, and a newer
+        # release flagging the fixture command raises an approval prompt nobody answers (CI hang).
+        'security': {'tirith_enabled': False},
         'platform_toolsets': {'cli': ['terminal']}}
     if worker_action == 'mcp':
         # A configured stdio MCP server the owner discovered must reach the worker's model too (F25).

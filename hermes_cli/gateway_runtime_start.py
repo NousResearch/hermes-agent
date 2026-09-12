@@ -18,7 +18,11 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float) -> subproces
     """
     home = profile_home.resolve()
     root = Path(__file__).resolve().parent.parent
-    command = [sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--quiet"]
+    # A root home is only pinned by an explicit selector: without one the child's
+    # _apply_profile_override follows the sticky active_profile and boots the wrong
+    # profile's daemon. A <root>/profiles/<name> home is already trusted as-is.
+    selector = [] if home.parent.name == "profiles" else ["--profile", "default"]
+    command = [sys.executable, "-m", "hermes_cli.main", *selector, "gateway", "run", "--quiet"]
     env = dict(os.environ)
     if sys.platform == "win32":
         from hermes_cli.gateway_windows import windowless_gateway_restart_spec

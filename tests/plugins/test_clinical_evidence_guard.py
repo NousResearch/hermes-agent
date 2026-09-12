@@ -119,6 +119,34 @@ def test_technical_guard_status_report_is_not_clinical(plugin):
     ) is False
 
 
+def test_clinical_assistance_stat_report_is_not_a_care_request(plugin):
+    prompt = (
+        "stat report de todo lo que se hizo hasta ahora para mejorar el pilar clinico "
+        "de asistencia clinica/asesoramiento clinico en cirugia plastica. Donde estamos? "
+        "Que mejoro? cuanto mejoro? y como nos ponen esos cambios relacionados a nuestro "
+        "propio status anterior, y tambien en comparacion a modelos de frontera genericos."
+    )
+
+    assert plugin._is_clinical(prompt) is False
+    assert plugin._on_pre_delivery_scope(prompt) is False
+
+
+def test_status_language_does_not_exclude_direct_patient_care(plugin):
+    assert plugin._is_clinical(
+        "Dime qué tratamiento indico a este paciente y luego compara el progreso del sistema."
+    ) is True
+
+
+def test_skill_library_review_with_clinical_examples_is_not_clinical(plugin):
+    prompt = (
+        "Review the conversation above and update the skill library. "
+        "Capture the rule that a clinical response about treatment for a patient "
+        "must preserve evidence internally."
+    )
+
+    assert plugin._on_pre_delivery_scope(prompt) is False
+
+
 def test_overlapping_turns_in_one_session_keep_separate_state(plugin):
     plugin._on_pre_llm_call(
         session_id="shared", turn_id="clinical",
@@ -267,3 +295,26 @@ def test_pre_delivery_repair_preserves_clinical_state_and_evidence(plugin):
     state = plugin._STATES[plugin._session_key("s")]
     assert state.clinical is True
     assert len(state.evidence) == 1
+
+
+def test_pre_delivery_repair_preserves_nonclinical_state_and_scope(plugin):
+    session_id = "skill-review"
+    plugin._on_pre_llm_call(
+        session_id=session_id,
+        turn_id="turn",
+        user_message="Review the conversation above and update the skill library.",
+    )
+
+    repair = "[PRE_DELIVERY_REPAIR]\nRepair the response without clinical claims."
+    assert plugin._on_pre_delivery_scope(
+        session_id=session_id,
+        turn_id="turn",
+        user_message=repair,
+    ) is False
+    plugin._on_pre_llm_call(
+        session_id=session_id,
+        turn_id="turn",
+        user_message=repair,
+    )
+
+    assert plugin._STATES[plugin._session_key(session_id, "turn")].clinical is False

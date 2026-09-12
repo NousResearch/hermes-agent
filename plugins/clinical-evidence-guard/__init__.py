@@ -54,6 +54,11 @@ _NONCLINICAL_LABEL_RE = re.compile(
     r"\b(?:no\s+cl[ií]nic[oa]s?|non[- ]?clinical)\b",
     re.IGNORECASE,
 )
+_META_SKILL_LIBRARY_TASK_RE = re.compile(
+    r"^\s*(?:review|revisa\w*|actualiza\w*|update)\b.{0,240}"
+    r"\b(?:conversation|conversaci[oó]n|skills?|biblioteca)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 _SOFTWARE_ACTION_RE = re.compile(
     r"\b(?:audit\w*|revis\w*|depur\w*|implement\w*|correg\w*|edit\w*|"
     r"refactor\w*|test\w*|probar)\b",
@@ -74,6 +79,18 @@ _META_CLINICAL_PROCESS_RE = re.compile(
     r"\b(?:alfred|sistema|modelo|guard|respuesta\w*|negaci\w*|rechaz\w*|"
     r"reh[uú]s\w*|aprendi\w*|mejor\w*|ajust\w*|calibr\w*|correcci\w*|"
     r"auditor[ií]a|persist\w*|memoria)\b",
+    re.IGNORECASE,
+)
+_META_STATUS_REQUEST_RE = re.compile(
+    r"\b(?:stat(?:istical)?\s+report|reporte\s+estad[ií]stico|estado|status|"
+    r"progreso|progress|d[oó]nde\s+estamos|qu[eé]\s+mejor[oó]|cu[aá]nto\s+mejor[oó]|"
+    r"comparaci[oó]n|comparison|benchmark)\b",
+    re.IGNORECASE,
+)
+_META_SYSTEM_TARGET_RE = re.compile(
+    r"\b(?:alfred|pilar|sistema|system|arquitectura|infraestructura|guard|gateway|"
+    r"modelos?\s+(?:de\s+)?frontera|frontier\s+models?|respuestas?\s+cl[ií]nicas?|"
+    r"asistencia\s+cl[ií]nica|asesoramiento\s+cl[ií]nico)\b",
     re.IGNORECASE,
 )
 _ASSISTANT_FAILURE_COMPLAINT_RE = re.compile(
@@ -310,8 +327,16 @@ def _prune_states(now: float) -> None:
 
 def _is_clinical(message: str) -> bool:
     candidate = _NONCLINICAL_LABEL_RE.sub(" ", message or "")
-    if not _DIRECT_CARE_REQUEST_RE.search(candidate):
+    if _META_SKILL_LIBRARY_TASK_RE.search(candidate):
+        return False
+    direct_care = bool(_DIRECT_CARE_REQUEST_RE.search(candidate))
+    if not direct_care:
         if _ASSISTANT_FAILURE_COMPLAINT_RE.search(candidate):
+            return False
+        if (
+            _META_STATUS_REQUEST_RE.search(candidate)
+            and _META_SYSTEM_TARGET_RE.search(candidate)
+        ):
             return False
         if (
             _SOFTWARE_ACTION_RE.search(candidate)
@@ -657,7 +682,7 @@ def _on_pre_llm_call(
     if "[PRE_DELIVERY_REPAIR]" in str(user_message or ""):
         with _LOCK:
             _resolved_key, state = _get_or_migrate_state(session_id, turn_id)
-            if state is not None and state.clinical:
+            if state is not None:
                 state.started_at = now
                 return None
     try:
@@ -704,9 +729,17 @@ def _classify_turn(user_message: str, conversation_history: Any = None) -> bool:
 def _on_pre_delivery_scope(
     user_message: str = "",
     conversation_history: Any = None,
+    session_id: str = "",
+    turn_id: str = "",
     **_: Any,
 ) -> bool:
     """Protect only clinical turns; workflow/meta turns retain ordinary streaming."""
+    if "[PRE_DELIVERY_REPAIR]" in str(user_message or ""):
+        with _LOCK:
+            _resolved_key, state = _get_or_migrate_state(session_id, turn_id)
+            if state is not None:
+                return state.clinical
+        return True
     try:
         return _classify_turn(_strip_reply_context(user_message), conversation_history)
     except Exception:

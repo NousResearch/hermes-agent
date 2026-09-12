@@ -1230,7 +1230,8 @@ def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session
             session_key=session_key, session_id=session_id, source=source,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family, cwd=resolved,
-            ui_session_id=ui_session_id, cron_session="")
+            ui_session_id=ui_session_id, cron_session="",
+            user_id=(sess or {}).get("dashboard_principal", {}).get("user_id", ""))
     return []
 
 
@@ -2270,17 +2271,35 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     return system_prompt
 
 
+def _dashboard_principal() -> dict:
+    """Snapshot server-verified identity; only a local stdio child reads its launch env."""
+    transport = current_transport() or _stdio_transport
+    identity = getattr(transport, "auth_identity", None)
+    if transport is _stdio_transport:
+        identity = {"user_id": os.environ.get("HERMES_TUI_USER_ID"),
+                    "provider": os.environ.get("HERMES_TUI_USER_PROVIDER")}
+    if _methods_browser_control._is_authenticated_identity(identity):
+        return {"user_id": identity["user_id"], "provider": identity["provider"]}
+    return {}
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
-    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None):
+    platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
+    dashboard_principal: dict | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
     from run_agent import AIAgent
+    if dashboard_principal is None:
+        with _sessions_lock:
+            session = _sessions.get(sid)
+            dashboard_principal = (session.get("dashboard_principal", {})
+                                   if session is not None else _dashboard_principal())
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
     for _mod in ("hermes_cli.mcp_startup", "tui_gateway.entry"):
@@ -2313,6 +2332,7 @@ def _make_agent(
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        user_id=dashboard_principal.get("user_id"),
         **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         with _sessions_lock:
@@ -2356,7 +2376,9 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
 def _init_session(
     sid: str, key: str, agent, history: list, cols: int = 80, cwd: str | None = None,
     session_db=None, source: str | None = None, profile_home: str | None = None,
-    explicit_cwd: bool = False):
+    explicit_cwd: bool = False, dashboard_principal: dict | None = None):
+    if dashboard_principal is None:
+        dashboard_principal = _dashboard_principal()
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
@@ -2367,7 +2389,7 @@ def _init_session(
             "show_reasoning": _load_show_reasoning(), "source": _resolve_session_source(source),
             "tool_progress_mode": _load_tool_progress_mode(), "edit_snapshots": {}, "tool_started_at": {},
             # Profile-scoped HERMES_HOME (None = launch); SessionBranch copies the parent's (same state.db).
-            "profile_home": profile_home,
+            "profile_home": profile_home, "dashboard_principal": dict(dashboard_principal),
             # In-session /model switch, honored on rebuild (/new, resume) — never leaks to siblings via env vars.
             "model_override": None,
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
@@ -2431,6 +2453,7 @@ def _deferred_session_record(
         "inflight_turn": None, "last_active": now, "lazy": lazy, "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
+        "dashboard_principal": _dashboard_principal(),
         "resume_runtime_overrides": resume_runtime_overrides, "resume_session_id": session_key,
         "running": False, "session_key": session_key, "show_reasoning": _load_show_reasoning(),
         "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),

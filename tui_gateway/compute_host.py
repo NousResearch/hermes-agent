@@ -318,7 +318,7 @@ class ComputeHost:
                 platform_override=frame.get("source"),
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
-                session_db=session_db)
+                session_db=session_db, dashboard_principal=frame.get("dashboard_principal", {}))
             if server._transfer_db_to_agent(agent, session_db):
                 owns_db = False
         finally:
@@ -339,7 +339,7 @@ class ComputeHost:
                 server._init_session(
                     sid, key, agent, list(history), cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None, session_db=session_db,
-                    source=frame.get("source"))
+                    source=frame.get("source"), dashboard_principal=frame.get("dashboard_principal", {}))
             finally:
                 reset_transport(token)
         except Exception:
@@ -356,7 +356,8 @@ class ComputeHost:
                 "tool_progress_mode": server._load_tool_progress_mode(), "edit_snapshots": {},
                 "tool_started_at": {}, "model_override": frame.get("model_override"),
                 "source": server._sanitize_client_source(frame.get("source")),
-                "transport": self._transport}
+                "transport": self._transport,
+                "dashboard_principal": dict(frame.get("dashboard_principal", {}))}
         session = server._sessions[sid]
         session["transport"] = self._transport
         session["profile_home"] = profile_home or session.get("profile_home")

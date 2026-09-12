@@ -646,6 +646,26 @@ class TestResolveJobRef:
             remove_job("dup")
 
 
+class TestManualRunReschedule:
+    def test_schedule_edit_clears_single_fire_manual_run(self, tmp_cron_dir):
+        from cron.jobs import trigger_job
+
+        job = create_job(prompt="Watch", schedule="30m")
+        triggered = trigger_job(job["id"], extra_prompt="check now")
+        assert triggered["manual_run_prompt"] == "check now"
+        assert triggered["manual_run_at"]
+
+        edited = update_job(job["id"], {"schedule": "every 1h"})
+        assert "manual_run_at" not in edited
+        assert "manual_run_prompt" not in edited
+
+    def test_explicit_manual_fields_survive_schedule_edit(self, tmp_cron_dir):
+        job = create_job(prompt="Watch", schedule="30m")
+        edited = update_job(
+            job["id"], {"schedule": "every 1h", "manual_run_prompt": "kept"})
+        assert edited["manual_run_prompt"] == "kept"
+
+
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")

@@ -1941,6 +1941,12 @@ def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job
     if updated.get("state") != "paused":
         updated["next_run_at"] = _next_run_or_reject_past_oneshot(
             updated_schedule, updated.get("name", job_id), updated_schedule, "update ")
+    # A pending single-fire manual run (trigger_job stamp) belongs to the old
+    # schedule: without this it would inject its prompt into a later fire of
+    # the new schedule. Explicitly re-stamped manual fields survive.
+    if "manual_run_at" not in updates and "manual_run_prompt" not in updates:
+        updated.pop("manual_run_at", None)
+        updated.pop("manual_run_prompt", None)
 
 
 def _fill_missing_next_run(updated: Dict[str, Any]) -> None:

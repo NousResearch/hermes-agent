@@ -152,7 +152,7 @@ export function VersionHero({
         )}
         <p className="mt-1 text-xs text-muted-foreground">
           {version?.appVersion ? u.version(version.appVersion) : u.versionUnavailable}
-          {version?.channel ? ` · ${version.channel}` : ''}
+          {version?.channel ? ` · ${u.channels[version.channel]}` : ''}
         </p>
       </div>
       {(version?.bundleSwapPending || version?.bundleOutOfSync) && (

@@ -146,7 +146,7 @@ def _read_ledger(path: Path) -> Optional[list[dict]]:
         text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return []
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     if not text.strip():
         return []

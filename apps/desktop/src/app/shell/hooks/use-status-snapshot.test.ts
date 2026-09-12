@@ -1,9 +1,10 @@
 import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react'
-import { createElement } from 'react'
+import { createElement, type ReactElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NotificationStack } from '@/components/notifications'
 import { getStatus } from '@/hermes'
+import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 import { clearNotifications } from '@/store/notifications'
 
@@ -40,44 +41,58 @@ afterEach(() => {
 })
 
 describe('useStatusSnapshot', () => {
-  it('shows a dismissible shared-profile warning on the existing status refresh', async (): Promise<void> => {
-    const warning: string = 'Another installation is using this profile.'
-    const requestGateway: GatewayRequester = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+  it.each(Object.entries(TRANSLATIONS) as [Locale, Translations][])(
+    'localizes and deduplicates shared-profile warnings in %s',
+    async (locale: Locale, copy: Translations): Promise<void> => {
+      const warning: string = copy.notifications.sharedProfileWarning
 
-    render(createElement(NotificationStack))
+      expect(warning).toBeTypeOf('string')
 
-    const { rerender }: { rerender: (props: { scope: string }) => void } = renderHook(({ scope }: { scope: string }): ReturnType<typeof useStatusSnapshot> => useStatusSnapshot('open', requestGateway, scope), {
-      initialProps: { scope: 'local-default' }
-    })
+      const wrapper = ({ children }: { children: ReactNode }): ReactElement =>
+        createElement(I18nProvider, { configClient: null, initialLocale: locale, children })
 
-    await flushAsync()
-    expect(screen.queryByText(warning)).toBeNull()
-    vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: warning } as never)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000)
-    })
-    expect(screen.getByText(warning)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
-    expect(screen.queryByText(warning)).toBeNull()
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000)
-    })
-    expect(screen.queryByText(warning)).toBeNull()
+      const requestGateway: GatewayRequester = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
 
-    vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: '' } as never)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000)
-    })
-    vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: warning } as never)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000)
-    })
-    expect(screen.getByText(warning)).toBeTruthy()
-    vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: '' } as never)
-    rerender({ scope: 'local-work' })
-    await flushAsync()
-    expect(screen.queryByText(warning)).toBeNull()
-  })
+      render(createElement(NotificationStack), { wrapper })
+
+      const { rerender }: { rerender: (props: { scope: string }) => void } = renderHook(
+        ({ scope }: { scope: string }): ReturnType<typeof useStatusSnapshot> =>
+          useStatusSnapshot('open', requestGateway, scope),
+        {
+          initialProps: { scope: 'local-default' },
+          wrapper
+        }
+      )
+
+      await flushAsync()
+      expect(screen.queryByText(warning)).toBeNull()
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: true } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.getByText(warning)).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: copy.notifications.dismiss }))
+      expect(screen.queryByText(warning)).toBeNull()
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.queryByText(warning)).toBeNull()
+
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: false } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: true } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.getByText(warning)).toBeTruthy()
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: false } as never)
+      rerender({ scope: 'local-work' })
+      await flushAsync()
+      expect(screen.queryByText(warning)).toBeNull()
+    }
+  )
 
   it('pauses status RPCs while visible but unfocused, then catches up on focus', async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false)

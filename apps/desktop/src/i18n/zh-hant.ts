@@ -161,6 +161,7 @@ export const zhHant = defineLocale({
   },
 
   notifications: {
+    sharedProfileWarning: '另一個 Hermes 安裝實例正在使用此設定檔。兩個實例共用此設定檔的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
     region: '通知',
     hide: '隱藏',
     show: '顯示',
@@ -2701,6 +2702,7 @@ export const zhHant = defineLocale({
   },
 
   updates: {
+    channels: { stable: '穩定版', canary: '預覽版' },
     bundleSwapPending: '重新啟動以完成更新',
     bundleSwapPendingDesc: '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
     bundleSwapPendingAction: '重新啟動 Hermes',

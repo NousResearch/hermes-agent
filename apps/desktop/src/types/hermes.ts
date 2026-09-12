@@ -1328,7 +1328,7 @@ export interface PlatformStatus {
 }
 
 export interface StatusResponse {
-  shared_profile_warning?: string
+  shared_profile_warning?: boolean
   active_sessions: number
   config_path: string
   config_version: number

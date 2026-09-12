@@ -405,6 +405,7 @@ export interface Translations {
   }
 
   notifications: {
+    sharedProfileWarning: string
     region: string
     hide: string
     show: string
@@ -2800,6 +2801,7 @@ export interface Translations {
   }
 
   updates: {
+    channels: { stable: string; canary: string }
     bundleSwapPending: string
     bundleSwapPendingDesc: string
     bundleSwapPendingAction: string

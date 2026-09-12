@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
+import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { en } from '@/i18n/en'
 import type { UpdateApplyState } from '@/store/updates'
 
@@ -136,6 +137,26 @@ describe('VersionHero bundle banners', () => {
 
     return relaunchApp
   }
+
+  it.each(Object.entries(TRANSLATIONS) as [Locale, Translations][])(
+    'localizes version channels in %s',
+    (locale: Locale, copy: Translations): void => {
+      for (const channel of ['stable', 'canary'] as const) {
+        const label: string = copy.updates.channels[channel]
+
+        expect(label).toBeTypeOf('string')
+
+        const { unmount }: { unmount: () => void } = render(
+          <I18nProvider configClient={null} initialLocale={locale}>
+            <VersionHero version={version({ channel })} />
+          </I18nProvider>
+        )
+
+        expect(screen.getByText(`${copy.updates.version('0.19.0')} · ${label}`)).toBeTruthy()
+        unmount()
+      }
+    }
+  )
 
   // FAIL-BEFORE (C19): the shared About extraction dropped the swap-pending
   // restart affordance even though main still produces bundleSwapPending and

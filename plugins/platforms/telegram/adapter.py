@@ -138,6 +138,10 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
+from plugins.platforms.telegram.model_picker_display import (
+    configured_region_geo, group_models_by_vendor as group_bedrock_models_by_vendor,
+    model_button_labels as bedrock_model_labels, pack_rows as pack_picker_rows, routing_legend,
+)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -3819,6 +3823,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """2-per-row layout keeps labels readable on mobile (a 4-button row truncates)."""
         return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
 
+    @staticmethod
+    def _rows_fitting_labels(buttons: list) -> list:
+        """Like :meth:`_rows_of_two`, but a button whose label is too long for a
+        half-width column gets a full-width row instead of being ellipsized.
+
+        Two columns are what hid the model count behind ``✓ AWS Bedrock (1…``
+        (#94986); the count is the part that tells the user whether a provider is
+        worth opening, so it must survive.
+        """
+        return [[buttons[i] for i in row]
+                for row in pack_picker_rows([str(getattr(b, "text", "")) for b in buttons])]
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "", metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard Yes/No prompt for the gateway ``/update`` watcher."""
@@ -3987,149 +4003,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
     _MODEL_PAGE_SIZE = 8
 
-    # Bedrock inference-profile IDs are ``<geo>.<vendor>.<model>``, but the
-    # same listing also advertises plain ``<vendor>.<model>`` IDs. Vendor
-    # segments are matched against this map rather than guessed from the
-    # ID shape, because model names contain dots too
-    # (``openai.gpt-5.6-terra``, ``zai.glm-4.7``) and a positional guess
-    # reads the version as a vendor. Values are display labels.
-    _VENDOR_LABELS = {
-        "ai21": "AI21",
-        "amazon": "Amazon",
-        "anthropic": "Anthropic",
-        "cohere": "Cohere",
-        "deepseek": "DeepSeek",
-        "google": "Google",
-        "meta": "Meta",
-        "minimax": "MiniMax",
-        "mistral": "Mistral",
-        "moonshot": "Moonshot AI",
-        "moonshotai": "Moonshot AI",
-        "nvidia": "NVIDIA",
-        "openai": "OpenAI",
-        "qwen": "Qwen",
-        "stability": "Stability",
-        "twelvelabs": "TwelveLabs",
-        "writer": "Writer",
-        "xai": "xAI",
-        "zai": "Z.ai",
-    }
-
-    # Distinct vendor segments that denote the same vendor. Folded before
-    # grouping so the drill-down never shows the same label twice.
-    _VENDOR_ALIASES = {"moonshot": "moonshotai"}
-
-    @classmethod
-    def _canonical_vendor(cls, vendor: str) -> str:
-        return cls._VENDOR_ALIASES.get(vendor, vendor)
-
-    @staticmethod
-    def _bedrock_region_scope() -> str:
-        """Return the configured Bedrock region as a short geography.
-
-        Examples: ``us-east-1`` → ``us``, ``eu-west-3`` → ``eu``. Region
-        resolution follows the runtime's own precedence (config.yaml, AWS
-        environment/profile, fallback), so picker labels describe the
-        endpoint Hermes will actually call. An unknown region uses the
-        neutral ``region`` label rather than leaking a misleading ID term.
-        """
-        try:
-            from agent.bedrock_adapter import resolve_bedrock_runtime_region
-            from hermes_cli.model_setup_flows import bedrock_region_geo_prefix
-
-            region = resolve_bedrock_runtime_region()
-            return bedrock_region_geo_prefix(region).rstrip(".") or "region"
-        except Exception:
-            return "region"
-
-    def _model_button_labels(self, models: list) -> list:
-        """Render display labels for *models*, one per entry.
-
-        Bedrock repeats a routing namespace and a vendor prefix in every ID
-        (``global.anthropic.claude-opus-5``); both are dropped so the model
-        family/version stays readable. The routing namespace is added back
-        as a ``geo:`` prefix only where it disambiguates — the same model is
-        commonly advertised both directly and behind one or more namespaces,
-        and those are distinct profiles the user must be able to tell apart.
-        Counting happens over the whole list so labels stay stable across
-        pagination. Model IDs themselves are never rewritten.
-        """
-        parsed = [self._split_bedrock_id(m) for m in models]
-        counts: dict = {}
-        for _geo, _vendor, short in parsed:
-            counts[short] = counts.get(short, 0) + 1
-
-        labels: list = []
-        for (geo, vendor, short) in parsed:
-            # The Claude name is already established by the Anthropic vendor
-            # page: drop its repeated ID prefix before calculating collisions.
-            display_short = short.removeprefix("claude-") if vendor == "anthropic" else short
-            label = display_short
-            if vendor and counts.get(short, 0) > 1:
-                # A bare ID takes the short geography of the configured
-                # Bedrock endpoint (us/eu/ap/...), while an inference profile
-                # already carries its own routing scope. ``G`` preserves the
-                # useful global distinction without consuming a whole button.
-                scope = geo or self._bedrock_region_scope()
-                label = f"{'G' if scope == 'global' else scope}: {display_short}"
-            if len(label) > 38:
-                label = label[:35] + "..."
-            labels.append(label)
-        return labels
-
-    @classmethod
-    def _split_bedrock_id(cls, model_id: str) -> tuple:
-        """Split a Bedrock model ID into (geo, vendor, model).
-
-        Handles both shapes a real listing returns:
-        ``<geo>.<vendor>.<model>`` (``us.openai.gpt-5.6-terra``) and plain
-        ``<vendor>.<model>`` (``openai.gpt-5.6-terra``). The vendor segment
-        is recognized from :attr:`_VENDOR_LABELS`, never from its position,
-        because model names contain dots of their own — a positional guess
-        turns ``openai.gpt-5.6-terra`` into vendor ``gpt-5``.
-
-        Returns ``("", "", short)`` when no known vendor segment is present,
-        so non-Bedrock providers keep their IDs untouched and never gain a
-        vendor drill-down step.
-        """
-        short = model_id.split("/")[-1] if "/" in model_id else model_id
-        parts = short.split(".")
-        # Vendor first (no geo), then geo + vendor. Only these two positions
-        # are valid, so a dotted model name can't be read as a vendor.
-        if parts and parts[0] in cls._VENDOR_LABELS:
-            return "", parts[0], ".".join(parts[1:])
-        if len(parts) >= 3 and parts[1] in cls._VENDOR_LABELS:
-            return parts[0], parts[1], ".".join(parts[2:])
-        return "", "", short
-
-    def _group_models_by_vendor(self, models: list) -> list:
-        """Group Bedrock model IDs by vendor segment.
-
-        Returns a vendor-sorted list of ``{vendor, label, indices}`` dicts
-        where ``indices`` are positions in *models*, so callers can scope a
-        sub-list without ever rewriting a model ID. Returns ``[]`` when the
-        list carries no Bedrock-style IDs, which is how callers decide not
-        to insert the extra drill-down step at all.
-        """
-        groups: dict = {}
-        for i, model_id in enumerate(models):
-            _geo, vendor, _short = self._split_bedrock_id(model_id)
-            if not vendor:
-                continue
-            groups.setdefault(self._canonical_vendor(vendor), []).append(i)
-        return [
-            {
-                "vendor": vendor,
-                "label": self._VENDOR_LABELS[vendor],
-                "indices": indices,
-            }
-            for vendor, indices in sorted(groups.items())
-        ]
-
     def _build_vendor_keyboard(self, models: list) -> Any:
         """Build the vendor drill-down keyboard for a Bedrock model list."""
         buttons: list = []
-        for group in self._group_models_by_vendor(models):
+        for group in group_bedrock_models_by_vendor(models):
             buttons.append(
                 InlineKeyboardButton(
                     f"{group['label']} ({len(group['indices'])})",
@@ -4167,7 +4044,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return [InlineKeyboardButton("◀ Back", callback_data="mb"), InlineKeyboardButton("✗ Cancel", callback_data="mx")]
 
     def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
-        rows = self._rows_of_two(buttons)
+        rows = self._rows_fitting_labels(buttons)
         if page_meta["total_pages"] > 1:
             rows.append(self._picker_nav_row(page_meta["page"], page_meta["total_pages"], nav_prefix))
         rows.append(tail_row)
@@ -4207,7 +4084,7 @@ class TelegramAdapter(BasePlatformAdapter):
         buttons: list = []
         # Labels are computed over the FULL list so a model's label does not
         # change when the user pages; only this page's slice is rendered.
-        all_labels = self._model_button_labels(models)
+        all_labels = bedrock_model_labels(models)
         for i, _model_id in enumerate(page_models):
             abs_idx = start + i
             short = all_labels[abs_idx]
@@ -4221,14 +4098,30 @@ class TelegramAdapter(BasePlatformAdapter):
         await query.edit_message_text(text=self.format_message(text_md), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
         await query.answer()
 
+    def _picker_truncation_hint(self, state: dict, shown: int) -> str:
+        """``N more available`` notice when the provider listing was capped.
+
+        ``*bold*`` and not ``_italic_``: :meth:`format_message` escapes a bare
+        underscore for MarkdownV2, so the italic form reached the user as literal
+        ``\\_98 more available …`` (#94986).
+        """
+        provider = next((p for p in state["providers"] if p["slug"] == state.get("selected_provider", "")), None)
+        total = provider.get("total_models", shown) if provider else shown
+        if total <= shown:
+            return ""
+        return f"\n*{total - shown} more available — type `/model <name>` directly*"
+
     async def _picker_show_vendors(self, query, state: dict) -> None:
         state["selected_vendor"] = ""
         models = state.get("full_model_list", [])
         state["model_list"] = models
         state["model_page"] = 0
         pname = state.get("selected_provider_name", "")
+        # The per-vendor counts below are counts of the LISTED models, so the
+        # cap has to be visible here too or they read as the whole catalog.
+        hint = self._picker_truncation_hint(state, len(models))
         await self._picker_edit(
-            query, f"⚙ *Model Configuration*\n\nProvider: *{pname}*\n\nSelect a model vendor:",
+            query, f"⚙ *Model Configuration*\n\nProvider: *{pname}*\n\nSelect a model vendor:{hint}",
             self._build_vendor_keyboard(models))
 
     async def _picker_show_models(self, query, state: dict, page: int) -> None:
@@ -4237,19 +4130,23 @@ class TelegramAdapter(BasePlatformAdapter):
         state["model_page"] = page
         keyboard, page_info = self._build_model_keyboard(models, page)
         pname = state.get("selected_provider_name", "")
+        # A bare label means "no routing namespace"; say so once in the body,
+        # where it costs no button width, instead of prefixing every button.
+        legend = routing_legend(models, configured_region_geo())
+        legend_line = f"\n*{legend}*" if legend else ""
         vendor = state.get("selected_vendor", "")
         if vendor:
-            label = next((g["label"] for g in self._group_models_by_vendor(state.get("full_model_list", []))
+            # Scoped to one vendor: the provider's ``total_models`` counts the whole
+            # catalog, so the truncation hint would be wrong against this sub-list.
+            label = next((g["label"] for g in group_bedrock_models_by_vendor(state.get("full_model_list", []))
                           if g["vendor"] == vendor), vendor)
             await self._picker_edit(
-                query, f"⚙ *Model Configuration*\n\nProvider: *{pname}* ▸ *{label}*{page_info}\nSelect a model:", keyboard)
+                query, f"⚙ *Model Configuration*\n\nProvider: *{pname}* ▸ *{label}*{page_info}\nSelect a model:{legend_line}",
+                keyboard)
             return
-        provider_slug = state.get("selected_provider", "")
-        provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
-        total = provider.get("total_models", len(models)) if provider else len(models)
-        shown = len(models)
-        extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
-        await self._picker_edit(query, f"⚙ *Model Configuration*\n\nProvider: *{pname}*{page_info}\nSelect a model:{extra}", keyboard)
+        extra = self._picker_truncation_hint(state, len(models))
+        await self._picker_edit(
+            query, f"⚙ *Model Configuration*\n\nProvider: *{pname}*{page_info}\nSelect a model:{legend_line}{extra}", keyboard)
 
     @staticmethod
     def _provider_list_text(current_model: str, provider_label: str, page_info: str) -> str:
@@ -4322,14 +4219,14 @@ class TelegramAdapter(BasePlatformAdapter):
             state["full_model_list"] = models
             state["selected_vendor"] = ""
             state["model_list"] = models
-            if len(self._group_models_by_vendor(models)) > 1:
+            if len(group_bedrock_models_by_vendor(models)) > 1:
                 await self._picker_show_vendors(query, state)
                 return
             await self._picker_show_models(query, state, 0)
         elif data.startswith("mvd:"):
             vendor = data[4:]
             full_models = state.get("full_model_list", state.get("model_list", []))
-            group = next((g for g in self._group_models_by_vendor(full_models) if g["vendor"] == vendor), None)
+            group = next((g for g in group_bedrock_models_by_vendor(full_models) if g["vendor"] == vendor), None)
             if group is None:
                 await query.answer(text="Vendor not found.")
                 return

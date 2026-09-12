@@ -364,6 +364,27 @@ def _model_level_key_env(provider_id: str) -> str:
     return str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
 
 
+def _configured_api_key_provider_secret(provider_id: str) -> tuple[str, str]:
+    """Return a usable inline key from ``providers.<id>``, if configured."""
+    try:
+        from hermes_cli.config import load_config
+
+        providers = load_config().get("providers")
+        entry = providers.get(provider_id) if isinstance(providers, dict) else None
+        configured_key = entry.get("api_key") if isinstance(entry, dict) else None
+        configured_key = _usable_declared_secret(
+            provider_id,
+            configured_key,
+            f"config:providers.{provider_id}.api_key",
+        )
+        if configured_key:
+            return configured_key, f"config:providers.{provider_id}.api_key"
+    except Exception:
+        # Preserve env/pool fallback when config is temporarily unreadable.
+        pass
+    return "", ""
+
+
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
@@ -379,6 +400,14 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
         except Exception:
             pass
         return "", ""
+
+    # ``providers.<id>`` is also the supported configuration surface for
+    # built-in providers. Resolve an inline key there before the provider's
+    # conventional env vars and credential pool so an explicit config choice
+    # cannot be silently replaced by an ambient shell credential.
+    configured_key, configured_source = _configured_api_key_provider_secret(provider_id)
+    if configured_key:
+        return configured_key, configured_source
 
     # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).

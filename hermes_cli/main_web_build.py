@@ -321,10 +321,10 @@ def _run_npm_install_deterministic(
     the build toolchain and the build dies with ``tsc: not found``. An npm outside
     ``engines.npm`` fails every command, so it gets one engine-repair retry.
 
-    ``--no-save`` on the ``npm install`` fallback keeps it true to this function's contract: never mutate
-    ``package-lock.json``. Without it, an out-of-sync lockfile gets rewritten by the fallback, which drifts
-    the committed lockfile and makes every future ``npm ci`` fail — a self-reinforcing cycle where web
-    devDeps never install and a stale dist is served on every update (PR #65595).
+    ``--no-save`` asks npm not to mutate ``package-lock.json``, but npm versions
+    can still normalize lockfile metadata during both commands. Preserve the
+    exact input bytes so generated churn cannot invalidate build stamps or make
+    every update autostash the same file (PR #65595, issue #105659).
     """
     # CI=1 no-ops unicode-animations' postinstall that animates to /dev/tty.
     run_env = _npm_lifecycle_env(env)
@@ -340,19 +340,36 @@ def _run_npm_install_deterministic(
                 return ci_result
         return _run(["install", "--no-save"])
 
-    result = _attempt(npm)
-    if result.returncode == 0:
-        return result
+    lockfile = cwd / "package-lock.json"
+    try:
+        original_lockfile = lockfile.read_bytes()
+    except FileNotFoundError:
+        original_lockfile = None
 
-    from hermes_cli.npm_engine import maybe_repair_npm_engine
-    repaired_npm = maybe_repair_npm_engine(npm, f"{result.stdout or ''}\n{result.stderr or ''}")
-    if not repaired_npm:
-        return result
-    # A freshly provisioned managed npm resolves `node` from PATH — put the
-    # managed tree first so it finds the managed Node, not a mismatched system one.
-    from hermes_constants import with_hermes_node_path
-    run_env["PATH"] = with_hermes_node_path(run_env)["PATH"]
-    return _attempt(repaired_npm)
+    try:
+        result = _attempt(npm)
+        if result.returncode == 0:
+            return result
+
+        from hermes_cli.npm_engine import maybe_repair_npm_engine
+        repaired_npm = maybe_repair_npm_engine(npm, f"{result.stdout or ''}\n{result.stderr or ''}")
+        if not repaired_npm:
+            return result
+        # A freshly provisioned managed npm resolves `node` from PATH — put the
+        # managed tree first so it finds the managed Node, not a mismatched system one.
+        from hermes_constants import with_hermes_node_path
+        run_env["PATH"] = with_hermes_node_path(run_env)["PATH"]
+        return _attempt(repaired_npm)
+    finally:
+        if original_lockfile is None:
+            lockfile.unlink(missing_ok=True)
+        else:
+            try:
+                current_lockfile = lockfile.read_bytes()
+            except FileNotFoundError:
+                current_lockfile = None
+            if current_lockfile != original_lockfile:
+                lockfile.write_bytes(original_lockfile)
 
 
 def _run_npm_watching_for_engine_failure(

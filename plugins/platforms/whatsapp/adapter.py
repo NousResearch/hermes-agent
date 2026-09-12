@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -9,6 +10,8 @@ import platform
 import re
 import signal
 import subprocess
+import threading
+import time
 from contextlib import suppress
 from functools import wraps
 from pathlib import Path
@@ -285,6 +288,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 10.0)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Inbound message deduplication (#100481)
+        self._dedup_cache_size = 2000
+        self._dedup_ttl_seconds = 86400 * 7
+        self._seen_message_ids: Dict[str, float] = {}
+        self._seen_message_order: list[str] = []
+        self._dedup_lock = threading.Lock()
+        self._dedup_state_path = self._session_path / "whatsapp_seen_message_ids.json"
+        self._load_seen_message_ids()
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``; NaN/Inf/negative/unparseable → ``default`` (fed to asyncio.sleep)."""
@@ -694,6 +705,64 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] {bridge_exit}")
         return bool(bridge_exit)
 
+    # --- Deduplication — seen message ID cache (persistent) (#100481) ---
+    def _load_seen_message_ids(self) -> None:
+        try:
+            payload = json.loads(self._dedup_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError):
+            logger.warning("[%s] Failed to load persisted dedup state from %s", self.name, self._dedup_state_path, exc_info=True)
+            return
+        seen_data = payload.get("message_ids", {}) if isinstance(payload, dict) else {}
+        now = time.time()
+        ttl = getattr(self, "_dedup_ttl_seconds", 86400 * 7)
+        if isinstance(seen_data, list):
+            entries: Dict[str, float] = {str(item).strip(): 0.0 for item in seen_data if str(item).strip()}
+        elif isinstance(seen_data, dict):
+            entries = {}
+            for key, value in seen_data.items():
+                if isinstance(key, str) and key.strip() and isinstance(value, (int, float, str)):
+                    try:
+                        entries[key] = float(value)
+                    except ValueError:
+                        pass
+        else:
+            return
+        valid: Dict[str, float] = {m: ts for m, ts in entries.items() if ts == 0.0 or ttl <= 0 or now - ts < ttl}
+        sorted_ids = sorted(valid, key=lambda k: valid[k], reverse=True)[:self._dedup_cache_size]
+        self._seen_message_order = list(reversed(sorted_ids))
+        self._seen_message_ids = {k: valid[k] for k in sorted_ids}
+
+    def _persist_seen_message_ids(self) -> None:
+        try:
+            self._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._dedup_lock:
+                recent = self._seen_message_order[-self._dedup_cache_size:]
+                payload = {"message_ids": {k: self._seen_message_ids[k] for k in recent if k in self._seen_message_ids}}
+            from utils import atomic_json_write
+            atomic_json_write(self._dedup_state_path, payload, indent=None)
+        except OSError:
+            logger.warning("[%s] Failed to persist dedup state to %s", self.name, self._dedup_state_path, exc_info=True)
+
+    async def _is_duplicate(self, message_id: str) -> bool:
+        if not message_id or not isinstance(message_id, str):
+            return False
+        message_id = message_id.strip()
+        if not message_id:
+            return False
+        now, ttl = time.time(), getattr(self, "_dedup_ttl_seconds", 86400 * 7)
+        with self._dedup_lock:
+            seen_at = self._seen_message_ids.get(message_id)
+            if seen_at is not None and (ttl <= 0 or now - seen_at < ttl):
+                return True
+            self._seen_message_ids[message_id] = now
+            self._seen_message_order.append(message_id)
+            while len(self._seen_message_order) > self._dedup_cache_size:
+                self._seen_message_ids.pop(self._seen_message_order.pop(0), None)
+        await asyncio.to_thread(self._persist_seen_message_ids)
+        return False
+
     async def _poll_messages(self) -> None:
         while self._running:
             if not self._http_session or await self._report_bridge_exit():
@@ -702,6 +771,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 async with self._bridge_req("get", "messages", 30) as resp:
                     if resp.status == 200:
                         for msg_data in await resp.json():
+                            msg_id = str(msg_data.get("messageId") or msg_data.get("id") or "").strip()
+                            if msg_id and await self._is_duplicate(msg_id):
+                                logger.info("[%s] Ignoring duplicate inbound WhatsApp message %s (#100481)", self.name, msg_id)
+                                continue
                             event = await self._build_message_event(msg_data)
                             if event:
                                 # Fire-and-forget: a slow bridge /read must not delay dispatch.

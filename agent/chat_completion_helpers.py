@@ -2091,13 +2091,47 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
     return _attempt
 
 
+def bypass_chat_sdk_request_transform(kwargs: dict[str, Any], client: Any = None) -> dict[str, Any]:
+    """Route bulk payload fields around the OpenAI SDK's client-side ``maybe_transform``.
+
+    ``chat.completions.create`` walks the entire ``messages`` and ``tools`` trees against
+    pydantic type unions with the GIL held — multi-MB conversations can take 30ms+ of pure
+    CPU time pre-network. The SDK merges ``extra_body`` directly into the wire JSON payload
+    AFTER the transform, so moving wire-format bulk fields there yields a byte-identical request
+    without the walk. HERMES_CHAT_SDK_TRANSFORM=1 disables.
+    """
+    if os.environ.get("HERMES_CHAT_SDK_TRANSFORM", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return kwargs
+    chat = getattr(client, "chat", None)
+    completions = getattr(chat, "completions", getattr(client, "completions", None))
+    if completions is not None and not hasattr(completions, "_post"):
+        return kwargs
+    from agent.codex_runtime import _is_plain_json_data
+
+    moved: dict[str, Any] = {}
+    if isinstance(kwargs.get("messages"), list) and _is_plain_json_data(kwargs["messages"]):
+        moved["messages"] = kwargs["messages"]
+    if isinstance(kwargs.get("tools"), list) and _is_plain_json_data(kwargs["tools"]):
+        moved["tools"] = kwargs["tools"]
+    if not moved:
+        return kwargs
+    bypassed = {k: v for k, v in kwargs.items() if k not in moved}
+    if "messages" in moved:
+        bypassed["messages"] = []
+    extra_body = bypassed.get("extra_body")
+    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
+    bypassed["extra_body"] = {**{f: v for f, v in moved.items() if f not in merged}, **merged}
+    return bypassed
+
+
 def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     summary_kwargs = _iteration_summary_chat_kwargs(agent, api_messages)
 
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
+        request_kwargs = bypass_chat_sdk_request_transform(summary_kwargs, summary_client)
         response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+            agent, api_request_id, request_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
         return _summary_text(agent, response)
     return _attempt
 

@@ -86,12 +86,12 @@ All commands run from the skill directory. Use absolute paths when calling from 
 
 | Endpoint | Path | Key Data |
 |---|---|---|
-| Cycle | `/v2/cycle` | Strain, heart rate, kilojoules |
-| Recovery | `/v2/recovery` | Recovery %, HRV, resting HR |
-| Sleep | `/v2/activity/sleep` | Sleep stages, efficiency, debt |
-| Workout | `/v2/activity/workout` | Strain by activity, duration |
-| Body | `/v2/user/measurement/body` | Weight, height |
-| Profile | `/v2/user/profile/basic` | User info |
+| Cycle | `/developer/v2/cycle` | Strain, heart rate, kilojoules |
+| Recovery | `/developer/v2/recovery` | Recovery %, HRV, resting HR |
+| Sleep | `/developer/v2/activity/sleep` | Sleep stages, efficiency, debt |
+| Workout | `/developer/v2/activity/workout` | Strain by activity, duration |
+| Body | `/developer/v2/user/measurement/body` | Weight, height |
+| Profile | `/developer/v2/user/profile/basic` | User info |
 
 ### Data Output
 

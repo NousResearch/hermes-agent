@@ -46,6 +46,7 @@ class WhoopClient:
             "User-Agent": "hermes-whoop-skill/1.0",
         })
         self._request_timestamps: list[float] = []
+        self._daily_timestamps: list[float] = []
         self._load_auth()
 
     def _load_auth(self) -> None:
@@ -124,13 +125,17 @@ class WhoopClient:
             if sleep_time > 0:
                 print(f"Per-minute rate limit reached, waiting {sleep_time:.1f}s...")
                 time.sleep(sleep_time)
-        # Check daily limit (86400s window)
-        day_ago = now - 86400
-        daily_count = sum(1 for ts in self._request_timestamps if ts > day_ago)
-        if daily_count >= DAILY_RATE_LIMIT:
+        # Track daily rate limit separately (86400s window) — independent of the
+        # per-minute prune so it sees the full day's requests, not just the last 60s.
+        self._daily_timestamps = [
+            ts for ts in self._daily_timestamps
+            if ts > now - 86400
+        ]
+        if len(self._daily_timestamps) >= DAILY_RATE_LIMIT:
             print(f"Daily rate limit ({DAILY_RATE_LIMIT}) reached. Stopping.")
             raise RateLimitError(f"Daily rate limit of {DAILY_RATE_LIMIT} requests exceeded")
         self._request_timestamps.append(time.time())
+        self._daily_timestamps.append(time.time())
 
     def _request(self, method: str, endpoint: str, params: dict | None = None) -> dict:
         """Make an authenticated API request with retry and rate limiting."""

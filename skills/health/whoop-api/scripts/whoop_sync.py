@@ -270,8 +270,11 @@ def _print_cron_instructions(refresh_script: Path, sync_script: Path) -> None:
     print(f"    */55 * * * * cd {sync_script.parent} && python3 {refresh_script}")
     print(f"    0 7 * * * cd {sync_script.parent} && python3 {sync_script} pull")
     print()
-    print("  Or with Hermes cron:")
-    print(f"    hermes cron create \"*/55 * * * *\" --name whoop-token-refresh --no-agent --script {refresh_script}")
+    print("  Or with Hermes cron (note: --script must be relative to HERMES_HOME/scripts/):")
+    print(
+        "    hermes cron create \"*/55 * * * *\" --name whoop-token-refresh "
+        "--no-agent --script whoop_token_refresh.py"
+    )
     print(f"    hermes cron create \"0 7 * * *\" --name whoop-daily-pull \"Pull Whoop data\" --workdir {sync_script.parent}")
 
 

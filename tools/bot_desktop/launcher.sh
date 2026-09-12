@@ -45,6 +45,14 @@ rm -f "$HERMES_BD_SOCKET" "/tmp/.X${HERMES_BD_DISPLAY_NUM}-lock" "/tmp/.X11-unix
 : > "$XAUTHORITY"; chmod 600 "$XAUTHORITY"
 xauth -q -f "$XAUTHORITY" add "$DISPLAY" MIT-MAGIC-COOKIE-1 "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 
+# ---- look: dark theme from whatever the host ships (first match wins), Hermes wallpaper ----
+pick_theme() { local d t; for t in "$@"; do for d in /usr/share/themes "$HOME/.themes"; do [[ -d "$d/$t" ]] && { echo "$t"; return; }; done; done; echo "$1"; }
+pick_icons() { local d t; for t in "$@"; do for d in /usr/share/icons "$HOME/.icons"; do [[ -d "$d/$t" ]] && { echo "$t"; return; }; done; done; echo "$1"; }
+GTK_THEME_NAME=$(pick_theme Adwaita-dark Breeze-Dark Greybird-dark Arc-Dark Adwaita)
+WM_THEME_NAME=$(pick_theme Default-hdpi Default)   # xfwm4 window themes ship with xfwm4 itself
+ICON_THEME_NAME=$(pick_icons Papirus-Dark breeze-dark Adwaita hicolor)
+: "${HERMES_BD_WALLPAPER:="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wallpaper.png"}"
+
 # ---- pre-seed xfconf BEFORE xfconfd starts (it caches; edits after start are overwritten) ----
 X="$XDG_CONFIG_HOME/xfce4/xfconf/xfce-perchannel-xml"
 [[ -e "$X/xfwm4.xml" ]] || cat > "$X/xfwm4.xml" <<'EOF'
@@ -54,9 +62,12 @@ X="$XDG_CONFIG_HOME/xfce4/xfconf/xfce-perchannel-xml"
     <property name="use_compositing" type="bool" value="false"/>
     <property name="workspace_count" type="int" value="1"/>
     <property name="focus_new" type="bool" value="true"/>
+    <property name="theme" type="string" value="HERMES_BD_WM_THEME"/>
+    <property name="title_font" type="string" value="DejaVu Sans Bold 9"/>
   </property>
 </channel>
 EOF
+sed -i "s|HERMES_BD_WM_THEME|$WM_THEME_NAME|" "$X/xfwm4.xml"
 [[ -e "$X/xfce4-screensaver.xml" ]] || cat > "$X/xfce4-screensaver.xml" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="xfce4-screensaver" version="1.0">
@@ -69,6 +80,12 @@ EOF
 <channel name="xsettings" version="1.0">
   <property name="Net" type="empty">
     <property name="EnableEventSounds" type="bool" value="false"/>
+    <property name="ThemeName" type="string" value="HERMES_BD_GTK_THEME"/>
+    <property name="IconThemeName" type="string" value="HERMES_BD_ICON_THEME"/>
+  </property>
+  <property name="Gtk" type="empty">
+    <property name="FontName" type="string" value="DejaVu Sans 10"/>
+    <property name="MonospaceFontName" type="string" value="DejaVu Sans Mono 10"/>
   </property>
   <property name="Xft" type="empty">
     <property name="DPI" type="int" value="96"/>
@@ -77,6 +94,7 @@ EOF
   </property>
 </channel>
 EOF
+sed -i "s|HERMES_BD_GTK_THEME|$GTK_THEME_NAME|; s|HERMES_BD_ICON_THEME|$ICON_THEME_NAME|" "$X/xsettings.xml"
 [[ -e "$X/xfce4-desktop.xml" ]] || cat > "$X/xfce4-desktop.xml" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="xfce4-desktop" version="1.0">
@@ -85,7 +103,8 @@ EOF
       <property name="monitorVNC-0" type="empty">
         <property name="workspace0" type="empty">
           <property name="color-style" type="int" value="0"/>
-          <property name="image-style" type="int" value="0"/>
+          <property name="image-style" type="int" value="5"/>
+          <property name="last-image" type="string" value="HERMES_BD_WALLPAPER_PLACEHOLDER"/>
           <property name="rgba1" type="array">
             <value type="double" value="0.11"/><value type="double" value="0.12"/>
             <value type="double" value="0.16"/><value type="double" value="1"/>
@@ -99,12 +118,91 @@ EOF
   </property>
 </channel>
 EOF
-# The vendor default panel layout suppresses the first-run "Welcome to the panel" dialog.
+sed -i "s|HERMES_BD_WALLPAPER_PLACEHOLDER|$HERMES_BD_WALLPAPER|" "$X/xfce4-desktop.xml"
+# Own panel layout (a layout on disk also suppresses the first-run "Welcome to the panel" dialog):
+# top bar = menu · tasks · tray · clock; bottom dock = only launchers whose program exists on this
+# host, the browser pinned to the one the bot drives so a human lands in the bot's own browser profile.
 if [[ ! -e "$X/xfce4-panel.xml" ]]; then
-  for d in /etc/xdg/xfce4/panel/default.xml /usr/share/xfce4-panel/default.xml \
-           /etc/xdg/xdg-xubuntu/xfce4/panel/default.xml; do
-    [[ -e "$d" ]] && { cp "$d" "$X/xfce4-panel.xml"; break; }
+  L="$XDG_CONFIG_HOME/xfce4/panel"; mkdir -p "$L"
+  dock_ids=(); n=20
+  add_launcher() {  # name icon exec — skipped when the executable is missing
+    local exe; exe=${3%% *}
+    command -v "$exe" >/dev/null 2>&1 || return 0
+    n=$((n+1)); mkdir -p "$L/launcher-$n"
+    printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=%s\nIcon=%s\nExec=%s\nTerminal=false\nStartupNotify=false\n' \
+      "$1" "$2" "$3" > "$L/launcher-$n/hermes.desktop"
+    dock_ids+=("$n")
+  }
+  add_launcher "Terminal" utilities-terminal "xfce4-terminal"
+  for b in google-chrome chromium chromium-browser firefox; do
+    command -v "$b" >/dev/null 2>&1 && { add_launcher "Browser" internet-web-browser "$b"; break; }
   done
+  add_launcher "Files" system-file-manager "thunar"
+  add_launcher "Text Editor" accessories-text-editor "mousepad"
+  dock_plugins=""; dock_items=""
+  for id in "${dock_ids[@]}"; do
+    dock_plugins+="<value type=\"int\" value=\"$id\"/>"
+    dock_items+="<property name=\"plugin-$id\" type=\"string\" value=\"launcher\"><property name=\"items\" type=\"array\"><value type=\"string\" value=\"hermes.desktop\"/></property></property>"
+  done
+  cat > "$X/xfce4-panel.xml" <<PANEL
+<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-panel" version="1.0">
+  <property name="configver" type="int" value="2"/>
+  <property name="panels" type="array">
+    <value type="int" value="1"/>
+    <value type="int" value="2"/>
+    <property name="dark-mode" type="bool" value="true"/>
+    <property name="panel-1" type="empty">
+      <property name="position" type="string" value="p=6;x=0;y=0"/>
+      <property name="length" type="uint" value="100"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="size" type="uint" value="28"/>
+      <property name="icon-size" type="uint" value="16"/>
+      <property name="background-style" type="uint" value="1"/>
+      <property name="background-rgba" type="array">
+        <value type="double" value="0.06"/><value type="double" value="0.07"/>
+        <value type="double" value="0.09"/><value type="double" value="0.92"/>
+      </property>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="1"/><value type="int" value="2"/><value type="int" value="3"/>
+        <value type="int" value="4"/><value type="int" value="5"/>
+      </property>
+    </property>
+    <property name="panel-2" type="empty">
+      <property name="position" type="string" value="p=10;x=0;y=0"/>
+      <property name="length" type="uint" value="1"/>
+      <property name="length-adjust" type="bool" value="true"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="size" type="uint" value="44"/>
+      <property name="icon-size" type="uint" value="28"/>
+      <property name="background-style" type="uint" value="1"/>
+      <property name="background-rgba" type="array">
+        <value type="double" value="0.06"/><value type="double" value="0.07"/>
+        <value type="double" value="0.09"/><value type="double" value="0.80"/>
+      </property>
+      <property name="plugin-ids" type="array">${dock_plugins}</property>
+    </property>
+  </property>
+  <property name="plugins" type="empty">
+    <property name="plugin-1" type="string" value="applicationsmenu">
+      <property name="show-button-title" type="bool" value="false"/>
+    </property>
+    <property name="plugin-2" type="string" value="tasklist">
+      <property name="grouping" type="bool" value="true"/>
+      <property name="show-labels" type="bool" value="true"/>
+    </property>
+    <property name="plugin-3" type="string" value="separator">
+      <property name="expand" type="bool" value="true"/>
+      <property name="style" type="uint" value="0"/>
+    </property>
+    <property name="plugin-4" type="string" value="systray"/>
+    <property name="plugin-5" type="string" value="clock">
+      <property name="digital-time-format" type="string" value="%a %H:%M"/>
+    </property>
+    ${dock_items}
+  </property>
+</channel>
+PANEL
 fi
 # Mask system autostarts that want logind/polkit/keyring/at-spi.
 for a in xfce4-screensaver light-locker xfce4-power-manager xfce-polkit \
@@ -113,6 +211,8 @@ for a in xfce4-screensaver light-locker xfce4-power-manager xfce-polkit \
   [[ -e "$XDG_CONFIG_HOME/autostart/$a.desktop" ]] || \
     printf '[Desktop Entry]\nType=Application\nName=%s\nHidden=true\n' "$a" > "$XDG_CONFIG_HOME/autostart/$a.desktop"
 done
+# Tests seed the config tree on a fake PATH and stop here (no X server needed).
+[[ -n "${HERMES_BD_SEED_ONLY:-}" ]] && exit 0
 
 # ---- X server + RFB (TigerVNC Xvnc), Unix socket only ----
 # SecurityTypes None is safe ONLY because -rfbport -1 disables TCP and the 0600 socket is reachable

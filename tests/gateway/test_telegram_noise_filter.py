@@ -343,3 +343,60 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+TURN_BUDGET_STATUS = (
+    "⚠️ Iteration budget exhausted (15/15) — asking model to summarise"
+)
+
+_VERIFIER_FOOTER = (
+    "⚠️ File-mutation verifier: 1 file(s) were NOT modified this turn despite any wording above\n"
+    "  • src/app.py — [patch] Could not find a match for old_string"
+)
+
+_ANSWER_WITH_VERIFIER_FOOTER = f"Here is the patch summary.\n\n{_VERIFIER_FOOTER}"
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS + ["whatsapp"])
+@pytest.mark.parametrize("event_type", ["lifecycle", "warn"])
+def test_chat_surfaces_drop_turn_budget_status(platform, event_type):
+    """Turn-budget exhaustion is operator diagnostics — drop it on chat surfaces."""
+    assert _prepare_gateway_status_message(platform, event_type, TURN_BUDGET_STATUS) is None
+
+
+@pytest.mark.parametrize("platform", ["local", "api_server", "webhook", "msgraph_webhook"])
+def test_programmatic_surfaces_keep_turn_budget_status(platform):
+    """Programmatic/raw-text surfaces must keep the raw turn-budget status."""
+    assert _prepare_gateway_status_message(platform, "lifecycle", TURN_BUDGET_STATUS) == TURN_BUDGET_STATUS
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS + ["whatsapp"])
+def test_chat_final_response_strips_file_mutation_verifier_footer(platform):
+    """Chat replies keep the assistant answer and drop the verifier footer."""
+    sanitized = _sanitize_gateway_final_response(platform, _ANSWER_WITH_VERIFIER_FOOTER)
+    assert sanitized == "Here is the patch summary."
+    assert "File-mutation verifier" not in sanitized
+    assert "src/app.py" not in sanitized
+    assert "old_string" not in sanitized
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_final_response_footer_only_becomes_empty(platform):
+    """A chat body that is only the verifier footer must not be delivered."""
+    assert _sanitize_gateway_final_response(platform, _VERIFIER_FOOTER) == ""
+
+
+@pytest.mark.parametrize("platform", ["local", "api_server", "webhook", "msgraph_webhook"])
+def test_raw_text_surfaces_keep_file_mutation_verifier_footer(platform):
+    """Programmatic surfaces keep the verifier footer on final responses."""
+    assert _sanitize_gateway_final_response(platform, _ANSWER_WITH_VERIFIER_FOOTER) == _ANSWER_WITH_VERIFIER_FOOTER
+    assert _sanitize_gateway_final_response(platform, _VERIFIER_FOOTER) == _VERIFIER_FOOTER
+
+
+def test_final_response_does_not_drop_prose_mentioning_budget_or_summarise():
+    """The status-noise regex must not run against entire final replies."""
+    answer = (
+        "I hit the iteration budget exhausted case, so I am asking the model "
+        "to summarise the remaining work for the user."
+    )
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer

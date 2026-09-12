@@ -450,6 +450,73 @@ class TestBusySessionAck:
         assert "iteration 3" in content
         assert str(sys.maxsize) not in content
 
+    def _make_redirect_agent(self):
+        agent = MagicMock()
+        agent._supports_active_turn_redirect = True
+        agent.redirect = MagicMock(return_value=True)
+        agent._active_children = []
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "api",
+            "seconds_since_activity": 0.1,
+        }
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_redirect_suppresses_ack_when_steer_ack_disabled(self, monkeypatch):
+        """Redirect still happens, but the operator ack is gated with steer acks."""
+        import gateway.run as _gr
+
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", "false")
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="actually use the other branch")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = self._make_redirect_agent()
+        runner._running_agents[sk] = agent
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.redirect.assert_called_once()
+        agent.interrupt.assert_not_called()
+        assert adapter._pending_messages.get(sk) is not event
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_redirect_sends_ack_when_steer_ack_enabled(self, monkeypatch):
+        """Default/true steer-ack setting still delivers the redirect ack."""
+        import gateway.run as _gr
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="actually use the other branch")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = self._make_redirect_agent()
+        runner._running_agents[sk] = agent
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.redirect.assert_called_once()
+        adapter._send_with_retry.assert_called_once()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Redirected current run" in content
+
 
 class TestBusySessionOnboardingHint:
     """First-touch hint appended to the busy-ack the first time it fires."""

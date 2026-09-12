@@ -95,6 +95,8 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
     rf"|{re.escape(COMPACTION_DONE_STATUS)}"
+    r"|iteration\s+budget\s+exhausted"
+    r"|asking\s+model\s+to\s+summari[sz]e"
     r")",
     re.IGNORECASE | re.DOTALL)
 
@@ -645,6 +647,10 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+# Same footer shape TTS strips in tools/tts_text_normalize.py — operator diagnostic, not chat prose.
+_VERIFIER_FOOTER_RE = re.compile(r"^\s*⚠️?\s*File-mutation verifier:.*(?:\n[ \t]+•.*)*", flags=re.MULTILINE)
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies for chat surfaces: concise, secret-redacted provider failure
     categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text."""
@@ -670,6 +676,10 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
+    # Operator-only file-mutation verifier footer (same shape TTS already strips).
+    # Fail-open: no match leaves the already-sanitized reply byte-identical.
+    if _VERIFIER_FOOTER_RE.search(redacted):
+        return _VERIFIER_FOOTER_RE.sub("", redacted).strip()
     return redacted
 
 

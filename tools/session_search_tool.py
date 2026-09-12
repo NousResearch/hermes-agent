@@ -513,7 +513,10 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
                    include_reasoning: bool = False) -> str:
-    """Run session search, closing DBs opened here. Positional order is frozen for old callers."""
+    """Run session search, optionally over reasoning traces, and close DBs opened here.
+
+    Positional order is frozen for old callers.
+    """
     from hermes_state import format_session_db_unavailable
     from hermes_state_registry import acquire, release_or_close
     owned_dbs: List[Any] = []
@@ -550,6 +553,8 @@ SESSION_SEARCH_SCHEMA = {
         "`session_id` alone = read a whole session — how you resolve an "
         "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
         "args = browse recent sessions. Results are actual DB messages, no LLM. "
+        "Hits returned with `include_reasoning` come from what the assistant reasoned, "
+        "not from what it said. "
         "Searches conversation history ONLY — when the user gave a direct "
         "source (URL, file, contact, live system), inspect that first; never "
         "conclude 'not found' from history alone. Use for questions about past "

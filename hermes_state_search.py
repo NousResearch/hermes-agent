@@ -1048,7 +1048,8 @@ class SessionSearchMixin:
         include_reasoning: bool = False,
     ) -> List[Dict[str, Any]]:
         """:meth:`_search_messages_impl` plus one log line per slow search with the routing
-        path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
+        path taken. ``include_reasoning`` searches only the canonical reasoning columns.
+        Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
         started = time.time()
         rows = None
         try:
@@ -1074,7 +1075,8 @@ class SessionSearchMixin:
         Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
         projection. ``sort``: None = BM25 rank; "newest"/"oldest" = timestamp then rank (the
         CJK LIKE fallback ignores it). Rewound rows (``active=0, compacted=0``) are excluded
-        by default; compaction-archived rows ARE included; ``include_inactive`` = every row."""
+        by default; compaction-archived rows ARE included; ``include_inactive`` = every row.
+        ``include_reasoning`` opts into an unranked canonical-row scan of reasoning traces."""
         result_fields = self._search_message_fields(fields)
         if not query or not query.strip():
             return []

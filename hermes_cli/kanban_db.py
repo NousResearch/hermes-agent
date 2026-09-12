@@ -3707,6 +3707,11 @@ def specify_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        task_row = conn.execute(
+            "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if task_row is not None and task_row["status"] == "blocked" and task_row["block_kind"] == "operator_hold":
+            return False
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "

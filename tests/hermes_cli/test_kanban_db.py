@@ -454,6 +454,22 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
 
 
 
+def test_archive_task_refuses_operator_held_task(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="held task")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', block_kind = 'operator_hold' WHERE id = ?",
+            (tid,),
+        )
+        conn.commit()
+
+        assert kb.archive_task(conn, tid) is False
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.block_kind == "operator_hold"
+
+
 def test_delete_archived_task_removes_related_rows(kanban_home):
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="parent")

@@ -1098,8 +1098,14 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         if purge_ids:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",
                                lambda tid: f"cannot delete {tid} (must already be archived)")
+        def archive_error(tid):
+            task = kb.get_task(conn, tid)
+            if task is not None and task.status == "blocked" and task.block_kind == "operator_hold":
+                return f"cannot archive {tid}: task is operator-held (unblock first)"
+            return f"cannot archive {tid}"
+
         return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid),
-                           lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
+                           lambda tid: f"Archived {tid}", archive_error)
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:

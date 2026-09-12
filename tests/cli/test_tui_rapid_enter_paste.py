@@ -49,3 +49,16 @@ def test_enter_right_after_text_arrives_is_a_newline_not_a_steer():
     shell._tui_handle_enter(_event(buf))
     shell._tui_enter_while_busy.assert_called_once()
     assert shell._tui_enter_while_busy.call_args.args[0] == "line one\nline two"
+
+
+def test_fast_backslash_continuation_still_consumes_the_backslash():
+    """`\\` + Enter inside a paste (multiline shortcuts on) behaves like a typed one: the
+    backslash is removed and a newline inserted, never a literal backslash left in the text."""
+    shell = _shell()
+    shell._tui_multiline_shortcuts = True
+    buf = Buffer()
+    buf.on_text_changed += shell._tui_on_text_changed
+    buf.insert_text("alpha \\")
+    shell._tui_handle_enter(_event(buf))          # < 50 ms after the text change
+    assert buf.text == "alpha \n"
+    shell._tui_enter_while_busy.assert_not_called()

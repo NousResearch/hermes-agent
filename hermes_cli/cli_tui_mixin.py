@@ -1351,14 +1351,9 @@ class CLITuiMixin:
         if self._tui_enter_overlay(event):
             return
         buf = event.app.current_buffer
-        # Paste without bracketed-paste (tmux strips it) and IME/voice dictation deliver each
-        # newline as its own Enter key event; the buffer collapse in _tui_on_text_changed only
-        # sees whole-chunk pastes. Text still arriving (<50 ms since the last change) means this
-        # Enter is a line break inside one message, not a submit — humans type >50 ms apart (#10994).
-        if time.monotonic() - getattr(self, "_tui_last_text_change", 0.0) < _RAPID_INPUT_ENTER_WINDOW_S:
-            buf.insert_text("\n")
-            return
         raw_text = buf.text
+        # Explicit `\` + Enter continuation runs first so its backslash is consumed identically
+        # whether the Enter was typed or arrived inside a paste.
         if (
             self._tui_multiline_shortcuts
             and buf.cursor_position == len(raw_text)
@@ -1367,6 +1362,13 @@ class CLITuiMixin:
             buf.text = continued
             buf.cursor_position = len(continued)
             event.app.invalidate()
+            return
+        # Paste without bracketed-paste (tmux strips it) and IME/voice dictation deliver each
+        # newline as its own Enter key event; the buffer collapse in _tui_on_text_changed only
+        # sees whole-chunk pastes. Text still arriving (<50 ms since the last change) means this
+        # Enter is a line break inside one message, not a submit (#10994).
+        if time.monotonic() - getattr(self, "_tui_last_text_change", 0.0) < _RAPID_INPUT_ENTER_WINDOW_S:
+            buf.insert_text("\n")
             return
         text = raw_text.strip()
         has_images = bool(self._attached_images)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import logging
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,28 @@ _ASYNC_SHUTDOWN = object()
 # Sessions remembered in _joined_author_peers; the oldest is dropped past this and its authors rejoin on their next write.
 _SESSION_CACHE_MAX_SIZE = 128
 
+# The local list exists only to batch messages not yet durable in Honcho. Once a message
+# is synced, retaining an unlimited transcript duplicates the remote source of truth and
+# lets one long-lived gateway channel pin arbitrarily large tool/chat payloads.
+_SYNCED_MESSAGE_CACHE_MAX_COUNT = 256
+_SYNCED_MESSAGE_CACHE_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _retained_heap_bytes(value: Any, seen: set[int] | None = None) -> int:
+    """Immediate Python heap owned by a message graph (cycle/alias safe)."""
+    seen = set() if seen is None else seen
+    marker = id(value)
+    if marker in seen:
+        return 0
+    seen.add(marker)
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        size += sum(_retained_heap_bytes(k, seen) + _retained_heap_bytes(v, seen)
+                    for k, v in value.items())
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        size += sum(_retained_heap_bytes(item, seen) for item in value)
+    return size
+
 
 @dataclass
 class HonchoSession:
@@ -45,6 +68,35 @@ class HonchoSession:
         """Add a message to the local cache."""
         self.messages.append({"role": role, "content": content, "timestamp": datetime.now().isoformat(), **kwargs})
         self.updated_at = datetime.now()
+
+    def trim_synced_cache(self) -> int:
+        """Drop oldest durable rows until the local cache fits both memory bounds.
+
+        Unsynced rows are never discarded, even when they alone exceed the limits: failed
+        delivery must trade boundedness for durability explicitly rather than lose data.
+        """
+        sizes = [_retained_heap_bytes(message) for message in self.messages]
+        retained_bytes = sum(sizes)
+        retained_count = len(self.messages)
+        if (retained_count <= _SYNCED_MESSAGE_CACHE_MAX_COUNT
+                and retained_bytes <= _SYNCED_MESSAGE_CACHE_MAX_BYTES):
+            return 0
+
+        keep = [True] * retained_count
+        removed = 0
+        for index, (message, size) in enumerate(zip(self.messages, sizes)):
+            if (retained_count <= _SYNCED_MESSAGE_CACHE_MAX_COUNT
+                    and retained_bytes <= _SYNCED_MESSAGE_CACHE_MAX_BYTES):
+                break
+            if not message.get("_synced"):
+                continue
+            keep[index] = False
+            retained_count -= 1
+            retained_bytes -= size
+            removed += 1
+        if removed:
+            self.messages[:] = [message for message, retain in zip(self.messages, keep) if retain]
+        return removed
 
 
 class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMixin, SessionMigrationMixin):
@@ -284,6 +336,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         """Write unsynced messages to Honcho synchronously."""
         new_messages = [m for m in session.messages if not m.get("_synced")]
         if not new_messages:
+            session.trim_synced_cache()
             return True
 
         # Resolved inside the operation so a retry after a client rebuild gets fresh objects.
@@ -313,6 +366,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             ok = False
         for msg in new_messages:
             msg["_synced"] = ok
+        trimmed = session.trim_synced_cache()
+        if trimmed:
+            logger.debug("Trimmed %d durable Honcho message(s) from local cache for %s", trimmed, session.key)
         with self._cache_lock:
             self._cache[session.key] = session
         return ok

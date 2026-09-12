@@ -49,6 +49,21 @@ def _token_update_sql(delta: bool) -> str:
 _TOKEN_UPDATE_ABSOLUTE_SQL = _token_update_sql(delta=False)
 _TOKEN_UPDATE_DELTA_SQL = _token_update_sql(delta=True)
 
+_SESSION_DAILY_USAGE_UPSERT_SQL = """INSERT INTO session_daily_usage (
+                   session_id, day, input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                   estimated_cost_usd, actual_cost_usd, api_call_count
+               ) VALUES (?, date('now'), ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, day) DO UPDATE SET
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                   cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                   reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
+                   estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
+                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
+                   api_call_count = api_call_count + excluded.api_call_count"""
+
 _MODEL_USAGE_UPSERT_SQL = """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
                    task, api_call_count, input_tokens, output_tokens,
@@ -77,6 +92,45 @@ _MODEL_USAGE_FIELDS = frozenset((
     "model", "billing_provider", "billing_base_url", "billing_mode", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
     "actual_cost_usd", "cost_status", "cost_source", "api_call_count"))
+
+_SESSION_USAGE_SELECT_SQL = (
+    "SELECT model, billing_provider, api_call_count, "
+    "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
+    "reasoning_tokens, estimated_cost_usd, actual_cost_usd "
+    "FROM sessions WHERE id = ?"
+)
+
+
+def _nonneg_int(new: Any, old: Any) -> int:
+    return max(0, int(new or 0) - int(old or 0))
+
+
+def _absolute_usage_increments(
+    existing: Dict[str, Any], *, input_tokens: int, output_tokens: int,
+    cache_read_tokens: int, cache_write_tokens: int, reasoning_tokens: int,
+    estimated_cost_usd: Optional[float], actual_cost_usd: Optional[float],
+    api_call_count: int,
+) -> Optional[Dict[str, Any]]:
+    """Non-negative (new absolute − stored) increments. None when every increment is ≤ 0."""
+    # Absolute UPDATE sets estimated_cost_usd = COALESCE(?, 0); None actual keeps the stored value.
+    new_estimated = 0.0 if estimated_cost_usd is None else float(estimated_cost_usd)
+    actual_inc = (
+        0.0 if actual_cost_usd is None
+        else max(0.0, float(actual_cost_usd) - float(existing.get("actual_cost_usd") or 0))
+    )
+    increments = {
+        "input_tokens": _nonneg_int(input_tokens, existing.get("input_tokens")),
+        "output_tokens": _nonneg_int(output_tokens, existing.get("output_tokens")),
+        "cache_read_tokens": _nonneg_int(cache_read_tokens, existing.get("cache_read_tokens")),
+        "cache_write_tokens": _nonneg_int(cache_write_tokens, existing.get("cache_write_tokens")),
+        "reasoning_tokens": _nonneg_int(reasoning_tokens, existing.get("reasoning_tokens")),
+        "estimated_cost_usd": max(0.0, new_estimated - float(existing.get("estimated_cost_usd") or 0)),
+        "actual_cost_usd": actual_inc,
+        "api_call_count": _nonneg_int(api_call_count, existing.get("api_call_count")),
+    }
+    if not any((value or 0) > 0 for value in increments.values()):
+        return None
+    return increments
 
 
 class SessionUsageMixin:
@@ -309,9 +363,7 @@ class SessionUsageMixin:
         record_model_usage = (not absolute) and has_usage
 
         def _do(conn):
-            row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?", (session_id,),
-            ).fetchone()
+            row = conn.execute(_SESSION_USAGE_SELECT_SQL, (session_id,)).fetchone()
             existing = dict(row) if row is not None else {}
             # create_session records the requested route before any API call. If that fails
             # and fallback succeeds, the first accounted usage is the authoritative route;
@@ -327,9 +379,46 @@ class SessionUsageMixin:
                        billing_base_url = ?, billing_mode = ?
                        WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
             conn.execute(sql, params)
+            # Activity-day ledger (#107861): same txn as the sessions UPDATE so a
+            # failed upsert rolls back with the counters. Delta writes the provided
+            # amounts; absolute writes only the non-negative increment.
+            daily = None
+            if absolute:
+                daily = _absolute_usage_increments(
+                    existing, input_tokens=input_tokens, output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
+                    reasoning_tokens=reasoning_tokens, estimated_cost_usd=estimated_cost_usd,
+                    actual_cost_usd=actual_cost_usd, api_call_count=api_call_count,
+                )
+            elif has_usage:
+                daily = {
+                    "input_tokens": input_tokens or 0,
+                    "output_tokens": output_tokens or 0,
+                    "cache_read_tokens": cache_read_tokens or 0,
+                    "cache_write_tokens": cache_write_tokens or 0,
+                    "reasoning_tokens": reasoning_tokens or 0,
+                    "estimated_cost_usd": float(estimated_cost_usd or 0),
+                    "actual_cost_usd": float(actual_cost_usd or 0),
+                    "api_call_count": api_call_count or 0,
+                }
+            if daily:
+                self._upsert_session_daily_usage(conn, session_id, **daily)
             if record_model_usage:
                 self._record_model_usage(conn, session_id, **usage)
         self._execute_write(_do)
+
+    def _upsert_session_daily_usage(
+        self, conn, session_id: str, *, input_tokens: int=0, output_tokens: int=0,
+        cache_read_tokens: int=0, cache_write_tokens: int=0, reasoning_tokens: int=0,
+        estimated_cost_usd: float=0, actual_cost_usd: float=0, api_call_count: int=0,
+    ) -> None:
+        """Add a UTC-day increment to session_daily_usage inside the caller's write txn."""
+        conn.execute(_SESSION_DAILY_USAGE_UPSERT_SQL, (
+            session_id, input_tokens or 0, output_tokens or 0,
+            cache_read_tokens or 0, cache_write_tokens or 0, reasoning_tokens or 0,
+            float(estimated_cost_usd or 0), float(actual_cost_usd or 0),
+            api_call_count or 0,
+        ))
 
     def _record_model_usage(
         self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

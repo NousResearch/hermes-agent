@@ -439,6 +439,24 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+-- Per-UTC-day usage increments (#107861). Lifetime session counters stay on
+-- sessions; this ledger attributes later deltas to the activity day, not
+-- date(started_at). No lifetime→daily backfill — residual (sessions.* − SUM(ledger))
+-- still pins to the start day for pre-deploy rows.
+CREATE TABLE IF NOT EXISTS session_daily_usage (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    actual_cost_usd REAL NOT NULL DEFAULT 0,
+    api_call_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, day)
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -565,6 +583,7 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
+CREATE INDEX IF NOT EXISTS idx_session_daily_usage_day ON session_daily_usage(day);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
 """

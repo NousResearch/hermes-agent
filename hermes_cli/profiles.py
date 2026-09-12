@@ -40,11 +40,16 @@ _CLONE_ALL_STRIP: list[str] = ["gateway.pid", "gateway_state.json", "processes.j
 
 # Infrastructure excluded from --clone-all ONLY when the source is the default profile
 # (``~/.hermes``): git checkout (+ ~3 GB venv), worktrees, sibling profiles, shared bins,
-# npm packages. Named profiles never hold these at root, so the gate avoids silently
-# dropping user data from a named-profile source. Export uses a root allow-list instead
-# (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot, a clone must run.
+# npm packages, and the managed local-models trees — GGUF weights (tens of GB), the
+# llama.cpp runtime binaries and the managed Node install, all re-downloadable on demand
+# and resolved from the default root only. Named profiles never hold these at root, so the
+# gate avoids silently dropping user data from a named-profile source. Export uses a root
+# allow-list instead (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot,
+# a clone must run. The last three mirror ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` — kept
+# as separate literals because importing it here would be circular; change both together.
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
+    "models", "runtimes", "node",
 })
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store

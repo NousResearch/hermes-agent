@@ -451,6 +451,22 @@ When `session_id` identifies an existing Hermes session and no explicit
 that session's active transcript. Session turn leases serialize concurrent
 writers and refresh the transcript after a contended wait.
 
+A run may carry an optional `workspace` string naming the session's working
+directory. The gateway is the final filesystem authority: it honors the field
+only when the path is absolute, exists as a directory on this host, and
+resolves (after symlink resolution) to the gateway's own working root — the
+configured `terminal.cwd`, or the launch directory when none is configured —
+or a path beneath it. An accepted workspace becomes the run's task-scoped
+terminal and filesystem cwd (the same binding the ACP adapter uses for editor
+workspaces) and the logical cwd shown in the system prompt, and is cleared
+when the run reaches a terminal state. Anything else — a sibling prefix such
+as `/workspace-other`, a `..` or symlink escape, a relative path, or a
+directory that does not exist on the gateway — is ignored with a warning and
+the run keeps the default working directory. Deployments that share a
+workspace between a frontend container and the gateway (for example both
+mounting `/workspace`) should set the gateway's `terminal.cwd` to that mount
+so per-session subdirectories validate.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.

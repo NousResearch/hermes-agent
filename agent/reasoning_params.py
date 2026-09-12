@@ -14,7 +14,7 @@ from utils import base_url_host_matches
 # Static OpenRouter fallback when the live /v1/models capability cache is cold.
 _OPENROUTER_REASONING_PREFIXES = (
     "deepseek/", "anthropic/", "openai/", "x-ai/", "google/gemini-2", "google/gemma-4",
-    "qwen/qwen3", "tencent/hy", "xiaomi/",
+    "qwen/qwen3", "tencent/hy", "xiaomi/", "z-ai/",
 )
 
 # Probe results cache per (model, base_url). Definitive values cache permanently; an
@@ -68,18 +68,28 @@ class ReasoningParamsMixin:
             return self._ollama_supports_thinking_cached()
         if not self._is_openrouter_url() or base_url_host_matches(url, "api.mistral.ai"):
             return False
+        # Strip a recognized routing-variant suffix (:nitro/:floor/:exacto/:online) before the catalog
+        # lookup — the cache is keyed by the BASE id, so a suffixed lookup misses and falls through to
+        # the static prefix list, which silently dropped reasoning for suffixed models (e.g.
+        # z-ai/glm-flash-latest:floor). :free/:batch are real catalog entries and are NOT stripped.
+        from hermes_constants import openrouter_variant_base
+
+        lookup_model = openrouter_variant_base(self.model) or self.model
         # Live-catalog metadata first (OpenRouter /v1/models supported_parameters) — the static prefix
         # allowlist repeatedly went stale one vendor at a time. Unknown falls back to the static list.
         try:
             from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
-            caps = openrouter_model_reasoning_capabilities(self.model)
+            caps = openrouter_model_reasoning_capabilities(lookup_model)
             if caps is None:
                 warm_openrouter_reasoning_caps_async()  # cache cold — warm in the background, never block
         except Exception:
             caps = None
         if caps is not None:
             return bool(caps.get("supports_reasoning"))
-        model = (self.model or "").lower()
+        # OpenRouter uses a leading ``~`` for some alias ids (for example
+        # ``~z-ai/glm-flash-latest``).  It is part of the catalog key above, but not the vendor
+        # identity used by this last-resort prefix fallback.
+        model = (lookup_model or "").lower().removeprefix("~")
         return any(model.startswith(prefix) for prefix in _OPENROUTER_REASONING_PREFIXES)
 
     def _lmstudio_reasoning_options_cached(self) -> list[str]:

@@ -813,7 +813,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
-        reply_to_mode = str(config.reply_to_mode or "first").strip().lower()
+        # YAML parses an unquoted `off` as False.
+        reply_to_mode = "off" if config.reply_to_mode is False else str(config.reply_to_mode or "first").strip().lower()
         self._reply_to_mode = reply_to_mode if reply_to_mode in {"off", "first", "all"} else "first"
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
@@ -2738,6 +2739,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, include_reply_fallback: bool = True) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
+        include_reply_fallback = include_reply_fallback and self._reply_to_mode != "off"
         thread_id = str((metadata or {}).get("thread_id") or "")
         if reply_to and include_reply_fallback:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}

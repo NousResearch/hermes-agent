@@ -631,26 +631,29 @@ class TestMatrixRenderingPayloads:
 
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("mode", ["off", "first", "all", " ALL ", "invalid"])
+    @pytest.mark.parametrize("mode, fallback_chunks", [
+        ('"off"', []), ("off", []), ("first", [0]), ("all", [0, 1]),
+        ('" ALL "', [0, 1]), ("invalid", [0]),
+    ])
     @pytest.mark.parametrize("thread_id", [None, "$root"])
-    async def test_split_reply_modes(self, mode, thread_id):
+    async def test_split_reply_modes(self, mode, fallback_chunks, thread_id, tmp_path):
+        import yaml
         from plugins.platforms.matrix.adapter import MatrixAdapter
-        config = self.adapter.config
-        config.reply_to_mode = mode
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(f"reply_to_mode: {mode}\n")
+        config = PlatformConfig.from_dict(yaml.safe_load(config_path.read_text()))
         adapter = MatrixAdapter(config)
         adapter._client = self.adapter._client
-        with patch.object(adapter, "truncate_message", return_value=["first", "tail"]):
-            result = await adapter.send("!room:example.org", "answer", reply_to="$parent",
-                                        metadata={"thread_id": thread_id})
+        text = "line\n" * (adapter.max_message_length // len("line\n") + 200)
+        result = await adapter.send("!room:example.org", text, reply_to="$parent",
+                                    metadata={"thread_id": thread_id})
         assert result.success
         contents = self._sent_contents()
         assert len(contents) == 2
-        normalized = mode.strip().lower()
-        if normalized not in {"off", "first", "all"}:
-            normalized = "first"
         for i, content in enumerate(contents):
             relation = content.get("m.relates_to", {})
-            fallback = normalized == "all" or (normalized == "first" and i == 0)
+            fallback = i in fallback_chunks
             assert ("m.in_reply_to" in relation) == fallback
             assert ("is_falling_back" in relation) == bool(thread_id and fallback)
             if fallback:
@@ -658,6 +661,37 @@ class TestMatrixRenderingPayloads:
             if thread_id:
                 assert relation["event_id"] == thread_id
                 assert relation["rel_type"] == "m.thread"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["off", "first", "all"])
+    @pytest.mark.parametrize("thread_id", [None, "$root"])
+    async def test_document_honors_reply_mode(self, mode, thread_id, tmp_path):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = self.adapter.config
+        config.reply_to_mode = mode
+        adapter = MatrixAdapter(config)
+        adapter._client = self.mock_client
+        adapter._encryption = False
+        self.mock_client.upload_media = AsyncMock(return_value="mxc://example.org/file")
+        document = tmp_path / "answer.txt"
+        document.write_text("answer")
+
+        result = await adapter.send_document(
+            "!room:example.org", str(document), reply_to="$parent",
+            metadata={"thread_id": thread_id},
+        )
+
+        assert result.success
+        relation = self._sent_contents()[0].get("m.relates_to", {})
+        if mode == "off":
+            assert "m.in_reply_to" not in relation
+            assert "is_falling_back" not in relation
+        else:
+            assert relation["m.in_reply_to"] == {"event_id": "$parent"}
+        if thread_id:
+            assert relation["rel_type"] == "m.thread"
+            assert relation["event_id"] == thread_id
 
     @pytest.mark.asyncio
     async def test_thread_payload_uses_m_thread_with_reply_fallback(self):

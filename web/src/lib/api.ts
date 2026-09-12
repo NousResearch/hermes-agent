@@ -607,6 +607,10 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
+  getCronAnalytics: (profile = "all", days: CronAnalyticsPeriod = 30) =>
+    fetchJSON<CronAnalyticsResponse>(
+      `/api/cron/analytics?profile=${encodeURIComponent(profile)}&days=${days}`,
+    ),
   getCronDeliveryTargets: () =>
     fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
   createCronJob: (job: CronJobMutation, profile = "default") =>
@@ -2303,6 +2307,36 @@ export interface CronJob {
   last_error?: string | null;
   last_delivery_error?: string | null;
   last_fire_error?: { at?: string | null; detail?: string | null } | null;
+}
+
+export type CronAnalyticsPeriod = 7 | 30 | 90;
+
+export interface CronJobAnalytics {
+  job_id: string;
+  profile: string;
+  period_days: CronAnalyticsPeriod;
+  usage_runs: number;
+  total_tokens: number;
+  avg_tokens_per_run: number | null;
+  total_cost_usd: number;
+  avg_cost_usd_per_run: number | null;
+  actual_cost_runs: number;
+  estimated_cost_runs: number;
+  unknown_cost_runs: number;
+  incomplete_runs: number;
+  attempts: number;
+  completed: number;
+  failed: number;
+  unknown: number;
+  running: number;
+  manual_runs: number;
+  scheduled_runs: number;
+  retry_attempts: number;
+}
+
+export interface CronAnalyticsResponse {
+  period_days: CronAnalyticsPeriod;
+  jobs: CronJobAnalytics[];
 }
 
 export interface CronDeliveryTarget {

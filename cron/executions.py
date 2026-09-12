@@ -334,6 +334,48 @@ def list_executions(
     return [dict(row) for row in rows]
 
 
+def execution_analytics(job_id: str, *, since: str) -> Dict[str, int]:
+    """Attempt/status rollup for one job in an ISO-8601 period.
+
+    ``scheduled_instant`` distinguishes scheduled fires from manual/direct
+    triggers.  Repeated attempts for the same scheduled instant are retries;
+    the first attempt remains the original scheduled run.
+    """
+    with _transaction() as conn:
+        rows = conn.execute(
+            """SELECT status, scheduled_instant FROM executions
+               WHERE job_id=?
+                 AND julianday(COALESCE(started_at, claimed_at)) >= julianday(?)""",
+            (str(job_id), str(since)),
+        ).fetchall()
+
+    counts = {state: 0 for state in ("completed", "failed", "unknown")}
+    running = manual_runs = 0
+    scheduled_counts: Dict[str, int] = {}
+    for row in rows:
+        status = str(row["status"] or "")
+        if status in counts:
+            counts[status] += 1
+        elif status in ("claimed", "running"):
+            running += 1
+        instant = row["scheduled_instant"]
+        if instant is None:
+            manual_runs += 1
+        else:
+            key = str(instant)
+            scheduled_counts[key] = scheduled_counts.get(key, 0) + 1
+
+    scheduled_runs = len(scheduled_counts)
+    return {
+        "attempts": len(rows),
+        **counts,
+        "running": running,
+        "manual_runs": manual_runs,
+        "scheduled_runs": scheduled_runs,
+        "retry_attempts": sum(max(0, count - 1) for count in scheduled_counts.values()),
+    }
+
+
 def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Return one exact execution attempt, or ``None`` when it is absent."""
     with _transaction() as conn:

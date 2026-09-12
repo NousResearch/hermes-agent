@@ -8,6 +8,7 @@ late-binding seam so ``monkeypatch.setattr(web_server_cron, ...)`` keeps working
 import asyncio
 import functools
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,7 @@ load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_cron_execution_analytics_for_profile = late("_cron_execution_analytics_for_profile", "hermes_cli.web_server_cron")
 
 def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
@@ -137,6 +139,49 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
         db.close()
 
 
+_CRON_ANALYTICS_PERIODS = {7, 30, 90}
+
+
+def _list_cron_analytics_sync(profile: str = "all", days: int = 30):
+    """Per-job usage and attempt rollups for the dashboard's selected period."""
+    try:
+        period_days = int(days)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="days must be 7, 30, or 90") from exc
+    if period_days not in _CRON_ANALYTICS_PERIODS:
+        raise HTTPException(status_code=400, detail="days must be 7, 30, or 90")
+
+    jobs = _list_cron_jobs_sync(profile)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=period_days)
+    cutoff_ts = cutoff.timestamp()
+    cutoff_iso = cutoff.isoformat()
+    dbs: Dict[str, Any] = {}
+    analytics: List[Dict[str, Any]] = []
+    try:
+        for job in jobs:
+            job_id = str(job.get("id") or "")
+            selected = str(job.get("profile") or job.get("profile_name") or "default")
+            if not job_id:
+                continue
+            db = dbs.get(selected)
+            if db is None:
+                db = _open_session_db_for_profile(selected, read_only=True)
+                dbs[selected] = db
+            usage = db.cron_job_usage_analytics(job_id, since=cutoff_ts)
+            attempts = _cron_execution_analytics_for_profile(selected, job_id, since=cutoff_iso)
+            analytics.append({
+                "job_id": job_id,
+                "profile": selected,
+                "period_days": period_days,
+                **usage,
+                **attempts,
+            })
+    finally:
+        for db in dbs.values():
+            db.close()
+    return {"period_days": period_days, "jobs": analytics}
+
+
 _EXECUTION_FIELDS = {"prompt", "skill", "skills", "script", "no_agent"}
 
 
@@ -211,6 +256,11 @@ _CRON_FIRE_RETRY_AFTER_SECONDS = 60
 @router.get("/api/cron/jobs")
 async def list_cron_jobs(profile: str = "all"):
     return await _run_cron_dashboard_io(_list_cron_jobs_sync, profile)
+
+
+@router.get("/api/cron/analytics")
+async def list_cron_analytics(profile: str = "all", days: int = 30):
+    return await _run_cron_dashboard_io(_list_cron_analytics_sync, profile, days)
 
 
 @router.get("/api/cron/jobs/{job_id}")

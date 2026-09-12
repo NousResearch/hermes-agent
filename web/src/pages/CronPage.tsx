@@ -11,7 +11,9 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type {
+  CronAnalyticsPeriod,
   CronJob,
+  CronJobAnalytics,
   CronDeliveryTarget,
   ModelOptionsResponse,
   ProfileInfo,
@@ -56,6 +58,20 @@ function formatTime(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return d.toLocaleString();
+}
+
+function formatInteger(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatUsd(value: number | null, locale: string): string {
+  if (value === null) return "—";
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(value);
 }
 
 function asText(value: unknown): string {
@@ -526,6 +542,8 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
+  const [analytics, setAnalytics] = useState<Record<string, CronJobAnalytics>>({});
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<CronAnalyticsPeriod>(30);
   const [triggeringJobKeys, setTriggeringJobKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -622,13 +640,28 @@ export default function CronPage() {
 
     const generation = ++jobsRequestGenerationRef.current;
 
-    api
-      .getCronJobs(profile)
-      .then((nextJobs) => {
+    Promise.all([
+      api.getCronJobs(profile),
+      api.getCronAnalytics(profile, analyticsPeriod).catch(() => ({
+        period_days: analyticsPeriod,
+        jobs: [],
+      })),
+    ])
+      .then(([nextJobs, nextAnalytics]) => {
         if (
           jobsRequestGenerationRef.current === generation &&
           selectedProfileRef.current === profile
-        ) setJobs(nextJobs);
+        ) {
+          setJobs(nextJobs);
+          setAnalytics(
+            Object.fromEntries(
+              nextAnalytics.jobs.map((item) => [
+                `${item.profile}:${item.job_id}`,
+                item,
+              ]),
+            ),
+          );
+        }
       })
       .catch(() => {
         if (
@@ -644,7 +677,7 @@ export default function CronPage() {
           selectedProfileRef.current === profile
         ) setLoading(false);
       });
-  }, [showToast, t.common.loading]);
+  }, [analyticsPeriod, showToast, t.common.loading]);
 
   useEffect(() => {
     api
@@ -1051,20 +1084,36 @@ export default function CronPage() {
             {t.cron.scheduledJobs} ({jobs.length})
           </H2>
 
-          <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
-            <Select
-              id="cron-profile-filter"
-              value={selectedProfile}
-              onValueChange={(v) => setSelectedProfile(v)}
-            >
-              <SelectOption value="all">All profiles</SelectOption>
-              {profiles.map((profile) => (
-                <SelectOption key={profile.name} value={profile.name}>
-                  {profileLabel(profile.name)}
-                </SelectOption>
-              ))}
-            </Select>
+          <div className="flex gap-3">
+            <div className="grid gap-1 min-w-[140px]">
+              <Label htmlFor="cron-analytics-period">{t.cron.analytics.period}</Label>
+              <Select
+                id="cron-analytics-period"
+                value={String(analyticsPeriod)}
+                onValueChange={(v) =>
+                  setAnalyticsPeriod(Number(v) as CronAnalyticsPeriod)
+                }
+              >
+                <SelectOption value="7">7 days</SelectOption>
+                <SelectOption value="30">30 days</SelectOption>
+                <SelectOption value="90">90 days</SelectOption>
+              </Select>
+            </div>
+            <div className="grid gap-1 min-w-[220px]">
+              <Label htmlFor="cron-profile-filter">Profile</Label>
+              <Select
+                id="cron-profile-filter"
+                value={selectedProfile}
+                onValueChange={(v) => setSelectedProfile(v)}
+              >
+                <SelectOption value="all">All profiles</SelectOption>
+                {profiles.map((profile) => (
+                  <SelectOption key={profile.name} value={profile.name}>
+                    {profileLabel(profile.name)}
+                  </SelectOption>
+                ))}
+              </Select>
+            </div>
           </div>
         </div>
 
@@ -1102,6 +1151,15 @@ export default function CronPage() {
             ? job.enabled_toolsets.filter(Boolean)
             : [];
           const lastResult = cronLastResult(job);
+          const usage = analytics[jobKey];
+          const pricedRuns = usage
+            ? usage.actual_cost_runs + usage.estimated_cost_runs
+            : 0;
+          const failedRuns = usage
+            ? usage.attempts > 0
+              ? usage.failed + usage.unknown
+              : usage.incomplete_runs
+            : 0;
 
           return (
             <Card key={jobKey}>
@@ -1165,6 +1223,41 @@ export default function CronPage() {
                       {t.cron.next}: {formatTime(job.next_run_at)}
                     </span>
                   </div>
+                  {usage && (
+                    <div
+                      className="mt-3 grid grid-cols-2 gap-x-5 gap-y-1 border-t border-border/60 pt-2 text-xs text-muted-foreground sm:grid-cols-3 lg:grid-cols-6"
+                      data-testid={`cron-usage-${jobKey}`}
+                    >
+                      <span>
+                        {t.cron.analytics.runs}: {usage.usage_runs}
+                      </span>
+                      <span>
+                        {t.cron.analytics.avgTokens}:{" "}
+                        {usage.avg_tokens_per_run === null
+                          ? "—"
+                          : formatInteger(usage.avg_tokens_per_run, locale)}
+                      </span>
+                      <span>
+                        {t.cron.analytics.totalTokens}:{" "}
+                        {formatInteger(usage.total_tokens, locale)}
+                      </span>
+                      <span
+                        title={`${t.cron.analytics.costBasis}; ${pricedRuns}/${usage.usage_runs} ${t.cron.analytics.pricedRuns}`}
+                      >
+                        {t.cron.analytics.avgCost}:{" "}
+                        {formatUsd(usage.avg_cost_usd_per_run, locale)}
+                      </span>
+                      <span>
+                        {t.cron.analytics.totalCost}:{" "}
+                        {formatUsd(pricedRuns ? usage.total_cost_usd : null, locale)}
+                      </span>
+                      <span>
+                        {usage.manual_runs} {t.cron.analytics.manual} · {failedRuns}{" "}
+                        {t.cron.analytics.failed} · {usage.retry_attempts}{" "}
+                        {t.cron.analytics.retries}
+                      </span>
+                    </div>
+                  )}
                   {job.last_delivery_error && (
                     <p className="text-xs text-destructive mt-1">
                       delivery: {job.last_delivery_error}

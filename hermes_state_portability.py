@@ -183,6 +183,56 @@ class SessionPortabilityMixin:
         )
         return [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
 
+    def cron_job_usage_analytics(self, job_id: str, *, since: float) -> Dict[str, Any]:
+        """Token/cost rollup for one cron job's sessions since a Unix timestamp.
+
+        The prefix range is the same exact-job boundary used by
+        :meth:`list_cron_job_runs`; jobs whose IDs share a substring cannot leak
+        into each other's totals.  Actual cost wins per run, with estimated cost
+        used only when the provider did not report an actual amount.
+        """
+        getattr(self, "flush_token_counts")()
+        prefix = f"cron_{job_id}_"
+        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        row = self._read_rows(
+            """SELECT
+                   COUNT(*) AS usage_runs,
+                   COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0)
+                       AS total_tokens,
+                   COALESCE(SUM(CASE
+                       WHEN actual_cost_usd IS NOT NULL THEN actual_cost_usd
+                       ELSE estimated_cost_usd END), 0.0) AS total_cost_usd,
+                   SUM(CASE WHEN actual_cost_usd IS NOT NULL THEN 1 ELSE 0 END)
+                       AS actual_cost_runs,
+                   SUM(CASE WHEN actual_cost_usd IS NULL AND estimated_cost_usd IS NOT NULL
+                       THEN 1 ELSE 0 END) AS estimated_cost_runs,
+                   SUM(CASE WHEN actual_cost_usd IS NULL AND estimated_cost_usd IS NULL
+                       THEN 1 ELSE 0 END) AS unknown_cost_runs,
+                   SUM(CASE WHEN ended_at IS NOT NULL
+                                 AND COALESCE(end_reason, '') != 'cron_complete'
+                       THEN 1 ELSE 0 END) AS incomplete_runs
+               FROM sessions
+               WHERE source='cron' AND id >= ? AND id < ? AND started_at >= ?""",
+            (prefix, prefix_hi, float(since)),
+        )[0]
+        usage_runs = int(row["usage_runs"] or 0)
+        total_tokens = int(row["total_tokens"] or 0)
+        actual_cost_runs = int(row["actual_cost_runs"] or 0)
+        estimated_cost_runs = int(row["estimated_cost_runs"] or 0)
+        priced_runs = actual_cost_runs + estimated_cost_runs
+        total_cost = float(row["total_cost_usd"] or 0.0)
+        return {
+            "usage_runs": usage_runs,
+            "total_tokens": total_tokens,
+            "avg_tokens_per_run": total_tokens / usage_runs if usage_runs else None,
+            "total_cost_usd": total_cost,
+            "avg_cost_usd_per_run": total_cost / priced_runs if priced_runs else None,
+            "actual_cost_runs": actual_cost_runs,
+            "estimated_cost_runs": estimated_cost_runs,
+            "unknown_cost_runs": int(row["unknown_cost_runs"] or 0),
+            "incomplete_runs": int(row["incomplete_runs"] or 0),
+        }
+
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.
         ``compact_rows=True`` omits the ``system_prompt`` blob. Public alias:

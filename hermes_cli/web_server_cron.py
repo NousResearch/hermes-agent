@@ -165,6 +165,21 @@ def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args,
     return result
 
 
+def _cron_execution_analytics_for_profile(
+    target_profile: Optional[str], job_id: str, *, since: str,
+) -> Dict[str, int]:
+    """Read one profile's execution ledger without leaking its HERMES_HOME."""
+    _profile_name, home = _cron_profile_home(target_profile)
+    from cron.executions import execution_analytics
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(home))
+    try:
+        return execution_analytics(job_id, since=since)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _notify_cron_provider_for_profile(target_profile: Optional[str]) -> None:
     """Best-effort provider reconcile against one profile's job store.
 

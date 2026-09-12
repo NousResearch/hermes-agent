@@ -317,6 +317,19 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    analytics: {
+      period: string;
+      runs: string;
+      avgTokens: string;
+      totalTokens: string;
+      avgCost: string;
+      totalCost: string;
+      manual: string;
+      failed: string;
+      retries: string;
+      pricedRuns: string;
+      costBasis: string;
+    };
     delivery: {
       local: string;
       telegram: string;

@@ -1136,8 +1136,10 @@ class TestAnthropicStreamCallbacks:
         assert mock_rebuild.call_count == 0
         assert agent._anthropic_client.close.call_count >= 1
 
-    def test_anthropic_malformed_tool_json_falls_back_to_buffered_message(self):
-        """Malformed fine-grained tool JSON uses Anthropic's buffered response."""
+    def test_anthropic_malformed_tool_json_retries_with_buffered_tool_input(self):
+        """#107830: a parser ValueError mid tool-args (after visible text) is retried on the SAME
+        stream wire with ``eager_input_streaming: false`` on every tool (server-validated args),
+        never a second ``create()`` request; the happy path keeps fine-grained streaming."""
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -1161,6 +1163,10 @@ class TestAnthropicStreamCallbacks:
                 return False
 
             def __iter__(self):
+                # Text already reached the user, so only the mid-tool-call retry path may re-open
+                # the stream; a tool_use that never registers as in flight is stubbed instead.
+                yield SimpleNamespace(
+                    type="content_block_delta", delta=SimpleNamespace(type="text_delta", text="Checking the tool."))
                 yield SimpleNamespace(
                     type="content_block_start",
                     content_block=SimpleNamespace(type="tool_use", name="cronjob_manage"),
@@ -1171,16 +1177,30 @@ class TestAnthropicStreamCallbacks:
             content=[SimpleNamespace(type="tool_use", name="cronjob_manage", input={"names": "cronjob_manage"})],
             stop_reason="tool_use",
         )
-        agent._anthropic_client = MagicMock()
-        agent._anthropic_client.messages.stream.return_value = _MalformedToolStream()
-        agent._anthropic_client.messages.create.return_value = repaired_message
-        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+        good_stream = MagicMock()
+        good_stream.__enter__ = MagicMock(return_value=good_stream)
+        good_stream.__exit__ = MagicMock(return_value=False)
+        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.get_final_message.return_value = repaired_message
 
-        response = agent._interruptible_streaming_api_call({"model": agent.model})
+        seen_tools = []
+
+        def _stream(**kwargs):
+            seen_tools.append([dict(t) for t in kwargs["tools"]])
+            return _MalformedToolStream() if len(seen_tools) == 1 else good_stream
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = _stream
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+        tools = [{"name": "cronjob_manage", "input_schema": {"type": "object"}}]
+
+        response = agent._interruptible_streaming_api_call({"model": agent.model, "tools": tools})
 
         assert response is repaired_message
-        assert agent._anthropic_client.messages.stream.call_count == 1
-        assert agent._anthropic_client.messages.create.call_count == 1
+        assert agent._anthropic_client.messages.create.call_count == 0
+        assert len(seen_tools) == 2
+        assert "eager_input_streaming" not in seen_tools[0][0]
+        assert seen_tools[1][0]["eager_input_streaming"] is False
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(

@@ -3001,7 +3001,6 @@ class _StreamingCall(StreamingWaitMonitor):
         self._writer_token = None
         _stream_context = {"manager": None, "stream": None}
         base_final_message = None
-        stream_parse_error = None
 
         from agent import relay_llm
         from agent.anthropic_adapter import sanitize_anthropic_kwargs
@@ -3039,6 +3038,9 @@ class _StreamingCall(StreamingWaitMonitor):
                         has_tool_use = True
                         if getattr(block, "name", None):
                             self._emit_tool_started(block.name)
+                            # Same as the chat_completions wire: a stream that dies inside the
+                            # tool args is retried (no tool has run yet) instead of stubbed.
+                            self.result["partial_tool_names"].append(block.name)
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     delta_type = getattr(delta, "type", None) if delta else None
@@ -3057,17 +3059,6 @@ class _StreamingCall(StreamingWaitMonitor):
                         raise EmptyStreamError(
                             "Provider returned an empty stream with no events (possible upstream error or malformed event stream).") from None
                     raise
-        except ValueError as exc:
-            # Fine-grained tool streaming exposes raw partial JSON. The Anthropic SDK
-            # may fail while incrementally decoding it before get_final_message() can
-            # return its buffered/repaired representation. Only recover after a tool
-            # block started; unrelated ValueErrors retain their normal handling.
-            _error_text = str(exc).strip().lower()
-            if not has_tool_use or not any(
-                marker in _error_text for marker in ("expected value at line", "expected ident at line")
-            ):
-                raise
-            stream_parse_error = exc
         finally:
             try:
                 self._close_managed_stream()
@@ -3078,19 +3069,6 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if self.agent._interrupt_requested:
             return None
-        if stream_parse_error is not None:
-            fallback_kwargs = dict(self.api_kwargs)
-            fallback_kwargs.pop("stream", None)
-            sanitize_anthropic_kwargs(
-                fallback_kwargs, log_prefix=getattr(self.agent, "log_prefix", "")
-            )
-            logger.warning(
-                "%sAnthropic tool stream JSON parsing failed (%s); retrying once with buffered messages.create()",
-                getattr(self.agent, "log_prefix", ""),
-                stream_parse_error,
-            )
-            base_final_message = request_client.messages.create(**fallback_kwargs)
-            return self._check_anthropic_message(base_final_message)
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:
@@ -3105,6 +3083,9 @@ class _StreamingCall(StreamingWaitMonitor):
         OpenAI primary is replaced lazily."""
         self.agent._emit_stream_drop(
             error=e, attempt=attempt + 2, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
+        if self.agent._is_provider_stream_parse_error(e):
+            from agent.anthropic_adapter import buffer_anthropic_tool_input
+            buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None) or self.agent.base_url)
         self._cancel_current_stream_attempt(reason)
         self.clients.close_once(reason)
 

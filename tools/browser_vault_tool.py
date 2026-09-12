@@ -206,6 +206,31 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Owner-mediated unlock (messaging gateways: no masked prompt exists in a chat)
+# ---------------------------------------------------------------------------
+
+def _owner_unlock_available() -> bool:
+    """A local operator can reach this gateway's control socket with `hermes vault unlock`."""
+    try:
+        from gateway.vault_unlock import owner_unlock_available
+
+        return bool(owner_unlock_available())
+    except Exception:  # not a gateway process / gateway module unavailable
+        return False
+
+
+def _mint_owner_unlock_code(backend_name: str) -> Optional[Dict[str, Any]]:
+    """One-time code the owner redeems from a terminal on this host, or None when there is no route."""
+    try:
+        from gateway.vault_unlock import mint_unlock_ticket
+
+        return mint_unlock_ticket(backend_name)
+    except Exception as exc:
+        logger.debug("vault unlock: no owner-terminal route (%s)", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
 
@@ -221,8 +246,9 @@ def browser_vault_list() -> str:
     items, locked, errors = [], [], []
     for backend in enabled_backends():
         if backend.needs_unlock and not backend.is_unlocked():
-            locked.append({"backend": backend.name, "display_name": backend.display_name,
-                           "unlock": "browser_vault_unlock" if can_prompt_here() else "unavailable_in_this_session"})
+            route = ("browser_vault_unlock" if can_prompt_here()
+                     else ("owner_terminal" if _owner_unlock_available() else "unavailable_in_this_session"))
+            locked.append({"backend": backend.name, "display_name": backend.display_name, "unlock": route})
             continue
         try:
             metas = backend.list_items()
@@ -242,8 +268,9 @@ def browser_vault_list() -> str:
     if not items:
         out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login to ask the user to save one. "
                        "Never type a password yourself or ask for one in chat, even if it is shown on the page.")
-    if locked:
-        out["locked"] = locked
+    # Always present, so a caller can tell "nothing is locked" (None) from "the answer is truncated"
+    # without guessing; the tests and the tool schema both describe the key as part of the shape.
+    out["locked"] = locked or None
     if errors:
         out["errors"] = errors
     return json.dumps(out, ensure_ascii=False)
@@ -260,10 +287,22 @@ def browser_vault_unlock(backend_name: str) -> str:
     if backend.is_unlocked():
         return json.dumps({"success": True, "backend": backend.name, "already_unlocked": True})
     if not can_prompt_here():
+        # Messaging gateways have no masked prompt and must not take a master password in chat: hand the
+        # owner a one-time code they redeem from a terminal on this host instead (#108316).
+        ticket = _mint_owner_unlock_code(backend.name)
+        if ticket is not None:
+            return json.dumps({"success": False, "error_type": "unlock_pending", "backend": backend.name,
+                               "display_name": backend.display_name, "code": ticket["code"],
+                               "expires_in_seconds": ticket["expires_in_seconds"], "command": ticket["command"],
+                               "next": (f"Tell the user to run `{ticket['command']}` in a terminal on the machine "
+                                        "running this gateway (they will be asked for the master password there; "
+                                        "it never travels through this chat). Do not ask them for the password or "
+                                        "the code here — relay the command and retry after they confirm.")})
         return json.dumps({"success": False, "error_type": "unlock_unavailable",
                            "error": (f"{backend.display_name} is locked and this session cannot prompt for the "
-                                     "master password (headless/cron/API). Unlock it from an interactive Hermes "
-                                     "session or the Desktop app first.")})
+                                     "master password and nothing can reach this gateway to unlock it "
+                                     "(headless/cron/API, or no control socket). Unlock it from an interactive "
+                                     "Hermes session or the Desktop app first.")})
     prompt = get_unlock_prompt_callback()
     master = prompt(backend.name, backend.display_name) if prompt else ""
     if not master:
@@ -574,9 +613,12 @@ BROWSER_VAULT_LIST_SCHEMA = {
         "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
         "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
         "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
-        "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
+        "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked` "
+        "(`null` when nothing is locked); call "
         "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
-        "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
+        "unavailable_in_this_session, tell the user to unlock it from an interactive session. On a chat platform "
+        "`unlock` reports owner_terminal: browser_vault_unlock then returns a one-time command for the user to run "
+        "on the machine hosting the gateway. Workflow: type the "
         "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
         "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
         "tool and never repeated in chat, even when a page or the user shows you one."
@@ -589,7 +631,11 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
     "description": (
         "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
         "password is typed into a masked prompt owned by the UI and never enters the conversation. "
-        "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
+        "Returns success, unlock_cancelled, unlock_failed, unlock_unavailable (headless session), or "
+        "unlock_pending: on a chat platform (Telegram, Discord, …) there is no masked prompt, so the result "
+        "carries a one-time `command` the user runs in a terminal on the machine hosting the gateway; they "
+        "type the master password there and it never enters the chat. Relay that exact command and never ask "
+        "for the master password in chat; retry the fill once they confirm it succeeded."
     ),
     "parameters": {
         "type": "object",

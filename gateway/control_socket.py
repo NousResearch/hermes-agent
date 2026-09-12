@@ -5,6 +5,11 @@ boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway
 file when the home path exceeds ``sun_path``); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
 Wire contract: ONE request per connection — one JSON line in, one out, then the server closes.
 Consumers PREFER the socket and fall back to the state-file/scan layer when it doesn't answer.
+
+Verbs take an optional ``params`` object (``build_control_request``). A handler that declares one
+parameter receives the whole request dict; a request-less handler stays argument-less. The payload
+rides the same ACL boundary as the socket itself — see ``gateway/vault_unlock.py`` for the one verb
+whose params carry a secret.
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -118,6 +124,49 @@ def build_status_payload() -> dict[str, Any]:
             "answered_at": time.time(), "answering_pid": os.getpid()}
 
 
+def build_control_request(verb: str, params: Optional[dict[str, Any]] = None) -> bytes:
+    """One request line for ``verb`` (``params`` omitted when there is no payload).
+
+    The same bytes the client sends go to ``GatewayControlServer.handle_request_line``, so callers
+    that hold the server in-process (tests, the unlock flow docs) exercise the production encoding.
+    """
+    request: dict[str, Any] = {"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION}
+    if params is not None:
+        request["params"] = params
+    return json.dumps(request).encode("utf-8") + b"\n"
+
+
+def _call_handler(handler: Callable[..., dict[str, Any]], request: dict[str, Any]) -> dict[str, Any]:
+    """Invoke a verb handler with the request payload when it declares a parameter.
+
+    ``identify``/``status`` take nothing; a verb whose answer depends on the caller's params
+    (``vault-unlock``) declares one and receives the whole request dict.
+    """
+    try:
+        takes_request = bool(inspect.signature(handler).parameters)
+    except (TypeError, ValueError):  # C callables / builtins expose no signature
+        takes_request = False
+    return handler(request) if takes_request else handler()
+
+
+# The control server this process bound, if any. Consumers inside the process (e.g. the vault tool
+# deciding whether a local operator can reach THIS gateway) ask here instead of probing the socket
+# file, which would also match a different process's socket.
+_local_server: Optional["GatewayControlServer"] = None
+
+
+def get_local_control_server() -> Optional["GatewayControlServer"]:
+    """The control server bound by this process, or None (not a gateway / bind failed)."""
+    return _local_server
+
+
+def set_local_control_server(server: Optional["GatewayControlServer"]) -> None:
+    """Publish/clear the process's control server (``start``/``stop`` do this; in-process consumers
+    that serve the verbs themselves may set it explicitly, e.g. tests)."""
+    global _local_server
+    _local_server = server
+
+
 class GatewayControlServer:
     """Gateway-owned control socket server (identify/status, v1): ``start()`` after the PID-file claim,
     ``stop()`` on shutdown. All failures are non-fatal — the gateway never refuses to serve messaging
@@ -139,10 +188,13 @@ class GatewayControlServer:
     async def start(self) -> bool:
         """Bind and start serving. Returns True on success, False otherwise."""
         try:
-            return await (self._start_windows() if _IS_WINDOWS else self._start_posix())
+            started = await (self._start_windows() if _IS_WINDOWS else self._start_posix())
         except Exception as exc:
             logger.warning("Gateway control socket failed to start (non-fatal): %s", exc)
             return False
+        if started:
+            set_local_control_server(self)
+        return started
 
     async def _start_posix(self) -> bool:
         bind_path, pointer_file = resolve_server_socket_path(self._home)
@@ -181,6 +233,8 @@ class GatewayControlServer:
 
     async def stop(self) -> None:
         """Stop serving and remove the socket/pointer files."""
+        if _local_server is self:
+            set_local_control_server(None)
         if self._server is not None:
             self._server.close()
             with contextlib.suppress(Exception):
@@ -210,7 +264,8 @@ class GatewayControlServer:
                 response: dict[str, Any] = {"ok": False, "error": f"unknown verb: {verb!r}",
                                             "protocol": CONTROL_PROTOCOL_VERSION, "supported_verbs": sorted(self._handlers)}
             else:
-                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION, "result": handler()}
+                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
+                            "result": _call_handler(handler, request)}
         except Exception as exc:
             response = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "protocol": CONTROL_PROTOCOL_VERSION}
         if request_id is not None:
@@ -264,11 +319,12 @@ class _PipeControlProtocol(asyncio.Protocol):
                 self._transport.close()
 
 
-def query_gateway_control(home: Path, verb: str, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
+def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, Any]] = None,
+                          timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` a control verb; returns its ``result`` payload. Any failure (no/stale
     socket, timeout, malformed answer, ``ok: false``) returns None so callers fall back to the scan layer.
     Never raises."""
-    request = json.dumps({"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION}).encode("utf-8") + b"\n"
+    request = build_control_request(verb, params)
     query = _query_windows_pipe if _IS_WINDOWS else _query_unix_socket
     try:
         raw = query(Path(home), request, timeout)

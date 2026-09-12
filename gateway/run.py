@@ -5120,8 +5120,12 @@ async def _start_gateway_start_control_socket(runner):
                 "pausing": accepted, "already_stopping": not accepted,
                 "pid": os.getpid(), "drain_timeout": _drain}
 
+        from gateway.vault_unlock import vault_unlock_handlers
+        # vault-unlock: a messaging session cannot prompt for a manager's master password, so the
+        # owner redeems a one-time code from a terminal on this host (`hermes vault unlock <code>`)
+        # and this process — the one holding the vault session — performs the unlock (#108316).
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler})
+            verb_handlers={"pause-for-update": _pause_for_update_handler, **vault_unlock_handlers()})
         if not await _control_server.start():
             _control_server = None
         else:

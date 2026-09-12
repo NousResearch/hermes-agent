@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { sanitizeTextForSpeech } from './speech-text'
+import { IncrementalSpeechSentenceBuffer, sanitizeTextForSpeech } from './speech-text'
 
 describe('sanitizeTextForSpeech', () => {
   it('summarizes fenced code blocks instead of reading them literally', () => {
@@ -148,5 +148,28 @@ After the table.`
     Example A | 10`
 
     expect(sanitizeTextForSpeech(text)).toContain('Item | Value')
+  })
+})
+
+describe('IncrementalSpeechSentenceBuffer', () => {
+  it('emits completed sentences while retaining the unfinished tail', () => {
+    const buffer = new IncrementalSpeechSentenceBuffer()
+
+    expect(buffer.append('The first sentence is ready. The second')).toEqual(['The first sentence is ready.'])
+    expect(buffer.append(' sentence is ready too. ')).toEqual(['The second sentence is ready too.'])
+    expect(buffer.flush()).toEqual([])
+  })
+
+  it('keeps short fragments with the following sentence', () => {
+    const buffer = new IncrementalSpeechSentenceBuffer()
+
+    expect(buffer.append('Hi! This longer sentence is ready. ')).toEqual(['Hi! This longer sentence is ready.'])
+  })
+
+  it('does not emit a reasoning block split across deltas', () => {
+    const buffer = new IncrementalSpeechSentenceBuffer()
+
+    expect(buffer.append('<think>Private reason.')).toEqual([])
+    expect(buffer.append('</think> The public answer is ready. ')).toEqual(['The public answer is ready.'])
   })
 })

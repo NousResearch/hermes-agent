@@ -340,6 +340,9 @@ profile and never shares with the default or any sibling:
 | Session namespace | `agent:<profile>:…` (default keeps `agent:main:…`) | Two profiles on the same chat never share history |
 | Logs | `agent.log` / `errors.log` / `gateway.log` under the profile's own home | — |
 | Terminal sandbox settings (`terminal.*`, SSH targets) | The profile's `config.yaml` | Documented default; unparsable config → execution refused |
+| Working directory of a turn (unset `terminal.cwd`) | Same rule as a standalone gateway: `$HOME` for the local backend, sandbox default otherwise | Never the directory the multiplexer process was launched from |
+| Command approvals (`command_allowlist`, "always" choices) | The profile's own `config.yaml` | A default-profile "always" never pre-approves a secondary's command; a secondary's choice is saved to its own config |
+| Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
 
 What is **shared** by design: the process, its PID/lock and `gateway_state.json`
 (default home), the one HTTP listener, and the `profile_routes` table (declared

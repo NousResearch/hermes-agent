@@ -6,6 +6,7 @@ This root file holds only what applies everywhere. Each area has its own `AGENTS
 past that); see the **routing table** at the end and read the area file before editing in that area.
 
 **Never give up on the right solution.**
+## git 
 
 ## What Hermes Is
 

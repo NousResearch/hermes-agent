@@ -8,12 +8,14 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import hashlib
 import json
 import logging
 import os
 import re
+import sys
 import threading
 import urllib.parse
 import urllib.request
@@ -40,7 +42,6 @@ from hermes_cli.models_catalog_static import (
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
-    _OPENROUTER_VARIANT_SUFFIXES,
     _PROVIDER_ALIASES,
     _PROVIDER_LABELS,
     _PROVIDER_MODELS,
@@ -441,6 +442,37 @@ def pick_silent_default_model(model_ids: list[str], provider: str = "openrouter"
     return preferred if preferred in model_ids else (model_ids[0] if model_ids else "")
 
 
+def recommended_nous_default_model() -> dict[str, Any]:
+    """The model a Nous account lands on without choosing one, honouring the account's tier.
+
+    Curated catalog plus the Portal's recommendations for the tier, narrowed to the org's policy,
+    then (free tier) to the rows the tier may select, then :func:`pick_silent_default_model`.
+    Contacts the Portal for a fresh tier read, so never call it on a hot path. Returns
+    ``{"provider": "nous", "model": str, "free_tier": bool}``; ``model`` may be ``""`` when nothing
+    is selectable (callers degrade). Shared by ``GET /api/model/recommended-default`` and the
+    sign-in completion in ``hermes_cli.anon_auth`` so both land on the same model.
+    """
+    from hermes_cli import models_pricing as mp
+    from hermes_cli.auth import get_provider_auth_state
+
+    model_ids = get_curated_nous_model_ids()
+    pricing = mp.get_pricing_for_provider("nous") or {}
+    free_tier = check_nous_free_tier(force_fresh=True)
+    try:
+        portal_url = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
+    except Exception:
+        portal_url = ""
+    # Narrow to policy BEFORE the tier split, so a rescued id still has to pass the free/paid predicate.
+    policy_allowed = mp.nous_policy_allowed_ids()
+    union = union_with_portal_free_recommendations if free_tier else union_with_portal_paid_recommendations
+    model_ids, pricing = union(model_ids, pricing, portal_url)
+    model_ids = mp.restrict_to_nous_policy(model_ids, policy_allowed, rescue_empty=True)
+    if free_tier:
+        model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
+    return {"provider": "nous", "model": pick_silent_default_model(model_ids, provider="nous"),
+            "free_tier": bool(free_tier)}
+
+
 def get_default_model_for_provider(provider: str) -> str:
     """Cost-safe default model for a provider, or "" — the NON-INTERACTIVE fallback when a provider
     is configured but no model was ever selected."""
@@ -513,17 +545,21 @@ def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tupl
 def fetch_openrouter_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> list[tuple[str, str]]:
     """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
-    global _openrouter_catalog_cache
+    # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
+    # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
+    from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
+    _me = sys.modules[__name__]
+    cached = profile_slot_get(_me, "_openrouter_catalog_cache")
 
-    if _openrouter_catalog_cache is not None and not force_refresh:
-        return list(_openrouter_catalog_cache)
+    if cached is not None and not force_refresh:
+        return list(cached)
 
     # Cold process: serve from the persisted disk cache when fresh so the
     # picker doesn't re-download the full ~686KB catalog on every open.
     if not force_refresh:
         disk = _read_openrouter_catalog_disk()
         if disk:
-            _openrouter_catalog_cache = disk
+            profile_slot_set(_me, "_openrouter_catalog_cache", disk)
             return list(disk)
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
@@ -537,7 +573,7 @@ def fetch_openrouter_models(
 
     live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
     if live is None:
-        return list(_openrouter_catalog_cache or fallback)
+        return list(cached or fallback)
     live_items, live_by_id = live
 
     # Free warm-up for the reasoning-capability cache: same payload the caps fetch would pull.
@@ -563,10 +599,10 @@ def fetch_openrouter_models(
         curated.append((preferred_id, desc))
 
     if not curated:
-        return list(_openrouter_catalog_cache or fallback)
+        return list(cached or fallback)
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
-    _openrouter_catalog_cache = curated
+    profile_slot_set(_me, "_openrouter_catalog_cache", curated)
     _write_openrouter_catalog_disk(curated)
     return list(curated)
 
@@ -808,13 +844,6 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
         for model in _provider_catalog_names(provider))
 
 
-def _openrouter_variant_base(model_id: str) -> Optional[str]:
-    """Base model id when ``model_id`` carries a recognized OpenRouter routing-variant suffix
-    (``x-ai/grok-4:nitro`` → ``x-ai/grok-4``), else ``None``."""
-    base, sep, suffix = (model_id or "").rpartition(":")
-    return base if sep and base and suffix.lower() in _OPENROUTER_VARIANT_SUFFIXES else None
-
-
 def _resolve_static_model_alias(
     name_lower: str, current_keys: set[str]) -> Optional[tuple[str, str]]:
     """Resolve short aliases (e.g. sonnet/opus) using static catalogs only."""
@@ -931,28 +960,69 @@ def _resolve_provider_prefix(model_name: str) -> Optional[tuple[str, str]]:
 
 def detect_provider_for_model(
     model_name: str, current_provider: str) -> Optional[tuple[str, str]]:
-    """Auto-detect the best provider for a model name: static catalogs (bare provider name → its
-    default; direct catalog match), then the OpenRouter catalog, then a configured ``vendor/`` prefix."""
+    """Auto-detect the best provider for a model name: the current provider's live catalog, static
+    catalogs (bare provider name → its default; direct catalog match), then the OpenRouter catalog,
+    then a configured ``vendor/`` prefix.
+
+    Never hands back a provider the user holds no credentials for: an unauthenticated guess is
+    skipped and the ladder continues (``None`` = stay on the current provider). Exceptions: the user
+    NAMED the provider (``/model nous``), or there is no current provider yet (``auto``) — then the
+    first guess is returned so the credential step fails loudly instead of silently ignoring input."""
+    from hermes_cli.models_detect import (
+        current_provider_catalog_match, current_provider_owns_vendor, provider_has_credentials)
+
     name = (model_name or "").strip()
     if not name:
         return None
 
+    # The current provider's LIVE catalog outranks every static guess: a model it already serves
+    # (Codex early-access ids, Portal-only slugs, Ollama Cloud models absent from _PROVIDER_MODELS)
+    # must never re-route the session to another vendor or to metered OpenRouter.
+    served = current_provider_catalog_match(name, current_provider)
+    if served is not None:
+        return (current_provider, served) if served != name else None
+    # Live catalog unavailable or lagging: the vendor's own id on the vendor's first-party provider
+    # is still a selection — an aggregator relisting it is not grounds to switch.
+    if current_provider_owns_vendor(name, current_provider):
+        return None
+
+    no_selection = (current_provider or "").strip().lower() in {"", "auto"}
+    for candidate in _detection_candidates(name, current_provider):
+        if candidate is None:
+            return None  # the current catalog owns this name
+        if no_selection or candidate[0] == current_provider or provider_has_credentials(candidate[0]):
+            return candidate
+        if _PROVIDER_ALIASES.get(name.lower(), name.lower()) == candidate[0]:
+            return candidate  # explicitly named provider: let the credential step report it
+        logger.debug("Skipping auto-switch of '%s' to %s: no credentials configured", name, candidate[0])
+    # A ``vendor/model`` prefix naming a provider the user DECLARED in ``providers:`` is a selection,
+    # not a guess — hand it back even before its key is wired up.
+    return _resolve_provider_prefix(name)
+
+
+def _detection_candidates(name: str, current_provider: str):
+    """Yield ``(provider, model)`` guesses in ladder order; ``None`` means the current provider's own
+    catalog owns the name (stop, stay)."""
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
-        return static_match
+        yield static_match
     if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
-        return None
+        yield None
+        return
 
     # OpenRouter catalog (exact slug, then bare model part).
     or_slug = _find_openrouter_slug(name)
     if or_slug:
-        if current_provider != "openrouter" or or_slug != name:
-            return ("openrouter", or_slug)
-        return None  # already on openrouter with matching name
+        if current_provider == "openrouter" and or_slug == name:
+            yield None  # already on openrouter with matching name
+            return
+        yield ("openrouter", or_slug)
 
     # Explicit ``vendor/model`` prefix naming a configured provider — AFTER the OpenRouter lookup so
     # aggregator-native slugs (``deepseek/deepseek-chat``) keep their routing.
-    return _resolve_provider_prefix(name)
+    prefixed = _resolve_provider_prefix(name)
+    if prefixed:
+        yield prefixed
 
 
 def _find_openrouter_slug(model_name: str) -> Optional[str]:
@@ -1416,10 +1486,15 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
     Failures are swallowed — the stale entry stays served until a later refresh succeeds.
     ``refresh_fn`` (no-args → fresh entry dict or None) lets ``custom:<base_url>`` keys from
     :func:`cached_fetch_api_models` reuse the same inflight-dedupe scaffolding."""
+    # Under a routed profile the inflight key includes the home: the same provider slug names a
+    # different disk cache and credential set per profile, so one profile's refresh must not
+    # suppress another's. Unscoped keeps the bare key (tests inspect the set by slug).
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    inflight_key = cache_key if get_hermes_home_override() is None else (hermes_home_key(), cache_key)
     with _swr_refresh_lock:
-        if cache_key in _swr_refresh_inflight:
+        if inflight_key in _swr_refresh_inflight:
             return
-        _swr_refresh_inflight.add(cache_key)
+        _swr_refresh_inflight.add(inflight_key)
 
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
@@ -1436,9 +1511,11 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
             logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
         finally:
             with _swr_refresh_lock:
-                _swr_refresh_inflight.discard(cache_key)
+                _swr_refresh_inflight.discard(inflight_key)
 
-    threading.Thread(target=_refresh, daemon=True, name=f"model-cache-swr-{cache_key}").start()
+    # copy_context: the refresh must read the calling profile's credentials and write ITS disk cache.
+    ctx = contextvars.copy_context()
+    threading.Thread(target=lambda: ctx.run(_refresh), daemon=True, name=f"model-cache-swr-{cache_key}").start()
 
 
 def _provider_models_cache_path() -> Path:
@@ -1835,6 +1912,7 @@ _copilot_context_cache_time: float = 0.0
 # re-attempt a slow HTTP call on every lookup. After a failure we back off for a
 # short window before retrying; a successful fetch clears it.
 _copilot_context_failed_time: float = 0.0
+_copilot_context_cache_key: Optional[str] = None  # fingerprint of the api_key the entry was fetched with
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour (successful fetch)
 _COPILOT_CONTEXT_NEGATIVE_TTL = 60  # 60s backoff after a failed fetch
 
@@ -1846,10 +1924,20 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
     Returns the token limit or None if not found.
     """
     global _copilot_context_cache, _copilot_context_cache_time, _copilot_context_failed_time
+    global _copilot_context_cache_key
+
+    # Keyed on the credential like fetch_github_model_catalog: the catalog (and its limits) is
+    # per-account, so another profile's token must not be served this entry.
+    from agent.credential_persistence import fingerprint_secret_value
+    key_fp = fingerprint_secret_value(api_key)
 
     now = time.time()
-    # Serve from cache if fresh
-    if _copilot_context_cache and (now - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL):
+    # Serve from cache if fresh and fetched with the same credential
+    if (
+        _copilot_context_cache
+        and _copilot_context_cache_key == key_fp
+        and (now - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL)
+    ):
         if model_id in _copilot_context_cache:
             return _copilot_context_cache[model_id]
         # Cache is fresh but model not in it — don't re-fetch
@@ -1875,6 +1963,7 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
             cache[mid] = max_prompt
     _copilot_context_cache = cache
     _copilot_context_cache_time = time.time()
+    _copilot_context_cache_key = key_fp
     return cache.get(model_id)
 
 
@@ -2406,11 +2495,20 @@ _deepinfra_catalog_neg_cache: dict[str, float] = {}
 _DEEPINFRA_CATALOG_NEG_TTL = 60.0  # seconds
 
 
+def _deepinfra_env(key: str) -> str:
+    """Profile-scoped ``.env``/environ read: under a multiplexed turn the launch env is not this profile's."""
+    from hermes_cli.config import get_env_value_prefer_dotenv
+    return (get_env_value_prefer_dotenv(key) or "").strip()
+
+
 def _deepinfra_catalog_url() -> tuple[str, str]:
-    """Return ``(cache_key, full_url)`` for the DeepInfra catalog endpoint."""
-    base = os.getenv("DEEPINFRA_BASE_URL", "").strip() or _DEEPINFRA_DEFAULT_BASE_URL
-    cache_key = base.rstrip("/")
-    return cache_key, f"{cache_key}/models?{_DEEPINFRA_MODELS_QUERY}"
+    """Return ``(cache_key, full_url)`` for the DeepInfra catalog endpoint. The key carries the
+    api-key fingerprint: the catalog is user-scoped (private fine-tunes), so two profiles with
+    different keys must not share an entry."""
+    base = (_deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL).rstrip("/")
+    from agent.credential_persistence import fingerprint_secret_value
+    fp = fingerprint_secret_value(_deepinfra_env("DEEPINFRA_API_KEY")) or "anon"
+    return f"{base}#{fp}", f"{base}/models?{_DEEPINFRA_MODELS_QUERY}"
 
 
 def _fetch_deepinfra_catalog(
@@ -2426,7 +2524,7 @@ def _fetch_deepinfra_catalog(
             return None
 
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
-    api_key = os.getenv("DEEPINFRA_API_KEY", "").strip()
+    api_key = _deepinfra_env("DEEPINFRA_API_KEY")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
@@ -2486,7 +2584,7 @@ def deepinfra_model_ids(tag: str, *, force_refresh: bool = False) -> list[str]:
 def deepinfra_base_url(section: Optional[dict] = None) -> str:
     """DeepInfra base URL: config-section ``base_url`` → ``DEEPINFRA_BASE_URL`` env → default; stripped."""
     candidate = section.get("base_url") if isinstance(section, dict) else None
-    value = candidate or os.getenv("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL
+    value = candidate or _deepinfra_env("DEEPINFRA_BASE_URL") or _DEEPINFRA_DEFAULT_BASE_URL
     return str(value).strip().rstrip("/")
 
 

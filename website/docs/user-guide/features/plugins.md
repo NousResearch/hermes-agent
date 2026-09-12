@@ -191,6 +191,30 @@ plugin; choose a new exact commit explicitly with
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 
+The same pin is available in Hermes Desktop: **Skills → Plugins → Install from
+Git** has a *Pin to commit* field that takes the full 40-character SHA, and the
+plugins list shows a `pinned @ <sha8>` badge on every pinned install so a team
+can confirm everyone is running the same commit. `hermes plugins list` prints
+the pin in its Source column (`git pinned@<sha8>`). Pins work for private
+repositories too, through the same stored credentials described below.
+
+### Installing from a private repository
+
+`hermes plugins install` clones non-interactively (it never prompts for a
+username or password), so a private repo needs a credential Hermes can find on
+its own. For an `https://` source it tries, in order:
+
+1. `GITHUB_TOKEN` or `GH_TOKEN` from your `.env` (GitHub hosts only).
+2. The `gh` CLI's login (`gh auth login`), GitHub hosts only.
+3. Your git credential helper (`git credential fill`) for that host — works for
+   GitLab, Bitbucket and self-hosted servers if a credential is already stored.
+
+The credential is sent as a one-shot HTTP header for that install or update;
+it is never written into the plugin's `.git/config` or the install metadata.
+SSH sources (`git@host:owner/repo.git`) authenticate through your ssh-agent as
+before. The same resolution applies to `hermes plugins update`, catalog MCP
+installs from git, and profile distributions fetched from a git URL.
+
 ### What the allow-list does NOT gate
 
 Several categories of plugin bypass `plugins.enabled` — they're part of Hermes' built-in surface and would break basic functionality if gated off by default:
@@ -373,8 +397,8 @@ deep links never auto-install, and agent-plugin installs go through the same
 `hermes plugins install`.
 
 Hybrid repos (agent + desktop halves in one repo) use one link and one
-dialog. The same modal is reachable without a link via **Settings → Plugins →
-Install from Git**. Legacy `hermes://plugin-agent/…` and
+dialog. The same modal is reachable without a link via **Capabilities →
+Plugins → Install from Git**. Legacy `hermes://plugin-agent/…` and
 `hermes://plugin-desktop/…` URLs route into the same dialog. In dev builds
 (`npm run dev`) the scheme is `hermes-dev://`.
 

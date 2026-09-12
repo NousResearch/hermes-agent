@@ -71,9 +71,12 @@ def _serialize_auto_reload(ar, format_money) -> dict | None:
         "reload_to_display": format_money(ar.reload_to_usd), "card": card_out}
 
 
-def _serialize_billing_state(state) -> dict:
-    """Serialize a BillingState for the wire (Decimals → strings, money-safe)."""
+def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
+    """Serialize a BillingState for the wire (Decimals → strings, money-safe). ``free_tier`` marks the
+    Nous free tier: no account, no balance, nothing to pay; the renderer branches on it before
+    ``logged_in``."""
     from agent.billing_view import format_money
+    from hermes_cli.anon_auth import GUEST_MODEL
 
     card = mc = None
     if state.card is not None:
@@ -88,7 +91,9 @@ def _serialize_billing_state(state) -> dict:
               "spent_display": format_money(m.spent_this_month_usd),
               "is_default_ceiling": m.is_default_ceiling}
     return {
-        "ok": True, "logged_in": state.logged_in, "org_name": state.org_name,
+        "ok": True, "logged_in": state.logged_in,
+        "free_tier": bool(free_tier), "free_tier_model": GUEST_MODEL if free_tier else None,
+        "org_name": state.org_name,
         "org_slug": state.org_slug, "role": state.role, "is_admin": state.is_admin,
         "can_change_plan": state.can_change_plan, "can_charge": state.can_charge,
         "balance_usd": _wire_str(state.balance_usd),

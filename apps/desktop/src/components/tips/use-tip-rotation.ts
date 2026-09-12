@@ -10,7 +10,8 @@
  * bubble, and a six-hour cooldown persisted across launches, so quitting and
  * reopening isn't a way to farm them. In practice that lands around one tip per
  * day of use and takes weeks to walk the catalog, which is the point — ten tips
- * in an afternoon is how a nicety turns into a thing people switch off.
+ * in an afternoon is how a nicety turns into a thing people switch off. And the
+ * walk is one lap: a tip shown once is never offered again (`nextTip`).
  *
  * Then "quiet" does the rest. A tip is still the app interrupting, so it waits
  * for a moment that is genuinely idle — nothing streaming, no dialog, menu or
@@ -28,7 +29,8 @@ import { resolveTipAnchor } from '@/lib/tips/anchor'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { nextTip } from '@/lib/tips/rotation'
 import { $awaitingResponse, $busy } from '@/store/session'
-import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, showTip } from '@/store/tips'
+import { $activeTip, $lastTipId, $nextTipAt, $retiredTips, $tipsEnabled, $tipShownAt, showTip } from '@/store/tips'
+import { checkTutorialLifetime } from '@/store/tutorial-lifetime'
 
 import { offerLocalSetupTip } from './local-setup-offer'
 
@@ -67,6 +69,8 @@ export function useTipRotation(copy: Translations['tips']) {
   const navigate = useNavigate()
 
   useEffect(() => {
+    checkTutorialLifetime()
+
     let lastTypedAt = 0
     let settledAt = Date.now() + SETTLE_MIN_MS + Math.random() * SETTLE_SPREAD_MS
 
@@ -81,6 +85,8 @@ export function useTipRotation(copy: Translations['tips']) {
     }
 
     const offer = () => {
+      checkTutorialLifetime()
+
       if (!$tipsEnabled.get() || $activeTip.get()) {
         return
       }
@@ -108,7 +114,9 @@ export function useTipRotation(copy: Translations['tips']) {
       const chosen = nextTip(
         TIP_CATALOG.map(tip => tip.id),
         onScreen.map(tip => tip.id),
-        { lastShownId: $lastTipId.get(), retired: $retiredTips.get() }
+        // `$tipShownAt` is the seen ledger: every tip that reached the screen
+        // is in it, so a tip the timer closed is as done as one the ✕ closed.
+        { lastShownId: $lastTipId.get(), retired: $retiredTips.get(), seen: Object.keys($tipShownAt.get()) }
       )
 
       const tip = onScreen.find(candidate => candidate.id === chosen)

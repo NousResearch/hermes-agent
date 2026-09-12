@@ -97,10 +97,19 @@ class AnthropicTransport(ProviderTransport):
             provider_data["anthropic_content_blocks"] = ordered_blocks
         return NormalizedResponse(
             content="\n".join(text_parts) if text_parts else None, tool_calls=tool_calls or None,
-            finish_reason=self.map_finish_reason(response.stop_reason),
+            finish_reason=self.response_finish_reason(response),
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None, usage=None,
             provider_data=provider_data or None,
         )
+
+    def response_finish_reason(self, response: Any) -> str:
+        """``stop_reason`` mapped to the OpenAI vocabulary. Bedrock InvokeModel guardrail blocks keep
+        ``stop_reason=end_turn`` and hand back the guardrail's canned text as an ordinary reply; they
+        must surface as ``content_filter`` so the loop treats them as a refusal, not model output."""
+        from agent.bedrock_adapter import anthropic_response_guardrail_intervened
+        if anthropic_response_guardrail_intervened(response):
+            return "content_filter"
+        return self.map_finish_reason(response.stop_reason)
 
     def validate_response(self, response: Any) -> bool:
         """Structural check; empty content is legitimate for ``end_turn``/``refusal`` (retrying

@@ -426,7 +426,12 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
             canonical = normalize_provider(cur_provider)
             prov_in = cur_provider
         else:
-            canonical = prov_in = "openrouter"
+            from hermes_cli.models_detect import provider_has_credentials
+
+            # Only guess OpenRouter when the user actually holds a key for it; otherwise keep the
+            # pair as sent rather than persisting a provider they never selected.
+            if provider_has_credentials("openrouter"):
+                canonical = prov_in = "openrouter"
 
     if canonical in _KNOWN_PROVIDER_NAMES and not canonical.startswith("custom"):
         try:
@@ -770,11 +775,15 @@ def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple
 
     if "/" in name:
         try:
+            from hermes_cli.models_detect import provider_has_credentials
+
             cur_is_aggregator = normalize_provider(prev_provider) in _AGGREGATOR_PROVIDERS
+            # A vendor slug on a native provider is a guess at an aggregator; never guess one the
+            # user has no key for — that silently writes a metered provider into config.yaml.
+            if not cur_is_aggregator and provider_has_credentials("openrouter"):
+                return "openrouter", name
         except Exception:
-            cur_is_aggregator = False
-        if not cur_is_aggregator:
-            return "openrouter", name
+            pass
     return "", name
 
 

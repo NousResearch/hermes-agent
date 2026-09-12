@@ -384,7 +384,7 @@ def _print_ticker_health(pids: list) -> None:
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
-    from hermes_cli.gateway import find_gateway_pids
+    from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
     print()
 
     provider = _active_cron_provider_name()
@@ -395,6 +395,12 @@ def cron_status():
                     "not the in-process ticker.", Colors.GREEN))
         print(color("  (No ticker heartbeat is expected for an external provider; "
                     "due jobs are delivered by an authenticated webhook.)", Colors.DIM))
+    elif not find_gateway_pids() and named_profile_served_by_running_multiplexer():
+        # Satellite profile: the default multiplexer's ticker fires this store (same answer as
+        # `_builtin_gateway_liveness`, which `cron list` uses -- the two must not disagree).
+        print(color("✓ Gateway is running via the default-profile multiplexer — it ticks this profile's jobs.",
+                    Colors.GREEN))
+        print(color("  Ticker health is reported by `hermes cron status` on the default profile.", Colors.DIM))
     else:
         pids = find_gateway_pids()
         gateway_alive_via_lock = False

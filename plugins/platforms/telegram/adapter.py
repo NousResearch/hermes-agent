@@ -2949,7 +2949,14 @@ class TelegramAdapter(BasePlatformAdapter):
             self._register_handlers(self._app)
             await self._initialize_app_with_retries(builder)
             await self._app.start()
-            webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            # Profile-scoped like TELEGRAM_WEBHOOK_SECRET: under multiplex os.environ holds the DEFAULT
+            # profile's URL, and registering it on a secondary bot pushes that bot's updates to the
+            # default's listener (and stops polling for it).
+            from agent.secret_scope import UnscopedSecretError, get_secret
+            try:
+                webhook_url = (get_secret("TELEGRAM_WEBHOOK_URL") or "").strip()
+            except UnscopedSecretError:
+                webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
             if webhook_url:
                 await self._start_webhook_mode(webhook_url, is_reconnect=is_reconnect)
             else:
@@ -5020,7 +5027,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv(env_name, default).lower() in {"true", "1", "yes", "on"}
+        return _scoped_gate_env(env_name, default).lower() in {"true", "1", "yes", "on"}
 
     def _extra_str_set(self, key: str, env_name: str) -> set[str]:
         """Comma/list allowlist from ``config.extra[key]``, else the profile-scoped env var."""
@@ -5115,7 +5122,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
-            raw = os.getenv("TELEGRAM_MENTION_PATTERNS", "").strip()
+            raw = _scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
             if raw:
                 try:
                     loaded = json.loads(raw)
@@ -6347,8 +6354,11 @@ class TelegramAdapter(BasePlatformAdapter):
     # -- Message reactions (processing lifecycle) --
 
     def _reactions_enabled(self) -> bool:
-        """Reactions enabled via TELEGRAM_REACTIONS env/config."""
-        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
+        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or TELEGRAM_REACTIONS."""
+        configured = self.config.extra.get("reactions")
+        if configured is None:
+            configured = _scoped_gate_env("TELEGRAM_REACTIONS", "false")
+        return str(configured).lower() not in {"false", "0", "no"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:
         """Set a single emoji reaction (``None`` clears all bot-set reactions, the documented Bot API way)."""
@@ -6471,34 +6481,25 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     gateway/config.py::load_gateway_config().
     """
     import json as _json
+    from gateway.platforms._shared import yaml_env_setter
     extras: dict = {}
-    # Under multiplex a secondary profile's authorization gates must NOT hit the process-global env
-    # (first-writer-wins would pin them for every profile); they flow via extra/secret scope.
-    try:
-        # See #72348.
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-        _skip_env_bridge = bool(is_multiplex_active() and current_secret_scope() is not None)
-    except Exception:
-        _skip_env_bridge = False
-
-    def _set_env(env: str, value: str) -> None:
-        if not os.getenv(env):
-            os.environ[env] = value
+    # Under multiplex a secondary profile's settings must NOT hit the process-global env (first-writer-wins
+    # would pin them for every profile, #72348); yaml_env_setter skips the write under its scope and the
+    # values flow via extra/secret scope instead.
+    _set_env = yaml_env_setter()
 
     def _bridge_lower(key: str, env: str) -> None:
         if key in telegram_cfg:
+            extras.setdefault(key, telegram_cfg[key])
             _set_env(env, str(telegram_cfg[key]).lower())
 
     def _bridge_gate(key: str, env: str, value: Any, *, seed_extra: bool = False) -> None:
-        """CSV allowlist gate: list → comma-joined; skipped under multiplex secret scope."""
+        """CSV allowlist gate: list → comma-joined; env write skipped under multiplex secret scope."""
         if value is None:
             return
         if seed_extra:
             extras.setdefault(key, value)
-        if isinstance(value, list):
-            value = ",".join(str(v) for v in value)
-        if not _skip_env_bridge:
-            _set_env(env, str(value))
+        _set_env(env, value)
 
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])

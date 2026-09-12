@@ -1,16 +1,20 @@
 """User-authorization mixin for ``GatewayRunner``: may this user/chat talk to the agent,
-the per-adapter DM policy, and the unauthorized-DM behavior.
+the per-adapter DM policy, the unauthorized-DM behavior, and the bot loop guard.
 
-``gateway.run`` is never imported at module import time (cycle); the one method that logs
-imports its ``logger`` lazily so records keep the ``"gateway.run"`` name.
+``gateway.run`` is never imported at module import time (cycle). The unauthorized-DM method still
+logs through ``gateway.run``'s logger so its records keep that name.
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
+import threading
+from pathlib import Path
 from typing import Optional
 
+from gateway.bot_loop_guard import BotLoopGuard
 from gateway.config import Platform
 from gateway.pairing import _PLATFORM_ALLOWLIST_ENV
 from gateway.session import SessionSource
@@ -22,6 +26,8 @@ from gateway.whatsapp_identity import (
 _GROUP_CHAT_TYPES = frozenset({"group", "forum", "channel"})
 _GROUP_FORUM_TYPES = frozenset({"group", "forum"})
 _TRUTHY = frozenset({"true", "1", "yes"})
+_BOT_LOOP_GUARD_INIT_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 # Platform -> ``<PLATFORM>_ALLOWED_USERS`` / ``<PLATFORM>_ALLOW_ALL_USERS``. Shared with the pairing
 # store's allowlist mirror (single source of truth); plugin platforms are added per-call from the registry.
@@ -213,31 +219,58 @@ class GatewayAuthorizationMixin:
         return getattr(self, "_profile_adapters", None) or {}
 
     def _authorization_adapter(self, platform: Optional[Platform], profile: Optional[str] = None):
-        """Live adapter whose intake policy gates authorization.
-
-        Secondary-profile adapters live in ``_profile_adapters[profile]``; the primary profile owns
-        ``self.adapters``. ``_profile_adapters`` is consulted BEFORE the active profile name: multiplex
-        turns override ``HERMES_HOME`` so ``_active_profile_name()`` reports the secondary profile
-        mid-turn, and treating it as primary would hand it the default bot.
+        """Live adapter whose intake policy gates authorization (``_adapters_for_profile`` for the
+        profile rule). ``None`` when the profile has no adapter for *platform*.
         """
         if not platform:
             return None
+        return self._adapters_for_profile(profile).get(platform)
+
+    def _adapters_for_profile(self, profile: Optional[str]) -> dict:
+        """The live adapter map *profile* may deliver through: ``_profile_adapters[p]`` for a
+        secondary, ``self.adapters`` only for the primary/default. ``_profile_adapters`` is consulted
+        BEFORE the active profile name: multiplex turns override ``HERMES_HOME`` so
+        ``_active_profile_name()`` reports the secondary profile mid-turn, and treating it as primary
+        would hand it the default bot. A named profile with no map gets ``{}`` — fail closed: a
+        secondary whose adapter failed to connect must NOT fall back to the default profile's adapter
+        (replies, tool sends, marker-file notices out the wrong bot)."""
         profile_name = (profile or "").strip() or None
-        if profile_name and profile_name != "default":
-            profile_adapters = self._profile_adapters_map()
-            if profile_name in profile_adapters:
-                return profile_adapters[profile_name].get(platform)
-            # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
-            primary_profile = getattr(self, "_primary_profile_name", None)
-            if not primary_profile:
-                with contextlib.suppress(Exception):
-                    primary_profile = self._active_profile_name()
-            if profile_name == primary_profile:
-                return self._primary_adapters().get(platform)
-            # Fail closed: a secondary profile whose adapter failed to connect must NOT
-            # fall back to the default profile's adapter (replies out the wrong bot).
-            return None
-        return self._primary_adapters().get(platform)
+        if not profile_name or profile_name == "default":
+            return self._primary_adapters()
+        profile_adapters = self._profile_adapters_map()
+        if profile_name in profile_adapters:
+            adapters = profile_adapters[profile_name]
+            if adapters or not self._is_shared_bot_satellite(profile_name):
+                return adapters
+            return self._primary_adapters()
+        # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
+        primary_profile = getattr(self, "_primary_profile_name", None)
+        if not primary_profile:
+            with contextlib.suppress(Exception):
+                primary_profile = self._active_profile_name()
+        return self._primary_adapters() if profile_name == primary_profile else {}
+
+    def _is_shared_bot_satellite(self, profile_name: str) -> bool:
+        """A served profile with NO adapter of its own that a ``profile_routes`` entry targets through the
+        default profile's bot: it drains through the primary's adapters (gateway/AGENTS.md). Its
+        ``_profile_adapters`` entry is the ``{}`` startup placeholder; a secondary connected on ANY
+        platform is its own credential boundary and never borrows the primary. Restored/cached sources
+        carry no transport ref, so this is what keeps heartbeats, completions and goal notices for such a
+        profile deliverable after a restart (the same rule ``kanban_watchers_notifier`` and cron apply)."""
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return False
+        # A bot that failed to connect is queued for reconnect: that profile owns a credential.
+        if (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name):
+            return False
+        routes = getattr(config, "profile_routes", None) or []
+        if not any(r.enabled and r.profile == profile_name and r.bot_profile is None for r in routes):
+            return False
+        from gateway.run import _multiplex_profile_homes
+        try:
+            return profile_name in {name for name, _home in _multiplex_profile_homes(config)}
+        except Exception:
+            return False
 
     def _adapter_for_source(self, source: Optional[SessionSource]):
         """Resolve the live adapter for an inbound ``SessionSource``."""
@@ -277,6 +310,29 @@ class GatewayAuthorizationMixin:
             return None
         registered, profile = self._owning_profile(adapter, platform)
         return (adapter, profile) if registered else None
+
+    def _authorization_home_for_source(self, source: SessionSource):
+        """HERMES_HOME whose allowlist admits *source*: the ingress-stamped transport home, else the home of
+        the profile owning the adapter that delivers it. ``None`` = authorize in the ambient scope
+        (multiplex off, or no live adapter — the check then fails closed on its own).
+
+        Inside a routed satellite's turn the ambient scope is the satellite's, whose ``.env`` has no
+        token/allowlist; every authorization decision made mid-turn (``/topic``, sibling ``/stop``, plugin
+        injection, voice, auto-resume) must read the admitting bot's allowlist instead."""
+        stamped = getattr(source, "_authorization_profile_home", None)
+        if stamped is not None:
+            return Path(stamped)
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return None
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return None
+        _registered, profile = self._owning_profile(adapter, getattr(source, "platform", None))
+        if profile is None:
+            from hermes_constants import get_process_hermes_home
+            return get_process_hermes_home()  # the primary bot's home, never the per-turn override
+        from hermes_cli.profiles import get_profile_dir
+        return get_profile_dir(profile)
 
     def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the transport-owning profile for adapter policy lookups."""
@@ -470,13 +526,51 @@ class GatewayAuthorizationMixin:
             self._warned_telegram_group_users_legacy = True
         return source.chat_id in legacy_chat_ids
 
+    def _bot_loop_guard_instance(self) -> BotLoopGuard:
+        guard = getattr(self, "_bot_loop_guard", None)
+        if guard is None:
+            with _BOT_LOOP_GUARD_INIT_LOCK:
+                guard = getattr(self, "_bot_loop_guard", None)
+                if guard is None:
+                    guard = self._bot_loop_guard = BotLoopGuard()
+        return guard
+
+    def _bot_loop_guard_conversation(self, source: SessionSource) -> tuple:
+        # One budget per conversation, not per sender pair: a per-pair key would hand N bots N budgets.
+        platform = source.platform.value if source.platform else ""
+        return (self._adapter_profile_for_source(source) or "", platform, str(source.chat_id or ""))
+
+    def _admit_bot_message(self, source: SessionSource) -> bool:
+        """Count one authorized bot-authored inbound message. False when it trips the budget or the chat is cooling down.
+        The inbound handler calls this once per message; ``_is_user_authorized`` only peeks because it is asked several times."""
+        if not getattr(source, "is_bot", False):
+            return True
+        allowed, state = self._bot_loop_guard_instance().admit(self._bot_loop_guard_conversation(source))
+        if state == "tripped":
+            logger.warning(
+                "Bot loop guard is dropping bot messages in %s chat %s: bot %s sent one message too many "
+                "for the window, cooling down (gateway.bot_loop_guard in config.yaml).",
+                source.platform.value if source.platform else "", source.chat_id, source.user_id,
+            )
+        return allowed
+
     def _is_user_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
         """Whether a user may use the bot.
 
         Order: trusted-upstream delegation, chat-scoped group allowlists, ``{PLATFORM}_ALLOW_BOTS``,
         per-platform allow-all, adapter role auth, pairing store, env/config allowlists,
-        ``GATEWAY_ALLOW_ALL_USERS``, default deny.
+        ``GATEWAY_ALLOW_ALL_USERS``, default deny. A bot-authored message that any of these admits
+        is still refused while its chat's loop guard is cooling down.
         """
+        if not self._principal_authorized(source, allow_adapter_delegation=allow_adapter_delegation):
+            return False
+        if not getattr(source, "is_bot", False):
+            return True
+        # The guard judges the final verdict: a chat allowlist admits a bot before the ALLOW_BOTS block runs.
+        return not self._bot_loop_guard_instance().blocked(self._bot_loop_guard_conversation(source))
+
+    def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
+        """The allowlist verdict alone, before the bot loop guard."""
         # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True

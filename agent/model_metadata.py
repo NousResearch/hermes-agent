@@ -24,7 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -105,8 +105,10 @@ def _strip_provider_prefix(model: str) -> str:
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
-_endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
-_endpoint_model_metadata_cache_time: Dict[str, float] = {}
+# In-memory memo keyed by (base_url, api-key fingerprint): per-key gateways return a per-key catalog, and
+# in a multiplexed process two profiles may share a URL with different keys. The disk memo stays per URL.
+_endpoint_model_metadata_cache: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
+_endpoint_model_metadata_cache_time: Dict[Tuple[str, str], float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 # Server-type verdicts (server_type, monotonic_ts): positive ones live an hour so a
 # server swap on the same port is re-detected; None gets the short TTL so a
@@ -339,10 +341,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Google / Gemma ("gemma4" is Ollama-style naming, e.g. gemma4:31b-cloud)
     "gemini": 1048576,
     "gemma-4": 256000, "gemma4": 256000, "gemma-4-31b": 256000, "gemma-3": 131072, "gemma": 8192,
-    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes.
+    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes. ``deepseek-flash``
+    # (version-less canonical id, 2026-09 Flash refresh) needs a discrete entry or the
+    # longest-key-first scan falls through to the 128K ``deepseek`` catch-all below.
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
-    "deepseek-reasoner": 1_000_000, "deepseek": 128000,
+    "deepseek-v4-pro": 1_000_000, "deepseek-v4.1-flash": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000, "deepseek-flash": 1_000_000, "deepseek": 128000,
     # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
     # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match
     # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)
@@ -353,9 +357,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
-    # GLM — 5.2/5.3 are 1M (5.2 verified empirically at 789K on api.z.ai); older GLM ~202K.
+    # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
+    # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
     # The OpenRouter :free variant is capped; the longer key wins.
-    "glm-5.2": 1_048_576, "glm-5.2:free": 256_000, "glm-5.3": 1_048_576, "glm": 202752,
+    "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
+    "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576,
+    "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
+    "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
+    "glm-4.7-flash": 202752, "glm-4.7": 204_800, "glm-4.6v": 131072, "glm-4.6": 204_800, "glm": 202752,
     # xAI — /v1/models returns no context_length, so these prevent probe-down on api.x.ai
     # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI) is OAuth-only:
     # 200k usable (the /v1/responses ~262144 input+output budget is a separate limit).
@@ -469,6 +478,45 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _strip_openrouter_routing_variant(
+    model: str, base_url: str = "", provider: str = ""
+) -> str:
+    """Strip an OpenRouter routing-variant suffix for catalog lookup.
+
+    ``:nitro`` / ``:floor`` / ``:exacto`` / ``:online`` are request-time
+    routing modifiers, NOT catalog entries — OpenRouter's ``/models`` lists
+    only the base id, and a variant shares the base model's context window.
+    Without this, every lookup below misses and the resolver falls through to
+    a generic family default (``x-ai/grok-4.6:nitro`` → the 131K ``grok``
+    catch-all instead of its real 2M window).
+
+    Only the id used for LOOKUP is rewritten. The suffixed id the caller holds
+    stays on the wire, so the routing opt-in is preserved — the same rule
+    :func:`hermes_cli.models.validate_requested_model` applies. Sharing the
+    base's cache key is intentional: the window is identical, so a variant and
+    its base must never disagree.
+
+    Narrow by design: only applied when the request actually routes through
+    OpenRouter, so a local ``model:tag`` that happens to end in one of these
+    words is untouched.
+    """
+    if not model:
+        return model
+    is_openrouter = (provider or "").strip().lower() == "openrouter" or (
+        bool(base_url) and _infer_provider_from_url(base_url) == "openrouter"
+    )
+    if not is_openrouter:
+        return model
+    base = openrouter_variant_base(model)
+    if base is None:
+        return model
+    logger.debug(
+        "Resolving context length for OpenRouter routing variant %r via base id %r",
+        model, base,
+    )
+    return base
+
+
 def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
 
@@ -488,11 +536,17 @@ def _server_root(base_url: str) -> str:
     return server_url[:-3] if server_url.endswith("/v1") else server_url
 
 
+def _catalog_key_matches(key: str, model_lower: str) -> bool:
+    """Substring match with version separators normalised on both sides, so a relay slug like
+    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398)."""
+    return key in model_lower or _normalize_model_version(key) in _normalize_model_version(model_lower)
+
+
 def _longest_key_match(table: Dict[str, int], model_lower: str) -> Optional[Tuple[str, int]]:
     """First ``(key, value)`` whose key is a substring of ``model_lower``, longest key first so
     specific entries (``gpt-5.4-mini``) beat their family catch-all (``gpt-5``); ties keep table order."""
     for key, value in sorted(table.items(), key=lambda x: len(x[0]), reverse=True):
-        if key in model_lower:
+        if _catalog_key_matches(key, model_lower):
             return key, value
     return None
 
@@ -888,9 +942,15 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _remember_endpoint_models(normalized: str, cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    _endpoint_model_metadata_cache[normalized] = cache
-    _endpoint_model_metadata_cache_time[normalized] = time.time()
+def _endpoint_memo_key(normalized: str, api_key: object) -> Tuple[str, str]:
+    from agent.credential_persistence import fingerprint_secret_value
+    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
+    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
+
+
+def _remember_endpoint_models(memo_key: Tuple[str, str], cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    _endpoint_model_metadata_cache[memo_key] = cache
+    _endpoint_model_metadata_cache_time[memo_key] = time.time()
     return cache
 
 
@@ -910,13 +970,14 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     _ensure_requests()
     local = is_local_endpoint(normalized)
+    memo_key = _endpoint_memo_key(normalized, api_key)
     if not force_refresh:
-        cached = _endpoint_model_metadata_cache.get(normalized)
-        if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(normalized, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
+        cached = _endpoint_model_metadata_cache.get(memo_key)
+        if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
         memo = _endpoint_disk_cache_get(normalized) if not local else None
         if memo is not None:
-            return _remember_endpoint_models(normalized, memo)
+            return _remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
     if _endpoint_blackholed(normalized):
         return {}
@@ -928,7 +989,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     if local:
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                return _remember_endpoint_models(normalized, _lmstudio_native_models(normalized, headers))
+                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -953,7 +1014,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
                 _endpoint_disk_cache_put(normalized, cache)
-            return _remember_endpoint_models(normalized, cache)
+            return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -962,7 +1023,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 response.close()
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    return _remember_endpoint_models(normalized, {})
+    return _remember_endpoint_models(memo_key, {})
 
 
 def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
@@ -1290,6 +1351,9 @@ _PRE_CATALOG_STALE_KEYS = frozenset({
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
+    # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.
+    "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
+    "deepseek-chat", "deepseek-reasoner",
 })
 
 
@@ -1297,7 +1361,7 @@ def _stale_pre_catalog_cache_entry(model: str, cached: int) -> bool:
     """True when a persisted window is a pre-catalog leftover: the model resolves (longest-key-first) to a
     _PRE_CATALOG_STALE_KEYS key and the cached value is <= the largest shorter matching catch-all (or 256K)."""
     model_lower = model.lower()
-    matches = [(key, value) for key, value in DEFAULT_CONTEXT_LENGTHS.items() if key in model_lower]
+    matches = [(key, value) for key, value in DEFAULT_CONTEXT_LENGTHS.items() if _catalog_key_matches(key, model_lower)]
     if not matches:
         return False
     specific_key, specific_value = max(matches, key=lambda kv: len(kv[0]))
@@ -1881,6 +1945,14 @@ def get_model_context_length(
         logger.info("No model id provided for context length resolution — defaulting to %s tokens.", f"{DEFAULT_FALLBACK_CONTEXT:,}")
         return DEFAULT_FALLBACK_CONTEXT
     model = _strip_provider_prefix(model)  # "local:x" -> "x"; Ollama "model:tag" colons preserved
+    # OpenRouter routing variants (":nitro", ":floor", ...) are request-time
+    # modifiers, not catalog entries — resolve the window from the BASE id.
+    # Deliberately placed AFTER the explicit config overrides above (0b/0c) so
+    # a user who pinned the fully-suffixed id keeps winning, and BEFORE every
+    # cache/catalog lookup below so the base's real window is found instead of
+    # a generic family default. Mirrors the validation path's base/suffix split
+    # in hermes_cli.models.validate_requested_model.
+    model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.
     endpoint_context = _endpoint_scoped_context_length(model, base_url)

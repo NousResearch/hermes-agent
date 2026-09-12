@@ -48,10 +48,26 @@ def _fake_managed_chromium(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def _fake_supervisor_registry(monkeypatch):
+    """browser_exec attaches the vault supervisor to the resolved CDP endpoint; the fake endpoint above is
+    not a real browser, so record the attach instead of opening a WebSocket (15 s start timeout)."""
+    from tools import browser_supervisor
+
+    attached = []
+
+    class _Registry:
+        def get_or_start(self, task_id, cdp_url, **kw):
+            attached.append((task_id, cdp_url))
+
+    monkeypatch.setattr(browser_supervisor, "SUPERVISOR_REGISTRY", _Registry())
+    return attached
+
+
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path."""
     script = tmp_path / "browser-use"
-    script.write_text("#!/bin/sh\n" + body)
+    script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return str(script)
 
@@ -249,6 +265,21 @@ class TestToolSurfaceSwap:
         )
         names = {t["function"]["name"] for t in defs}
         assert "browser_exec" in names
+
+
+class TestVaultSupervisorAttach:
+    def test_exec_attaches_supervisor_to_the_browser_it_drives(self, tmp_path, monkeypatch, _fake_supervisor_registry):
+        """browser_vault_fill injects secrets only over the supervisor's CDP WebSocket. Without this attach the
+        default (Browser Use) backend had no supervisor at all and every fill failed with supervisor_required."""
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {"backend": "browser-use"}})
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho ok\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda url: url)
+
+        result = json.loads(bu_cli.browser_exec("print(1)", task_id="t-vault"))
+
+        assert result["success"] is True
+        assert _fake_supervisor_registry == [("t-vault", "ws://127.0.0.1:47000/devtools/browser/t-vault")]
 
 
 class TestFindCli:
@@ -942,7 +973,7 @@ class TestFindCliManagedBin:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         bu = bin_dir / "browser-use"
-        bu.write_text("#!/bin/sh\n")
+        bu.write_text("#!/bin/sh\n", encoding="utf-8")
         bu.chmod(bu.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(bu)]
 
@@ -950,7 +981,7 @@ class TestFindCliManagedBin:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         uvx = bin_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n")
+        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
@@ -964,7 +995,7 @@ class TestFindCliManagedBin:
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         cli = cli_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n")
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
         cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(cli)]
 
@@ -976,12 +1007,12 @@ class TestFindCliManagedBin:
         user_dir = tmp_path / "userhome" / ".local" / "bin"
         user_dir.mkdir(parents=True)
         user_cli = user_dir / "browser-use"
-        user_cli.write_text("#!/bin/sh\n")
+        user_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         user_cli.chmod(user_cli.stat().st_mode | stat.S_IXUSR)
         managed_dir = tmp_path / "home" / "bin"
         managed_dir.mkdir(parents=True)
         managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n")
+        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
@@ -990,13 +1021,13 @@ class TestFindCliManagedBin:
         path_dir = tmp_path / "onpath"
         path_dir.mkdir()
         path_cli = path_dir / "browser-use"
-        path_cli.write_text("#!/bin/sh\n")
+        path_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         path_cli.chmod(path_cli.stat().st_mode | stat.S_IXUSR)
         monkeypatch.setenv("PATH", str(path_dir))
         managed_dir = tmp_path / "home" / "bin"
         managed_dir.mkdir(parents=True)
         managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n")
+        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
@@ -1004,7 +1035,7 @@ class TestFindCliManagedBin:
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         uvx = cli_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n")
+        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
@@ -1032,7 +1063,7 @@ class TestInstallCli:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         cli = bin_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n")
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
         cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
@@ -1069,7 +1100,7 @@ class TestInstallCli:
             'target="$UV_TOOL_BIN_DIR/browser-use"\n'
             'echo "#!/bin/sh" > "$target"\n'
             '/bin/chmod +x "$target"\n'
-        )
+        , encoding="utf-8")
         uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
         import sys as _sys
         import types as _types
@@ -1085,7 +1116,7 @@ class TestInstallCli:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         uv = tmp_path / "uv"
-        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n')
+        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n', encoding="utf-8")
         uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
         import sys as _sys
         import types as _types

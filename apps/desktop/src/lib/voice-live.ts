@@ -23,6 +23,8 @@ export type VoiceChatMode = 'chained' | 'gpt-live'
 
 export interface VoiceLiveStatus {
   mode: VoiceChatMode
+  /** Server-selected billing; invalid values remain visible as unavailable. */
+  auth?: string
   available: boolean
   reason: null | string
   model: string
@@ -43,6 +45,7 @@ interface LiveServerEvent {
   start_ms?: number
   end_ms?: number
   delegation?: { id: string; type: string; target: string }
+  item?: { id?: string; type?: string; target?: string; text?: string }
   error?: { type?: string; code?: null | string; message?: string; client_event_id?: string }
   usage?: { seconds?: number }
   reason?: string
@@ -54,6 +57,8 @@ export interface LiveTranscriptFragment {
   text: string
   startMs: number
   endMs: number
+  /** Frameless timing is local arrival, not provider audio timestamps. */
+  timestampSource?: 'arrival'
 }
 
 export interface VoiceLiveHandlers {
@@ -90,6 +95,7 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
     }
 
     return {
+      auth: response.auth ?? 'api',
       available: Boolean(response.available),
       mode: response.mode === 'gpt-live' ? 'gpt-live' : 'chained',
       model: response.model,
@@ -100,6 +106,52 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
     // Older backend without the endpoint → chained.
     return null
   }
+}
+
+/** Resolve billing before opening any microphone or selecting a voice engine. */
+export async function resolveVoiceConversationStart(): Promise<{ mode: VoiceChatMode; fallbackReason: null | string }> {
+  const status = await fetchVoiceLiveStatus()
+
+  if (!status) {
+    throw new Error('Voice settings are unavailable. Reconnect and try again; no voice session was started.')
+  }
+
+  if (status.mode !== 'gpt-live' || status.available) {
+    return { mode: status.mode, fallbackReason: null }
+  }
+
+  if (status.auth !== 'api') {
+    throw new Error(status.reason ?? 'GPT-Live subscription is unavailable; no API fallback was used')
+  }
+
+  return { mode: 'chained', fallbackReason: status.reason ?? 'not configured' }
+}
+
+// The Codex frameless protocol caps context appends at 500 UTF-8 bytes.
+function subscriptionChunks(text: string): string[] {
+  const chunks: string[] = []
+  const encoder = new TextEncoder()
+  let chunk = ''
+  let bytes = 0
+
+  for (const character of text.trim()) {
+    const size = encoder.encode(character).length
+
+    if (bytes + size > 500) {
+      chunks.push(chunk)
+      chunk = ''
+      bytes = 0
+    }
+
+    chunk += character
+    bytes += size
+  }
+
+  if (chunk) {
+    chunks.push(chunk)
+  }
+
+  return chunks
 }
 
 /** Split a reply into append-sized chunks on sentence boundaries. */
@@ -220,6 +272,8 @@ export class VoiceLiveSession {
   private finalized = false
   private started = false
   private eventCounter = 0
+  private subscription = false
+  private delegationIds = new Set<string>()
   private transcript: LiveTranscriptFragment[] = []
   private speakingProbe: null | number = null
   private analyser: null | AnalyserNode = null
@@ -318,6 +372,7 @@ export class VoiceLiveSession {
 
     const response = await hermesApi<{
       ok: boolean
+      auth?: string
       session?: { id: string }
       transport?: { sdp: string; type: string }
     }>({
@@ -332,6 +387,7 @@ export class VoiceLiveSession {
       throw new Error('GPT-Live session creation failed')
     }
 
+    this.subscription = response.auth === 'subscription'
     this.sessionId = response.session?.id ?? null
     await connection.setRemoteDescription({ sdp: response.transport.sdp, type: 'answer' })
   }
@@ -379,6 +435,39 @@ export class VoiceLiveSession {
       return
     }
 
+    if (this.subscription) {
+      if (event.type === 'input_transcript.added' || event.type === 'output_transcript.added') {
+        if (typeof event.item?.text !== 'string') {
+          return
+        }
+
+        // Frameless fragments have no audio timestamps. Local monotonic arrival time
+        // preserves the five-minute context window without claiming provider timing/finality.
+        const arrivedAt = performance.now()
+        event = {
+          start_ms: arrivedAt,
+          end_ms: arrivedAt,
+          delta: event.item.text,
+          type:
+            event.type === 'input_transcript.added'
+              ? 'session.input_transcript.delta'
+              : 'session.output_transcript.delta'
+        }
+      } else if (event.type === 'delegation.created') {
+        const item = event.item
+
+        if (!item?.id || item.type !== 'delegation' || item.target !== 'client') {
+          return
+        }
+
+        // Keep the provider's actual ID; work is derived from captured user words.
+        event = {
+          type: 'session.delegation.created',
+          delegation: { id: item.id, type: item.type, target: item.target }
+        }
+      }
+    }
+
     switch (event.type) {
       case 'session.started':
         this.started = true
@@ -392,7 +481,8 @@ export class VoiceLiveSession {
           endMs: event.end_ms ?? 0,
           speaker: event.type === 'session.input_transcript.delta' ? 'user' : 'assistant',
           startMs: event.start_ms ?? 0,
-          text: event.delta ?? ''
+          text: event.delta ?? '',
+          ...(this.subscription ? { timestampSource: 'arrival' as const } : {})
         }
 
         this.transcript.push(fragment)
@@ -409,7 +499,8 @@ export class VoiceLiveSession {
       case 'session.delegation.created': {
         const id = event.delegation?.id
 
-        if (id) {
+        if (id && !this.delegationIds.has(id)) {
+          this.delegationIds.add(id)
           this.activeDelegationId = id
           this.handlers.onDelegation(id, this.contextWindow())
         }
@@ -440,8 +531,25 @@ export class VoiceLiveSession {
     }
   }
 
+  private appendSubscription(delegationId: null | string, content: string, channel: 'commentary' | 'speakable'): void {
+    for (const chunk of subscriptionChunks(content)) {
+      this.send({
+        channel,
+        content: [{ text: chunk, type: 'input_text' }],
+        ...(delegationId ? { delegation_item_id: delegationId } : {}),
+        type: delegationId ? 'delegation.context.append' : 'session.context.append'
+      })
+    }
+  }
+
   /** Quiet progress for the live model ("Hermes is running the tests…"). */
   think(delegationId: null | string, content: string): void {
+    if (this.subscription) {
+      this.appendSubscription(delegationId, content, 'commentary')
+
+      return
+    }
+
     const text = content.replace(/\s+/g, ' ').trim().slice(0, APPEND_CHAR_LIMIT)
 
     if (text) {
@@ -456,6 +564,12 @@ export class VoiceLiveSession {
 
   /** A result the voice should say aloud (paraphrased). */
   speak(delegationId: null | string, content: string): void {
+    if (this.subscription) {
+      this.appendSubscription(delegationId, content, 'speakable')
+
+      return
+    }
+
     for (const chunk of chunkForCommentary(content)) {
       this.send({
         content: chunk,
@@ -468,6 +582,12 @@ export class VoiceLiveSession {
 
   /** Steer the live persona mid-conversation (session-wide). */
   instruct(content: string): void {
+    if (this.subscription) {
+      this.appendSubscription(null, content, 'commentary')
+
+      return
+    }
+
     const text = content.trim().slice(0, APPEND_CHAR_LIMIT)
 
     if (text) {
@@ -483,6 +603,11 @@ export class VoiceLiveSession {
   setMuted(muted: boolean): void {
     for (const track of this.microphone?.getAudioTracks() ?? []) {
       track.enabled = !muted
+    }
+
+    // Subscription WebRTC mutes the microphone track; it has no API mute event.
+    if (this.subscription) {
+      return
     }
 
     this.send({

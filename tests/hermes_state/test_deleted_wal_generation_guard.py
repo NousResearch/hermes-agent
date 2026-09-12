@@ -16,10 +16,12 @@ from pathlib import Path
 import pytest
 
 import hermes_state
+import hermes_state_dbfile
+import hermes_state_readpool
 import hermes_state_wal
 from hermes_state import (
-    DeletedWalGenerationError, SessionDB, _close_time_checkpoint_configurable, classify_persistence_error,
-    refuse_deleted_wal_generation,
+    DeletedWalGenerationError, SessionDB, StateDbReplacedError, _close_time_checkpoint_configurable,
+    classify_persistence_error, refuse_deleted_wal_generation,
 )
 from hermes_state_dbfile import _pread_db_header, iter_deleted_sqlite_sidecar_holders
 from tests.hermes_state._wal_generation_harness import (
@@ -33,13 +35,17 @@ def force_wal(monkeypatch):
     pin_wal(monkeypatch)
 
 
-def test_classify_deleted_wal_is_replaced_not_disk():
-    err = DeletedWalGenerationError(
+def test_classify_deleted_wal_separately_from_main_file_replacement():
+    message = (
         "FATAL: a live process holds a deleted state.db-wal or state.db-shm "
         "inode while the path names a different (or missing) generation."
     )
-    assert classify_persistence_error(err) == "replaced"
-    assert classify_persistence_error(str(err)) == "replaced"
+    assert classify_persistence_error(DeletedWalGenerationError(message)) == "deleted_wal"
+    assert classify_persistence_error(message) == "deleted_wal"
+
+    replaced = StateDbReplacedError("state.db was replaced underneath this process")
+    assert classify_persistence_error(replaced) == "replaced"
+    assert classify_persistence_error(str(replaced)) == "replaced"
 
 
 def test_iter_holders_empty_on_non_linux(monkeypatch, tmp_path):
@@ -125,6 +131,90 @@ def test_second_sessiondb_open_refuses_and_does_not_mint_wal(tmp_path, force_wal
     if wal.exists():
         assert wal.stat().st_ino == inode_before
     writer.close()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="deleted-WAL /proc scan is Linux-only",
+)
+def test_iter_holders_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypatch):
+    """OpenZFS can report a live, still-linked file's /proc fd target with the
+    `` (deleted)`` suffix (dentry unhashed, nlink still 1) even though nothing
+    was actually unlinked. The scan must not treat that as an orphaned WAL."""
+    path = tmp_path / "state.db"
+    db = make_db(path, "s", "held")
+    wal = require_wal(db)
+    real_readlink = os.readlink
+
+    def fake_readlink(fd_path, *args, **kwargs):
+        target = real_readlink(fd_path, *args, **kwargs)
+        if target.endswith(("-wal", "-shm")):
+            return target + " (deleted)"
+        return target
+
+    monkeypatch.setattr(hermes_state_dbfile.os, "readlink", fake_readlink)
+    try:
+        assert iter_deleted_sqlite_sidecar_holders(path) == []
+        assert wal.exists()
+    finally:
+        db.close()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="deleted-WAL write halt uses Linux unlink semantics",
+)
+def test_write_path_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypatch):
+    """Same OpenZFS artifact as above, but on the sticky in-process write-path
+    probe (_wal_generation_was_lost), which the open-path fix alone does not cover."""
+    path = tmp_path / "state.db"
+    db = make_db(path, "s", "held")
+    require_wal(db)
+    # Mimic the post-close-race state that forces the /proc probe path.
+    db._db_sidecar_identity = {}
+    real_readlink = os.readlink
+
+    def fake_readlink(fd_path, *args, **kwargs):
+        target = real_readlink(fd_path, *args, **kwargs)
+        if target.endswith(("-wal", "-shm")):
+            return target + " (deleted)"
+        return target
+
+    monkeypatch.setattr(hermes_state_readpool.os, "readlink", fake_readlink)
+    try:
+        assert db._wal_generation_was_lost() is False
+        db.append_message("s", role="user", content="after-artifact")
+        rows = db.get_messages("s")
+        assert any(m["content"] == "after-artifact" for m in rows)
+    finally:
+        db.close()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="deleted-WAL /proc scan is Linux-only",
+)
+def test_iter_holders_flags_orphan_kept_alive_by_hardlink(tmp_path, force_wal):
+    """`st_nlink == 0` is not proof of an orphan either: a stale generation can keep a
+    surviving hard link (a backup, an operator copy) after the watched path itself is
+    unlinked or replaced, so `st_nlink` stays >= 1 on a truly orphaned inode. The guard
+    must still flag it by comparing the fd's identity against the CURRENT watched path,
+    not by trusting the link count."""
+    path = tmp_path / "state.db"
+    db = make_db(path, "s", "held")
+    wal = require_wal(db)
+    backup = tmp_path / "backup-wal"
+    os.link(wal, backup)  # keeps the old inode's nlink >= 1 after the unlink below
+    try:
+        lose_sidecars(path, rename=False)
+        wal.write_bytes(b"new-generation")  # watched path recreated on a different inode
+        assert backup.stat().st_nlink >= 1
+        holders = iter_deleted_sqlite_sidecar_holders(path)
+        assert any(
+            target.removesuffix(" (deleted)").endswith("-wal") for _pid, target in holders
+        )
+    finally:
+        db.close()
 
 
 @pytest.mark.skipif(

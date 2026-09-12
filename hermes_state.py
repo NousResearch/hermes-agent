@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from agent.message_sanitization import _sanitize_surrogates
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
@@ -46,14 +46,16 @@ from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 from hermes_state_dbfile import (
-    _canonical_sqlite_path, _connect_tracked_db, _prepare_connection_retirement,
+    _canonical_sqlite_path, _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
-from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
+from hermes_state_wal import (
+    _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
+)
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_usage import SessionUsageMixin
@@ -506,7 +508,9 @@ class SessionDB(
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
         malformed sqlite_master), generation stamp."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Never materialize a deleted/archived named profile's home: a multiplexer or Desktop backend
+        # still holding the profile's route would otherwise re-scaffold it on the next turn (#94590).
+        mkdir_under_hermes_home(self.db_path.parent)
         # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
         # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
         preflight_db_writability(self.db_path, db_label="state.db")
@@ -615,7 +619,12 @@ class SessionDB(
         )
         try:
             conn.row_factory = sqlite3.Row
-            self._wal_active = apply_wal_with_fallback(conn, db_label="state.db") == "wal"
+            mode = apply_wal_with_fallback(conn, db_label="state.db")
+            # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
+            # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.
+            # Unknown -> reads queue on the writer lock (slow but correct) instead of racing SQLITE_BUSY
+            # on a file that may really be in rollback-journal mode.
+            self._wal_active = mode == "wal" and _on_disk_journal_mode(conn) == "wal"
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
@@ -810,10 +819,20 @@ class SessionDB(
         ioerr_begin_retried = False
         while True:
             self._raise_if_db_corrupt()
-            self._raise_if_db_replaced()
+            # NOTE: the replaced/generation live probe runs INSIDE the lock below,
+            # not here. close() mutates _conn and _db_sidecar_identity under that
+            # same lock, ending the WAL generation (SQLite unlinks the -wal/-shm
+            # sidecars on a clean close). A lock-free probe that races close() can
+            # observe the mid-teardown state — sidecars already unlinked while
+            # _db_sidecar_identity is not yet cleared — and misclassify this
+            # process's OWN clean close as an externally deleted generation,
+            # raising a sticky DeletedWalGenerationError that permanently refuses
+            # later writes (#105567). Inside the lock the probe only ever sees the
+            # stable post-close state (identity cleared → adopt / reopen path).
             fn_started = False
             try:
                 with self._lock:
+                    self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")
@@ -914,13 +933,30 @@ class SessionDB(
 
     def _read_one(self, sql: str, params: Any = ()) -> Optional[sqlite3.Row]:
         """``fetchone()`` of one read-only statement via ``_read_ctx``."""
-        with self._read_ctx() as conn:
-            return conn.execute(sql, params).fetchone()
+        return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchone())
 
     def _read_all(self, sql: str, params: Any = ()) -> List[sqlite3.Row]:
         """``fetchall()`` of one read-only statement via ``_read_ctx``."""
-        with self._read_ctx() as conn:
-            return conn.execute(sql, params).fetchall()
+        return self._read_retrying_ioerr(lambda conn: conn.execute(sql, params).fetchall())
+
+    def _read_retrying_ioerr(self, fn: Callable[[sqlite3.Connection], T]) -> T:
+        """Run an idempotent SELECT through ``_read_ctx``, retrying a transient SQLITE_IOERR.
+
+        A warm ``mode=ro`` pooled reader can hit the same millisecond-wide WAL transition window as a
+        read-only OPEN (#100436) when its statement executes or steps: a sibling process's checkpoint /
+        WAL reset / frame flush surfaces ``disk I/O error`` because a read-only connection cannot rewrite
+        the -shm index (#100871, WSL2 ext4-on-vhdx, multi-process). The window closes on its own, so
+        the statement is replayed on the SAME connection within the read-only IOERR budget -- never
+        closed and reopened (close() cancels this process's POSIX locks for every sibling connection),
+        never quarantined (busy is not broken). A persistent IOERR exhausts the budget and propagates."""
+        for attempt in range(_READ_ONLY_IOERR_RETRY_ATTEMPTS + 1):
+            try:
+                with self._read_ctx() as conn:
+                    return fn(conn)
+            except sqlite3.OperationalError as exc:
+                if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or _DISK_IO_ERROR_MARKER not in str(exc).lower():
+                    raise
+                time.sleep(_READ_ONLY_IOERR_RETRY_BACKOFF_S)
 
     def _ensure_db_file_generation(self) -> None:
         """Mint a once-per-file generation stamp (state_meta + application_id). First opener wins (INSERT
@@ -933,13 +969,22 @@ class SessionDB(
         token = uuid.uuid4().hex
         try:
             with self._lock:
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
-                    (_STATE_DB_GENERATION_KEY, token),
-                )
+                # Read first: the stamp is minted once per file, and a no-op INSERT OR IGNORE
+                # still takes the write lock — under a sibling's transaction it blocked for the
+                # busy timeout and the except below then dropped the token entirely. First
+                # opener still wins via INSERT OR IGNORE; racers converge on the re-read.
                 row = self._conn.execute(
                     "SELECT value FROM state_meta WHERE key = ?", (_STATE_DB_GENERATION_KEY,),
                 ).fetchone()
+                if not (row and row[0]):
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO state_meta (key, value) VALUES (?, ?)",
+                        (_STATE_DB_GENERATION_KEY, token),
+                    )
+                    row = self._conn.execute(
+                        "SELECT value FROM state_meta WHERE key = ?",
+                        (_STATE_DB_GENERATION_KEY,),
+                    ).fetchone()
                 if row and row[0]:
                     token = str(row[0])
                 pragma_row = self._conn.execute("PRAGMA application_id").fetchone()
@@ -998,8 +1043,10 @@ class SessionDB(
         if sys.platform.startswith("linux"):
             watched = _watched_sqlite_sidecar_paths(self.db_path)
             try:
-                for target in _proc_fd_targets(os.getpid()):
-                    if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+                for target, fd_path in _proc_fd_targets(os.getpid()):
+                    canonical = _canonical_sqlite_path(target)
+                    if (" (deleted)" in target and canonical in watched
+                            and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                         return True
             except OSError:
                 return False

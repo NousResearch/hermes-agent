@@ -15,7 +15,6 @@ from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
-
 class _MCPServerConfig(dict):
     """A server snapshot carrying its immutable discovery provenance."""
 
@@ -26,31 +25,33 @@ class _MCPServerConfig(dict):
     def copy(self):
         return type(self)(self, native_config_managed=self.native_config_managed)
 
-_mcp_stderr_log_fh: Optional[Any] = None
+_mcp_stderr_log_fh: Dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
 
 
 def _get_mcp_stderr_log() -> Any:
-    """Shared append-mode handle for MCP subprocess stderr, opened once per process. Must expose a
-    real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
-    global _mcp_stderr_log_fh
+    """Shared append-mode handle for MCP subprocess stderr, opened once per process PER PROFILE HOME (a
+    multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
+    expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
+    from hermes_constants import get_hermes_home, hermes_home_key
+    home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
-        if _mcp_stderr_log_fh is None:
+        fh = _mcp_stderr_log_fh.get(home_key)
+        if fh is None:
             try:
-                from hermes_constants import get_hermes_home
                 log_dir = get_hermes_home() / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
                 fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
                 fh.fileno()  # confirm a real fd before committing
-                _mcp_stderr_log_fh = fh
             except Exception as exc:  # pragma: no cover — best-effort fallback
                 logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
                 try:
-                    _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
+                    fh = open(os.devnull, "w", encoding="utf-8")
                 except Exception:
-                    _mcp_stderr_log_fh = sys.stderr
-        return _mcp_stderr_log_fh
+                    fh = sys.stderr
+            _mcp_stderr_log_fh[home_key] = fh
+        return fh
 
 
 def _write_stderr_log_header(server_name: str) -> None:
@@ -354,36 +355,51 @@ def _load_mcp_config() -> Dict[str, dict]:
         return {}
 
 
-def _native_mcp_server_enabled(name: str) -> Optional[bool]:
-    """Whether native ``config.yaml`` still enables *name*.
+def _native_mcp_server_config(name: str) -> Tuple[bool, Optional[dict]]:
+    """Return ``(known, effective config)`` for a native server.
 
-    ``None`` means the file could not be read or parsed and callers must fail
-    open. This intentionally excludes portable plugin MCPs: their lifecycle is
-    owned by plugin discovery, not ``hermes mcp remove``.
+    The effective config includes the managed overlay, matching
+    :func:`_load_mcp_config`.  ``known=False`` means an authority file could not
+    be read safely; lifecycle callers must preserve the live task.
     """
     try:
         import yaml
-        from hermes_cli.config import get_config_path
+        from hermes_cli import managed_scope
+        from hermes_cli.config import get_config_path, load_config, require_readable_config_before_write
 
-        path = get_config_path()
-        if not path.exists():
-            return False
-        with open(path, encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh)
-        if not isinstance(raw, dict):
-            return None
-        servers = raw.get("mcp_servers")
+        # Validate both authority files before consulting load_config(): its
+        # defaults/LKG fallback is correct for serving, but cannot prove a
+        # destructive retirement on a first unreadable load.
+        require_readable_config_before_write(get_config_path())
+        managed_dir = managed_scope.get_managed_dir()
+        managed_path = managed_dir / "config.yaml" if managed_dir is not None else None
+        if managed_path is not None and managed_path.exists():
+            with open(managed_path, encoding="utf-8") as fh:
+                managed_raw = yaml.safe_load(fh)
+            if managed_raw is not None and not isinstance(managed_raw, dict):
+                return False, None
+
+        servers = load_config().get("mcp_servers")
         if servers is None:
-            return False
+            return True, None
         if not isinstance(servers, dict):
-            return None
+            return False, None
         config = servers.get(name)
         if config is None:
-            return False
+            return True, None
         if not isinstance(config, dict):
-            return None
+            return False, None
         from tools.mcp_tool_common import _parse_boolish
-        return _parse_boolish(config.get("enabled", True), default=True)
+        if not _parse_boolish(config.get("enabled", True), default=True):
+            return True, None
+        interpolated = _interpolate_env_vars(config)
+        return (True, interpolated) if isinstance(interpolated, dict) else (False, None)
     except Exception as exc:
         logger.debug("Failed to inspect native MCP config for '%s': %s", name, exc)
-        return None
+        return False, None
+
+
+def _native_mcp_server_enabled(name: str) -> Optional[bool]:
+    """Compatibility predicate for tests and callers that only need membership."""
+    known, config = _native_mcp_server_config(name)
+    return config is not None if known else None

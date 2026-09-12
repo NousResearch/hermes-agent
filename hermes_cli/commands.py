@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Mapping
+from dataclasses import dataclass
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
@@ -42,42 +41,11 @@ class CommandDef:
     argument_mode: str | None = None  # desktop composer: options|text|mixed; None inferred
     # Desktop availability: None = offered; "hidden" = runs but out of the popover; else a reason.
     desktop: str | None = None
-    # Optional help copy for static subcommands. Completion surfaces display it
-    # beside the subcommand name; callers that only understand ``subcommands``
-    # continue to receive the existing flat tuple.
-    subcommand_descriptions: Mapping[str, str] = field(default_factory=dict)
 
 
 VALID_BUSY_POLICIES: frozenset[str] = frozenset({"dispatch", "reject", "interrupt_then_dispatch"})
 
 
-WISDOM_SUBCOMMAND_HELP: dict[str, str] = {
-    "setup": "Configure this profile for Collective Wisdom",
-    "status": "Show account, organization, setup, and Gateway health",
-    "browse": "[query] — Search skills published by your team",
-    "show": "<skill> — View its description, requirements, scan, and install state",
-    "versions": "<skill> — Browse immutable published versions",
-    "candidates": "[all|query] — Review qualified or manually eligible local skills",
-    "submit": "<local-skill> — Prepare an owner-private contribution draft",
-    "drafts": "List your drafts and moderation states",
-    "review": "<draft> — Review scans, policy, hashes, and available actions",
-    "install": "<id|URL|id@vN> — Plan and confirm a managed installation",
-    "installed": "List and manage skills installed on this device",
-    "check": "Check installed skills and apply eligible automatic updates",
-    "update": "<skill|all> — Plan and confirm available updates",
-    "uninstall": "<skill> — Remove a managed skill after confirmation",
-    "notifications": "Review unseen publication, install, and update events",
-    "mute": "[status|1d|1w|30d|forever|off] — Manage your organization's proactive notifications",
-    "sync": "[status|retry] — Check or retry saved notification receipts and operation reports",
-    "inbox": "Read shared agent advice and pending Wisdom consent",
-    "consent": "<id> <inspect|defer|confirm> — Use an exact pending consent control in the local CLI",
-    "help": "Show this guide and command examples",
-}
-
-
-# ---------------------------------------------------------------------------
-# Central registry -- single source of truth
-# ---------------------------------------------------------------------------
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
@@ -249,17 +217,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("search", "browse", "inspect", "install", "audit",
                             "pending", "approve", "reject", "diff", "approval"),
                desktop="settings"),
-    CommandDef(
-        "wisdom",
-        "Browse, contribute, install, and manage Collective Wisdom skills",
-        "Tools & Skills",
-        aliases=("collective-wisdom-install",),
-        args_hint="[keyword]",
-        subcommands=tuple(WISDOM_SUBCOMMAND_HELP),
-        subcommand_descriptions=WISDOM_SUBCOMMAND_HELP,
-        busy_policy="reject",
-        argument_mode="mixed",
-    ),
     CommandDef("memory", "Review pending memory writes / toggle the approval gate",
                "Tools & Skills", args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
@@ -378,25 +335,6 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
-def command_available(command: CommandDef | str) -> bool:
-    """Return whether a registry command may be presented or dispatched locally.
-
-    The registry and lookup tables deliberately remain static.  Availability is a
-    fresh, refresh-free projection so login/logout and token replacement take effect
-    without mutating command state held by a running conversation.
-    """
-    cmd = command if isinstance(command, CommandDef) else resolve_command(command)
-    if cmd is None:
-        return False
-    if cmd.name != "wisdom":
-        return True
-    try:
-        from hermes_wisdom.entitlement import is_entitled
-        return bool(is_entitled())
-    except Exception:
-        return False
-
-
 def _build_description(cmd: CommandDef) -> str:
     """CLI-facing description including the usage hint."""
     if not cmd.args_hint:
@@ -411,10 +349,6 @@ COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
 # registry order), then pipe patterns in args_hint ("[on|off|status]") as fallback.
 SUBCOMMANDS: dict[str, list[str]] = {
     f"/{_cmd.name}": list(_cmd.subcommands) for _cmd in COMMAND_REGISTRY if _cmd.subcommands}
-SUBCOMMAND_DESCRIPTIONS: dict[str, dict[str, str]] = {
-    f"/{cmd.name}": {sub: str(cmd.subcommand_descriptions.get(sub) or "") for sub in cmd.subcommands}
-    for cmd in COMMAND_REGISTRY if cmd.subcommands
-}
 for _cmd in COMMAND_REGISTRY:
     if _cmd.gateway_only:
         continue
@@ -499,10 +433,7 @@ def _resolve_config_gates() -> set[str]:
 
 def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = None) -> bool:
     """Not ``cli_only``, or its config gate is truthy (*config_overrides* from
-    ``_resolve_config_gates()`` avoids re-reading config per command), and passes
-    any refresh-free account entitlement gate."""
-    if not command_available(cmd):
-        return False
+    ``_resolve_config_gates()`` avoids re-reading config per command)."""
     if not cmd.cli_only:
         return True
     if not cmd.gateway_config_gate:

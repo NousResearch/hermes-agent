@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
-from hermes_cli.commands import COMMANDS, SUBCOMMANDS, SUBCOMMAND_DESCRIPTIONS
+from hermes_cli.commands import COMMANDS, SUBCOMMANDS
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -281,11 +281,6 @@ class SlashCommandCompleter(Completer):
         self._file_cache_cwd: str = ""
 
     def _command_allowed(self, slash_command: str) -> bool:
-        from hermes_cli.commands import command_available, resolve_command
-
-        command = resolve_command(slash_command)
-        if command is not None and not command_available(command):
-            return False
         try:
             return self._command_filter is None or bool(self._command_filter(slash_command))
         except Exception:
@@ -440,8 +435,7 @@ class SlashCommandCompleter(Completer):
                 yield from handler(sub_text, sub_text.lower())
             elif first_arg and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
                 yield from _prefix_completions(
-                    ((s, SUBCOMMAND_DESCRIPTIONS.get(base_cmd, {}).get(s))
-                     for s in SUBCOMMANDS[base_cmd]), sub_text)
+                    ((s, None) for s in SUBCOMMANDS[base_cmd]), sub_text)
             return
         word = text[1:]
 

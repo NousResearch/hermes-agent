@@ -893,14 +893,10 @@ class GatewayShutdownMixin:
             source = self._get_cached_session_source(session_key)
         if source is not None:
             return source, source.platform.value, str(source.chat_id), source.thread_id, getattr(source, "profile", None)
-        parts = session_key.split(":")
-        profile = parts[1] if len(parts) >= 5 and parts[0] == "agent" and parts[1] != "main" else None
-        # _parse_session_key only understands the ``agent:main:`` lane; a secondary's key is parsed on
-        # the same shape with its profile carried separately.
-        _parsed = _parse_session_key(":".join(["agent", "main", *parts[2:]]) if profile else session_key)
+        _parsed = _parse_session_key(session_key)
         if not _parsed:
             return None
-        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), profile
+        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), _parsed.get("profile")
 
     async def _send_shutdown_notice(
         self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
@@ -1080,6 +1076,10 @@ class GatewayShutdownMixin:
         live agent (e.g. the user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
         """
         if agent is None or (executor_task is not None and executor_task.done()):
+            return False
+        # Drain/restart already told the chat the task will be interrupted; a "still working"
+        # heartbeat after that notice reads as a contradiction (#10990).
+        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
             return False
         if session_key:
             _hb_state = self._peek_session_state(session_key)

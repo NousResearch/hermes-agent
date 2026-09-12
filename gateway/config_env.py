@@ -21,6 +21,7 @@ from gateway.config import (
     PlatformConfig,
     _getenv_str,
     _has_usable_api_server_key,
+    SHARED_LISTENER_MIRROR_PLATFORMS,
 )
 from utils import is_truthy_value
 
@@ -168,23 +169,37 @@ def _env_reply_mode(config: GatewayConfig, platform: Platform, env: str) -> None
         config.platforms.setdefault(platform, PlatformConfig()).reply_to_mode = mode
 
 
+def _loading_secondary_under_multiplexer() -> bool:
+    """True while a multiplexer loads a NON-default profile's config (``_profile_runtime_scope`` sets the
+    home override; the runner sets the multiplex flag). Same signal ``gateway.config`` uses for scoped reads."""
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    override = get_hermes_home_override()
+    return bool(override) and is_multiplex_active() and profile_name_for_home(override) != "default"
+
+
 def _enable_from_env(
     config: GatewayConfig, platform: Platform, *, pop_marker: bool = False, warn: bool = True
 ) -> PlatformConfig:
     """Enable *platform* on env credentials unless config.yaml explicitly disabled it.
 
-    A multiplex secondary profile pins ``enabled: false`` to share the default profile's listener
-    yet inherits the process env; without this guard env presence would force-enable it and trip
-    MultiplexConfigError. By default the ``_enabled_explicit`` marker is READ (the plugin-enable
-    and relay passes still need it) and the disable is warned once; port-binding platforms POP it
-    (terminal branch) and stay silent.
+    A multiplex secondary profile may pin ``enabled: false`` yet inherit the process env; without
+    this guard env presence would force-enable it. By default the ``_enabled_explicit`` marker is
+    READ (the plugin-enable and relay passes still need it) and the disable is warned once;
+    api_server/webhook POP it (terminal branch) and stay silent.
     """
     platform_config = config.platforms.setdefault(platform, PlatformConfig())
     extra = platform_config.extra
     explicit = extra.pop("_enabled_explicit", False) if pop_marker else extra.get("_enabled_explicit", False)
     if platform_config.enabled:
         return platform_config
-    if not explicit:
+    if not explicit and not (
+        platform.value in SHARED_LISTENER_MIRROR_PLATFORMS and _loading_secondary_under_multiplexer()
+    ):
+        # A secondary's API_SERVER_KEY / WEBHOOK_ENABLED (the docs require the key in its .env for
+        # /p/<profile>/ auth) must not turn into listener intent: the default profile's listener already
+        # mirrors those two at /p/<profile>/ (#100397). The credential still lands in ``extra`` for it.
+        # Every other inbound-port platform IS enabled for a secondary: it runs in shared-listener mode.
         platform_config.enabled = True
     elif warn:
         _warn_explicit_disable_beats_env(platform)

@@ -42,6 +42,7 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
+import { useStickyPromptClip } from './use-sticky-prompt-clip'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -207,7 +208,6 @@ export function subscribeToThreadForeground(shouldReanchor: () => boolean, onRea
 }
 
 interface ThreadMessageListProps {
-  afterContent?: ReactNode
   clampToComposer: boolean
   components: ThreadMessageComponents
   emptyPlaceholder?: ReactNode
@@ -399,7 +399,6 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
 })
 
 const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
-  afterContent,
   clampToComposer,
   components,
   emptyPlaceholder,
@@ -1032,6 +1031,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   )
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey })
+  useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
 
   return (
     <div
@@ -1084,7 +1084,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             )}
             {rows}
             {loadingIndicator}
-            {afterContent}
             {clampToComposer && (
               <div
                 aria-hidden="true"

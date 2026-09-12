@@ -114,6 +114,47 @@ tick()
   6. Release scheduler lock
 ```
 
+### Missed-occurrence contract (restart gaps)
+
+Recurring jobs are **at-most-once per occurrence, and every occurrence is
+accounted for**: it either runs (one execution row carrying its
+`scheduled_instant`), or its skip is logged with a reason. An occurrence is never
+dropped silently. The mechanics, in the order the due scan applies them
+(`cron/jobs.py::_evaluate_due_job`):
+
+1. **Pre-dispatch advance is provisional.** `tick()` advances `next_run_at` past
+   the due occurrence *before* dispatch so a crash mid-run cannot re-fire it on
+   every restart. Because that leaves a window — advanced, but no fire claim yet
+   (interpreter finalizing, executor refusing work, `SIGKILL`) — the due scan
+   stamps `pending_slot = {scheduled_at, at, by}` on the record in the same
+   save. `claim_job_for_fire` (the point after which side effects may exist)
+   and `mark_job_run` clear it; an explicit `schedule` / `next_run_at` /
+   `enabled` / `state` rewrite (edit, pause, resume, run-now) drops it.
+2. **Restore once.** A later scan that finds a `pending_slot` whose owner is
+   provably gone (this process and the job is not in its running set; another
+   process past the 300 s fire-claim lease or with a dead pid) puts
+   `scheduled_at` back as `next_run_at`, drops the stamp, and logs a WARNING
+   (`cron/occurrences.py::unclaimed_pending_slot`). This happens at most once
+   per lost occurrence — the restored instant then meets the ordinary rules
+   below like any other overdue slot, so there is never a replay of N slots.
+3. **Already fired → never twice.** `completed_occurrence()` consults the
+   executions ledger for a `completed` row with that exact `scheduled_instant`
+   before anything is due; a slot that ran before the restart advances without
+   firing. `failed` / `unknown` rows do not count as completion.
+4. **Late within grace → fire late.** Grace = half the period clamped to
+   `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
+   `last_dispatch.kind = late`.
+5. **Past grace → collapse the backlog, fire once** (`kind = catch_up`), or skip
+   with a logged reason when the operator set `cron.catch_up_missed: false`
+   (planned downtime). One-shots past their 120 s grace are retired with a
+   diagnostic, never resurrected.
+6. **Paused / disabled / terminal jobs never catch up**; the due scan drops them
+   before any of the above, and pause/resume clears any pending slot.
+
+The same store fields drive every topology: a standalone `hermes -p X gateway
+run` and a profile served by the default multiplexer (`_start_multiplex` ticks
+each home under `_profile_cron_scope`) evaluate the identical record.
+
 ### Gateway Integration
 
 In gateway mode, the cron **trigger** (the part that decides *when* a due job

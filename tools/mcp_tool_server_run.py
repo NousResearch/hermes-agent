@@ -57,7 +57,45 @@ class MCPServerRunMixin:
         Config read failures fail open. Deregistration happens before ownership
         is dropped so every profile overlay can remove the server's tools.
         """
-        if not self._native_config_managed or _config._native_mcp_server_enabled(self.name) is not False:
+        if not self._native_config_managed:
+            return False
+        key = _registration._server_key_for_task(self)
+        with _core._lock:
+            owner_scope = _core._server_scope_keys.get(key)
+            scopes = set(_core._server_tool_scopes.get(key, ()))
+            if owner_scope is not None:
+                scopes.add(owner_scope)
+
+        authorities = {}
+        if scopes:
+            from pathlib import Path
+            from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            for scope in scopes:
+                home_token = set_hermes_home_override(scope)
+                secret_token = set_secret_scope(build_profile_secret_scope(Path(scope)))
+                try:
+                    authorities[scope] = _config._native_mcp_server_config(self.name)
+                finally:
+                    reset_secret_scope(secret_token)
+                    reset_hermes_home_override(home_token)
+        else:
+            authorities[None] = _config._native_mcp_server_config(self.name)
+
+        # Any unreadable authority makes destructive reconciliation unsafe.
+        if any(not known for known, _cfg in authorities.values()):
+            return False
+        surviving = {
+            scope for scope, (_known, cfg) in authorities.items()
+            if cfg is not None and _registration._same_server_route(self, cfg)
+        }
+        if surviving:
+            if scopes:
+                for scope in scopes - surviving:
+                    _registration._remove_server_scope(key, scope)
+                if owner_scope not in surviving:
+                    with _core._lock:
+                        _core._server_scope_keys[key] = next(iter(surviving))
             return False
         logger.info("MCP server '%s': removed or disabled in config; stopping live connection", self.name)
         self._retired_from_config = True
@@ -68,15 +106,17 @@ class MCPServerRunMixin:
         self._fail_inflight_calls("config removal")
         self._deregister_tools()
         with _core._lock:
-            if _core._servers.get(self.name) is self:
-                _core._servers.pop(self.name, None)
-                _core._server_scope_keys.pop(self.name, None)
-                _core._server_tool_scopes.pop(self.name, None)
-                _core._server_connect_errors.pop(self.name, None)
-                _core._server_connect_failures.pop(self.name, None)
-                _core._server_connect_retry_after.pop(self.name, None)
-                _core._server_connecting.discard(self.name)
-                _core._parallel_safe_servers.discard(self.name)
+            if _core._servers.get(key) is self:
+                _core._servers.pop(key, None)
+            for ledger in (
+                _core._server_scope_keys, _core._server_tool_scopes,
+                _core._server_connect_errors, _core._server_connect_failures,
+                _core._server_connect_retry_after, _core._server_error_counts,
+                _core._server_breaker_opened_at, _core._server_errors_all_application,
+                _core._server_trust_levels, _core._tool_read_only_hints,
+            ):
+                ledger.pop(key, None)
+            _core._server_connecting.discard(key)
         return True
 
     async def _wait_for_lifecycle_event(self) -> str:
@@ -456,5 +496,5 @@ class MCPServerRunMixin:
         """Drop this server's tools from the registry (idempotent); on shutdown AND budget
         exhaustion, so a dead server never leaves phantom tools in the prompt."""
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
-            _registration._deregister_mcp_tool_all_scopes(self.name, tool_name)
+            _registration._deregister_mcp_tool_all_scopes(self, tool_name)
         self._registered_tool_names = []

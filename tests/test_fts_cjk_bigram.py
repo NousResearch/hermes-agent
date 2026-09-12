@@ -212,6 +212,85 @@ def test_legacy_v22_optimize_lands_on_cjk(cjk_so, tmp_path, monkeypatch):
         d.close()
 
 
+def test_optimize_demote_leaves_established_cjk_index_intact(cjk_so, tmp_path, monkeypatch):
+    """#103647: a legacy inline-FTS DB that ALSO carries an established (backfilled,
+    trigger-live) messages_fts_cjk index must demote without touching the cjk family.
+    The demote enumeration matches 'messages_fts_%', which sweeps the cjk vtable and
+    its shadow tables into the fts_v22_trash_* renames; renaming them breaks the
+    vtable constructor chain ('vtable constructor failed: messages_fts_cjk') and
+    aborts optimize-storage on every CJK-enabled host before any space is reclaimed."""
+    import time as _time
+
+    from hermes_state_common import SCHEMA_SQL
+    from hermes_state_fts import FTS_CJK_TABLE_SQL, FTS_CJK_TRIGGER_SQL
+
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(cjk_so))
+    db_path = tmp_path / "state.db"
+
+    # Hand-build the coexistence shape: legacy inline FTS + a live cjk index.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.enable_load_extension(True)
+        conn.load_extension(str(cjk_so))
+        conn.executescript(SCHEMA_SQL)
+        conn.executescript("""
+            DROP TABLE IF EXISTS messages_fts;
+            DROP TABLE IF EXISTS messages_fts_trigram;
+            DROP VIEW IF EXISTS messages_fts_trigram_src;
+            CREATE VIRTUAL TABLE messages_fts USING fts5(content);
+            CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content) VALUES (new.id, COALESCE(new.content,''));
+            END;
+        """)
+        # Established cjk index: tables + triggers, no backfill markers (complete).
+        conn.executescript(FTS_CJK_TABLE_SQL)
+        conn.executescript(FTS_CJK_TRIGGER_SQL)
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (10)")
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES ('s1', 'cli', ?)",
+            (_time.time(),),
+        )
+        for role, content in (
+            ("user", "레거시 일본 메시지"),
+            ("assistant", "legacy english reply"),
+        ):
+            conn.execute(
+                "INSERT INTO messages (session_id, timestamp, role, content) "
+                "VALUES ('s1', ?, ?, ?)",
+                (_time.time(), role, content),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    d = SessionDB(db_path=db_path)
+    try:
+        assert d.fts_optimize_available(), "legacy inline layout must be eligible"
+        assert d._fts_cjk_loaded
+        with d._lock:
+            cjk_triggers = d._conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' "
+                "AND name LIKE 'messages_fts_cjk_%'"
+            ).fetchone()[0]
+        assert cjk_triggers == 3, "cjk index is established and trigger-live"
+        result = d.optimize_fts_storage(vacuum=False)
+        assert result["ok"]
+        # The cjk index survives demote untouched: same tables, same service path.
+        assert d._fts_cjk_available
+        assert d.fts_cjk_rebuild_status() is None
+        assert d._describe_search_path("일본") == "fts_cjk"
+        assert d.search_messages("일본", limit=10)
+        with d._lock:
+            trash_cjk = d._conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE name LIKE 'fts_v22_trash_messages_fts_cjk%'"
+            ).fetchone()[0]
+        assert trash_cjk == 0, "no cjk table may be renamed into the trash family"
+    finally:
+        d.close()
+
+
 def test_pure_latin_embedded_in_cjk_recovered_via_cjk_index(db):
     """#54242 residual: a pure-Latin query for a token embedded in CJK text
     (no whitespace) misses on unicode61; with the cjk index available the

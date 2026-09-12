@@ -579,22 +579,23 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     rate-limited entry does (a redeemed banked reset restores the whole account; a still-exhausted
     entry just re-freezes with fresh metadata on its next 429).
     """
+    from agent.credential_pool import _borrowed_single_use_pool_root, _profile_owns_pool_provider
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     cleared = 0
     try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-            entries = _pool_entries(auth_store, "openai-codex")
-            if entries is None:
-                return 0
-            for entry in _codex_pool_dicts(entries):
+        # Same owner rule as ``persist_pool_entries``: a profile with no Codex rows of its own
+        # borrows the global-root pool, so the cooldown must clear where the rows actually live.
+        target = None if _profile_owns_pool_provider("openai-codex") else _borrowed_single_use_pool_root()
+        with _auth_store_lock(target_path=target):
+            auth_store = _load_auth_store(target)
+            for entry in _codex_pool_dicts(_pool_entries(auth_store, "openai-codex")):
                 if access_token and str(entry.get("access_token") or "") != access_token:
                     continue
                 if _entry_is_rate_limit_exhausted(entry):
                     _clear_pool_entry_status(entry)
                     cleared += 1
             if cleared:
-                _save_auth_store(auth_store)
+                _save_auth_store(auth_store, target_path=target)
     except Exception:
         logger.debug("Failed to clear Codex pool quota cooldowns", exc_info=True)
     return cleared
@@ -606,21 +607,16 @@ def _codex_pool_dicts(entries: Optional[List[Any]]) -> Iterator[Dict[str, Any]]:
             yield entry
 
 
-def _read_codex_pool_entries() -> Optional[List[Any]]:
-    """Locked read of ``credential_pool.openai-codex`` from auth.json (None when absent)."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-    return _pool_entries(auth_store, "openai-codex")
-
-
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
-    """Return metadata for a pool-only Codex credential in quota cooldown."""
-    from hermes_cli.auth import _nonempty_str
+    """Return metadata for a pool-only Codex credential in quota cooldown.
+
+    Reads through ``read_credential_pool`` so a named profile with no Codex rows of its own sees
+    the global-root pool (the per-provider fallback every other pool read uses)."""
+    from hermes_cli.auth import _nonempty_str, read_credential_pool
     from agent.credential_pool import _parse_absolute_timestamp
     try:
         now = time.time()
-        for entry in _codex_pool_dicts(_read_codex_pool_entries()):
+        for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
             token = entry.get("access_token")
             if not _nonempty_str(token) or not _entry_is_rate_limit_exhausted(entry):
                 continue
@@ -646,11 +642,12 @@ def _pool_entries(auth_store: Dict[str, Any], provider_id: str) -> Optional[List
 def _pool_codex_access_token() -> str:
     """First non-empty pool access_token not in an exhaustion cooldown window, else "".
 
-    Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds.
+    Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
+    through ``read_credential_pool`` so a profile inherits the global-root pool (#34143).
     """
-    from hermes_cli.auth import _nonempty_str
+    from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
-        for entry in _codex_pool_dicts(_read_codex_pool_entries()):
+        for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
             token, reset_at = entry.get("access_token"), entry.get("last_error_reset_at")
             in_cooldown = isinstance(reset_at, (int, float)) and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:

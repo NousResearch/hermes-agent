@@ -12,7 +12,6 @@ from __future__ import annotations
 import atexit
 import json
 import logging
-import os
 import threading
 import time
 from contextlib import suppress
@@ -20,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
-from agent.secret_scope import get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -43,6 +42,13 @@ _DEFAULT_USER_ID = "hermes-user"
 _SYNC_MSG_MAX_CHARS = 450
 
 
+# Sentence ends recognized when trimming a synced message. Deliberately unordered:
+# the LAST boundary of ANY kind wins, so one CJK stop early in a mixed-script turn
+# cannot outrank a Latin stop near the end of the window. ``".\n"`` is not listed —
+# its index can never exceed the bare ``"."`` it starts with.
+_SYNC_SENTENCE_ENDS = ("。", "！", "？", ".", "!", "?")
+
+
 def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
     """Cap a synced message at its last sentence boundary within ``max_len``.
 
@@ -53,10 +59,10 @@ def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
     """
     if len(text) <= max_len:
         return text
-    for sep in ("。", "！", "？", ".\n", ".", "!", "?"):
-        cut = text[:max_len].rfind(sep)
-        if cut > max_len // 3:
-            return text[:cut + 1]
+    window = text[:max_len]
+    cut = max(window.rfind(sep) for sep in _SYNC_SENTENCE_ENDS)
+    if cut > max_len // 3:
+        return text[:cut + 1]
     return text[:max_len]
 
 
@@ -74,16 +80,36 @@ def _read_mem0_json(config_path: Path) -> dict:
     return {}
 
 
+def _scoped_env(name: str) -> str:
+    """Profile-scoped read of a non-secret mem0 setting; no scope under multiplex = unset (never
+    ``os.environ``). Only the API key may fail closed — OSS mode has none to read (#99121)."""
+    try:
+        return get_secret(name, "") or ""
+    except UnscopedSecretError:
+        return ""
+
+
 def _load_config() -> dict:
     """Env vars provide defaults; $HERMES_HOME/mem0.json overrides individual keys.
     Layering avoids a silent failure when the JSON file exists but lacks fields
     like ``api_key`` that the user set in ``.env``."""
     from hermes_constants import get_hermes_home
-    config = {"mode": os.environ.get("MEM0_MODE", "platform"), "api_key": get_secret("MEM0_API_KEY", ""), "host": os.environ.get("MEM0_HOST", ""), "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"), "oss": {}}
-    if os.environ.get("MEM0_USER_ID"):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
-        config["user_id"] = os.environ["MEM0_USER_ID"]
+    # Identity (user/agent id), host and mode are .env values like the key: read them through the
+    # profile scope too, or a secondary profile's memories land in the default profile's account.
+    config = {"mode": _scoped_env("MEM0_MODE") or "platform", "host": _scoped_env("MEM0_HOST"),
+              "agent_id": _scoped_env("MEM0_AGENT_ID") or "hermes", "oss": {}}
+    if user_id := _scoped_env("MEM0_USER_ID"):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
+        config["user_id"] = user_id
     file_cfg = _read_mem0_json(get_hermes_home() / "mem0.json")
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
+    # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends; pure OSS mode builds its
+    # backend from the local ``oss`` config and has no platform credential to resolve. Decide after
+    # mem0.json overrode the env fallback so a scope-less multiplex caller can load an OSS config
+    # without weakening fail-closed reads for credentialed modes.
+    if config.get("mode", "platform") == "oss":
+        config.setdefault("api_key", "")
+    elif not config.get("api_key"):
+        config["api_key"] = get_secret("MEM0_API_KEY", "")
     return config
 
 

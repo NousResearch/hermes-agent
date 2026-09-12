@@ -197,9 +197,6 @@ def _format_live_status_output(sid: str, session: dict, arg: str) -> str:
 # name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
 # A None no-session reply means the formatter handles a missing session itself.
 _LIVE_SLASH_OUTPUT = {
-    "wisdom": (None, lambda sid, session, arg: _format_live_wisdom_output(session or {}, "wisdom", arg)),
-    "collective-wisdom-install": (
-        None, lambda sid, session, arg: _format_live_wisdom_output(session or {}, "collective-wisdom-install", arg)),
     "compress": ("no active session for /compress",
                  lambda sid, session, arg: _mirror_slash_side_effects(sid, session, f"/compress {arg}".strip())),
     "usage": (_NO_AGENT_USAGE, _format_live_usage_output),

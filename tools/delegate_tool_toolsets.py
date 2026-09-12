@@ -17,7 +17,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "clarify",  # no user interaction
         "memory",  # no writes to shared MEMORY.md
         "send_message",  # no cross-platform side effects
-        "present_wisdom_consent",  # only the main conversation can request user consent
         "cronjob_manage",  # no scheduling more work in the parent's name
     ]
 )

@@ -1,7 +1,7 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
+import { clearAllPrompts, clearApprovalRequest, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 import {
   onScrollToBottomRequest,
@@ -45,7 +45,7 @@ describe('ScrollToBottomButton', () => {
   it('morphs into the approval pill when scrolled up with a pending approval', () => {
     pendingApproval()
     setThreadAtBottom(false)
-    render(<ScrollToBottomButton sessionId={null} />)
+    render(<ScrollToBottomButton sessionId="sess-1" />)
 
     expect(screen.getByRole('button', { name: 'Approval needed' })).toBeTruthy()
     expect(screen.getByText('Approval needed')).toBeTruthy()
@@ -57,6 +57,22 @@ describe('ScrollToBottomButton', () => {
 
     // Parked at bottom → control hidden, so it can't claim "approval needed".
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('labels uncounted content without zero and follows only its own approval', () => {
+    pendingApproval()
+    setThreadAtBottom(false)
+    const view = render(<ScrollToBottomButton sessionId="tile-runtime" />)
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' }).textContent).toBe('Scroll to bottom')
+
+    act(() => setApprovalRequest({ command: 'x', description: 'd', sessionId: 'tile-runtime', requestId: 'r1' }))
+    expect(screen.getByRole('button', { name: 'Approval needed' })).toBeTruthy()
+    act(() => clearApprovalRequest('tile-runtime', 'r1'))
+    expect(screen.queryByText('Approval needed')).toBeNull()
+    expect(screen.getByRole('button').textContent).toBe('Scroll to bottom')
+
+    view.rerender(<ScrollToBottomButton sessionId="sess-1" />)
+    expect(screen.getByRole('button', { name: 'Approval needed' })).toBeTruthy()
   })
 
   it('re-arms sticky-bottom on click', () => {

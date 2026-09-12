@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
@@ -136,13 +136,40 @@ def _canonical_sqlite_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
 
 
-def _watched_sqlite_sidecar_paths(db_path) -> Set[str]:
+def _watched_sqlite_sidecar_paths(db_path) -> Dict[str, str]:
+    """Map each sidecar's canonical (/proc-comparable) form to its literal, still-named path,
+    so a canonical match can be re-``stat``'d for identity rather than trusted as text."""
     base = os.path.abspath(os.fspath(db_path))
-    return {_canonical_sqlite_path(base + "-wal"), _canonical_sqlite_path(base + "-shm")}
+    literal = (base + "-wal", base + "-shm")
+    return {_canonical_sqlite_path(path): path for path in literal}
+
+
+def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
+    """Confirm a `` (deleted)`` /proc fd target really names an orphaned generation, not the
+    CURRENT watched sidecar.
+
+    The suffix alone is not proof: on OpenZFS a live, still-linked file whose dentry was
+    unhashed is reported as deleted while it is still the very same inode the watched path
+    names. Conversely ``st_nlink == 0`` is not proof of the opposite — a stale generation can
+    keep a surviving hard link (a backup, an operator copy) after the watched path itself is
+    removed or replaced, leaving ``st_nlink >= 1`` on a truly orphaned inode. So compare
+    identity, not link count: only an exact ``(st_dev, st_ino)`` match between the fd and the
+    CURRENT watched path proves they are the same live file. A mismatch, or a watched path
+    that cannot be stat'd at all, means the fd holds a generation the watched path no longer
+    names — the guard keeps failing closed."""
+    try:
+        fd_stat = os.stat(fd_path)
+    except OSError:
+        return True
+    try:
+        watched_stat = os.stat(watched_path)
+    except OSError:
+        return True
+    return (fd_stat.st_dev, fd_stat.st_ino) != (watched_stat.st_dev, watched_stat.st_ino)
 
 
 def _iter_proc_fd_targets():
-    """Yield ``(pid, readlink target)`` for every readable ``/proc/<pid>/fd`` entry."""
+    """Yield ``(pid, readlink target, fd path)`` for every readable ``/proc/<pid>/fd`` entry."""
     for pid_str in os.listdir("/proc"):
         if not pid_str.isdigit():
             continue
@@ -153,7 +180,8 @@ def _iter_proc_fd_targets():
             continue  # process gone or not ours
         for fd in fds:
             with contextlib.suppress(OSError):
-                yield int(pid_str), os.readlink(f"{fd_dir}/{fd}")
+                fd_path = f"{fd_dir}/{fd}"
+                yield int(pid_str), os.readlink(fd_path), fd_path
 
 
 def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
@@ -166,8 +194,10 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     holders: List[Tuple[int, str]] = []
     watched = _watched_sqlite_sidecar_paths(db_path)
     try:
-        for pid, target in _iter_proc_fd_targets():
-            if " (deleted)" in target and _canonical_sqlite_path(target) in watched:
+        for pid, target, fd_path in _iter_proc_fd_targets():
+            canonical = _canonical_sqlite_path(target)
+            if (" (deleted)" in target and canonical in watched
+                    and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                 holders.append((pid, target))
     except Exception as exc:
         logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
@@ -614,7 +644,7 @@ def count_db_holders(db_path: Path) -> Optional[int]:
         if not sys.platform.startswith("linux"):
             return None
         target = os.path.realpath(str(db_path))
-        return len({pid for pid, link in _iter_proc_fd_targets() if link == target})
+        return len({pid for pid, link, _fd_path in _iter_proc_fd_targets() if link == target})
     except Exception:
         return None
 

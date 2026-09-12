@@ -61,6 +61,8 @@ class GatewayACPAgent(acp.Agent):
         self._changed = asyncio.Condition()
         self._failure = None
         self._permissions = {}
+        self._admissions = {}
+        self._tool_args = {}
         from hermes_cli.gateway_mutations import PreparedMutations
         self._mutations = PreparedMutations()
 
@@ -145,12 +147,23 @@ class GatewayACPAgent(acp.Agent):
         return ResumeSessionResponse()
 
     async def cancel(self, session_id, **kwargs):
-        snapshot = self._snapshots.get(session_id)
-        if snapshot is None:
+        if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
+        admission_id = self._admissions.get(session_id)
+        if admission_id is None:
+            return
         client = await self._client()
-        await client.rpc("session.interrupt", session_id=session_id,
-                         execution_generation=snapshot["execution_generation"])
+        # Cancel our own admission; another surface's running turn is not ours to
+        # interrupt. Only when our admission is the one executing do we interrupt.
+        try:
+            await client.rpc("prompt.cancel", session_id=session_id, admission_id=admission_id)
+        except GatewayClientError as exc:
+            if str(exc) != "stale_generation":
+                raise
+            receipt = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id)
+            if receipt["status"] == "started":
+                await client.rpc("session.interrupt", session_id=session_id,
+                                 execution_generation=receipt["execution_generation"])
 
     async def fork_session(self, cwd, session_id, mcp_servers=None, **kwargs):
         from acp.schema import ForkSessionResponse
@@ -214,11 +227,15 @@ class GatewayACPAgent(acp.Agent):
         receipt = await client.rpc("prompt.submit", session_id=session_id,
                                    input_id=uuid.uuid4().hex, **submit)
         admission_id = receipt["admission_id"]
-        async with self._changed:
-            await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None)
-            if self._failure:
-                raise self._failure
-            terminal = self._terminals.pop(admission_id)
+        self._admissions[session_id] = admission_id
+        try:
+            async with self._changed:
+                await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None)
+                if self._failure:
+                    raise self._failure
+                terminal = self._terminals.pop(admission_id)
+        finally:
+            self._admissions.pop(session_id, None)
         outcome = terminal.get("outcome")
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
@@ -258,6 +275,25 @@ class GatewayACPAgent(acp.Agent):
             task = self._permissions.pop((sid, payload["prompt_id"], payload["execution_generation"]), None)
             if task:
                 task.cancel()
+            return
+        # In-process turns publish ``tool_name``; managed workers publish ``name``.
+        tool_name = payload.get("tool_name") or payload.get("name") or "tool"
+        if kind == "tool.start":
+            from acp_adapter.tools import build_tool_start, coerce_tool_args
+            args = coerce_tool_args(payload.get("args"))
+            self._tool_args[(sid, payload["tool_call_id"])] = (tool_name, args)
+            if self._conn:
+                await self._conn.session_update(session_id=sid,
+                    update=build_tool_start(payload["tool_call_id"], tool_name, args))
+            return
+        if kind == "tool.complete":
+            from acp_adapter.tools import build_tool_complete
+            name, args = self._tool_args.pop((sid, payload["tool_call_id"]), (tool_name, {}))
+            result = payload.get("result")
+            if self._conn:
+                await self._conn.session_update(session_id=sid, update=build_tool_complete(
+                    payload["tool_call_id"], name, result=result if isinstance(result, str) else None,
+                    function_args=args))
             return
         if kind == "message.delta":
             text = payload.get("text", "")

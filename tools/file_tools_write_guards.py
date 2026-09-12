@@ -106,10 +106,24 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
         return filepath
 
 
+def _sensitive_path_match_form(path: str, *, windows: bool | None = None) -> str:
+    """Return the separator form used by the POSIX sensitive-path denylist.
+
+    A leading POSIX path is accepted by the Windows CLI, but ``normpath`` and
+    task resolution turn its separators into backslashes.  Keep native paths
+    intact for every other guard and normalize only this lexical comparison.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    return path.replace("\\", "/") if windows else path
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
-    if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
+    sensitive_candidates = tuple(_sensitive_path_match_form(c) for c in candidates)
+    if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS
+           for c in sensitive_candidates):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
             "Use the terminal tool with sudo if you need to modify system files.")

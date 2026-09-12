@@ -437,6 +437,18 @@ def _normalize_command_for_detection(command: str) -> str:
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    command = re.sub(
+        r"(?:%HERMES_HOME%|\$env:HERMES_HOME|\$\{env:HERMES_HOME\})[/\\]",
+        "$HERMES_HOME/", command, flags=re.IGNORECASE,
+    )
+    command = re.sub(
+        r"(?:%HERMES_HOME%|\$env:HERMES_HOME|\$\{env:HERMES_HOME\})(?=$|[\s'\"])",
+        "$HERMES_HOME", command, flags=re.IGNORECASE,
+    )
+    command = re.sub(
+        r"(?:%HOME%|\$env:HOME|\$\{env:HOME\})[/\\]\.hermes",
+        "$HOME/.hermes", command, flags=re.IGNORECASE,
+    )
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
     command = re.sub(r'\\([^\n])', r'\1', command)
     command = re.sub(r"''|\"\"", '', command)

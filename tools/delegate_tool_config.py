@@ -221,28 +221,32 @@ def _resolve_child_credential_pool(
     endpoint identity (the ``custom:<name>`` pool key derived from the base_url) and only share the parent's
     pool when both resolve to the *same* custom endpoint. See #7833.
     """
-    parent_pool = getattr(parent_agent, "_credential_pool", None)
     if not effective_provider:
-        return parent_pool
+        return getattr(parent_agent, "_credential_pool", None)
+
     parent_provider = getattr(parent_agent, "provider", None) or ""
+    parent_pool = getattr(parent_agent, "_credential_pool", None)
     try:
-        if effective_provider == "custom":
-            from agent.credential_pool import get_custom_provider_pool_key
-            child_key = get_custom_provider_pool_key(effective_base_url)
-            if child_key is None:
-                return None
-            parent_key = get_custom_provider_pool_key(getattr(parent_agent, "base_url", None))
-            if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
-                return parent_pool
-            return _loaded_pool(child_key)
-        if parent_pool is not None and effective_provider == parent_provider:
+        from agent.credential_pool import resolve_runtime_pool_key
+
+        child_key = resolve_runtime_pool_key(effective_provider, effective_base_url)
+        # An unregistered direct endpoint has no scoped pool identity. It must
+        # keep the child's fixed credential rather than borrow another custom
+        # endpoint's pool. See #7833.
+        if str(effective_provider).strip().lower() == "custom" and child_key == "custom":
+            return None
+
+        parent_key = resolve_runtime_pool_key(
+            parent_provider, getattr(parent_agent, "base_url", None)
+        )
+        if parent_pool is not None and child_key == parent_key:
             return parent_pool
-        return _loaded_pool(effective_provider)
+        return _loaded_pool(child_key)
     except Exception as exc:
-        if effective_provider == "custom":
-            logger.debug("Could not resolve custom credential pool for child endpoint '%s': %s", effective_base_url, exc)
-        else:
-            logger.debug("Could not load credential pool for child provider '%s': %s", effective_provider, exc)
+        logger.debug(
+            "Could not resolve credential pool for child provider '%s' at '%s': %s",
+            effective_provider, effective_base_url, exc,
+        )
     return None
 
 def _merge_request_overrides(runtime_overrides, explicit_overrides):

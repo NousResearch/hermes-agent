@@ -14,6 +14,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
 )
 from gateway.session import SessionEntry, build_session_key
+from gateway.shutdown_flush import flush_overflow_to_file, recover_pending_to_db
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -179,8 +180,8 @@ async def test_idle_restart_drain_queues_every_message_but_throttles_notice():
 
     assert first_result[0] is True and "queued" in first_result[1]
     assert second_result == (True, None)
-    assert adapter._pending_messages[session_key] is first
-    assert runner._session_state(session_key).conversation.queued_events == [second]
+    assert adapter._pending_messages == {}
+    assert runner._session_state(session_key).conversation.queued_events == [first, second]
 
 
 @pytest.mark.asyncio
@@ -203,8 +204,52 @@ async def test_busy_and_idle_restart_drain_share_chat_notice_cooldown():
 
     assert "queued" in idle_result[1]
     assert adapter.sent == []
-    assert adapter._pending_messages[session_key] is idle_event
-    assert runner._session_state(session_key).conversation.queued_events == [busy_event]
+    assert adapter._pending_messages[session_key] is busy_event
+    assert runner._session_state(session_key).conversation.queued_events == [idle_event]
+
+
+@pytest.mark.asyncio
+async def test_idle_restart_drain_holds_events_outside_adapter_lifecycle(
+    tmp_path, monkeypatch
+):
+    runner, adapter = make_restart_runner()
+    runner._draining = True
+    runner._restart_requested = True
+    runner._busy_input_mode = "queue"
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    handled = []
+
+    async def drain_handler(event):
+        handled.append(event.message_id)
+        await runner._hm_dispatch_idle_commands(event, event.source, session_key)
+        return None
+
+    adapter.set_message_handler(drain_handler)
+    events = [
+        MessageEvent(
+            text=text, message_type=MessageType.TEXT, source=source, message_id=f"m{index}"
+        )
+        for index, text in enumerate(("first", "second"), start=1)
+    ]
+    for event in events:
+        await adapter.handle_message(event)
+        await adapter._session_tasks[session_key]
+
+    assert handled == ["m1", "m2"]
+    assert adapter._pending_messages == {}
+    assert session_key not in adapter._active_sessions
+    assert runner._session_state(session_key).conversation.queued_events == events
+
+    flush_dir = tmp_path / "pending_messages"
+    flush_dir.mkdir()
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    assert flush_overflow_to_file({session_key: events}) == 2
+    recovered_db = MagicMock()
+    assert recover_pending_to_db(recovered_db) == 2
+    assert [
+        call.kwargs["content"] for call in recovered_db.append_message.call_args_list
+    ] == ["first", "second"]
 
 
 @pytest.mark.asyncio

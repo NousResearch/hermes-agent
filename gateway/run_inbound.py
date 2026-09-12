@@ -966,7 +966,7 @@ class GatewayInboundMixin:
                 self._effective_busy_input_mode(source)
             )
             if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queue_during_drain = await self._hold_idle_event_for_restart(_quick_key, event)
             if not self._should_send_drain_notice(source):
                 return True, None, command
             message = (

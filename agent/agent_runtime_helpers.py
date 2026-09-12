@@ -637,6 +637,32 @@ def strip_think_blocks(agent, content: str) -> str:
     return content
 
 
+def sync_primary_runtime_credentials(agent) -> None:
+    """Refresh ``agent._primary_runtime`` after an in-place credential adoption
+    (env refresh, OAuth/token re-mint). Adoption paths update the live client but
+    not the snapshot, so the next transport recovery or turn-start restore
+    resurrects the pre-adoption key/endpoint from it — the exact resurrection
+    class #75091's snapshot comment warns about, via the adoption paths.
+
+    Skipped while a fallback is active: mid-fallback token re-mints adopt the
+    FALLBACK's identity onto the agent, and the snapshot exists precisely to
+    preserve the primary identity across the fallback. Syncing there would let
+    the next restore_primary_runtime promote the fallback to primary permanently.
+
+    Best-effort: agents without a snapshot (init-time tests, partial fixtures)
+    are left untouched; a build failure keeps the old snapshot rather than
+    killing the adoption that already succeeded.
+    """
+    if getattr(agent, "_primary_runtime", None) is None:
+        return
+    if getattr(agent, "_fallback_activated", False):
+        return
+    try:
+        agent._primary_runtime = _build_primary_runtime_snapshot(agent, getattr(agent, "api_mode", "chat_completions"))
+    except Exception:
+        logger.warning("sync_primary_runtime_credentials snapshot rebuild failed", exc_info=True)
+
+
 def sync_credential_pool_entry_id(agent) -> None:
     """Rebind ``agent._credential_pool_entry_id`` from the current pool + key. OAuth refreshes
     can replace the token before recovery runs, so the key alone cannot attribute a failure;
@@ -3259,7 +3285,7 @@ __all__ = [
     "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",
     "looks_like_codex_intermediate_ack", "copy_reasoning_content_for_api", "cleanup_dead_connections",
     "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
-    "force_close_tcp_sockets",
+    "force_close_tcp_sockets", "sync_primary_runtime_credentials",
 ]
 
 

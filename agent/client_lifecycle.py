@@ -549,7 +549,16 @@ class ClientLifecycleMixin:
         """Apply a fresh key/base_url to the OpenAI-style kwargs and rebuild the shared client."""
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         self._sync_client_kwargs_credentials()
-        return self._replace_primary_openai_client(reason=reason)
+        adopted = self._replace_primary_openai_client(reason=reason)
+        if adopted:
+            # Token re-mints adopt a new key/endpoint in place; without a snapshot refresh the next
+            # transport recovery resurrects the expired pre-mint credentials from _primary_runtime.
+            try:
+                from agent.agent_runtime_helpers import sync_primary_runtime_credentials
+                sync_primary_runtime_credentials(self)
+            except Exception:
+                logger.debug("sync_primary_runtime_credentials after %s failed", reason, exc_info=True)
+        return adopted
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
@@ -764,6 +773,13 @@ class ClientLifecycleMixin:
             sync_credential_pool_entry_id(self)
         except Exception:
             logger.debug("sync_credential_pool_entry_id after env refresh failed", exc_info=True)
+        # Keep _primary_runtime in step with the adopted endpoint/key, or transport recovery /
+        # turn-start restore resurrects the pre-adoption endpoint from the init snapshot (#75091 class).
+        try:
+            from agent.agent_runtime_helpers import sync_primary_runtime_credentials
+            sync_primary_runtime_credentials(self)
+        except Exception:
+            logger.debug("sync_primary_runtime_credentials after env refresh failed", exc_info=True)
         self._env_creds_seen = (base_url, api_key)
         logger.info("Applied updated .env credentials for %s: endpoint %s", self.provider, self.base_url)
         return True

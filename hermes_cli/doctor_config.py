@@ -187,6 +187,18 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
     return known, custom_providers, resolve_auth, normalize, resolve_full
 
 
+def _as_config_str(value: object) -> str:
+    """Coerce a raw config scalar to a stripped string, tolerating junk shapes.
+
+    ``config.yaml`` is user-authored, so ``model.default`` / ``model.provider``
+    can legitimately arrive as a list, dict, int, or None. Doctor is a
+    diagnostic: a malformed value must be reported, never crash the check —
+    ``.strip()`` on a non-string raises inside the ``try`` guarding the whole
+    model/provider section, whose blanket handler then hides every check in it.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
 # Vendor/model slugs are valid on aggregators and any custom provider; Fireworks' native IDs are slash-form
 # (accounts/fireworks/models/...) and DeepInfra's catalog is exclusively vendor/model.
 _VENDOR_SLUG_PROVIDERS = {
@@ -214,10 +226,26 @@ def _validate_model_config(config_path, issues: list) -> None:
     # Detect stale root-level model keys (known bug source — PR #4329)
     from hermes_cli.config import read_user_config_raw
     cfg = read_user_config_raw(config_path)
-    model_section = cfg.get("model") or {}
-    provider_raw = (model_section.get("provider") or "").strip()
+    # read_user_config_raw() deliberately skips migration, but every behavioural consumer
+    # (cli.py, config.py, managed_scope.py) applies _normalize_root_model_keys on load, so
+    # ``model: <id>`` + root ``provider:`` (what ``hermes config set model`` writes) resolves
+    # fine at runtime. Reading the unmigrated shape left model_section a str, so the first
+    # .get() raised AttributeError and the blanket handler discarded every check in this
+    # block — unknown provider, vendor-prefixed id, and missing API key alike.
+    try:
+        from hermes_cli.config import _normalize_root_model_keys
+        cfg = _normalize_root_model_keys(cfg)
+    except Exception:
+        pass
+    model_section = cfg.get("model")
+    # ``model:`` may still be a non-mapping (a bare list without root keys), or a list that
+    # migration wrapped as {"default": [...]}, so coerce per value rather than trusting the
+    # container's type.
+    if not isinstance(model_section, dict):
+        model_section = {}
+    provider_raw = _as_config_str(model_section.get("provider"))
     provider = provider_raw.lower()
-    default_model = (model_section.get("default") or model_section.get("model") or "").strip()
+    default_model = _as_config_str(model_section.get("default") or model_section.get("model"))
     known_providers, custom_providers, resolve_auth, normalize, resolve_full = _known_provider_ids(cfg)
     valid_provider_ids = set(known_providers)
     accept = {provider} if provider else set()

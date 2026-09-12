@@ -11,6 +11,7 @@ active_profile (child-process inheritance contract).
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -122,6 +123,36 @@ class TestApplyProfileOverrideHermesHomeGuard:
 
         assert os.environ.get("HERMES_HOME") == str(profile_dir)
         assert sys.argv == ["hermes", "gateway", "install", "--system"]
+
+    def test_webhook_route_profile_reaches_subparser_without_selecting_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """The subscribe target profile belongs to the route, not this CLI process."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True)
+        (hermes_root / "profiles" / "compta").mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["hermes", "webhook", "subscribe", "notifier", "--profile", "compta"],
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        from hermes_cli.subcommands.webhook import build_webhook_parser
+
+        _apply_profile_override()
+
+        assert os.environ["HERMES_HOME"] == str(hermes_root)
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_webhook_parser(subparsers, cmd_webhook=lambda args: None)
+        args = parser.parse_args(sys.argv[1:])
+        assert args.command == "webhook"
+        assert args.webhook_action == "subscribe"
+        assert args.profile == "compta"
 
 
 

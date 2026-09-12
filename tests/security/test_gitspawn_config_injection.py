@@ -37,6 +37,29 @@ pytestmark = pytest.mark.skipif(not _HAS_GIT, reason="git not installed")
 # ---------------------------------------------------------------------------
 
 
+def _make_filter_repo(tmp_path: Path, name: str) -> tuple[Path, Path]:
+    repo = tmp_path / name
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitattributes").write_text("payload filter=evil\n")
+    (repo / "payload").write_text("base\n")
+    subprocess.run(
+        [
+            "git", "-C", str(repo), "-c", "user.email=a@b", "-c", "user.name=a",
+            "add", ".",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(repo), "-c", "user.email=a@b", "-c", "user.name=a",
+            "commit", "-qm", "init",
+        ],
+        check=True,
+    )
+    (repo / "payload").write_text("changed\n")
+    return repo, tmp_path / f"MARKER-{name}"
+
+
 class TestHardenGitArgv:
     def test_diff_gets_flags_after_subcommand(self):
         assert harden_git_argv(["diff", "HEAD"]) == [
@@ -75,6 +98,70 @@ class TestHardenGitArgv:
             "-c", "core.quotePath=false", "diff", *NO_DRIVER_DIFF_FLAGS, "--numstat",
         ]
 
+    def test_filter_overrides_injected_before_diff(self, tmp_path):
+        repo = tmp_path / "poc_filter"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        with (repo / ".git" / "config").open("a") as f:
+            f.write('[filter "pwn"]\n\tclean = "cat"\n')
+        out = harden_git_argv(["-C", str(repo), "diff", "HEAD"])
+        assert out == [
+            "-C", str(repo), "-c", "filter.pwn.clean=", "diff", *NO_DRIVER_DIFF_FLAGS, "HEAD",
+        ]
+
+    def test_filter_with_dots_in_name_handled(self, tmp_path):
+        repo = tmp_path / "poc_dots"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        with (repo / ".git" / "config").open("a") as f:
+            f.write('[filter "evil.name"]\n\tclean = "cat"\n')
+        out = harden_git_argv(["-C", str(repo), "diff", "HEAD"])
+        assert "-c" in out and "filter.evil.name.clean=" in out
+
+    def test_worktree_config_filter_is_neutralized(self, tmp_path):
+        repo, marker = _make_filter_repo(tmp_path, "worktree")
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "extensions.worktreeConfig", "true"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git", "-C", str(repo), "config", "--worktree",
+                "filter.evil.clean", f"touch {marker}; cat",
+            ],
+            check=True,
+        )
+
+        hardened = harden_git_argv(["-C", str(repo), "diff", "HEAD"])
+        subprocess.run(["git", *hardened], capture_output=True, env=noninteractive_git_env())
+        assert not marker.exists()
+
+    @pytest.mark.parametrize("conditional", [False, True])
+    def test_included_config_mutation_invalidates_filter_discovery(self, tmp_path, conditional):
+        repo, marker = _make_filter_repo(tmp_path, f"include-{conditional}")
+        included = repo / "filters.cfg"
+        included.write_text("")
+        section = (
+            f'[includeIf "gitdir:{(repo / ".git").as_posix()}"]'
+            if conditional else "[include]"
+        )
+        with (repo / ".git" / "config").open("a") as f:
+            f.write(f"{section}\n\tpath = ../filters.cfg\n")
+
+        assert "filter.evil.clean=" not in harden_git_argv(
+            ["-C", str(repo), "diff", "HEAD"]
+        )
+        included.write_text(f'[filter "evil"]\n\tclean = touch {marker}; cat\n')
+
+        hardened = harden_git_argv(["-C", str(repo), "diff", "HEAD"])
+        assert "filter.evil.clean=" in hardened
+        subprocess.run(["git", *hardened], capture_output=True, env=noninteractive_git_env())
+        assert not marker.exists()
+
+    def test_non_git_cwd_returns_no_filter_overrides(self, tmp_path):
+        non_git = tmp_path / "not_git"
+        non_git.mkdir()
+        out = harden_git_argv(["diff", "HEAD"], cwd=non_git)
+        assert out == ["diff", *NO_DRIVER_DIFF_FLAGS, "HEAD"]
+
 
 # ---------------------------------------------------------------------------
 # 2. Real-git E2E: every automatic path neutralizes every sink
@@ -108,14 +195,15 @@ def _make_malicious_repo(tmp: Path) -> tuple[Path, Path]:
         f.write(f'[core]\n\tfsmonitor = "touch {marker}.fsmonitor"\n\thooksPath = {hooks}\n')
         f.write(f'[diff "evil"]\n\tcommand = "touch {marker}.extdiff"\n')
         f.write(f'\ttextconv = "sh -c \'touch {marker}.textconv; cat\'"\n')
-    (repo / ".gitattributes").write_text("* diff=evil\n")
+        f.write(f'[filter "evil"]\n\tclean = "touch {marker}.clean; cat"\n')
+    (repo / ".gitattributes").write_text("* diff=evil filter=evil\n")
     (repo / "README").write_text("changed\n")  # dirty working tree so diffs run
     return repo, marker
 
 
 def _fired(marker: Path) -> list[str]:
     out = []
-    for sink in ("fsmonitor", "hook", "extdiff", "textconv"):
+    for sink in ("fsmonitor", "hook", "extdiff", "textconv", "clean"):
         p = Path(f"{marker}.{sink}")
         if p.exists():
             out.append(sink)
@@ -135,7 +223,7 @@ def test_baseline_unhardened_git_fires_sinks(malicious_repo):
     repo, marker = malicious_repo
     subprocess.run(["git", "-C", str(repo), "diff", "HEAD"], capture_output=True)
     fired = _fired(marker)
-    assert "fsmonitor" in fired and "extdiff" in fired, fired
+    assert "fsmonitor" in fired and "extdiff" in fired and "clean" in fired, fired
 
 
 def test_coding_workspace_snapshot_is_safe(malicious_repo):

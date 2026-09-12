@@ -572,6 +572,10 @@ export const ru = defineLocale({
       appActionsDesc: 'Где в заголовке окна сидят Настройки, Макет и HUD. Справа оставляют место для вкладок слева.',
       appActionsLeft: 'Слева',
       appActionsRight: 'Справа',
+      externalButtonsTitle: 'Сторонние кнопки в заголовке окна',
+      externalButtonsDesc:
+        'Место для кнопок, которые другие программы (DisplayFusion, Actual Window Manager) добавляют в заголовок окна, — чтобы они не перекрывали инструменты Hermes.',
+      externalButtonsNone: 'Нет',
       terminalFontTitle: 'Шрифт терминала',
       terminalFontDesc:
         'Выберите установленный шрифт для терминалов приложения. Nerd Fonts отображают Powerlevel10k и иконки оболочки; оставьте пустым, чтобы использовать встроенный JetBrains Mono.',

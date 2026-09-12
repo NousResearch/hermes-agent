@@ -30,6 +30,7 @@ import {
   setTitlebarAppActionsSide,
   type TitlebarAppActionsSide
 } from '@/store/titlebar-app-actions'
+import { $titlebarExternalButtons, setTitlebarExternalButtons } from '@/store/titlebar-external-buttons'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import {
@@ -395,6 +396,9 @@ function GlassRow({ children, label }: GlassRowProps) {
   )
 }
 
+/** Count of third-party caption buttons the titlebar makes room for. */
+type ExternalButtonOptionId = '0' | '1' | '2' | '3' | '4'
+
 export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
@@ -403,6 +407,7 @@ export function AppearanceSettings() {
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
+  const titlebarExternalButtons = useStore($titlebarExternalButtons)
   const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
@@ -496,6 +501,14 @@ export function AppearanceSettings() {
     { id: 'right', label: a.appActionsRight },
     { id: 'left', label: a.appActionsLeft }
   ] as const satisfies readonly { id: TitlebarAppActionsSide; label: string }[]
+
+  const externalButtonsOptions = [
+    { id: '0', label: a.externalButtonsNone },
+    { id: '1', label: '1' },
+    { id: '2', label: '2' },
+    { id: '3', label: '3' },
+    { id: '4', label: '4' }
+  ] as const satisfies readonly { id: ExternalButtonOptionId; label: string }[]
 
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
@@ -686,6 +699,21 @@ export function AppearanceSettings() {
             description={a.appActionsDesc}
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
             title={a.appActionsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setTitlebarExternalButtons(Number(id))
+                }}
+                options={externalButtonsOptions}
+                value={String(titlebarExternalButtons) as ExternalButtonOptionId}
+              />
+            }
+            description={a.externalButtonsDesc}
+            title={a.externalButtonsTitle}
           />
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),

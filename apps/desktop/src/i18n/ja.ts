@@ -504,6 +504,10 @@ export const ja = defineLocale({
         '設定・レイアウト・HUD をタイトルバーの左右どちらに置くか。右にするとタブ用のスペースが左に残ります。',
       appActionsLeft: '左',
       appActionsRight: '右',
+      externalButtonsTitle: 'サードパーティのタイトルバーボタン',
+      externalButtonsDesc:
+        '他のアプリ（DisplayFusion、Actual Window Manager など）が追加するタイトルバーボタン用の余白を確保し、Hermes のタイトルバーツールがその下に隠れないようにします。',
+      externalButtonsNone: 'なし',
       terminalFontTitle: 'ターミナルフォント',
       terminalFontDesc:
         'Desktop のターミナルで使用するインストール済みフォントを選びます。Nerd Font は Powerlevel10k とシェルアイコンを表示できます。空欄では内蔵の JetBrains Mono を使用します。',

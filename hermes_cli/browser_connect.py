@@ -105,6 +105,18 @@ _BROWSERS = (
         ("/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable",
          "/opt/microsoft/msedge/microsoft-edge", "/opt/microsoft/msedge/msedge"),
         "microsoft-edge", linux_exec=("microsoft-edge", "microsoft-edge-stable")),
+    # Helium (imput): Windows ProgId HeliumHTM.<hash>, install + profile under
+    # LOCALAPPDATA\imput\Helium. win_bins is helium.exe only — chrome.exe would
+    # steal Google Chrome via shutil.which. Darwin/Linux default-browser maps
+    # are left unset (unverified IDs); mac/linux fields fill Helium names only.
+    _Browser(
+        "helium", "/Applications/Helium.app/Contents/MacOS/Helium",
+        ("Helium",), ("helium.exe",),
+        (("imput", "Helium", "Application", "chrome.exe"),),
+        ("imput", "Helium", "User Data"),
+        ("helium",),
+        ("/opt/helium/chrome",),
+        "helium"),
 )
 _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 
@@ -122,7 +134,8 @@ _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 _WINDOWS_PROGID_MAP = (
     ("chromehtml", "chrome"), ("msedgehtm", "edge"),
     ("braveohtml", "brave-origin"),  # Brave Origin stable (brave-core install_static)
-    ("bravehtml", "brave"), ("chromiumhtm", "chromium"))
+    ("bravehtml", "brave"), ("chromiumhtm", "chromium"),
+    ("heliumhtm", "helium"))
 
 # ``ChromeBHTML`` = Beta, ``ChromeDHTML`` = Dev, ``ChromeSSHTML`` = Canary (SxS);
 # ``MSEdge[BDC]HTML`` = Edge channels; Brave Origin Beta=BraveOBHTML, Dev=BraveODHTML,

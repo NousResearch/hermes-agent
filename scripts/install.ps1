@@ -4108,11 +4108,15 @@ function Install-Desktop {
         # is the artifact), but on failure we scan $npmOut for the TLS-trust
         # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
         # instead of an opaque "exit 1" (issue #38016).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+        & $npmExe ci --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+            & $npmExe install --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+            $code = $LASTEXITCODE
+        }
+        if ($code -eq 0) {
+            & node apps/desktop/scripts/ensure-rolldown-binding.mjs
             $code = $LASTEXITCODE
         }
         $ErrorActionPreference = $prevEAP
@@ -4221,7 +4225,7 @@ function Install-Desktop {
                 $code = $LASTEXITCODE
             }
         }
-        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
+        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR -and -not (Test-ElectronDist -InstallDir $InstallDir)) {
             $mirror = $script:DesktopElectronFallbackMirror
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
             Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"

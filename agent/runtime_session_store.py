@@ -51,13 +51,15 @@ class WorkerRPC:
         else:
             raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
         with self.lock:
-            descriptor = query_identify(self.home, timeout=5)
-            if descriptor.get('pid') == os.getpid():
-                raise WorkerPersistenceError('synchronous_self_rpc')
-            from hermes_cli.gateway_runtime import _endpoint
-            discovery = _endpoint(descriptor, self.home)
+            # A served secondary has no socket; its multiplexer's descriptor names it.
+            from hermes_cli.gateway_runtime import discover_gateway_endpoint
+            discovery = discover_gateway_endpoint(self.home, timeout=5)
             if discovery.state != 'ready' or discovery.endpoint is None:
                 raise WorkerPersistenceError('owner_unavailable')
+            from hermes_cli.gateway_runtime import control_home_for
+            descriptor = query_identify(control_home_for(self.home, discovery.endpoint), timeout=5)
+            if descriptor.get('pid') == os.getpid():
+                raise WorkerPersistenceError('synchronous_self_rpc')
             endpoint = discovery.endpoint
             ticket = _session_ticket(self.home, endpoint,
                 purpose='interactive' if method == 'worker.register' else 'worker-adoption')

@@ -22,6 +22,9 @@ class GatewayEndpoint:
     api_origin: str
     supervisor: Literal["none", "systemd", "launchd", "windows", "external"]
     capabilities: frozenset[str]
+    # Home whose control socket answers for this endpoint: the profile's own home, or the
+    # default multiplexer's root when the profile is served by it.
+    control_home: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,7 +38,7 @@ def _canonical_home(home: str | Path) -> str:
     return os.path.normcase(str(Path(home).expanduser().resolve()))
 
 
-def _endpoint(payload: dict, home: Path) -> GatewayDiscovery:
+def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> GatewayDiscovery:
     if type(payload.get("runtime_protocol")) is not int or payload["runtime_protocol"] != 1:
         return GatewayDiscovery("incompatible", reason_code="runtime_protocol")
     profiles = payload.get("served_profiles")
@@ -79,11 +82,57 @@ def _endpoint(payload: dict, home: Path) -> GatewayDiscovery:
         profile_id=matches[0]["profile_id"], instance_id=instance,
         authority_epoch=epoch, runtime_protocol=1, api_origin=origin,
         supervisor=supervisor, capabilities=frozenset(capabilities),
+        control_home=str(control_home) if control_home is not None else None,
     ))
 
 
+def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:
+    """Home whose control socket mints tickets for *endpoint* (the multiplexer's for a served profile)."""
+    if endpoint is not None and endpoint.control_home:
+        return Path(endpoint.control_home)
+    return home
+
+
+def _multiplexer_home_for(home: Path) -> Path | None:
+    """Default root that may multiplex *home*, when *home* is a named profile under it."""
+    from hermes_constants import named_profile_home
+    if named_profile_home(home) is None:
+        return None
+    root = home.parent.parent
+    return root if root != home else None
+
+
+def _multiplexer_starting(home: Path) -> bool:
+    from hermes_cli.gateway_runtime_discovery import missing_owner_state
+    root = _multiplexer_home_for(home)
+    return root is not None and missing_owner_state(root) == "starting"
+
+
+def _served_by_multiplexer(home: Path, *, timeout: float) -> GatewayDiscovery | None:
+    """A served secondary has no socket of its own: the default multiplexer's control socket
+    answers for it, and its ``identify`` lists the home under ``served_profiles``. Only the
+    multiplexer's live descriptor proves service; a held ``gateway.lock`` alone does not."""
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, query_identify
+    root = _multiplexer_home_for(home)
+    if root is None:
+        return None
+    try:
+        payload = query_identify(root, timeout=timeout)
+    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, DiscoveryError, PermissionError,
+            OSError, ValueError, TypeError):
+        return None
+    result = _endpoint(payload, home, control_home=root)
+    if result.state == "inaccessible" and result.reason_code == "profile_mismatch":
+        return None  # the multiplexer does not serve this profile
+    return result
+
+
 def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0) -> GatewayDiscovery:
-    """Read live control identity, preserving uncertainty instead of spawning."""
+    """Read live control identity, preserving uncertainty instead of spawning.
+
+    A named profile served by the default multiplexer resolves to the multiplexer's endpoint
+    with ``profile_id`` = the profile's own home, so clients attach to it with that identity.
+    """
     from hermes_cli.gateway_runtime_discovery import DiscoveryError, missing_owner_state, query_identify
 
     if not math.isfinite(timeout) or timeout <= 0:
@@ -92,6 +141,9 @@ def discover_gateway_endpoint(profile_home: str | Path, *, timeout: float = 2.0)
     try:
         return _endpoint(query_identify(home, timeout=timeout), home)
     except (FileNotFoundError, ConnectionRefusedError):
+        served = _served_by_multiplexer(home, timeout=timeout)
+        if served is not None:
+            return served
         return GatewayDiscovery(missing_owner_state(home))
     except TimeoutError:
         return GatewayDiscovery("inaccessible", reason_code="control_timeout")
@@ -140,6 +192,10 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = 30.0) -
             if observed.state not in {"absent", "starting"}:
                 return observed
             if observed.state == "starting":
+                requested = True
+            # A default multiplexer that is still starting will serve this named profile; never
+            # spawn a competing per-profile daemon while its reservation is pending.
+            if observed.state == "absent" and not requested and _multiplexer_starting(home):
                 requested = True
             if observed.state == "absent" and not requested:
                 service = discover_existing_gateway_service(home, deadline=deadline)

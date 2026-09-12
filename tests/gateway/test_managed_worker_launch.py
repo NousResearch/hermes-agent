@@ -105,7 +105,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
     gate = tmp_path / 'background-exit'
     if worker_action == 'background':
         # A session-owned background process is a turn-boundary survivor, not turn litter (F24).
-        peer.command = f'printf MANAGED_TOOL_EFFECT; while [ ! -e {gate} ]; do sleep .1; done'
+        peer.command = f'printf MANAGED_TOOL_EFFECT; while test ! -e {gate}; do sleep .1; done'
         peer.tool_args = {'background': True}
     peer.blocked, peer.release = threading.Event(), threading.Event()
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
@@ -123,7 +123,7 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         config['mcp_servers'] = {'owned': {'command': sys.executable, 'args': [str(home / 'peer.py')]}}
         config['platform_toolsets']['cli'] = ['terminal', 'owned']
     (home / 'config.yaml').write_text(json.dumps(config))
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     audit = tmp_path / 'sqlite-opens.jsonl'
     site = tmp_path / 'audit-site'
     site.mkdir()

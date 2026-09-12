@@ -86,7 +86,7 @@ print(json.dumps({{'max_turns': cfg['agent']['max_turns'], 'raw_model': raw['mod
     'opened': opened, 'plugins': sorted(get_plugin_manager()._plugins),
     'executed': os.path.exists(os.path.join(home, 'plugin-executed'))}}))
 ''', encoding='utf-8')
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(root))
     result = subprocess.run([sys.executable, str(script)], cwd=root, env=env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=90)

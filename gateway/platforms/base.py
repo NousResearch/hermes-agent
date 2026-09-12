@@ -2042,14 +2042,19 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
-    def _mark_connected(self) -> None:
+    def _mark_connected(self, *, listener_base: Optional[str] = None) -> None:
+        """``listener_base`` (``http://host:port``) is stamped by port-binders after a REAL bind: under the
+        multiplexer it is the shared listener a served profile's ``/p/<profile>/`` mirror hangs off, and
+        what the dashboard/Desktop report as that profile's api_server/webhook URL."""
         self._running = True
         self._fatal_error_code = self._fatal_error_message = None
         self._fatal_error_retryable = True
         if self.send_path_degraded:
             self._mark_degraded()
         else:
-            self._write_runtime_status_safe("connected", platform_state="connected", error_code=None, error_message=None)
+            extra = {"listener_base": listener_base} if listener_base else {}
+            self._write_runtime_status_safe(
+                "connected", platform_state="connected", error_code=None, error_message=None, **extra)
 
     def _mark_degraded(self) -> None:
         """Publish ``retrying`` for a running adapter whose delivery path is unproven."""

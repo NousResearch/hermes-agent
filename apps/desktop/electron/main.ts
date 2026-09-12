@@ -254,7 +254,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { createLocalBackendLifecycle } from './local-backend-lifecycle'
+import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -12126,7 +12126,8 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
   const primary = backendConnectionState.invalidate()
 
   stopBackendChild(primary)
-  await Promise.all([waitForBackendExit(primary), stopAllPoolBackends()])
+  // Bounded: a backend that ignores SIGTERM must not wedge app quit (main's 7 s teardown budget).
+  await waitForTeardown([localShutdown, waitForBackendExit(primary), stopAllPoolBackends()], 7_000)
 })
 
 const quitTeardown = createQuitTeardownCoordinator(() => app.quit())

@@ -91,7 +91,7 @@ def test_ordinary_daemon_discovery_matches_legacy_extensions(tmp_path):
     (plugin / 'plugin.yaml').write_text('name: probe_plugin\nversion: 0.1.0\ndescription: Discovery fixture\n')
     (plugin / '__init__.py').write_text(
         "def register(ctx):\n    ctx.register_command('probe-plugin', lambda args: args, description='Disposable plugin discovery')\n")
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1')
     requests = [('commands.catalog', {}), *[('complete.slash', {'text': text})
@@ -123,7 +123,12 @@ sys.__stdout__.write(json.dumps(results) + '\\n')
                             return reply
             for (method, params), baseline in zip(requests, expected):
                 reply = await rpc(method, params)
-                assert reply.get('result') == baseline, reply
+                got = reply.get('result')
+                if got != baseline and isinstance(got, dict) and 'skills' in got:
+                    a, b = got['skills'], baseline['skills']
+                    delta = {k: (a.get(k), b.get(k)) for k in set(a) | set(b) if a.get(k) != b.get(k)}
+                    raise AssertionError(f'skills delta daemon vs legacy: {delta}')
+                assert got == baseline, reply
             for method in ('commands.catalog', 'complete.slash'):
                 reply = await rpc(method, {'profile': 'foreign-profile', **({'text': '/probe'} if method == 'complete.slash' else {})})
                 assert reply['error']['message'] == 'profile_mismatch', reply

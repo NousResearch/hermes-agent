@@ -108,7 +108,10 @@ def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
     coder = served_root / "profiles" / "coder"
     live = resolve_gateway_liveness(profile_dir=coder, health_probe=None, use_cache=False)
     assert live.running is True and live.pid == os.getpid() and live.source == "multiplexer"
-    assert profile_platforms_from_multiplexer(live.runtime, "coder") == {"telegram": {"state": "connected"}}
+    plats = profile_platforms_from_multiplexer(live.runtime, "coder")
+    assert plats["telegram"] == {"state": "connected"}
+    # The default's api_server is coder's too (served at /p/coder/), not a missing adapter.
+    assert plats["api_server"]["state"] == "connected"
     # An unserved profile keeps the historical "stopped" answer.
     other = resolve_gateway_liveness(profile_dir=served_root / "profiles" / "other", health_probe=None, use_cache=False)
     assert other.running is False

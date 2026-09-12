@@ -494,7 +494,13 @@ def _chat_messages_to_responses_input(
         emit(message_items, msg)
         if not message_items:
             # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.
-            fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
+            # Strict relays (e.g. Volcengine Coding Plan /responses) instead reject an empty-content
+            # assistant item with HTTP 400 "missing input.content" while accepting a reasoning item
+            # with no following message. Only synthesize the "" fallback for OpenAI-family endpoints
+            # (xai/github/codex or unknown); "other:*" relays get none.
+            needs_following = current_issuer_kind in ("xai_responses", "github_responses", "codex_backend") or not current_issuer_kind
+            fallback = content_parts or (content_text if content_text.strip()
+                                         else ("" if (reasoning_items and needs_following) else None))
             if fallback is not None:
                 emit([{"role": "assistant", "content": fallback}], msg)
         emit(_replay_tool_call_items(msg, start_index=len(items)), msg)

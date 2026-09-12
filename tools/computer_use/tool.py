@@ -254,10 +254,12 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     # Bot Desktop lease: while a human drives the screen every action, capture included, is refused.
     from tools.bot_desktop import lease as _bd_lease
     from tools.bot_desktop.runtime import ensure_started_for_tool as _bd_ensure_started
-    try:
-        _bd_lease.assert_agent_may_act()
-    except _bd_lease.HumanHasControl as e:
+    def _refused(e: Exception) -> str:
         return json.dumps({"ok": False, "action": action, "code": "human_has_control", "error": str(e)})
+    try:
+        admitted = _bd_lease.assert_agent_may_act()
+    except _bd_lease.HumanHasControl as e:
+        return _refused(e)
     _bd_ensure_started()  # headless gateway: bring the profile's screen up before the backend probes DISPLAY
     if (err := _reject_unsafe(action, args)) is not None:
         return err
@@ -276,7 +278,19 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
-            return _dispatch(backend, action, args)
+            # Re-check under the dispatch lock: approval, backend start-up and lock waits above can take
+            # seconds, and a human may have taken over meanwhile. A result produced after such a flip is
+            # discarded too — it may picture what they typed.
+            try:
+                _bd_lease.assert_agent_may_act()
+            except _bd_lease.HumanHasControl as e:
+                return _refused(e)
+            result = _dispatch(backend, action, args)
+            if _bd_lease.get().epoch != admitted.epoch and _bd_lease.human_holds():
+                return _refused(_bd_lease.HumanHasControl(
+                    "A human took over this desktop while the action ran; its result was discarded. Call "
+                    "computer_use action='wait_for_human' to block until they hand control back."))
+            return result
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})

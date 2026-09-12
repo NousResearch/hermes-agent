@@ -103,6 +103,10 @@ export interface SudoRequest extends KeyedPrompt {
   respondMethod?: string
   /** Description override so the card can say WHAT the password is for. */
   description?: string
+  /** Immutable origin of the request. The reply is sent to THIS socket, never to whichever
+   *  connection happens to be in the foreground when the user presses Send — a password typed for
+   *  host A must not travel to host B. */
+  origin?: { connectionId: null | string; profile: string }
 }
 
 export interface SecretRequest extends KeyedPrompt {

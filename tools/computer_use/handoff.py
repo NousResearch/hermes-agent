@@ -3,8 +3,9 @@ take over the screen (login, 2FA, CAPTCHA, payment) and ``wait_for_human`` block
 back. Both are answered without touching cua-driver, so a human typing a credential is never
 captured.
 
-The notification itself (Desktop pane badge, Telegram/Discord message) is emitted by the gateway's
-lease listener; this module only records intent on the lease and waits.
+The Desktop pane shows the request (the gateway broadcasts the lease change). Reaching the person
+anywhere else is the model's job: it relays the ask in its reply, which is what lands in the chat
+surface the user is actually on. This module only records intent on the lease and waits.
 """
 
 from __future__ import annotations
@@ -25,8 +26,9 @@ def handle_handoff(action: str, args: Dict[str, Any]) -> str:
         _lease.request_handoff(reason)
         return json.dumps({
             "ok": True, "action": action, "state": _lease.get().as_dict(),
-            "next": "The user has been asked to open this bot's Desktop pane and take over. Call "
-                    "computer_use action='wait_for_human' to block until they hand control back, then "
+            "next": "Hermes Desktop now shows 'Bot needs you' on this bot's Screen. Tell the user in your "
+                    "reply what to do and that they can take over from Bots > Screen, then call "
+                    "computer_use action='wait_for_human' to block until they hand control back and "
                     "re-capture before continuing — the screen state is whatever they left."})
     timeout = min(_MAX_WAIT_SECONDS, max(1.0, float(args.get("seconds") or _DEFAULT_WAIT_SECONDS)))
     released = _lease.wait_for_release(timeout=timeout)

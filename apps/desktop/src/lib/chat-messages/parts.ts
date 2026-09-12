@@ -10,15 +10,53 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+// A MEDIA directive names a real file, and agents write it in two shapes: bare
+// (quoted when the path holds spaces), or wrapped in the emphasis of a bolded
+// attachment list (`**MEDIA:/path/report.md**`). Only the path is literal — the
+// emphasis is markdown decoration, and a path that keeps the closing markers
+// (`/path/report.md**`) exists on no disk: the file card offers a preview and
+// the rail then refuses with "file does not exist". A line whose path-shaped
+// value holds spaces counts whole only when it ends in a file extension, so
+// `MEDIA:/path.md trailing words` still yields `/path.md`.
+const MEDIA_VALUE_ALTERNATIVES = [
+  '`[^`\\n]+`',
+  '"[^"\\n]+"',
+  "'[^'\\n]+'",
+  '(?:\\/|~[\\\\/]|[a-zA-Z]:[\\\\/]|file:)[^\\n]*?[^\\S\\n][^\\n]*?\\.\\w{1,8}',
+  '\\S+'
+]
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+// The bold/italic wrapper around a directive, matched as a pair on one line so
+// the markers leave with it (a leftover `**` would render as literal prose).
+const MEDIA_WRAPPED_RE = /([*_]{1,3}|~{2})(MEDIA:[^\n]*?)\1/g
+
+// A backtick cannot appear inside the template literals below, so the optional
+// quote characters the directive may sit in get their own constant.
+const MEDIA_QUOTES = '["\'`]?'
+
+const MEDIA_LINE_RE = new RegExp(
+  `(^|\\n)[\\t ]*${MEDIA_QUOTES}MEDIA:\\s*(${MEDIA_VALUE_ALTERNATIVES.join('|')})${MEDIA_QUOTES}[\\t ]*(\\n|$)`,
+  'g'
+)
+
+const MEDIA_TAG_RE = new RegExp(`${MEDIA_QUOTES}MEDIA:\\s*(${MEDIA_VALUE_ALTERNATIVES.join('|')})${MEDIA_QUOTES}`, 'g')
+
+const MEDIA_QUOTE_CHARS = ['"', "'", '`']
+
+// A dangling closing run is decoration: no filename ends in `**` or `~~`. A
+// single trailing marker is left alone — an unpaired `*` is more likely to be
+// path text than emphasis.
+const TRAILING_EMPHASIS_RE = /[*_~]{2,3}$/
 
 function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
   const quote = trimmed[0]
 
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+  if (quote && quote === trimmed.at(-1) && MEDIA_QUOTE_CHARS.includes(quote)) {
+    return trimmed.slice(1, -1)
+  }
+
+  return trimmed.replace(TRAILING_EMPHASIS_RE, '')
 }
 
 function mediaLink(value: string): string {
@@ -29,6 +67,7 @@ function mediaLink(value: string): string {
 
 export function renderMediaTags(text: string): string {
   return text
+    .replace(MEDIA_WRAPPED_RE, (_match, _marker: string, directive: string) => directive)
     .replace(
       MEDIA_LINE_RE,
       (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`

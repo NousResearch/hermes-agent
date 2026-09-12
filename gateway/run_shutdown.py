@@ -1896,6 +1896,8 @@ class GatewayShutdownMixin:
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
         try:
+            from gateway.work_router.integration import stop_runtimes
+            await stop_runtimes(self)
             await GatewayRunner._stop_begin_teardown(self, ctx)
             timeout = self._restart_drain_timeout
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)

@@ -131,6 +131,76 @@ class TestGatewayLifecyclePattern:
         assert contains_gateway_lifecycle_command_or_referenced_script(command)
 
     @pytest.mark.parametrize("text", [
+        "systemctl kill hermes-gateway",
+        "systemctl try-restart hermes-gateway",
+        "systemctl reload-or-restart hermes-gateway",
+        "systemctl reload-or-try-restart hermes-gateway",
+        "systemctl condrestart hermes-gateway",
+        "systemctl --now disable hermes-gateway",
+        "systemctl --now mask hermes-gateway",
+        "systemctl --user --no-block try-restart hermes-gateway.service",
+        "systemctl reload-or-restart --user hermes-gateway.service",
+        "systemctl reload-or-try-restart hermes-gateway.service --no-block",
+        "systemctl disable --user --now hermes-gateway.service",
+        "systemctl mask hermes-gateway.service --now",
+        "systemctl --signal SIGTERM kill hermes-gateway.service",
+        "systemctl --host example.invalid condrestart hermes-gateway.service",
+        "/usr/bin/systemctl --user try-restart hermes-gateway.service",
+        "sudo /bin/systemctl mask --now hermes-gateway.service",
+        '"systemctl" "try-restart" "hermes-gateway.service"',
+        'system"ctl" re"load"-or-restart hermes-"gateway".service',
+        "systemctl cond\\restart hermes-gateway.service",
+        "systemctl try-restart hermes.gateway.service",
+        "systemctl try-restart ai.hermes.gateway.service",
+        "systemctl try-restart hermes-gateway-work.service",
+        "systemctl try-restart hermes-gateway@work.service",
+        "systemctl disable --now /etc/systemd/system/hermes-gateway.service",
+        "systemctl try-restart nginx.service hermes-gateway.service",
+        "systemctl --user \\\n  reload-or-restart \\\n  hermes-gateway.service",
+        "true && (systemctl --now mask hermes-gateway.service)",
+        "sh -c 'systemctl re\"load\"-or-restart hermes-gateway.service'",
+        "sh -c 'systemctl \\\ntry-restart \\\nhermes-gateway.service'",
+        'subprocess.run(["systemctl", "--user", "try-restart", "hermes-gateway.service"])',
+    ])
+    def test_systemctl_disruptive_variants_target_gateway(self, text):
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command_or_referenced_script
+
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+        assert contains_gateway_lifecycle_command_or_referenced_script(text)
+
+    @pytest.mark.parametrize("text", [
+        "systemctl kill nginx.service",
+        "systemctl try-restart hermes-meta.service",
+        "systemctl reload-or-restart hermes-cron-helper.service",
+        "systemctl reload-or-try-restart payment-gateway.service",
+        "systemctl condrestart other.service",
+        "systemctl disable --now nginx.service",
+        "systemctl mask nginx.service --now",
+        "systemctl status hermes-gateway.service",
+        "systemctl --now status hermes-gateway.service",
+        "systemctl status hermes-gateway.service restart",
+        "systemctl --host hermes-gateway try-restart nginx.service",
+        "systemctl try-restart --host hermes-gateway nginx.service",
+        "systemctl status hermes-gateway.service disable --now",
+        "systemctl --user disable hermes-gateway.service",
+        "systemctl mask hermes-gateway.service --user",
+        "systemctl disable hermes-gateway.service; echo --now",
+        "systemctl --now disable nginx.service; echo hermes-gateway.service",
+        "systemctl try-restart nginx.service\necho hermes-gateway.service",
+        "systemctl try-restart not-hermes-gateway.service",
+        "systemctl try-restart hermes-gatewayish.service",
+        "systemctl-notes try-restart hermes-gateway.service",
+        "rg 'systemctl try-restart hermes-gateway.service' /tmp/service.log",
+        "journalctl --grep='systemctl mask --now hermes-gateway.service'",
+        "cat > /tmp/runbook.md <<'EOF'\nsystemctl mask --now hermes-gateway.service\nEOF",
+        "sh -c 'systemctl disable hermes-gateway.service'",
+    ])
+    def test_systemctl_non_disruptive_or_inert_variants_allowed(self, text):
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command_or_referenced_script
+
+        assert not contains_gateway_lifecycle_command_or_referenced_script(text), text
+
+    @pytest.mark.parametrize("text", [
         # The tokenizing pass must not widen the blast radius: prose and
         # non-gateway services stay allowed even though tokenization now
         # strips their quotes too.

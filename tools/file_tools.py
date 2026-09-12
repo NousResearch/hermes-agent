@@ -30,7 +30,8 @@ from tools.file_tools_paths import (
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
-    _is_internal_file_tool_content)
+    _count_truncation_placeholders, _extract_v4a_added_content, _find_truncation_placeholder,
+    _is_internal_file_tool_content, _truncation_placeholder_error)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
     _mark_verification_stale, _patch_failure_lock, _patch_failure_tracker, _read_tracker,
@@ -771,6 +772,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         err = ("Refusing to write internal read_file display text as file content. "
                "Strip read_file line-number prefixes or reconstruct the intended "
                "file contents before writing.")
+    if not err:
+        _placeholder = _find_truncation_placeholder(content)
+        if _placeholder:
+            err = _truncation_placeholder_error(f"to {path!r}", _placeholder)
     if err:
         return tool_error(err)
     try:
@@ -875,11 +880,21 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return tool_error("path required")
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
+                _placeholder = _find_truncation_placeholder(new_string)
+                if _placeholder and (
+                    _placeholder.lower() not in (old_string or "").lower()
+                    or _count_truncation_placeholders(new_string) > _count_truncation_placeholders(old_string)
+                ):
+                    return tool_error(_truncation_placeholder_error("in new_string", _placeholder))
                 _replace_target = _path_to_resolved.get(path) or path
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
+                _added = _extract_v4a_added_content(patch)
+                _placeholder = _find_truncation_placeholder(_added)
+                if _placeholder:
+                    return tool_error(_truncation_placeholder_error("in patch content", _placeholder))
                 result = file_ops.patch_v4a(_rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, file_ops))
             else:
                 return tool_error(f"Unknown mode: {mode}")

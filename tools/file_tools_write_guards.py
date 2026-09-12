@@ -10,6 +10,7 @@ deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
 
 import fnmatch
 import os
+import re
 from pathlib import Path
 
 from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
@@ -445,3 +446,59 @@ def _looks_like_read_file_line_numbered_content(content: str) -> bool:
 def _is_internal_file_tool_content(content: str) -> bool:
     """Return True when content is file-tool display text, not intended file bytes."""
     return _is_internal_file_status_text(content) or _looks_like_read_file_line_numbered_content(content)
+
+
+# ── Truncation placeholder safety guards (#83714) ───────────────────────
+_TRUNCATION_PLACEHOLDER_RE = re.compile(
+    r'(?:'
+    r'(?:\.\.\.|…)\s*\[truncated\]'
+    r'|\[truncated\]\s*(?:\.\.\.|…)'
+    r'|⟪HERMES-CONTEXT-COMPRESSION:[^⟫]*⟫'
+    r'|(?://|#|/\*|<!--)\s*\.\.\.\s*(?:(?:rest\s+of\s+(?:file|code)\s+|rest\s+)?unchanged|rest\s+of\s+(?:file|code))(?:\s*\.\.\.)?\s*(?:\*/|-->)?'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def _find_truncation_placeholder(text: str | None) -> str | None:
+    """Return the matched placeholder substring if text contains a truncation placeholder, else None."""
+    if not text:
+        return None
+    m = _TRUNCATION_PLACEHOLDER_RE.search(text)
+    return m.group(0) if m else None
+
+
+def _count_truncation_placeholders(text: str | None) -> int:
+    """Return the number of truncation placeholder occurrences in text."""
+    if not text:
+        return 0
+    return len(_TRUNCATION_PLACEHOLDER_RE.findall(text))
+
+
+def _truncation_placeholder_error(target_desc: str, marker: str) -> str:
+    return (
+        f"Refusing to write {target_desc}: content contains what appears to be a "
+        f"truncation placeholder ({marker!r}) instead of actual content. "
+        "Do not abbreviate code or omit sections with truncation markers. "
+        "Emit the full, complete content without '...[truncated]' or "
+        "'rest unchanged' placeholders. The file was NOT modified."
+    )
+
+
+def _extract_v4a_added_content(patch_content: str) -> str:
+    """Return only the text added in a V4A patch (+ lines and Add File bodies)."""
+    try:
+        from tools.patch_parser import parse_v4a_patch, OperationType
+        operations, parse_error = parse_v4a_patch(patch_content)
+        if parse_error or not operations:
+            return patch_content
+        chunks: list[str] = []
+        for op in operations:
+            for hunk in op.hunks:
+                for line in hunk.lines:
+                    if line.prefix == '+' or op.operation == OperationType.ADD:
+                        chunks.append(line.content)
+        return "\n".join(chunks)
+    except Exception:
+        return patch_content
+

@@ -87,6 +87,7 @@ delegation:
       review_provider: openai-codex
       review_model: gpt-5.6-sol
       alert_target: slack:C0AEMP1AG0H
+      alert_workspace_id: T_APPROVED_WORKSPACE
 ```
 
 Routing starts only when `enabled: true` and the active profile appears in `profiles`. The conservative `default_data_classification: restricted` also remains in force until an operator explicitly changes it for an approved profile. Existing `delegation.provider` and `delegation.model` settings stay in place as the fallback.
@@ -100,7 +101,7 @@ Creating or reviewing this code and documentation does not activate anything. Ea
 1. Change profile configuration to enable routing, allow a profile, or change its default data classification.
 2. Restart an affected CLI or gateway process.
 3. Run the live `agy` wiring canary or an acceptance delegation. These calls use subscription quota.
-4. Copy `scripts/run_gemini_daily_review.py` into `$HERMES_HOME/scripts/`.
+4. Copy `scripts/gemini_daily_review.py` into `$HERMES_HOME/scripts/`.
 5. Create, enable, run, pause, or remove the hourly no-agent cron job.
 6. Send a real Slack alert canary.
 
@@ -116,7 +117,7 @@ Every started Gemini attempt receives one profile-local receipt, including failu
 $HERMES_HOME/routing/gemini-routing.sqlite3
 ```
 
-The database file uses mode `0600`; its parent directory uses mode `0700`. Receipts include the original goal, context, result or worker-failure evidence, hashes, route decision, model alias, timestamps, byte counts, and duration. Raw content is necessary for the independent review, so access to the profile home is the privacy boundary.
+The database file and SQLite sidecars use mode `0600`; its parent directory uses mode `0700`. Receipt and reviewer prose is redacted after the configured 30-day raw-data window while hashes and aggregate verdicts remain available for the 180-day aggregate window. Receipts include the original goal, context, result or worker-failure evidence, hashes, route decision, model alias, timestamps, byte counts, and duration. Raw content is necessary for the independent review, so access to the profile home is the privacy boundary.
 
 Raw task text and model output do not go to ordinary gateway logs or a Slack alert. Logs use metadata such as receipt IDs, status, byte counts, and duration. Slack alerts contain counts, the routing day, pipeline status, a batch ID, and the local receipt path.
 
@@ -129,7 +130,7 @@ The review is postdeployment operational assurance, not a model-evaluation progr
 For each routing day, the reviewer:
 
 1. Builds the cohort from every Gemini attempt whose Antigravity process started, including successful, failed, timed-out, malformed, and fallback-triggering attempts.
-2. Selects `min(5, eligible_count)`. This is five random tasks when at least five are eligible, all tasks when fewer than five are eligible, and an empty sample when no tasks are eligible.
+2. Selects `min(5, eligible_count)` by sorting receipt IDs on `HMAC-SHA256(sample_seed, receipt_id)` with receipt ID as the tie-breaker. This gives five random tasks selected deterministically and replayably when at least five are eligible, all tasks when fewer than five are eligible, and an empty sample when no tasks are eligible.
 3. Persists the random seed and selected receipt IDs before review. A retry reuses the same sample.
 4. Makes one separate, isolated `openai-codex/gpt-5.6-sol` call for each selected item. Each call has no Hermes tools, memory, SOUL, sibling samples, or model fallback.
 5. Stores every validated verdict and the final batch status in the local receipt database.

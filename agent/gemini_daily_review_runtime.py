@@ -67,10 +67,14 @@ def _make_default_reviewer_factory(review: Mapping[str, Any]) -> Callable[[], So
 def _make_default_slack_sender(
     channel_id: str,
     *,
+    expected_workspace_id: str,
     standalone_send: Callable[..., Any] | None = None,
     client_factory: Callable[[str], Any] | None = None,
     token: str | None = None,
 ) -> Callable[[str], Mapping[str, Any]]:
+    if not expected_workspace_id:
+        raise ValueError("review.alert_workspace_id must pin one Slack workspace")
+
     def send(message: str) -> Mapping[str, Any]:
         from agent.secret_scope import get_secret
         from gateway.config import PlatformConfig
@@ -96,6 +100,8 @@ def _make_default_slack_sender(
             build_client = client_factory
 
         client = build_client(selected_token)
+        batch_match = re.search(r"\bbatch (grb_[a-f0-9]+)\b", message)
+        batch_id = batch_match.group(1) if batch_match else ""
 
         async def call(method_name: str, **kwargs: Any) -> Mapping[str, Any]:
             result = getattr(client, method_name)(**kwargs)
@@ -111,28 +117,20 @@ def _make_default_slack_sender(
             channel = info.get("channel")
             if auth.get("ok") is not True or not auth.get("team_id"):
                 raise RuntimeError("Slack auth.test did not verify a workspace")
+            if str(auth.get("team_id")) != expected_workspace_id:
+                raise RuntimeError("Slack token belongs to an unexpected workspace")
             if info.get("ok") is not True or not isinstance(channel, Mapping):
                 raise RuntimeError("Slack conversations.info did not verify the channel")
             if channel.get("is_member") is not True:
                 raise RuntimeError("Slack bot is not a member of the review channel")
             channel_team = channel.get("context_team_id") or channel.get("team_id")
-            if channel_team and channel_team != auth.get("team_id"):
+            if channel_team and str(channel_team) != expected_workspace_id:
                 raise RuntimeError("Slack workspace/channel identity mismatch")
-            return str(auth["team_id"])
+            return expected_workspace_id
 
-        team_id = asyncio.run(preflight())
-        send_impl = standalone_send or _standalone_send
-        try:
-            result = asyncio.run(
-                send_impl(PlatformConfig(enabled=True, token=selected_token), channel_id, message)
-            )
-        except Exception:
-            result = {"error": "unknown_send_result"}
-
-        batch_match = re.search(r"\bbatch (grb_[a-f0-9]+)\b", message)
-        batch_id = batch_match.group(1) if batch_match else ""
-
-        async def verify_history(expected_ts: str | None) -> Mapping[str, Any]:
+        async def find_history(
+            team_id: str, expected_ts: str | None = None
+        ) -> Mapping[str, Any] | None:
             kwargs: dict[str, Any] = {"channel": channel_id, "limit": 25, "inclusive": True}
             if expected_ts:
                 kwargs.update(oldest=expected_ts, latest=expected_ts)
@@ -157,7 +155,20 @@ def _make_default_slack_sender(
                         "chat_id": channel_id,
                         "message_id": item_ts,
                     }
-            raise RuntimeError("Slack delivery was not visible in channel history")
+            return None
+
+        team_id = asyncio.run(preflight())
+        existing = asyncio.run(find_history(team_id))
+        if existing is not None:
+            return existing
+
+        send_impl = standalone_send or _standalone_send
+        try:
+            result = asyncio.run(
+                send_impl(PlatformConfig(enabled=True, token=selected_token), channel_id, message)
+            )
+        except Exception:
+            result = {"error": "unknown_send_result"}
 
         expected_ts = None
         if isinstance(result, Mapping) and result.get("success") is True:
@@ -165,7 +176,10 @@ def _make_default_slack_sender(
             expected_ts = str(result.get("message_id") or "") or None
             if returned_channel != channel_id or expected_ts is None:
                 raise RuntimeError("Gemini review Slack alert returned the wrong target")
-        return asyncio.run(verify_history(expected_ts))
+        verified = asyncio.run(find_history(team_id, expected_ts))
+        if verified is None:
+            raise RuntimeError("Slack delivery was not visible in channel history")
+        return verified
 
     return send
 
@@ -176,6 +190,7 @@ def run_configured_review(
     now: datetime | None = None,
     reviewer_factory: Callable[[], Any] | None = None,
     alert_sender: Callable[[str], Any] | None = None,
+    active_profile: str | None = None,
 ) -> dict[str, Any]:
     """Run one configured review tick without printing successful output."""
 
@@ -186,6 +201,13 @@ def run_configured_review(
     delegation = config.get("delegation")
     routing = delegation.get("gemini_routing") if isinstance(delegation, Mapping) else None
     if not isinstance(routing, Mapping) or not bool(routing.get("enabled")):
+        return {"status": "disabled"}
+    if active_profile is None:
+        from hermes_cli.profiles import get_active_profile_name
+
+        active_profile = get_active_profile_name() or "default"
+    profiles = routing.get("profiles")
+    if not isinstance(profiles, list) or active_profile not in profiles:
         return {"status": "disabled"}
     review = routing.get("review")
     if not isinstance(review, Mapping) or not bool(review.get("enabled")):
@@ -210,7 +232,10 @@ def run_configured_review(
     store = GeminiReceiptStore(receipt_path)
 
     factory = reviewer_factory or _make_default_reviewer_factory(review)
-    sender = alert_sender or _make_default_slack_sender(alert_channel_id)
+    sender = alert_sender or _make_default_slack_sender(
+        alert_channel_id,
+        expected_workspace_id=str(review.get("alert_workspace_id") or ""),
+    )
     runner = DailyReviewRunner(
         store=store,
         reviewer_factory=factory,

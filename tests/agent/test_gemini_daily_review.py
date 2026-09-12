@@ -21,14 +21,22 @@ from agent.gemini_route_receipts import GeminiReceiptStore
 UTC = timezone.utc
 
 
-def test_verdict_parser_maps_faithful_contract_to_internal_pass_fail():
-    assert _parse_verdict({"verdict": "faithful", "reason": "matched the evidence"}) == {
+def test_verdict_parser_enforces_exact_fail_closed_contract():
+    assert _parse_verdict(
+        {"verdict": "pass", "reason": "matched the evidence", "failure_kind": "none"}
+    ) == {
         "verdict": "pass",
         "reason": "matched the evidence",
+        "failure_kind": "none",
     }
-    assert _parse_verdict(
-        {"verdict": "unfaithful", "reason": "invented an unsupported result"}
-    ) == {"verdict": "fail", "reason": "invented an unsupported result"}
+    with pytest.raises(ValueError, match="exactly"):
+        _parse_verdict({"verdict": "faithful", "reason": "legacy alias"})
+    with pytest.raises(ValueError, match="failure_kind"):
+        _parse_verdict({"verdict": "fail", "reason": "missing field"})
+    with pytest.raises(ValueError, match="failure_kind"):
+        _parse_verdict(
+            {"verdict": "pass", "reason": "wrong kind", "failure_kind": "correctness"}
+        )
 
 
 def add_attempt(
@@ -69,16 +77,17 @@ def add_attempt(
     )
 
 
-def test_sampling_is_deterministic_unbiased_shape_and_exactly_five_of_six():
-    ids = [f"grt_{index}" for index in range(6)]
+def test_sampling_uses_exact_hmac_rank_vector():
+    ids = ["grt_f", "grt_c", "grt_a", "grt_e", "grt_b", "grt_d"]
     seed = bytes.fromhex("42" * 32)
-    first = sample_receipt_ids(ids, 5, seed)
-    second = sample_receipt_ids(ids, 5, seed)
 
-    assert first == second
-    assert len(first) == 5
-    assert len(set(first)) == 5
-    assert set(first) <= set(ids)
+    assert sample_receipt_ids(ids, 5, seed) == [
+        "grt_f",
+        "grt_a",
+        "grt_d",
+        "grt_b",
+        "grt_e",
+    ]
 
 
 def test_sampling_reviews_all_when_cohort_is_under_five():
@@ -96,7 +105,8 @@ def test_review_prompt_contains_full_attempt_and_strict_schema(tmp_path: Path):
     assert "bounded context" in prompt
     assert "response grt_a" in prompt
     assert "route_reason" in prompt
-    assert '"verdict": "faithful|unfaithful"' in prompt
+    assert '"verdict": "pass|fail"' in prompt
+    assert '"failure_kind": "none|correctness|instruction|omission|hallucination|worker_failure|unreviewable"' in prompt
     assert "Return JSON only" in prompt
 
 
@@ -106,9 +116,11 @@ def test_sol_reviewer_creates_fresh_toolless_memoryless_agent_per_receipt():
     class FakeAgent:
         def __init__(self, **kwargs):
             created.append(kwargs)
+            self.provider = kwargs["provider"]
+            self.model = kwargs["model"]
 
         def run_conversation(self, prompt):
-            return {"final_response": '{"verdict":"pass","reason":"good"}'}
+            return {"final_response": '{"verdict":"pass","reason":"good","failure_kind":"none"}'}
 
         def close(self):
             pass
@@ -133,7 +145,28 @@ def test_sol_reviewer_creates_fresh_toolless_memoryless_agent_per_receipt():
         assert kwargs["model"] == "gpt-5.6-sol"
 
 
-def test_runner_reviews_started_failures_and_fallbacks_and_stays_silent_on_pass(tmp_path: Path):
+def test_sol_reviewer_fails_closed_on_actual_provider_or_model_mismatch():
+    class WrongAgent:
+        provider = "openrouter"
+        model = "wrong-model"
+
+        def __init__(self, **_kwargs):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    reviewer = SolReviewer(
+        provider="openai-codex",
+        model="gpt-5.6-sol",
+        agent_factory=WrongAgent,
+    )
+
+    with pytest.raises(RuntimeError, match="reviewer_identity_mismatch"):
+        reviewer("review this")
+
+
+def test_runner_reviews_full_cohort_but_worker_failures_fail_closed(tmp_path: Path):
     store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
     for index, status in enumerate(("completed", "failed", "timeout")):
         add_attempt(store, f"grt_{index}", status=status, fallback_used=status != "completed")
@@ -142,7 +175,7 @@ def test_runner_reviews_started_failures_and_fallbacks_and_stays_silent_on_pass(
 
     def reviewer(prompt: str) -> dict:
         prompts.append(prompt)
-        return {"verdict": "pass", "reason": "acceptable"}
+        return {"verdict": "pass", "reason": "acceptable", "failure_kind": "none"}
 
     result = DailyReviewRunner(
         store=store,
@@ -154,13 +187,15 @@ def test_runner_reviews_started_failures_and_fallbacks_and_stays_silent_on_pass(
         alert_channel_id="C_ROUTE_FAILURES",
     ).run(target_day=date(2026, 9, 11), seed=bytes.fromhex("33" * 32))
 
-    assert result["status"] == "passed"
+    assert result["status"] == "failed"
     assert result["eligible_count"] == 3
     assert result["reviewed_count"] == 3
     assert len(prompts) == 3
     assert any('"worker_status":"failed"' in prompt for prompt in prompts)
     assert any('"fallback_used":1' in prompt for prompt in prompts)
-    assert alerts == []
+    assert len(alerts) == 1
+    items = store.list_review_items(store.get_review_batch("2026-09-11")["batch_id"])
+    assert [item["verdict"] for item in items].count("fail") == 2
 
 
 def test_runner_alerts_only_sanitized_receipt_ids_and_reasons_on_quality_failure(tmp_path: Path):
@@ -171,7 +206,7 @@ def test_runner_alerts_only_sanitized_receipt_ids_and_reasons_on_quality_failure
     result = DailyReviewRunner(
         store=store,
         reviewer_factory=lambda: (
-            lambda _prompt: {"verdict": "fail", "reason": "unsupported conclusion"}
+            lambda _prompt: {"verdict": "fail", "reason": "unsupported conclusion", "failure_kind": "correctness"}
         ),
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
@@ -195,7 +230,7 @@ def test_successful_failure_alert_persists_exact_channel_and_message_ts(tmp_path
     result = DailyReviewRunner(
         store=store,
         reviewer_factory=lambda: (
-            lambda _prompt: {"verdict": "fail", "reason": "private review reason"}
+            lambda _prompt: {"verdict": "fail", "reason": "private review reason", "failure_kind": "correctness"}
         ),
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
@@ -223,7 +258,7 @@ def test_alert_message_is_aggregate_only_and_excludes_review_content(tmp_path: P
     DailyReviewRunner(
         store=store,
         reviewer_factory=lambda: (
-            lambda _prompt: {"verdict": "fail", "reason": "PRIVATE_REVIEW_REASON"}
+            lambda _prompt: {"verdict": "fail", "reason": "PRIVATE_REVIEW_REASON", "failure_kind": "correctness"}
         ),
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
@@ -255,7 +290,7 @@ def test_wrong_channel_delivery_remains_pending_and_retries_same_batch(tmp_path:
     runner = DailyReviewRunner(
         store=store,
         reviewer_factory=lambda: (
-            lambda _prompt: {"verdict": "fail", "reason": "bad"}
+            lambda _prompt: {"verdict": "fail", "reason": "bad", "failure_kind": "correctness"}
         ),
         reviewer_provider="openai-codex",
         reviewer_model="gpt-5.6-sol",
@@ -304,7 +339,7 @@ def test_second_run_reuses_terminal_batch_without_duplicate_reviews_or_alerts(tm
         def reviewer(_prompt: str) -> dict:
             nonlocal calls
             calls += 1
-            return {"verdict": "fail", "reason": "bad"}
+            return {"verdict": "fail", "reason": "bad", "failure_kind": "correctness"}
 
         return reviewer
 
@@ -339,7 +374,7 @@ def test_concurrent_runs_claim_one_daily_batch_once(tmp_path: Path):
         with calls_lock:
             calls += 1
         time.sleep(0.1)
-        return {"verdict": "pass", "reason": "ok"}
+        return {"verdict": "pass", "reason": "ok", "failure_kind": "none"}
 
     def run() -> None:
         results.append(

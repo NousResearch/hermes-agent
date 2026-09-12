@@ -238,6 +238,54 @@ def test_retention_redacts_raw_text_before_deleting_hashes(tmp_path: Path):
     assert row["response_sha256"]
 
 
+def test_retention_redacts_raw_reviewer_prose_at_raw_cutoff(tmp_path: Path):
+    store = make_store(tmp_path)
+    old = datetime.now(UTC) - timedelta(days=31)
+    prepare(store, started_at=old)
+    batch = store.create_or_get_review_batch(
+        routing_day="2026-08-01",
+        timezone_name="America/Los_Angeles",
+        sample_size_requested=1,
+        eligible_count=1,
+        sample_seed_hex="11" * 32,
+        sample_receipt_ids=["grt_test"],
+        started_at=old,
+    )
+    store.add_review_item(
+        batch_id=batch["batch_id"],
+        receipt_id="grt_test",
+        ordinal=0,
+        reviewer_provider="openai-codex",
+        reviewer_model="gpt-5.6-sol",
+        review_status="completed",
+        verdict="fail",
+        reason="PRIVATE REVIEW REASON",
+        review_json={
+            "verdict": "fail",
+            "reason": "PRIVATE REVIEW REASON",
+            "failure_kind": "correctness",
+        },
+    )
+
+    outcome = store.apply_retention(now=datetime.now(UTC), raw_days=30, aggregate_days=180)
+    item = store.list_review_items(batch["batch_id"])[0]
+
+    assert outcome["review_raw_redacted"] == 1
+    assert item["reason"] == ""
+    assert item["review_json"] is None
+    assert item["verdict"] == "fail"
+    assert item["review_sha256"]
+
+
+def test_receipt_store_fails_closed_when_private_modes_cannot_be_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(os, "chmod", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")))
+
+    with pytest.raises(RuntimeError, match="private permissions"):
+        GeminiReceiptStore(tmp_path / "routing" / "routing.sqlite3")
+
+
 def test_read_methods_use_read_only_sqlite_connections(tmp_path: Path, monkeypatch):
     store = make_store(tmp_path)
     prepare(store)

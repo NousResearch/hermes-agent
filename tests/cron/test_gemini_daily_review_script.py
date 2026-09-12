@@ -23,6 +23,7 @@ def _config(db: Path) -> dict:
         "delegation": {
             "gemini_routing": {
                 "enabled": True,
+                "profiles": ["default"],
                 "receipt_db": str(db),
                 "retention": {"raw_days": 30, "aggregate_days": 180},
                 "review": {
@@ -33,6 +34,7 @@ def _config(db: Path) -> dict:
                     "review_model": "gpt-5.6-sol",
                     "review_reasoning_effort": "medium",
                     "alert_target": "slack:C0A12345678",
+                    "alert_workspace_id": "T_EXPECTED",
                 },
             }
         }
@@ -78,7 +80,7 @@ def test_configured_review_runs_previous_local_day_and_stays_quiet_on_pass(
 
     def reviewer_factory():
         created.append(object())
-        return lambda prompt: {"verdict": "pass", "reason": "faithful"}
+        return lambda prompt: {"verdict": "pass", "reason": "faithful", "failure_kind": "none"}
 
     result = run_configured_review(
         config=_config(db),
@@ -111,7 +113,7 @@ def test_configured_review_alerts_only_the_exact_configured_channel_on_failure(t
         config=_config(db),
         now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
         reviewer_factory=lambda: (
-            lambda prompt: {"verdict": "fail", "reason": "missed the requested evidence"}
+            lambda prompt: {"verdict": "fail", "reason": "missed the requested evidence", "failure_kind": "correctness"}
         ),
         alert_sender=sender,
     )
@@ -156,7 +158,7 @@ def test_alert_target_must_be_one_exact_slack_channel(tmp_path: Path):
     with pytest.raises(ValueError, match="exact slack"):
         run_configured_review(
             config=config,
-            reviewer_factory=lambda: lambda prompt: {"verdict": "pass", "reason": "ok"},
+            reviewer_factory=lambda: lambda prompt: {"verdict": "pass", "reason": "ok", "failure_kind": "none"},
             alert_sender=lambda message: None,
         )
 
@@ -201,7 +203,7 @@ def test_no_agent_entrypoint_writes_fatal_errors_only_to_stderr(
     assert "RuntimeError: boom" in captured.err
 
 
-def test_no_agent_entrypoint_fails_when_required_alert_is_still_pending(
+def test_no_agent_entrypoint_keeps_handled_pending_alert_quiet(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
@@ -216,10 +218,24 @@ def test_no_agent_entrypoint_fails_when_required_alert_is_still_pending(
         lambda: {"status": "failed", "alert_status": "pending"},
     )
 
-    assert module.main() == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "required Slack alert remains pending" in captured.err
+    assert module.main() == 0
+    assert capsys.readouterr() == ("", "")
+
+
+def test_configured_review_requires_active_profile_membership(tmp_path: Path):
+    config = _config(tmp_path / "routing.sqlite3")
+    config["delegation"]["gemini_routing"]["profiles"] = ["other"]
+
+    result = run_configured_review(
+        config=config,
+        now=datetime(2026, 9, 11, 16, tzinfo=timezone.utc),
+        active_profile="default",
+        reviewer_factory=lambda: pytest.fail("reviewer must not be constructed"),
+        alert_sender=lambda _message: pytest.fail("sender must not be called"),
+    )
+
+    assert result == {"status": "disabled"}
+    assert not (tmp_path / "routing.sqlite3").exists()
 
 
 def test_no_agent_entrypoint_subprocess_honors_custom_profile_home_and_is_silent(
@@ -277,6 +293,8 @@ def test_default_slack_sender_verifies_workspace_membership_and_history():
 
         async def conversations_history(self, **kwargs):
             calls.append(("conversations_history", kwargs))
+            if sum(name == "conversations_history" for name, _ in calls) == 1:
+                return {"ok": True, "messages": []}
             return {
                 "ok": True,
                 "messages": [
@@ -297,6 +315,7 @@ def test_default_slack_sender_verifies_workspace_membership_and_history():
 
     result = _make_default_slack_sender(
         "C0A12345678",
+        expected_workspace_id="T_KIZUKI",
         standalone_send=send,
         client_factory=lambda token: FakeClient(),
         token="xoxb-test-only",
@@ -312,6 +331,7 @@ def test_default_slack_sender_verifies_workspace_membership_and_history():
     assert [name for name, _ in calls] == [
         "auth_test",
         "conversations_info",
+        "conversations_history",
         "send",
         "conversations_history",
     ]
@@ -337,17 +357,22 @@ def test_default_slack_sender_reconciles_unknown_send_from_channel_history():
                 ],
             }
 
+    sends: list[str] = []
+
     async def uncertain_send(*_args):
+        sends.append("sent")
         raise TimeoutError("response lost after possible delivery")
 
     result = _make_default_slack_sender(
         "C0A12345678",
+        expected_workspace_id="T_KIZUKI",
         standalone_send=uncertain_send,
         client_factory=lambda token: FakeClient(),
         token="xoxb-test-only",
     )("Gemini daily review: Receipt: x batch grb_deadbeef")
 
     assert result["message_id"] == "1720000000.000005"
+    assert sends == []
 
 
 def test_default_slack_sender_refuses_workspace_channel_identity_mismatch():
@@ -360,7 +385,7 @@ def test_default_slack_sender_refuses_workspace_channel_identity_mismatch():
         async def conversations_info(self, **_kwargs):
             return {
                 "ok": True,
-                "channel": {"is_member": True, "context_team_id": "T_KIZUKI"},
+                "channel": {"is_member": True, "context_team_id": "T_WRONG"},
             }
 
     async def send(*_args):
@@ -369,12 +394,13 @@ def test_default_slack_sender_refuses_workspace_channel_identity_mismatch():
 
     sender = _make_default_slack_sender(
         "C0A12345678",
+        expected_workspace_id="T_KIZUKI",
         standalone_send=send,
         client_factory=lambda token: FakeClient(),
         token="xoxb-test-only",
     )
 
-    with pytest.raises(RuntimeError, match="identity mismatch"):
+    with pytest.raises(RuntimeError, match="workspace"):
         sender("Gemini daily review: batch grb_deadbeef")
     assert sent == []
 

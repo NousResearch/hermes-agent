@@ -31,6 +31,7 @@ EXPECTED_GEMINI_ROUTING_DEFAULTS = {
         "review_provider": "openai-codex",
         "review_model": "gpt-5.6-sol",
         "alert_target": "slack:C0AEMP1AG0H",
+        "alert_workspace_id": "",
     },
 }
 
@@ -171,9 +172,32 @@ def test_gemini_routing_accepts_profile_relative_receipt_path():
     [
         ["--dangerously-skip-permissions"],
         ["--dangerously-skip-permissions=true"],
+        ["--add-dir=/tmp/escape"],
+        ["--continue"],
+        ["--continue=recent"],
+        ["--conversation=other"],
     ],
 )
 def test_gemini_routing_refuses_dangerous_permission_bypass_extra_args(extra_args):
     errors = _error_messages(_routing_config(extra_args=extra_args))
 
-    assert any("--dangerously-skip-permissions" in message for message in errors)
+    assert any("extra_args" in message for message in errors)
+
+
+def test_enabled_review_requires_pinned_workspace_identity():
+    review = {
+        **EXPECTED_GEMINI_ROUTING_DEFAULTS["review"],
+        "enabled": True,
+        "alert_workspace_id": "",
+    }
+
+    errors = _error_messages(_routing_config(review=review))
+
+    assert any("review.alert_workspace_id" in message for message in errors)
+
+
+@pytest.mark.parametrize("receipt_db", ["/tmp/other-profile.sqlite3", "../escape.sqlite3"])
+def test_receipt_db_must_remain_profile_local(receipt_db):
+    errors = _error_messages(_routing_config(receipt_db=receipt_db))
+
+    assert any("receipt_db" in message for message in errors)

@@ -29,6 +29,9 @@ DEFAULT_MAX_OUTPUT_BYTES = 131_072
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 _CONTROLLED_ARG_PREFIXES = (
     "--dangerously-skip-permissions",
+    "--add-dir",
+    "--continue",
+    "--conversation",
     "--model",
     "--effort",
     "--mode",

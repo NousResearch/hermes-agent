@@ -173,6 +173,11 @@ class AntigravityDelegateChild:
                 "route": "gemini",
                 "route_reason": self.route_reason,
                 "receipt_id": self.receipt_id,
+                "worker_route": "gemini",
+                "worker_provider": self.requested_provider,
+                "worker_model_requested": self.requested_model,
+                "route_receipt_id": self.receipt_id,
+                "fallback_used": False,
             }
         return self._fallback_or_failure(
             result.error_message or "Antigravity worker failed",
@@ -207,6 +212,15 @@ class AntigravityDelegateChild:
             result = dict(result)
             result["route"] = route
             result["route_reason"] = self.route_reason
+            result["worker_route"] = route
+            result["worker_provider"] = str(
+                getattr(self.fallback_child, "provider", "delegation-model")
+            )
+            result["worker_model_requested"] = str(
+                getattr(self.fallback_child, "model", "")
+            )
+            result["route_receipt_id"] = self.receipt_id or None
+            result["fallback_used"] = True
             if self.receipt_id:
                 result["receipt_id"] = self.receipt_id
             if error_code:
@@ -227,6 +241,11 @@ class AntigravityDelegateChild:
             "route_reason": self.route_reason,
             "receipt_id": self.receipt_id or None,
             "gemini_error_code": error_code,
+            "worker_route": route,
+            "worker_provider": self.requested_provider,
+            "worker_model_requested": self.requested_model,
+            "route_receipt_id": self.receipt_id or None,
+            "fallback_used": False,
         }
 
     def get_activity_summary(self) -> dict[str, Any]:

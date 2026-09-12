@@ -19,36 +19,21 @@ AlertSender = Callable[[str], Any]
 Clock = Callable[[], datetime]
 
 
-def _seeded_digest(seed: bytes, counter: int) -> bytes:
-    return hmac.new(seed, counter.to_bytes(16, "big"), hashlib.sha256).digest()
-
-
-def _unbiased_index(seed: bytes, counter: int, upper: int) -> tuple[int, int]:
-    """Return a deterministic rejection-sampled integer in ``range(upper)``."""
-    if upper <= 0:
-        raise ValueError("upper must be positive")
-    modulus = 1 << 256
-    limit = modulus - (modulus % upper)
-    while True:
-        value = int.from_bytes(_seeded_digest(seed, counter), "big")
-        counter += 1
-        if value < limit:
-            return value % upper, counter
-
-
 def sample_receipt_ids(
     receipt_ids: Sequence[str], sample_size: int, seed: bytes
 ) -> list[str]:
-    """Select uniformly without replacement using a persisted 256-bit seed."""
+    """Rank receipt IDs by the persisted HMAC-SHA256 replay contract."""
     if len(seed) < 32:
         raise ValueError("sampling seed must contain at least 256 bits")
     sample_size = min(max(0, int(sample_size)), len(receipt_ids))
-    pool = sorted(str(receipt_id) for receipt_id in receipt_ids)
-    counter = 0
-    for index in range(len(pool) - 1, len(pool) - sample_size - 1, -1):
-        chosen, counter = _unbiased_index(seed, counter, index + 1)
-        pool[index], pool[chosen] = pool[chosen], pool[index]
-    return pool[len(pool) - sample_size :] if sample_size else []
+    ranked = sorted(
+        (str(receipt_id) for receipt_id in receipt_ids),
+        key=lambda receipt_id: (
+            hmac.new(seed, receipt_id.encode("utf-8"), hashlib.sha256).digest(),
+            receipt_id,
+        ),
+    )
+    return ranked[:sample_size]
 
 
 def build_review_prompt(attempt: Mapping[str, Any]) -> str:
@@ -71,15 +56,15 @@ def build_review_prompt(attempt: Mapping[str, Any]) -> str:
     return (
         "You are an isolated quality reviewer. Evaluate the recorded Gemini result for "
         "correctness, completeness, grounding in the supplied evidence, calibrated "
-        "uncertainty, and compliance with the requested output contract. A failed or "
-        "fallback attempt is not automatically a quality failure; judge whether its "
-        "recorded behavior was correct, useful, and honest.\n\n"
+        "uncertainty, and compliance with the requested output contract. A Gemini worker "
+        "timeout or error must be a fail with failure_kind worker_failure.\n\n"
         "Attempt JSON:\n"
         f"{_canonical_json(evidence)}\n\n"
         "Return JSON only, with exactly this semantic shape:\n"
-        '{"verdict": "faithful|unfaithful", "reason": "brief concrete reason"}\n'
-        "The verdict must be the literal string faithful or unfaithful. The reason must be a "
-        "non-empty string. Do not include Markdown fences or other text."
+        '{"verdict": "pass|fail", "reason": "one concrete sentence", '
+        '"failure_kind": "none|correctness|instruction|omission|hallucination|worker_failure|unreviewable"}\n'
+        "Use failure_kind none only with pass. The reason must be a non-empty string. "
+        "Do not include Markdown fences or other text."
     )
 
 
@@ -91,20 +76,38 @@ def _parse_verdict(value: Mapping[str, Any] | str) -> dict[str, str]:
             raise ValueError("reviewer_output_invalid: not valid JSON") from exc
     if not isinstance(value, Mapping):
         raise ValueError("reviewer_output_invalid: expected an object")
+    expected_keys = {"verdict", "reason", "failure_kind"}
+    if set(value) != expected_keys:
+        raise ValueError(
+            "reviewer_output_invalid: object must contain exactly verdict, reason, and failure_kind"
+        )
     verdict = value.get("verdict")
     reason = value.get("reason")
-    verdict_map = {
-        "faithful": "pass",
-        "unfaithful": "fail",
-        # Internal/test callers may already use the persisted vocabulary.
-        "pass": "pass",
-        "fail": "fail",
+    failure_kind = value.get("failure_kind")
+    allowed_failure_kinds = {
+        "none",
+        "correctness",
+        "instruction",
+        "omission",
+        "hallucination",
+        "worker_failure",
+        "unreviewable",
     }
-    if verdict not in verdict_map:
-        raise ValueError("reviewer_output_invalid: verdict must be faithful or unfaithful")
+    if verdict not in {"pass", "fail"}:
+        raise ValueError("reviewer_output_invalid: verdict must be pass or fail")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("reviewer_output_invalid: reason must be non-empty")
-    return {"verdict": verdict_map[verdict], "reason": reason.strip()}
+    if failure_kind not in allowed_failure_kinds:
+        raise ValueError("reviewer_output_invalid: unsupported failure_kind")
+    if (verdict == "pass") != (failure_kind == "none"):
+        raise ValueError(
+            "reviewer_output_invalid: failure_kind must be none exactly when verdict is pass"
+        )
+    return {
+        "verdict": str(verdict),
+        "reason": reason.strip(),
+        "failure_kind": str(failure_kind),
+    }
 
 
 class SolReviewer:
@@ -148,6 +151,13 @@ class SolReviewer:
                 "workspace context, or outside knowledge. Return strict JSON only."
             ),
         )
+        actual_provider = getattr(agent, "provider", self.provider)
+        actual_model = getattr(agent, "model", self.model)
+        if actual_provider != self.provider or actual_model != self.model:
+            close = getattr(agent, "close", None)
+            if callable(close):
+                close()
+            raise RuntimeError("reviewer_identity_mismatch")
         # Prevent the lazy session-DB fallback from persisting this isolated review.
         setattr(agent, "_persist_disabled", True)
         try:
@@ -295,6 +305,12 @@ class DailyReviewRunner:
             try:
                 reviewer = self.reviewer_factory()
                 verdict = _parse_verdict(reviewer(build_review_prompt(attempt)))
+                if attempt.get("worker_status") != "completed" or attempt.get("error_code"):
+                    verdict = {
+                        "verdict": "fail",
+                        "reason": "Gemini worker did not produce a completed result.",
+                        "failure_kind": "worker_failure",
+                    }
                 self.store.add_review_item(
                     batch_id=batch["batch_id"],
                     receipt_id=receipt_id,

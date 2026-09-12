@@ -18,7 +18,7 @@ def decide_delegation_route(
     *, task: Mapping[str, Any], role: str, profile: str, config: Mapping[str, Any]
 ) -> RouteDecision:
     """Choose Gemini for eligible leaf work unless a hard exclusion applies."""
-    requested_route = task.get("route", config.get("default_route", "gemini"))
+    requested_route = task.get("route") or config.get("default_route", "gemini")
     explicit_gemini = task.get("route") == "gemini"
 
     def sol(reason: str) -> RouteDecision:
@@ -43,9 +43,8 @@ def decide_delegation_route(
     if requested_route == "sol":
         return sol("Sol was explicitly selected by route policy")
 
-    data_classification = task.get(
-        "data_classification",
-        config.get("default_data_classification", "restricted"),
+    data_classification = task.get("data_classification") or config.get(
+        "default_data_classification", "restricted"
     )
     if data_classification == "restricted":
         return sol("restricted data cannot use the Gemini subscription lane")

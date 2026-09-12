@@ -67,6 +67,7 @@ def routing_config(**overrides):
 def fake_child(summary: str = "sol answer") -> MagicMock:
     child = MagicMock()
     child.session_id = "sol-child"
+    child.provider = "openai-codex"
     child.model = "gpt-5.6-sol"
     child._delegate_role = "leaf"
     child._delegate_saved_tool_names = []
@@ -148,6 +149,117 @@ def test_eligible_leaf_builds_gemini_adapter_with_sol_fallback():
     kwargs = build_gemini.call_args.kwargs
     assert kwargs["fallback_child"] is sol
     assert kwargs["route_reason"] == "eligible output-only leaf delegation"
+
+
+def test_omitted_single_task_metadata_uses_standard_profile_defaults():
+    routed = fake_child("gemini answer")
+    sol = fake_child()
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=routed) as build_gemini,
+    ):
+        result = json.loads(delegate_task(goal="summarize", parent_agent=parent()))
+
+    assert result["results"][0]["summary"] == "gemini answer"
+    build_gemini.assert_called_once()
+
+
+def test_omitted_classification_uses_restricted_profile_default_and_blocks_explicit_gemini():
+    sol = fake_child()
+    with (
+        patch(
+            "tools.delegate_tool._load_config",
+            return_value=routing_config(default_data_classification="restricted"),
+        ),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
+        patch("tools.delegate_tool._build_antigravity_delegate_child") as build_gemini,
+    ):
+        result = json.loads(
+            delegate_task(goal="summarize", route="gemini", parent_agent=parent())
+        )
+
+    assert result["results"][0]["worker_route"] == "sol"
+    assert "restricted" in result["results"][0]["route_reason"]
+    build_gemini.assert_not_called()
+
+
+def test_public_results_and_lifecycle_hooks_carry_exact_route_metadata():
+    parent_agent = parent()
+    parent_agent._subagent_id = "parent-sa"
+    routed = fake_child("gemini answer")
+    routed.requested_provider = "google-antigravity"
+    routed.requested_model = "gemini-3.8-flash-low"
+    routed.run_conversation.return_value = {
+        "final_response": "gemini answer",
+        "completed": True,
+        "api_calls": 1,
+        "messages": [],
+        "route": "gemini",
+        "route_reason": "eligible output-only leaf delegation",
+        "worker_route": "gemini",
+        "worker_provider": "google-antigravity",
+        "worker_model_requested": "gemini-3.8-flash-low",
+        "route_receipt_id": "grt_123",
+        "fallback_used": False,
+    }
+    starts: list[dict] = []
+    stops: list[dict] = []
+
+    def start_hook(event, **kwargs):
+        if event == "subagent_start":
+            starts.append(kwargs)
+
+    def stop_hook(event, **kwargs):
+        if event == "subagent_stop":
+            stops.append(kwargs)
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value=routing_config()),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=fake_child()),
+        patch("tools.delegate_tool._build_antigravity_delegate_child", return_value=routed),
+        patch("hermes_cli.lifecycle.invoke_hook", side_effect=start_hook),
+        patch("hermes_cli.plugins.invoke_hook", side_effect=stop_hook),
+    ):
+        result = json.loads(
+            delegate_task(
+                goal="summarize",
+                route="gemini",
+                data_classification="standard",
+                parent_agent=parent_agent,
+            )
+        )
+
+    public = result["results"][0]
+    expected = {
+        "worker_route": "gemini",
+        "worker_provider": "google-antigravity",
+        "worker_model_requested": "gemini-3.8-flash-low",
+        "route_receipt_id": "grt_123",
+        "fallback_used": False,
+    }
+    assert {key: public[key] for key in expected} == expected
+    assert {key: starts[0][key] for key in expected} == {**expected, "route_receipt_id": None}
+    assert starts[0]["parent_subagent_id"] == "parent-sa"
+    assert {key: stops[0][key] for key in expected} == expected
 
 
 @pytest.mark.parametrize(
@@ -250,6 +362,11 @@ def test_adapter_returns_gemini_output_and_records_two_phase_receipt(tmp_path: P
 
     assert result["final_response"] == "gemini answer"
     assert result["completed"] is True
+    assert result["worker_route"] == "gemini"
+    assert result["worker_provider"] == "antigravity-subscription"
+    assert result["worker_model_requested"] == "gemini-3.8-flash-low"
+    assert result["route_receipt_id"] == adapter.receipt_id
+    assert result["fallback_used"] is False
     rows = adapter.store.list_started_attempts_for_day(
         adapter.store.get_attempt(adapter.receipt_id)["routing_day"]
     )
@@ -265,7 +382,11 @@ def test_adapter_records_failure_then_runs_prebuilt_sol_fallback(tmp_path: Path)
     result = adapter.run_conversation("summarize", task_id="child-task")
 
     assert result["final_response"] == "fallback answer"
-    assert result["route"] == "gemini_then_sol"
+    assert result["worker_route"] == "gemini_then_sol"
+    assert result["worker_provider"] == "openai-codex"
+    assert result["worker_model_requested"] == "gpt-5.6-sol"
+    assert result["route_receipt_id"] == adapter.receipt_id
+    assert result["fallback_used"] is True
     row = adapter.store.get_attempt(adapter.receipt_id)
     assert row["worker_status"] == "failed"
     assert row["fallback_used"] == 1

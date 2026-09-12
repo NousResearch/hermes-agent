@@ -224,7 +224,7 @@ def test_monotonic_timeout_terminates_group_and_cleans_workspace(
     fake_agy: Path, tmp_path: Path
 ):
     pid_file = tmp_path / "timeout.pid"
-    result = make_worker(fake_agy, timeout_seconds=0.15).run(
+    result = make_worker(fake_agy, timeout_seconds=2.0).run(
         goal=f"SLEEP PID_FILE={pid_file}", context="", output_schema=None
     )
     assert result.status == "failed"
@@ -345,6 +345,9 @@ def test_dangerous_or_contract_overriding_extra_args_are_rejected(fake_agy: Path
         "--output-format=text",
         "--disable-slash-commands=false",
         "--json-schema=elsewhere.json",
+        "--add-dir=/tmp/escape",
+        "--continue",
+        "--conversation=other",
     ):
         with pytest.raises(ValueError):
             make_worker(fake_agy, extra_args=[arg])

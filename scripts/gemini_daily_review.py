@@ -20,12 +20,7 @@ from agent.gemini_daily_review import main as run_configured_review
 
 def main() -> int:
     try:
-        result = run_configured_review()
-        if (
-            result.get("status") in {"failed", "pipeline_failed"}
-            and result.get("alert_status") != "sent"
-        ):
-            raise RuntimeError("required Slack alert remains pending")
+        run_configured_review()
     except Exception as exc:
         print(f"Gemini daily review failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import sqlite3
+import stat
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -63,16 +64,23 @@ class GeminiReceiptStore:
 
     def _initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self.path.parent.chmod(0o700)
-        except OSError:
-            pass
+        self._enforce_private_mode(self.path.parent, 0o700)
         with self._write_connection() as conn:
             self._ensure_schema(conn)
+        self._enforce_private_mode(self.path, 0o600)
+
+    @staticmethod
+    def _enforce_private_mode(path: Path, expected_mode: int) -> None:
         try:
-            self.path.chmod(0o600)
-        except OSError:
-            pass
+            path.chmod(expected_mode)
+            actual_mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError as exc:
+            raise RuntimeError(f"could not enforce private permissions for {path}") from exc
+        if actual_mode != expected_mode:
+            raise RuntimeError(
+                f"could not enforce private permissions for {path}: "
+                f"expected {oct(expected_mode)}, got {oct(actual_mode)}"
+            )
 
     def _open_write(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
@@ -83,6 +91,10 @@ class GeminiReceiptStore:
             actual = apply_wal_with_fallback(conn, db_label="routing/gemini-routing.sqlite3")
             if actual not in {"wal", "delete"}:
                 raise sqlite3.OperationalError(f"unsupported journal mode returned: {actual}")
+            for suffix in ("", "-wal", "-shm"):
+                candidate = Path(f"{self.path}{suffix}")
+                if candidate.exists():
+                    self._enforce_private_mode(candidate, 0o600)
         except Exception:
             conn.close()
             raise
@@ -576,6 +588,17 @@ class GeminiReceiptStore:
                 """,
                 (raw_cutoff,),
             )
+            review_raw_cursor = conn.execute(
+                """UPDATE daily_review_items
+                   SET reason='', review_json=NULL
+                   WHERE batch_id IN (
+                       SELECT batch_id FROM daily_review_batches
+                       WHERE created_at_utc < ?
+                   )
+                     AND (reason != '' OR review_json IS NOT NULL)
+                """,
+                (raw_cutoff,),
+            )
             old_batches = [
                 row[0]
                 for row in conn.execute(
@@ -602,6 +625,7 @@ class GeminiReceiptStore:
             ).rowcount
         return {
             "raw_redacted": raw_cursor.rowcount,
+            "review_raw_redacted": review_raw_cursor.rowcount,
             "review_items_deleted": deleted_items,
             "review_batches_deleted": deleted_batches,
             "attempts_deleted": deleted_attempts,

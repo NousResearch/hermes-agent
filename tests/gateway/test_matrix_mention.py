@@ -287,6 +287,64 @@ async def test_auto_thread_skips_dm(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Thread session-keying: in-thread messages key chat_type="thread"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_in_thread_message_keys_chat_type_thread(monkeypatch):
+    """An in-thread (non-DM) message must key chat_type="thread" so a reply
+    resumes the SAME session a handoff/cron seed created (which keys the
+    first-class "thread" lane, like Telegram/Discord/Slack)."""
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
+
+    adapter = _make_adapter()
+    adapter._threads.mark("$thread_root")
+    event = _make_event("reply in thread", thread_id="$thread_root")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id == "$thread_root"
+    assert msg.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_in_thread_dm_keeps_chat_type_dm(monkeypatch):
+    """A DM thread keeps chat_type="dm" — the seed already keys DMs that way."""
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
+
+    adapter = _make_adapter()
+    _set_dm(adapter)
+    adapter._threads.mark("$thread_root")
+    event = _make_event("reply in dm thread", thread_id="$thread_root", event_id="$dm2")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id == "$thread_root"
+    assert msg.source.chat_type == "dm"
+
+
+@pytest.mark.asyncio
+async def test_non_thread_room_message_keeps_chat_type_group(monkeypatch):
+    """A non-threaded room message is unaffected — still chat_type="group"."""
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event("plain room message")
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id is None
+    assert msg.source.chat_type == "group"
+
+
+# ---------------------------------------------------------------------------
 # Thread persistence
 # ---------------------------------------------------------------------------
 

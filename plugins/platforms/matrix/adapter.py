@@ -1410,6 +1410,40 @@ class MatrixAdapter(BasePlatformAdapter):
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
         return str(event_id)
 
+    async def create_handoff_thread(
+        self,
+        parent_chat_id: str,
+        name: str,
+    ) -> Optional[str]:
+        """Create a Matrix thread anchor for a session handoff.
+
+        Matrix has no channel-level "create thread" API — a thread is just
+        events whose ``m.relates_to``/``rel_type: m.thread`` reference a root
+        event's ``event_id`` (the same model Slack uses with ``thread_ts``).
+        So post a seed/root message into ``parent_chat_id`` and return its
+        ``event_id``: the handoff watcher / cron scheduler uses that as the
+        ``thread_id`` for subsequent sends, and ``_apply_relation_metadata``
+        already threads them off it.
+
+        Returns the seed event id as a string, or ``None`` if the client is
+        unavailable or the seed send failed (callers fall back to
+        ``parent_chat_id`` directly).
+        """
+        if self._client is None:
+            return None
+        seed_text = (name or "").strip() or "Hermes session"
+        result = await self.send(parent_chat_id, seed_text)
+        root = result.message_id if (result and result.success) else None
+        if not root:
+            return None
+        try:
+            # Register the root so inbound replies in this thread are
+            # recognised as participated (mirrors inbound thread handling).
+            self._threads.mark(str(root))
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return str(root)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         identity = await self._resolve_room_identity(chat_id)
         return {"name": identity.display_name, "type": "dm" if identity.chat_type == "dm" else "group"}
@@ -2041,6 +2075,15 @@ class MatrixAdapter(BasePlatformAdapter):
             if synthetic:
                 thread_id = event_id
         display_name = await self._get_display_name(room_id, sender)
+        # Key an in-thread (non-DM) message with chat_type="thread" so a human
+        # reply resumes the SAME session the seed created. Handoff/cron seeds
+        # (and Telegram/Discord/Slack) key the first-class "thread" lane; without
+        # this Matrix keys "group" and the reply lands in a different session,
+        # silently dropping the seeded context. DM threads keep "dm", which the
+        # seed already matches; build_session_key drops user_id for threads, so
+        # chat_type is the only remaining divergent slot.
+        if thread_id and not is_dm:
+            chat_type = "thread"
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,

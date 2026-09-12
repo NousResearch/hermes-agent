@@ -77,3 +77,22 @@ def test_aux_only_model_still_gets_its_own_row(db, analytics):
 
     assert ("gemini-3-flash", "gemini") in pairs
     assert ("gpt-5.6-terra", "openai-codex") in pairs
+
+
+def test_distinct_models_counts_aux_only_models(db, analytics):
+    """The header count and the card list are two views of one row set.
+
+    ``totals.distinct_models`` was a ``COUNT(DISTINCT model)`` over ``sessions``
+    alone, so a model reached only through auxiliary usage drew a card the
+    header never counted (#89631).
+    """
+    _session(db, "s1", "gpt-5.6-terra", "openai-codex")
+    db.record_auxiliary_usage(
+        "s1", "title_generation", model="gpt-5.4-mini", billing_provider="openai-codex",
+        input_tokens=50, output_tokens=5,
+    )
+
+    result = analytics()
+
+    assert {m["model"] for m in result["models"]} == {"gpt-5.6-terra", "gpt-5.4-mini"}
+    assert result["totals"]["distinct_models"] == len({m["model"] for m in result["models"]})

@@ -462,9 +462,10 @@ def _home_prefix_fold_regex(path: str, include_bare: bool = False):
         return None
     # Optional leading root separator; a Windows drive letter is a component.
     prefix = r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components)
+    flags = re.IGNORECASE if os.name == "nt" else 0
     if include_bare:
-        return re.compile(prefix + rf"(?:{_PATH_TAIL})?(?=[{_PATH_TOKEN_STOP}]|$)")
-    return re.compile(prefix + _PATH_TAIL)
+        return re.compile(prefix + rf"(?:{_PATH_TAIL})?(?=[{_PATH_TOKEN_STOP}]|$)", flags)
+    return re.compile(prefix + _PATH_TAIL, flags)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str, *, include_bare: bool = False) -> str:
@@ -1191,7 +1192,6 @@ def _shell_command_segment(command: str, start: int) -> str:
 
 _HERMES_HOME_DESTRUCTION_DESCRIPTION = "destructive operation on Hermes data directory"
 _HERMES_HOME_ROOTS = ("~/.hermes", "$hermes_home", "${hermes_home}", "$home/.hermes", "${home}/.hermes")
-_HERMES_DESTRUCTIVE_SQL_RE = re.compile(r"\b(?:delete\s+from|drop\s+(?:table|database))\b", re.IGNORECASE)
 _HERMES_DESTRUCTIVE_NAMES = frozenset({
     "rm", "mv", "truncate", "shred", "unlink", "tee", "cp", "install", "sqlite3",
 })
@@ -1206,17 +1206,16 @@ _HERMES_OPTIONS_WITH_ARG = {
     "shred": {"-n", "--iterations", "-s", "--size", "--random-source"},
     "sqlite3": {"-cmd", "-init", "-newline", "-nullvalue", "-separator"},
 }
-_HERMES_PARAMETER_VALUE_RE = re.compile(
-    r"^\$\{(?P<name>hermes_home|home)(?::?[?=-][^}]*)?\}", re.IGNORECASE,
-)
-
-
 def _is_hermes_managed_path(word: str) -> bool:
     path = word.lower().replace("\\", "/").rstrip("/")
-    path = _HERMES_PARAMETER_VALUE_RE.sub(
-        lambda match: "$hermes_home" if match.group("name").lower() == "hermes_home" else "$home",
-        path,
-    )
+    if path.startswith("${hermes_home"):
+        close = path.find("}")
+        if close != -1 and (close == len(path) - 1 or path[close + 1] == "/"):
+            return True  # Ambiguous parameter operators fail closed at a managed-path operand.
+    if path.startswith("${home"):
+        close = path.find("}")
+        if close != -1 and path[close + 1:].startswith("/.hermes"):
+            return True
     return any(path == root or path.startswith(root + "/") for root in _HERMES_HOME_ROOTS)
 
 
@@ -1232,49 +1231,28 @@ def _command_operands(argv: list[str], command_name: str) -> tuple[list[str], di
             options = False
         elif options and arg.startswith("-") and arg != "-":
             option, separator, value = arg.partition("=")
+            if option.startswith("--") and option not in with_arg:
+                matches = [candidate for candidate in with_arg if candidate.startswith(option)]
+                option = matches[0] if len(matches) == 1 else option
             if option in with_arg:
                 if separator:
                     option_values.setdefault(option, []).append(value)
                 else:
                     pending_option = option
-            elif len(arg) > 2 and arg[:2] in with_arg:
-                option_values.setdefault(arg[:2], []).append(arg[2:])
+            elif not arg.startswith("--"):
+                for index, letter in enumerate(arg[1:], start=1):
+                    short_option = "-" + letter
+                    if short_option not in with_arg:
+                        continue
+                    attached = arg[index + 1:]
+                    if attached:
+                        option_values.setdefault(short_option, []).append(attached)
+                    else:
+                        pending_option = short_option
+                    break
         else:
             operands.append(arg)
     return operands, option_values
-
-
-_INERT_HEREDOC_CONSUMERS = frozenset({"cat", "tee"})
-_QUOTED_HEREDOC_RE = re.compile(r"<<(?P<tabs>-?)[ \t]*(?P<quote>['\"])(?P<delimiter>[^'\"\n]+)(?P=quote)")
-
-
-def _strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask quoted cat/tee heredoc data so its lines are not treated as commands."""
-    lines = command.splitlines(keepends=True)
-    index = 0
-    while index < len(lines):
-        match = _QUOTED_HEREDOC_RE.search(lines[index])
-        if not match:
-            index += 1
-            continue
-        commands = list(_iter_shell_command_word_spans(lines[index][:match.start()]))
-        name = (
-            os.path.basename(_deobfuscate_shell_word_for_detection(commands[-1][2])).lower()
-            if commands else ""
-        )
-        delimiter = match.group("delimiter")
-        strip_tabs = bool(match.group("tabs"))
-        body_index = index + 1
-        while body_index < len(lines):
-            candidate = lines[body_index].rstrip("\r\n")
-            if (candidate.lstrip("\t") if strip_tabs else candidate) == delimiter:
-                break
-            if name in _INERT_HEREDOC_CONSUMERS:
-                ending = lines[body_index][len(lines[body_index].rstrip("\r\n")):]
-                lines[body_index] = ending
-            body_index += 1
-        index = body_index + 1
-    return "".join(lines)
 
 
 def _has_hermes_redirect(command: str) -> bool:
@@ -1282,21 +1260,25 @@ def _has_hermes_redirect(command: str) -> bool:
     for kind, index, _, quote in _scan_shell(command, subst="uq"):
         if kind != "char" or quote is not None or command[index] != ">":
             continue
-        if ((index and command[index - 1] in "<>")
-                or (index + 1 < len(command) and command[index + 1] == "&")):
+        if index and command[index - 1] in "<>":
             continue
         target_start = index + 1
+        descriptor_form = target_start < len(command) and command[target_start] == "&"
+        if descriptor_form:
+            target_start += 1
         while target_start < len(command) and command[target_start] in ">| \t":
             target_start += 1
         _, _, target = _read_shell_word(command, target_start)
-        if _is_hermes_managed_path(_deobfuscate_shell_word_for_detection(target)):
+        target = _deobfuscate_shell_word_for_detection(target)
+        if descriptor_form and (target == "-" or target.isdigit()):
+            continue
+        if _is_hermes_managed_path(target):
             return True
     return False
 
 
 def _detect_hermes_home_destruction(command: str) -> bool:
     """Hard-block destructive verbs only when they target Hermes-managed state."""
-    command = _strip_inert_heredoc_bodies(command)
     if _has_hermes_redirect(command):
         return True
     for word_start, _, word in _iter_shell_command_word_spans(command):
@@ -1325,9 +1307,23 @@ def _detect_hermes_home_destruction(command: str) -> bool:
                 return True
         elif name == "sqlite3" and operands and _is_hermes_managed_path(operands[0]):
             sql = operands[1:] + option_values.get("-cmd", [])
-            if _HERMES_DESTRUCTIVE_SQL_RE.search(" ".join(sql)):
+            if sql and not all(_sqlite_payload_is_read_only(payload) for payload in sql):
                 return True
     return False
+
+
+_SQLITE_READ_ONLY_PREFIXES = ("select", "explain", "values")
+_SQLITE_READ_ONLY_DOT_COMMANDS = (".databases", ".dump", ".indexes", ".schema", ".show", ".tables")
+
+
+def _sqlite_payload_is_read_only(payload: str) -> bool:
+    """Accept only SQLite payloads whose statements are structurally read-only."""
+    statements = [statement.strip().lower() for statement in re.split(r"[;\n]+", payload) if statement.strip()]
+    return bool(statements) and all(
+        statement.startswith(_SQLITE_READ_ONLY_PREFIXES)
+        or statement.split(None, 1)[0] in _SQLITE_READ_ONLY_DOT_COMMANDS
+        for statement in statements
+    )
 
 
 def _split_env_string(payload: str) -> list[str] | None:

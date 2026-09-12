@@ -371,7 +371,14 @@ class TestHermesHomeHardline:
             "cp /dev/null -t $HERMES_HOME",
             "sqlite3 $HERMES_HOME/state.db 'delete from messages where 1=1'",
             "sqlite3 -cmd 'DELETE FROM messages' $HERMES_HOME/state.db",
+            "sqlite3 -cmd 'UPDATE messages SET content = 0' $HERMES_HOME/state.db",
+            "sqlite3 $HERMES_HOME/state.db '.restore /tmp/replacement.db'",
             "rm -rf ${HERMES_HOME:?}/state.db",
+            "rm ${HERMES_HOME%/}/state.db",
+            'printf x >&"$HERMES_HOME/state.db"',
+            "cp -at$HERMES_HOME /tmp/replacement",
+            "mv -vt$HERMES_HOME /tmp/replacement",
+            "install -Dt$HERMES_HOME /tmp/replacement",
         )
         for command in commands:
             blocked, description = detect_hardline_command(command)
@@ -391,9 +398,14 @@ class TestHermesHomeHardline:
             "rm /tmp/state.db",
             "truncate -s0 /tmp/state.db",
             'git commit -m "do not rm $HERMES_HOME/state.db"',
-            "cat > /tmp/notes.txt <<'EOF'\nrm $HERMES_HOME/state.db\nEOF",
+            "sqlite3 $HERMES_HOME/state.db 'select count(*) from messages'",
         ):
             assert detect_hardline_command(command) == (False, None), command
+
+        # Heredoc bodies may feed an executable consumer, so the security floor
+        # deliberately does not exempt command-looking lines based on the producer.
+        piped = "cat <<'EOF' | sh\nrm $HERMES_HOME/state.db\nEOF"
+        assert detect_hardline_command(piped)[0] is True
 
     def test_full_guard_floor_survives_yolo_and_force(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))

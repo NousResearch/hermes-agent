@@ -1847,10 +1847,6 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
-        # Ingress delivery counter (#102260): a healthy transport can still discard 100% of
-        # inbound; without a delivered-side counter a deaf gateway looks idle.
-        self._inbound_delivered_total: int = 0
-        self._last_inbound_delivered_monotonic: Optional[float] = None
         self._no_message_handler_logged: bool = False
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
@@ -2196,21 +2192,6 @@ class BasePlatformAdapter(ABC):
     def is_connected(self) -> bool:
         """Check if adapter is currently connected."""
         return self._running
-
-    def note_inbound_delivered(self) -> None:
-        """Record that one inbound event reached the gateway message handler.
-
-        The delivered side of the ingress accounting introduced for #102260.
-        Adapters that observe their own wire traffic (Telegram's getUpdates
-        instrumentation) compare their received counter against this one to
-        tell "nothing is arriving" apart from "everything arriving is being
-        dropped downstream" — two failures that look identical from every
-        transport-level health probe.
-        """
-        self._inbound_delivered_total = (
-            getattr(self, "_inbound_delivered_total", 0) + 1
-        )
-        self._last_inbound_delivered_monotonic = time.monotonic()
 
     def set_message_handler(self, handler: MessageHandler) -> None:
         """Set the incoming-message handler (MessageEvent -> optional response str)."""
@@ -3544,10 +3525,8 @@ class BasePlatformAdapter(ABC):
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
         if not self._message_handler:
-            # A connected adapter with no message handler is silently deaf: it
-            # polls, publishes "connected", and can still send — while every
-            # inbound message is discarded here with no log at all. Say so once
-            # per adapter so the failure is diagnosable (#102260).
+            # No handler = every inbound silently discarded on an adapter that still polls and sends;
+            # say so once per adapter (#102260).
             if not getattr(self, "_no_message_handler_logged", False):
                 self._no_message_handler_logged = True
                 logger.error(
@@ -3557,8 +3536,6 @@ class BasePlatformAdapter(ABC):
                     self.name,
                 )
             return
-
-        self.note_inbound_delivered()
 
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)

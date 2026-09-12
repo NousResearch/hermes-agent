@@ -277,3 +277,37 @@ def test_native_launchd_ambiguous_domains_cannot_start(tmp_path, monkeypatch):
     with pytest.raises(RuntimeStartError, match="service_scope_conflict"):
         discover_existing_gateway_service(tmp_path.resolve(), deadline=time.monotonic()+5)
     assert len(calls) == 2 and all(argv[1] == "print" for argv in calls)
+
+
+@pytest.mark.linux_only
+@pytest.mark.spawns_gateway_lookalike  # stub interpreter records the resolved home then exits; reaped below
+def test_unmanaged_root_home_child_ignores_sticky_active_profile(tmp_path, monkeypatch):
+    """Explicit default selection survives the CLI child's own profile bootstrap (F15): with
+    active_profile=other sticky, the spawned `gateway run` must still resolve the root home."""
+    from hermes_cli import gateway_runtime_start as start
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "other").mkdir(parents=True)
+    (root / "active_profile").write_text("other", encoding="utf-8")
+    witness = tmp_path / "resolved.json"
+    real = start.subprocess.Popen
+
+    def boundary(argv, **kwargs):
+        assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
+        # Same argv and env as the real child; the module-import bootstrap is what resolves the profile.
+        code = ("import json, os, sys\nsys.argv = ['hermes', *sys.argv[1:]]\nimport hermes_cli.main\n"
+                f"open({str(witness)!r}, 'w').write(json.dumps({{'home': os.environ['HERMES_HOME'], 'argv': sys.argv}}))")
+        return real([sys.executable, "-c", code, *argv[3:]], **kwargs)
+
+    monkeypatch.setattr(start.subprocess, "Popen", boundary)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
+    child = start.spawn_unmanaged_gateway(root, deadline=time.monotonic() + 5)
+    try:
+        assert child.wait(timeout=30) == 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+    resolved = json.loads(witness.read_text())
+    assert resolved["home"] == str(root), resolved
+    assert resolved["argv"] == ["hermes", "gateway", "run", "--quiet"], resolved

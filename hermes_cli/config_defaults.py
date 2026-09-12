@@ -1274,6 +1274,9 @@ DEFAULT_CONFIG = {
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+        # When true, skip parent memory-provider on_delegation notifications for child results
+        # (children are ephemeral workers; providers that persist delegation observations opt out).
+        "suppress_memory_notify": False,
         # Subagent threads ALWAYS resolve approvals non-interactively (the parent TUI owns stdin;
         # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
         # log a warning audit line. true only for trusted batch work.

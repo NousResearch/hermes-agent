@@ -8,6 +8,8 @@ import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from utils import is_truthy_value
+
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
 def _stringify_tool_content(content: Any) -> str:
@@ -331,6 +333,12 @@ def _notify_memory_manager(results, task_list, child_by_index, parent_agent) -> 
     memory = getattr(parent_agent, "_memory_manager", None) if parent_agent else None
     if not memory:
         return
+    from tools.delegate_tool import _load_config
+    try:
+        if is_truthy_value(_load_config().get("suppress_memory_notify")):
+            return  # delegation.suppress_memory_notify: ephemeral child results opted out of provider persistence
+    except (TypeError, ValueError):
+        pass
     for entry in results:
         try:
             task_index = entry.get("task_index", -1)

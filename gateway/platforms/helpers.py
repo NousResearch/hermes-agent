@@ -15,14 +15,74 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
+# Cap on how many marks are mirrored to the persistence file. The file is rewritten in full on
+# each mutation, so the persisted window is deliberately narrower than the in-memory cache.
+_PERSIST_MAX_ENTRIES = 512
+
 
 class MessageDeduplicator:
-    """TTL-based message deduplication cache (``if dedup.is_duplicate(msg_id): return``)."""
+    """TTL-based message deduplication cache (``if dedup.is_duplicate(msg_id): return``).
 
-    def __init__(self, max_size: int = 2000, ttl_seconds: float = 300):
+    ``persist_path`` opts into restart survival: the seen-set is mirrored to that file and reloaded
+    on construction, so a mark made by a previous process still suppresses an event that is
+    redelivered to the new one. Without it the cache is per-process memory — which is why a Slack
+    Socket Mode event in flight when the gateway stopped ran a second turn after it came back.
+
+    The file is written through on every mutation, before the caller continues: the window this
+    covers is an abrupt stop, so a deferred flush could die with the process and lose exactly the
+    marks that matter. Writes are atomic and bounded to the newest
+    ``min(max_size, _PERSIST_MAX_ENTRIES)`` marks. Any I/O or parse failure degrades to
+    memory-only behaviour — a dedupe cache must never break inbound delivery.
+    """
+
+    def __init__(self, max_size: int = 2000, ttl_seconds: float = 300,
+                 persist_path: str | Path | None = None):
         self._seen: dict[str, float] = {}
         self._max_size = max_size
         self._ttl = ttl_seconds
+        self._persist_path = Path(persist_path) if persist_path is not None else None
+        self._persist_limit = max(1, min(max_size, _PERSIST_MAX_ENTRIES))
+        self._persist_warned = False
+        if self._persist_path is not None:
+            self._load_persisted(self._persist_path)
+
+    def _load_persisted(self, path: Path) -> None:
+        """Adopt the marks left by an earlier process, dropping the expired ones."""
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Dedupe state at %s is unreadable; starting from memory",
+                           path, exc_info=True)
+            return
+        seen = payload.get("seen") if isinstance(payload, dict) else None
+        if not isinstance(seen, dict):
+            return
+        now = time.time()
+        valid = {
+            key: float(ts)
+            for key, ts in seen.items()
+            if isinstance(key, str) and key and isinstance(ts, (int, float))
+            and now - float(ts) < self._ttl
+        }
+        if len(valid) > self._max_size:  # file written by a larger cache
+            valid = {k: valid[k] for k in sorted(valid, key=lambda k: valid[k], reverse=True)[:self._max_size]}
+        self._seen.update(valid)
+
+    def _persist(self) -> None:
+        """Mirror the newest marks to disk. A failure is logged once, never raised."""
+        if self._persist_path is None:
+            return
+        try:
+            newest = sorted(self._seen, key=lambda k: self._seen[k], reverse=True)[:self._persist_limit]
+            self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_json_write(self._persist_path, {"seen": {k: self._seen[k] for k in newest}})
+        except OSError:
+            if not self._persist_warned:
+                self._persist_warned = True
+                logger.warning("Cannot persist dedupe state to %s; continuing in memory",
+                               self._persist_path, exc_info=True)
 
     def is_duplicate(self, msg_id: str) -> bool:
         """Return True if *msg_id* was already seen within the TTL window."""
@@ -40,6 +100,7 @@ class MessageDeduplicator:
             if len(self._seen) > self._max_size:
                 # All entries still fresh: keep the newest so max_size holds under load.
                 self._seen = dict(sorted(self._seen.items(), key=lambda item: item[1])[-self._max_size:])
+        self._persist()
         return False
 
     def contains(self, msg_id: str) -> bool:
@@ -54,10 +115,12 @@ class MessageDeduplicator:
 
     def discard(self, msg_id: str) -> None:
         """Release a claimed message ID after cancelled/failed handoff."""
-        self._seen.pop(msg_id, None)
+        if self._seen.pop(msg_id, None) is not None:
+            self._persist()
 
     def clear(self):
         self._seen.clear()
+        self._persist()
 
 
 async def cancel_task(task: Optional[asyncio.Task]) -> None:

@@ -74,6 +74,7 @@ import {
   fetchBoard,
   fetchBoards,
   fetchProfiles,
+  fetchTaskContext,
   patchTask,
   PROFILES_KEY
 } from './api'
@@ -237,7 +238,15 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
   )
 }
 
-function Card({
+export function formatContextTokens(tokens: number): string {
+  if (tokens < 1_000) {return String(tokens)}
+
+  if (tokens < 1_000_000) {return `${Math.round(tokens / 1_000)}k`}
+
+  return `${Math.round(tokens / 100_000) / 10}m`
+}
+
+export function Card({
   columns,
   onDelete,
   onMove,
@@ -260,49 +269,71 @@ function Card({
   const summary = task.latest_summary || task.body
   const fallback = useDefaultAssignee()
   const arc = arcState(task, fallback)
+  const boardSlug = useValue($boardSlug)
+  const [contextHovered, setContextHovered] = useState(false)
+
+  const contextQuery = useQuery({
+    queryKey: ['kanban', 'task-context', boardSlug, task.id, task.current_run_id, task.worker_pid],
+    queryFn: () => fetchTaskContext(task.id),
+    enabled: contextHovered && task.status === 'running',
+    staleTime: 5_000,
+    retry: false
+  })
+
+  const contextTip = task.status === 'running' && contextQuery.data?.available
+    ? k.contextUsage(
+        formatContextTokens(contextQuery.data.context_used),
+        formatContextTokens(contextQuery.data.context_max),
+        contextQuery.data.estimated
+      )
+    : k.contextUnavailable
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div
-          className={cn(
-            'group relative flex cursor-grab flex-col gap-2 rounded-md border border-(--ui-stroke-tertiary) border-l-2 bg-(--ui-bg-elevated) p-2.5',
-            // Hover matches the provider-picker rows: a quiet primary fill;
-            // selected = the theme's focus color (same as a focused input).
-            'transition-colors hover:bg-primary/[0.06] active:cursor-grabbing',
-            selected && 'border-(--dt-composer-ring) bg-[color-mix(in_srgb,var(--dt-composer-ring)_7%,transparent)]',
-            dragging && 'opacity-40'
-          )}
-          draggable
-          onClick={event => (event.metaKey || event.ctrlKey ? onToggleSelect(task.id) : onOpen(task.id))}
-          onDragEnd={() => setDragging(false)}
-          onDragStart={event => {
-            event.dataTransfer.setData('text/plain', task.id)
-            event.dataTransfer.effectAllowed = 'move'
-            // Snapshot the drag image before dimming the source, so the ghost
-            // stays a solid card (dimming first would bake 40% into it).
-            event.dataTransfer.setDragImage(event.currentTarget, event.nativeEvent.offsetX, event.nativeEvent.offsetY)
-            setDragging(true)
-          }}
-          style={{ '--kanban-tone': meta.tone, borderLeftColor: meta.tone } as CSSProperties}
-        >
-          {/* Machine-activity arc: animates ONLY while an agent is actually on
-              the card (claimed + working; amber when the heartbeat is gone).
-              Queued attachment is the footer's named-agent chip — a moving
-              border on an idle card would lie. Hidden during drag/selection
-              so those states stay legible. */}
-          {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
-            <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
-          )}
-          <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
-            {task.title || task.id}
-          </span>
-          {summary && (
-            <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
-          )}
-          <CardFooter arc={arc} task={task} />
-        </div>
-      </ContextMenuTrigger>
+      <Tip label={contextTip}>
+        <ContextMenuTrigger asChild>
+          <div
+            className={cn(
+              'group relative flex cursor-grab flex-col gap-2 rounded-md border border-(--ui-stroke-tertiary) border-l-2 bg-(--ui-bg-elevated) p-2.5',
+              // Hover matches the provider-picker rows: a quiet primary fill;
+              // selected = the theme's focus color (same as a focused input).
+              'transition-colors hover:bg-primary/[0.06] active:cursor-grabbing',
+              selected && 'border-(--dt-composer-ring) bg-[color-mix(in_srgb,var(--dt-composer-ring)_7%,transparent)]',
+              dragging && 'opacity-40'
+            )}
+            draggable
+            onClick={event => (event.metaKey || event.ctrlKey ? onToggleSelect(task.id) : onOpen(task.id))}
+            onDragEnd={() => setDragging(false)}
+            onDragStart={event => {
+              event.dataTransfer.setData('text/plain', task.id)
+              event.dataTransfer.effectAllowed = 'move'
+              // Snapshot the drag image before dimming the source, so the ghost
+              // stays a solid card (dimming first would bake 40% into it).
+              event.dataTransfer.setDragImage(event.currentTarget, event.nativeEvent.offsetX, event.nativeEvent.offsetY)
+              setDragging(true)
+            }}
+            onPointerEnter={() => setContextHovered(true)}
+            onPointerLeave={() => setContextHovered(false)}
+            style={{ '--kanban-tone': meta.tone, borderLeftColor: meta.tone } as CSSProperties}
+          >
+            {/* Machine-activity arc: animates ONLY while an agent is actually on
+                the card (claimed + working; amber when the heartbeat is gone).
+                Queued attachment is the footer's named-agent chip — a moving
+                border on an idle card would lie. Hidden during drag/selection
+                so those states stay legible. */}
+            {(arc === 'running' || arc === 'stale') && !dragging && !selected && (
+              <span aria-hidden className={cn('kanban-arc', arc === 'stale' && 'kanban-arc--stale')} />
+            )}
+            <span className="line-clamp-2 text-[0.8125rem] font-medium leading-snug text-foreground">
+              {task.title || task.id}
+            </span>
+            {summary && (
+              <span className="line-clamp-2 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{summary}</span>
+            )}
+            <CardFooter arc={arc} task={task} />
+          </div>
+        </ContextMenuTrigger>
+      </Tip>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => onOpen(task.id)}>
           <Codicon name="link-external" size="0.85rem" />

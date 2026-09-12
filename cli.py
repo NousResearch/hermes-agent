@@ -2970,7 +2970,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 config=self.config,
                 # Writer identity: a re-claim by this process replaces its own entry.
                 # See #94595.
-                metadata={"live_session_id": str(self.session_id)},
+                metadata=self._active_session_metadata(),
             )
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)
@@ -2982,6 +2982,39 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         with suppress(Exception):
             atexit.register(self._release_active_session)
         return True
+
+    def _active_session_metadata(self) -> dict[str, Any]:
+        """Live writer identity, with exact Kanban incarnation and initialized context window."""
+        metadata: dict[str, Any] = {"live_session_id": str(self.session_id)}
+        task_id = os.getenv("HERMES_KANBAN_TASK", "")
+        if not task_id:
+            return metadata
+        metadata.update({
+            "kanban_task_id": task_id,
+            "kanban_run_id": os.getenv("HERMES_KANBAN_RUN_ID", ""),
+            "kanban_board": os.getenv("HERMES_KANBAN_BOARD", ""),
+        })
+        compressor = getattr(getattr(self, "agent", None), "context_compressor", None)
+        try:
+            context_max = int(getattr(compressor, "context_length", 0) or 0)
+        except Exception:
+            context_max = 0
+        if context_max > 0:
+            metadata["context_max"] = context_max
+        return metadata
+
+    def _refresh_active_session_metadata(self) -> None:
+        """Publish metadata that only becomes known after the worker agent initializes."""
+        lease = getattr(self, "_active_session_lease", None)
+        if lease is None or not os.getenv("HERMES_KANBAN_TASK"):
+            return
+        try:
+            from hermes_cli.active_sessions import transfer_active_session
+
+            transfer_active_session(
+                lease, session_id=str(self.session_id), metadata=self._active_session_metadata())
+        except Exception:
+            logger.debug("Failed to refresh active Kanban session metadata", exc_info=True)
 
     def _release_active_session(self) -> None:
         lease = getattr(self, "_active_session_lease", None)

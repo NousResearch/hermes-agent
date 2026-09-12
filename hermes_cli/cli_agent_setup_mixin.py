@@ -575,6 +575,9 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
+            # A single-query Kanban worker claims its lease before the deferred agent exists.
+            # Refresh once initialization has resolved the worker's effective context window.
+            getattr(self, "_refresh_active_session_metadata")()
             # Route agent status output through prompt_toolkit so ANSI escapes aren't garbled by
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.

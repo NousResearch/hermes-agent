@@ -764,6 +764,21 @@ _LEAN_RECOVERY_HEADING = "## Context Recovery"
 # (the tool-group alignment floor otherwise keeps ~32K of tool output alive).
 _LEAN_TAIL_KEEP_TOOL_ROUNDS = 6
 _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
+# Same argument for assistant text: a degenerate generation (a model that collapses into
+# repeating one phrase) can write a single message orders of magnitude larger than the whole
+# tail budget, and nothing above can evict it — the message-count floor in
+# ``_find_tail_cut_by_tokens`` and the newest-assistant anchor (#29824) both pin it inside the
+# tail. OFF by default (``compression.tail_assistant_max_chars: 0``): the cut rewrites text the
+# model really emitted, and a legitimate 20K-char report must not be cut, so it is opt-in. The
+# deployment that hit this ran 16000 (~4K tokens against a 10K-25K lean tail).
+_LEAN_TAIL_TRUNCATION_MARKER = "[assistant message truncated at compaction"
+# Our own footer, only when it terminates the content. A message that merely QUOTES the marker
+# stays subject to the cap, and matching the size back out lets a LOWERED cap re-cut an earlier
+# truncation without restating the original length wrong.
+_LEAN_TAIL_TRUNCATION_FOOTER_RE = re.compile(
+    r"\n\n" + re.escape(_LEAN_TAIL_TRUNCATION_MARKER)
+    + r" — ([\d,]+) chars preserved in session history\..*\]\Z"
+)
 
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
@@ -771,6 +786,15 @@ def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> st
     hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
+        f"chars preserved in session history.{hint}]"
+    )
+
+
+def _lean_truncation_note(content_len: int, session_id: str) -> str:
+    """Footer appended to an assistant message cut inside the tail."""
+    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    return (
+        f"\n\n{_LEAN_TAIL_TRUNCATION_MARKER} — {content_len:,} "
         f"chars preserved in session history.{hint}]"
     )
 
@@ -2301,7 +2325,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        tail_assistant_max_chars: int = 0, custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2332,6 +2356,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # distinct reason + rearm snapshot instead of every iteration.
         self._last_reclaim_block_warn: "tuple[str, int] | None" = None
         self.min_tail_user_messages = min_tail_user_messages
+        # Lean tail: cut assistant content longer than this (0 = never cut; the default).
+        self.tail_assistant_max_chars = max(0, int(tail_assistant_max_chars or 0))
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # Usable input = context_length - max_tokens; only a positive int counts as a reservation.
@@ -3135,6 +3161,39 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             demoted += 1
         if demoted and not self.quiet_mode:
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
+        return result
+
+    def _truncate_oversized_tail_assistants(self, messages: List[Dict[str, Any]], tail_start: int) -> List[Dict[str, Any]]:
+        """Lean mode: cut tail assistant content longer than ``tail_assistant_max_chars`` (0 = off).
+
+        Tool results have ``_demote_stale_tail_tools``; assistant content had no equivalent, so a
+        runaway generation stays pinned in the tail and compaction reclaims nothing — every later
+        turn re-sends the wall of repetition that is itself feeding the degeneration. Only
+        ``content`` is cut: ``tool_calls`` stay intact so tool-group pairing survives, and the full
+        message stays in session history, which is what the footer's pointer recovers.
+        New list (untouched rows shared, cut ones copied)."""
+        limit = int(getattr(self, "tail_assistant_max_chars", 0) or 0)
+        if limit <= 0:
+            return messages
+        session_id = getattr(self, "_session_id", "") or ""
+        result = list(messages)
+        truncated = 0
+        for i in range(tail_start, len(messages)):
+            msg = messages[i]
+            content = msg.get("content")
+            if msg.get("role") != "assistant" or not isinstance(content, str):
+                continue
+            # Measure the cap against the body, not an earlier pass's footer, and carry that
+            # pass's original size forward so a lowered cap re-cuts and still names the real size.
+            prior = _LEAN_TAIL_TRUNCATION_FOOTER_RE.search(content)
+            body = content[: prior.start()] if prior else content
+            if len(body) <= limit:
+                continue
+            original = int(prior.group(1).replace(",", "")) if prior else len(content)
+            result[i] = _rewritten(msg, body[:limit] + _lean_truncation_note(original, session_id))
+            truncated += 1
+        if truncated and not self.quiet_mode:
+            logger.info("Lean tail: truncated %d oversized assistant message(s)", truncated)
         return result
 
     def _augment_summary_lean(self, summary: str, turns_to_summarize: List[Dict[str, Any]]) -> str:
@@ -4675,6 +4734,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
             messages = self._demote_stale_tail_tools(messages, compress_end)
+            messages = self._truncate_oversized_tail_assistants(messages, compress_end)
         scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
         turns_to_summarize = scan.turns_to_summarize
         self._record_compression_regions(

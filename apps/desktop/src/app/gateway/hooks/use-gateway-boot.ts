@@ -12,7 +12,7 @@ import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
-import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { reconnectAttemptAfterClose, reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -386,7 +386,11 @@ export function useGatewayBoot({
           return
         }
 
-        reconnectAttempt = 0
+        // No attempt-counter reset here: a successful dial only proves the
+        // backend ACCEPTS sockets. The counter resets at close time on real
+        // service proof (reconnectAttemptAfterClose in the onState handler),
+        // so an accept-then-starve backend keeps escalating to the backoff
+        // cap instead of storming at attempt 0.
         reconnectFailingSince = null
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
@@ -478,10 +482,16 @@ export function useGatewayBoot({
         return
       }
 
-      clearReconnectTimer()
-      reconnectAttempt = 0
-      reconnectFailingSince = null
-      escalated = false
+      if (forceOpenSocket) {
+        // Genuine new-connectivity signal (power resume, network online,
+        // manual reconnect): the world changed, so the backoff ladder's
+        // history is stale — reset it and dial immediately.
+        clearReconnectTimer()
+        reconnectAttempt = 0
+        reconnectFailingSince = null
+        escalated = false
+      }
+
       reconnectSecondaryGateways({ forceOpenSockets: forceOpenSocket })
 
       // Browser WebSocket state can remain OPEN after sleep even though the OS
@@ -491,6 +501,14 @@ export function useGatewayBoot({
       // only a socket that is provably dead.
 
       if (!gatewayOpen()) {
+        // Ambient nudge (focus/visibility) while the backoff loop is armed or
+        // mid-dial: let it work. Clearing the timer and dialing per nudge
+        // turned every click into an immediate dial against a cold-booting
+        // backend — the observed storms where clicking made recovery worse.
+        if (!forceOpenSocket && (reconnectTimer !== null || reconnecting)) {
+          return
+        }
+
         await attemptReconnect()
 
         return
@@ -531,7 +549,17 @@ export function useGatewayBoot({
 
         const decision = decideLivenessForceClose({
           workingSessionCount: $workingSessionIds.get().length,
-          consecutiveFailures: livenessProbeFailures
+          consecutiveFailures: livenessProbeFailures,
+          // A pending RPC (a session.resume grinding through a cold agent
+          // build, a slow sidebar refresh) makes probe silence as
+          // inconclusive as a running turn — tearing the socket down would
+          // cancel the very work being waited on and redial into the same
+          // busy backend.
+          pendingRpcCount: gateway.pendingRequestCount,
+          // Frames delivered during the silence are positive proof of life:
+          // the transport serves, the probe merely starved.
+          msSinceLastServed:
+            typeof gateway.lastServedAtMs === 'number' ? Date.now() - gateway.lastServedAtMs : Number.POSITIVE_INFINITY
         })
 
         if (!decision.close) {
@@ -871,7 +899,9 @@ export function useGatewayBoot({
 
       if (st === 'open') {
         bootSnapshotSuperseded = true
-        reconnectAttempt = 0
+        // The attempt counter deliberately survives `open`: acceptance is not
+        // service. It resets at close time on real service proof below, so an
+        // accept-then-starve backend keeps escalating instead of storming.
         reconnectFailingSince = null
         reauthNotified = false
         primaryReauthError = null
@@ -889,6 +919,10 @@ export function useGatewayBoot({
           completeDesktopBoot()
         }
       } else if (bootCompleted && !$gatewaySwitching.get() && (st === 'closed' || st === 'error')) {
+        // Real service proof decides the ladder: a generation that delivered
+        // at least one frame earns a fresh start; an unserved open (or a dial
+        // that never opened) keeps escalating toward the backoff cap.
+        reconnectAttempt = reconnectAttemptAfterClose(reconnectAttempt, typeof gateway.lastServedAtMs === 'number')
         // The socket dropped after a healthy boot (typically sleep/wake). Try
         // to bring it back instead of leaving the composer stuck disabled.
         scheduleReconnect()

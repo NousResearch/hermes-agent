@@ -90,3 +90,36 @@ describe('reconnectBackoffDelayMs', () => {
     }
   })
 })
+
+describe('reconnectAttemptAfterClose', () => {
+  it('keeps escalating when the socket opened but never served (accept-then-starve storm)', async () => {
+    const { reconnectAttemptAfterClose } = await import('./reconnect-backoff')
+
+    // Opened, delivered zero frames, died — the counter must carry forward
+    // so the next dial waits at the escalated ceiling instead of ~0-300ms.
+    expect(reconnectAttemptAfterClose(4, false)).toBe(4)
+  })
+
+  it('resets only on real service proof — a generation that delivered a frame', async () => {
+    const { reconnectAttemptAfterClose } = await import('./reconnect-backoff')
+
+    expect(reconnectAttemptAfterClose(4, true)).toBe(0)
+    expect(reconnectAttemptAfterClose(9, true)).toBe(0)
+  })
+
+  it('a long-lived but silent socket is NOT proof (the temporal-heuristic hole)', async () => {
+    const { reconnectAttemptAfterClose } = await import('./reconnect-backoff')
+
+    // A degraded-but-open socket can outlive any stability window without
+    // ever serving; only a delivered frame resets the ladder.
+    expect(reconnectAttemptAfterClose(7, false)).toBe(7)
+  })
+
+  it('sanitizes bad previous-attempt inputs', async () => {
+    const { reconnectAttemptAfterClose } = await import('./reconnect-backoff')
+
+    expect(reconnectAttemptAfterClose(-2, false)).toBe(0)
+    expect(reconnectAttemptAfterClose(2.9, false)).toBe(2)
+    expect(reconnectAttemptAfterClose(Number.NaN, true)).toBe(0)
+  })
+})

@@ -1497,7 +1497,10 @@ class GatewayInboundMixin:
         return message_text
 
     @staticmethod
-    def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
+    def _prepend_inbound_reply_context(
+        event: MessageEvent, source: SessionSource, message_text: str,
+        history: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         """Prepend the Discord triggering-message id and the reply-to pointer."""
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature.
@@ -1514,12 +1517,22 @@ class GatewayInboundMixin:
                     f"{message_text}"
                 )
 
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
+        reply_text = getattr(event, "reply_to_text", None)
+        if not reply_text and event.reply_to_message_id:
+            # Voice and media replies carry an id without quoted text: recover the persisted
+            # transcript content, which exposes the platform id as ``message_id``.
+            _target_id = str(event.reply_to_message_id)
+            for _entry in reversed(history or []):
+                if str(_entry.get("message_id") or "") == _target_id:
+                    _entry_content = _entry.get("content")
+                    if isinstance(_entry_content, str) and _entry_content.strip():
+                        reply_text = _entry_content.strip()
+                    break
+        if reply_text and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
             # Adapters resolve the original message (or the user's native partial quote).
             # A preview here silently loses later list items and code; keep that context intact.
-            reply_text = event.reply_to_text
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
         return message_text
@@ -1644,7 +1657,7 @@ class GatewayInboundMixin:
                 return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        return self._prepend_inbound_reply_context(event, source, message_text, history)
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: List[Dict[str, Any]],

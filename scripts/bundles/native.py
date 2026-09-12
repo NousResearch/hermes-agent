@@ -90,6 +90,10 @@ def stage_native(args) -> int:
         from scripts.build.windows_deps import prepare_windows_environment
 
         base_env = prepare_windows_environment(source=root, state=out.parent / ".build-deps", env=base_env)
+    # Rustup resolves its installed toolchain under HOME unless these are explicit.
+    # Preserve the build host's compiler and Cargo cache before isolating app state.
+    for key, directory in (("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")):
+        base_env.setdefault(key, str(Path.home() / directory))
     with tempfile.TemporaryDirectory(prefix=".build-", dir=out) as work:
         env = {**base_env, "HOME": work, "USERPROFILE": work,
                "HERMES_HOME": str(Path(work) / ".hermes"),

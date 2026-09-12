@@ -135,15 +135,16 @@ sys.path.insert(0, sys.argv[1])
 from build_wheels import write_reqs_file
 write_reqs_file(Path(sys.argv[2]), Path(sys.argv[3]))
 PYREQS
-# The bind mount is runner-owned: the container (any uid) can only write
-# into a dir the HOST pre-created with open perms (same as the wheelhouse).
-ASSEMBLY="$(mktemp -d "$PAYLOAD_ABS/.environments-XXXXXX")"
-chmod 0777 "$ASSEMBLY"
+# shellcheck source=scripts/termux/assembly_permissions.sh
+. "$HERE/assembly_permissions.sh"
+prepare_assembly
+# Restore host ownership on failure too, after Docker has removed input mounts.
+trap restore_assembly_owner EXIT
 # Mount the payload at its REAL on-device path: the venv records
 # absolute paths (interpreter symlink, pyvenv.cfg) that must be correct
 # on-device from birth -- a /payload alias would bake container paths in.
 docker run --rm --platform linux/arm64 \
-    --user root --network none \
+    --user 1000:1000 --network none \
     -v "$ASSEMBLY:/data/data/com.termux/files/usr/lib/hermes-agent" \
     -v "$PAYLOAD_ABS/python:/data/data/com.termux/files/usr/lib/hermes-agent/tools/python" \
     -v "$PAYLOAD_ABS/node:/data/data/com.termux/files/usr/lib/hermes-agent/tools/node" \
@@ -172,6 +173,8 @@ docker run --rm --platform linux/arm64 \
         "$PY" "$ROOT/app/scripts/termux/build_environment.py" assemble \
             --root "$ROOT" --python "$PY" --requirements "$ROOT/.work/resolved-reqs.txt"
     ' || fail "venv assembly failed inside the container (offline wheelhouse install)"
+restore_assembly_owner
+trap - EXIT
 # They were built at the final on-device paths, not at host scratch paths.
 mv "$ASSEMBLY/venv" "$ASSEMBLY/pm-runtime" "$PAYLOAD_ABS/"
 rm -rf "$ASSEMBLY"

@@ -4218,7 +4218,18 @@ def launchd_restart():
                     return
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
             else:
+                # The graceful drain did not complete within the budget: if the health probe
+                # already classified the loop as wedged we escalated to a bounded stop there;
+                # otherwise fall through to the SIGKILL escalation here. Either way, do NOT reach
+                # the `launchctl kickstart -k` below while the old PID is still alive — launchd
+                # would block on an undying process and `hermes update` hangs (#81642). Force-kill
+                # the residual PID first so the kickstart can start the replacement.
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
+                try:
+                    terminate_pid(pid, force=True)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                _wait_for_pid_exit(pid, max(wait_budget, 1.0))
         # Captured: an unloaded job (3/113/125) is the expected case below, which
         # prints its own ↻ line — and e.stderr feeds the update_cmd failure diagnostic.
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90, **_CAPTURE_TEXT)

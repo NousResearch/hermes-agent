@@ -1010,6 +1010,34 @@ class CredentialPool(CredentialPoolAdminMixin):
         with self._lock:
             return self._current_unlocked()
 
+    def leased_entry(
+        self,
+        credential_id: str,
+        *,
+        entry_filter: Optional[Callable[[PooledCredential], bool]] = None,
+    ) -> Optional[PooledCredential]:
+        """Return the exact entry covered by an active lease.
+
+        ``current()`` is a shared rotation cursor and may advance after a
+        child acquires its lease. Revalidate endpoint eligibility while holding
+        the pool lock so callers bind the leased credential rather than a
+        concurrent child's selection.
+        """
+        with self._lock:
+            if self._active_leases.get(credential_id, 0) <= 0:
+                return None
+            entry = self._find(lambda candidate: candidate.id == credential_id)
+            if entry is None:
+                return None
+            if entry_filter is not None:
+                try:
+                    if not entry_filter(entry):
+                        return None
+                except Exception as exc:
+                    logger.warning("credential pool: leased-entry filter failed: %s", exc)
+                    return None
+            return entry
+
     def entry_id_for_api_key(self, api_key_hint: Any = None) -> Optional[str]:
         """Stable id for the runtime credential in use.
 
@@ -2088,7 +2116,12 @@ class CredentialPool(CredentialPoolAdminMixin):
 
     # ---- leases ------------------------------------------------------------
 
-    def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
+    def acquire_lease(
+        self,
+        credential_id: Optional[str] = None,
+        *,
+        entry_filter: Optional[Callable[[PooledCredential], bool]] = None,
+    ) -> Optional[str]:
         """Acquire a soft lease on a credential.
 
         With *credential_id*, lease that entry directly. Otherwise prefer the
@@ -2096,18 +2129,25 @@ class CredentialPool(CredentialPoolAdminMixin):
         every credential is at the soft cap, still return the least-leased
         one instead of blocking.
         """
-        chosen_id, pending_refresh = self._acquire_lease_under_lock(credential_id)
+        chosen_id, pending_refresh = self._acquire_lease_under_lock(
+            credential_id, entry_filter=entry_filter
+        )
         if pending_refresh:
             self._refresh_pending_entries(pending_refresh)
             # Mirror select(): a pool whose entries all needed a deferred
             # refresh must retry once they are back in rotation, or the caller
             # sees "no credentials available" after a successful refresh.
             if chosen_id is None:
-                chosen_id, _ = self._acquire_lease_under_lock(credential_id)
+                chosen_id, _ = self._acquire_lease_under_lock(
+                    credential_id, entry_filter=entry_filter
+                )
         return chosen_id
 
     def _acquire_lease_under_lock(
-        self, credential_id: Optional[str],
+        self,
+        credential_id: Optional[str],
+        *,
+        entry_filter: Optional[Callable[[PooledCredential], bool]] = None,
     ) -> Tuple[Optional[str], List[PooledCredential]]:
         with self._lock:
             if credential_id:
@@ -2116,6 +2156,12 @@ class CredentialPool(CredentialPoolAdminMixin):
                 return credential_id, []
 
             available, pending_refresh = self._available_entries(clear_expired=True, refresh=True)
+            if entry_filter is not None:
+                try:
+                    available = [entry for entry in available if entry_filter(entry)]
+                except Exception as exc:
+                    logger.warning("credential pool: lease entry filter failed: %s", exc)
+                    return None, pending_refresh
             if not available:
                 return None, pending_refresh
 

@@ -365,10 +365,38 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
-    leased_cred_id = child_pool.acquire_lease()
+    from tools.delegate_tool_config import (
+        _credential_pool_entry_matches_runtime,
+        _credential_pool_matches_runtime,
+    )
+
+    provider = getattr(child, "provider", None)
+    base_url = getattr(child, "base_url", None)
+    if not _credential_pool_matches_runtime(child_pool, provider, base_url):
+        logger.warning(
+            "Skipping delegated credential pool lease: pool does not match child runtime %s at %s",
+            provider, base_url,
+        )
+        child._credential_pool = None
+        return None, None
+
+    from agent.credential_pool import CredentialPool
+
+    real_pool = isinstance(child_pool, CredentialPool)
+    entry_filter = (
+        (lambda entry: _credential_pool_entry_matches_runtime(entry, base_url))
+        if real_pool else None
+    )
+    leased_cred_id = (
+        child_pool.acquire_lease(entry_filter=entry_filter)
+        if real_pool else child_pool.acquire_lease()
+    )
     if leased_cred_id is not None:
         with _quiet("Failed to bind child to leased credential: %s"):
-            leased_entry = child_pool.current()
+            leased_entry = (
+                child_pool.leased_entry(leased_cred_id, entry_filter=entry_filter)
+                if real_pool else child_pool.current()
+            )
             if leased_entry is not None and hasattr(child, "_swap_credential"):
                 child._swap_credential(leased_entry)
     return child_pool, leased_cred_id

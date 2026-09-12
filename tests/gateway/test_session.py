@@ -1560,11 +1560,41 @@ class TestGatewaySessionDbRecovery:
         assert SessionStore._is_fts_corruption_error(
             RuntimeError("no such table: messages_fts")
         )
+        missing_fts = sqlite3.connect(":memory:")
+        try:
+            missing_fts.executescript(
+                "CREATE TABLE messages(content TEXT);"
+                "CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN "
+                "INSERT INTO messages_fts(content) VALUES (new.content); END;"
+            )
+            with pytest.raises(sqlite3.OperationalError) as missing:
+                missing_fts.execute("INSERT INTO messages(content) VALUES ('hello')")
+        finally:
+            missing_fts.close()
+        assert "no such table: main.messages_fts" in str(missing.value).lower()
+        assert SessionStore._is_fts_corruption_error(missing.value)
+        lookalike = sqlite3.connect(":memory:")
+        try:
+            lookalike.executescript(
+                "CREATE TABLE messages(content TEXT);"
+                "CREATE TRIGGER messages_fts_archive_insert AFTER INSERT ON messages BEGIN "
+                "INSERT INTO messages_fts_archive(content) VALUES (new.content); END;"
+            )
+            with pytest.raises(sqlite3.OperationalError) as missing_archive:
+                lookalike.execute("INSERT INTO messages(content) VALUES ('hello')")
+        finally:
+            lookalike.close()
+        assert not SessionStore._is_fts_corruption_error(missing_archive.value)
         assert SessionStore._is_fts_corruption_error(
             sqlite3.DatabaseError(
                 'fts5: corrupt structure record for table "messages_fts"'
             )
         )
+        contradictory = sqlite3.IntegrityError(
+            'fts5: corrupt structure record for table "messages_fts"'
+        )
+        contradictory.sqlite_errorcode = sqlite3.SQLITE_CONSTRAINT_TRIGGER
+        assert not SessionStore._is_fts_corruption_error(contradictory)
         assert not SessionStore._is_fts_corruption_error(
             RuntimeError("shifts were applied")
         )

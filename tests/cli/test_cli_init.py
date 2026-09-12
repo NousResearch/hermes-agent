@@ -105,6 +105,18 @@ class TestVerboseAndToolProgress:
         assert isinstance(cli.tool_progress_mode, str)
         assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
 
+    def test_compact_uses_config_without_an_explicit_override(self):
+        configured = _make_cli(config_overrides={
+            "display": {"compact": True, "tool_progress": "all"},
+        })
+        overridden = _make_cli(
+            config_overrides={"display": {"compact": True, "tool_progress": "all"}},
+            compact=False,
+        )
+
+        assert configured.compact is True
+        assert overridden.compact is False
+
 
 class TestFallbackChainInit:
     def test_merges_new_and_legacy_fallback_config(self):
@@ -711,6 +723,5 @@ class TestRootLevelProviderOverride:
         })
         assert result["model"]["default"] == "flat-default-model"
         assert result["model"]["provider"] == "auto"
-
 
 

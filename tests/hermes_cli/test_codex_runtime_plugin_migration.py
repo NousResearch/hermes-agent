@@ -162,6 +162,81 @@ class TestStripExistingManagedBlock:
 
 class TestMigrate:
 
+    def test_preserves_unmanaged_root_default_permissions(self, tmp_path):
+        """A user-owned root default wins without producing duplicate TOML keys."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        user_default = "default_permissions = ':full-access' # preserve exactly\n"
+        target.write_text(
+            "# user permissions\n"
+            f"{user_default}"
+            "\n"
+            f"{MIGRATION_MARKER}\n"
+            "\n"
+            'default_permissions = ":workspace"\n'
+            "\n"
+            "[mcp_servers.old]\n"
+            'command = "old"\n'
+            "\n"
+            f"{MIGRATION_END_MARKER}\n"
+            "\n"
+            "[features]\n"
+            "terminal_resize_reflow = true\n"
+        )
+
+        migrate(
+            {"mcp_servers": {"current": {"command": "new"}}},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        migrated_once = target.read_text()
+
+        assert migrated_once.count("default_permissions =") == 1
+        assert user_default in migrated_once
+        assert tomllib.loads(migrated_once)["default_permissions"] == ":full-access"
+        assert "[mcp_servers.current]" in migrated_once
+
+        migrate(
+            {"mcp_servers": {"current": {"command": "new"}}},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        assert target.read_text() == migrated_once
+
+    def test_only_unmanaged_root_key_suppresses_managed_default(self, tmp_path):
+        """Comments, similar names, and table keys are not root assignments."""
+        import tomllib
+
+        target = tmp_path / "config.toml"
+        original = (
+            "# default_permissions = ':full-access'\n"
+            "my_default_permissions = 'leave-me'\n"
+            "\n"
+            "[features]\n"
+            "default_permissions = 'table-value'\n"
+        )
+        target.write_text(original)
+
+        migrate(
+            {},
+            codex_home=tmp_path,
+            discover_plugins=False,
+            expose_hermes_tools=False,
+        )
+        migrated = target.read_text()
+        parsed = tomllib.loads(migrated)
+
+        assert parsed["default_permissions"] == ":workspace"
+        assert parsed["my_default_permissions"] == "leave-me"
+        assert parsed["features"]["default_permissions"] == "table-value"
+        assert "# default_permissions = ':full-access'\n" in migrated
+        assert "my_default_permissions = 'leave-me'\n" in migrated
+        assert "[features]\n" in migrated
+        assert "default_permissions = 'table-value'\n" in migrated
+
 
 
     def test_plugin_discovery_writes_plugin_blocks(self, tmp_path, monkeypatch):

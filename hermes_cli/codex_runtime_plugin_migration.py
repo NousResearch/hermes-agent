@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -209,6 +210,14 @@ def _insert_managed_block_at_top_level(user_text: str, managed_block: str) -> st
     prefix = "".join(lines[:first_table_idx]).rstrip("\n")
     suffix = "".join(lines[first_table_idx:]).lstrip("\n")
     return f"{prefix}\n\n{managed_block}\n{suffix}" if prefix else f"{managed_block}\n{suffix}"
+
+
+def _has_root_default_permissions(toml_text: str) -> bool:
+    """Return whether valid TOML defines ``default_permissions`` at the document root."""
+    try:
+        return "default_permissions" in tomllib.loads(toml_text)
+    except tomllib.TOMLDecodeError:
+        return False
 
 
 def _strip_unmanaged_plugin_tables(toml_text: str) -> str:
@@ -434,15 +443,11 @@ def migrate(
         # re-render and may strip pre-existing tables outside the managed block.
         plugin_query_succeeded = not plugin_err
         report.migrated_plugins += [f"{p['name']}@{p['marketplace']}" for p in plugins]
-    if default_permission_profile:
-        report.wrote_permissions_default = default_permission_profile
     if expose_hermes_tools:
         translated["hermes-tools"] = _build_hermes_tools_mcp_entry()
         if "hermes-tools" not in report.migrated:
             report.migrated.append("hermes-tools")
-    managed_block = render_codex_toml_section(
-        translated, plugins=plugins, default_permission_profile=default_permission_profile)
-    new_text = managed_block
+    without_managed: Optional[str] = None
     if target.exists():
         try:
             existing = target.read_text(encoding="utf-8")
@@ -452,6 +457,14 @@ def migrate(
         without_managed = _strip_existing_managed_block(existing)
         if plugin_query_succeeded:
             without_managed = _strip_unmanaged_plugin_tables(without_managed)
+        if default_permission_profile and _has_root_default_permissions(without_managed):
+            default_permission_profile = None
+    if default_permission_profile:
+        report.wrote_permissions_default = default_permission_profile
+    managed_block = render_codex_toml_section(
+        translated, plugins=plugins, default_permission_profile=default_permission_profile)
+    new_text = managed_block
+    if without_managed is not None:
         new_text = _insert_managed_block_at_top_level(without_managed, managed_block)
     if dry_run:
         return report

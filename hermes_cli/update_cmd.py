@@ -1089,7 +1089,12 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
 def _verify_head_after_pull(
     git_cmd, branch: str, pre_pull_sha, *, in_place_update: bool, _windows_gateway_resume
 ) -> str | None:
-    """Return the post-pull HEAD SHA; ``sys.exit(1)`` if the pull was a no-op or landed off-branch."""
+    """Return the post-pull HEAD SHA; ``sys.exit(1)`` if the pull was a no-op or landed off-branch.
+
+    One no-op is NOT fatal: when the branch is attached and already *contains* ``origin/<branch>``
+    (a fork's upstream sync fast-forwarded HEAD past the lagging mirror earlier in the same run),
+    the pull has nothing to do and the update itself did move HEAD.
+    """
     # A detached checkout pinned to a SHA can report "N new commit(s)" and a successful
     # merge --ff-only yet stay put; surface the no-op instead of claiming "Code updated!".
     # Verify HEAD actually moved (issue #79678). ``merge --ff-only`` succeeding only means the merge
@@ -1101,11 +1106,30 @@ def _verify_head_after_pull(
     # claiming success.
     post_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
     if pre_pull_sha and post_pull_sha == pre_pull_sha:
+        if _origin_tip_is_ancestor_of_head(git_cmd, branch):
+            # Benign no-op: this run's fork upstream sync already fast-forwarded the branch PAST
+            # ``origin/<branch>``, so pulling from the lagging mirror cannot move HEAD. HEAD did
+            # move during the update (that is why the counts said "new commit(s)"), and the
+            # attached branch strictly contains the mirror tip — not the detached/pinned stall
+            # this guard exists for. Treating it as fatal aborted the pre-pull guard's whole
+            # purpose downstream: the dependency sync and the fleet restart never ran, so the
+            # gateway kept serving stale modules behind "Code did not move".
+            print(
+                f"  ℹ origin/{branch} is already contained in HEAD ({post_pull_sha[:10]}) — "
+                "local is ahead of the origin mirror because the upstream sync moved HEAD "
+                "earlier in this run; continuing.")
+            return post_pull_sha
         print()
         print("✗ Code did not move — update was a no-op.")
-        print(
-            f"  HEAD is pinned to {pre_pull_sha[:10]} (detached checkout); "
-            f"origin/{branch} advanced but the working tree stayed put.")
+        if _current_branch_name(git_cmd) == "HEAD":
+            # The guard's original case: detached checkout pinned to a raw SHA.
+            print(
+                f"  HEAD is pinned to {pre_pull_sha[:10]} (detached checkout); "
+                f"origin/{branch} advanced but the working tree stayed put.")
+        else:
+            print(
+                f"  HEAD is pinned to {pre_pull_sha[:10]}; origin/{branch} still holds "
+                "commits HEAD does not contain.")
         print(
             "  Reattach to the branch and retry: "
             f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update")
@@ -1131,6 +1155,19 @@ def _verify_head_after_pull(
 def _current_branch_name(git_cmd, *, check: bool = False) -> str:
     """``rev-parse --abbrev-ref HEAD`` (literal "HEAD" when detached)."""
     return _git_run(git_cmd, ["rev-parse", "--abbrev-ref", "HEAD"], check=check).stdout.strip()
+
+
+def _origin_tip_is_ancestor_of_head(git_cmd, branch: str) -> bool:
+    """True when ``origin/<branch>`` is already contained in HEAD.
+
+    Such a checkout is at or *ahead of* the origin remote, so a pull from it is a real no-op that
+    must not be reported as a pinned/detached stall. A detached HEAD returns False (that is the
+    pinned-SHA case), and so does a missing ``origin/<branch>`` ref — both keep the fatal path.
+    """
+    if _current_branch_name(git_cmd) == "HEAD":
+        return False
+    probe = _git_run(git_cmd, ["merge-base", "--is-ancestor", f"origin/{branch}", "HEAD"])
+    return probe.returncode == 0
 
 
 def _handle_update_called_process_error(

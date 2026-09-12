@@ -151,6 +151,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         # Init auth failures live here because the failed manager is discarded.
         self._init_auth_failure: Optional[str] = None
         self._init_auth_notice_emitted = False
+        # Preserved non-auth bootstrap cause (network down, HTTP error, timeout) so
+        # tool calls report what actually failed instead of a generic message.
+        self._init_failure: Optional[str] = None
         self._cron_skipped = False  # cron and flush contexts disable the plugin entirely
 
     @property
@@ -254,6 +257,22 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def _can_start_init(self) -> bool:
         return not (self._cron_skipped or self._session_initialized) and bool(self._config) and self._lazy_init_kwargs is not None
 
+    def _describe_init_error(self, exc: Exception) -> str:
+        """Return a sanitized, user-facing Honcho init failure message."""
+        status = getattr(exc, "status", None)
+        code = getattr(exc, "code", None)
+        message = str(exc).strip() or exc.__class__.__name__
+        exc_type = exc.__class__.__name__
+        prefix = "Honcho memory unavailable for this operation"
+
+        if status:
+            return f"{prefix}: session bootstrap failed: {message} (HTTP {status})."
+        if code == "timeout" or "timeout" in message.lower() or "timed out" in message.lower():
+            return f"{prefix}: session bootstrap timed out ({exc_type})."
+        if code == "connection_error":
+            return f"{prefix}: connection error during session bootstrap ({exc_type})."
+        return f"{prefix}: session bootstrap failed: {message} ({exc_type})."
+
     def _run_session_init(self, label: str) -> bool:
         """Run _do_session_init with the deferred kwargs; on failure discard the manager
         and (for auth failures) keep the detail for the one-time notice."""
@@ -272,12 +291,16 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 # Keep the auth detail so the one-time notice survives the manager discard.
                 self._init_auth_failure = str(e)
                 detail = "authentication rejected"
+            else:
+                # Keep the bootstrap cause so tool calls can report what actually failed.
+                self._init_failure = self._describe_init_error(e)
             logger.warning("Honcho %s session init failed: %s", label, detail)
             return False
         self._lazy_init_kwargs = self._lazy_init_session_id = None
         if self._init_auth_failure is not None:
             self._init_auth_failure = None
             self._init_auth_notice_emitted = False
+        self._init_failure = None
         return True
 
     def _start_session_init_background(self, *, wait_timeout: float = 0.0, blocking: bool = True) -> None:
@@ -886,8 +909,11 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             if self._init_thread and self._init_thread.is_alive():
                 return tool_error("Honcho session is still initializing; try again shortly.")
             if not self._ensure_session():
-                return tool_error(f"Honcho memory authentication failed: {self._init_auth_failure}"
-                                  if self._init_auth_failure else "Honcho session could not be initialized.")
+                if self._init_auth_failure:
+                    return tool_error(f"Honcho memory authentication failed: {self._init_auth_failure}")
+                return tool_error(
+                    self._init_failure or "Honcho session could not be initialized."
+                )
         if not self._manager or not self._session_key:
             return tool_error("Honcho is not active for this session.")
         if (handler := self._TOOL_HANDLERS.get(tool_name)) is None:

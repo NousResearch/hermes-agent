@@ -988,14 +988,18 @@ class TestInitAuthFailureNotice:
         assert provider.prefetch("a real question") == ""
         assert reauths == []
 
-    def test_non_auth_tools_init_failure_keeps_generic_error(self, tmp_path, monkeypatch):
+    def test_non_auth_tools_init_failure_surfaces_preserved_cause(self, tmp_path, monkeypatch):
+        """Non-auth init failures surface the preserved bootstrap cause, not a
+        generic message — the ported #14834 contract (auth failures keep their
+        own notice path; a subsequent init success clears the cause)."""
         client = MagicMock()
         client.peer.side_effect = TimeoutError("request timed out")
         _wire_init(tmp_path, monkeypatch, client, recall_mode="tools", dead_refresh=False)
         provider = _initialized_provider()
 
         out = provider.handle_tool_call("honcho_profile", {})
-        assert "could not be initialized" in out
+        assert "session bootstrap timed out" in out
+        assert provider._init_failure in out
 
 
 # ---------------------------------------------------------------------------

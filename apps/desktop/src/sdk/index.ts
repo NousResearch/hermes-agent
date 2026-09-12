@@ -1669,6 +1669,12 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
+/** The fresh draft welcome area: replace core's Intro with a profile- and cwd-aware surface. */
+export {
+  CHAT_WELCOME_AREA,
+  type ChatWelcomeContribution,
+  type ChatWelcomeProps
+} from '@/lib/chat-welcome'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@/lib/format'

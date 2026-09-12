@@ -1053,6 +1053,30 @@ def provider_label(provider: Optional[str]) -> str:
     return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
+def _trusted_fast_mode_endpoints() -> set[tuple[str, str]]:
+    """``agent.fast_mode_trusted_endpoints`` as normalized ``(provider, host)`` pairs.
+
+    Opt-in for self-hosted deployments that forward the fast-mode params verbatim. Malformed
+    entries are ignored rather than raising: a typo must not make fast mode unavailable, and it
+    must not widen the gate either.
+    """
+    from hermes_cli.config import load_config
+
+    try:
+        configured = (load_config() or {}).get("agent", {}).get("fast_mode_trusted_endpoints")
+    except Exception:
+        return set()
+    pairs = set()
+    for entry in configured or []:
+        provider, sep, host = str(entry or "").partition(":")
+        if not sep:
+            continue
+        provider, host = provider.strip().lower(), host.strip().lower()
+        if provider and host:
+            pairs.add((normalize_provider(provider), host))
+    return pairs
+
+
 def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     """OpenAI flagship eligible for Priority Processing. Codex-series excluded — the Codex Responses
     API doesn't accept ``service_tier``."""
@@ -1100,9 +1124,27 @@ def _fast_mode_route_supported(
     else:
         allowed = {"openai": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:
-        return False
+        return _is_trusted_fast_mode_endpoint(provider, base_url)
     host = (urlparse(str(base_url or "")).hostname or "").lower()
-    return not host or host in allowed.values()
+    if not host or host in allowed.values():
+        return True
+    return _is_trusted_fast_mode_endpoint(provider, base_url)
+
+
+def _is_trusted_fast_mode_endpoint(provider: Optional[str], base_url: Optional[str]) -> bool:
+    """Whether this exact provider+host pair is opted in via config.
+
+    Both halves must be present and match exactly: an operator vouches for a specific
+    deployment, not for a provider name or a domain suffix.
+    """
+    from urllib.parse import urlparse
+
+    if not provider or not base_url:
+        return False
+    host = (urlparse(str(base_url)).hostname or "").lower()
+    if not host:
+        return False
+    return (normalize_provider(provider), host) in _trusted_fast_mode_endpoints()
 
 
 def resolve_fast_mode_overrides(

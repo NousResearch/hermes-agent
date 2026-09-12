@@ -339,6 +339,70 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert "extra_headers" not in kwargs
 
 
+class TestTrustedProxyRoute(unittest.TestCase):
+    """Self-hosted endpoints can be opted in; everything else stays fail-closed.
+
+    Fast mode is refused on custom base URLs because a proxy that drops the param
+    bills for a tier that was never delivered. An operator who has verified their
+    deployment forwards it can vouch for that exact provider+host pair.
+    """
+
+    PROXY_BASE_URL = "https://proxy.example.com/v1"
+    TRUSTED = ["llm-proxy:proxy.example.com"]
+
+    def _resolve(self, model, trusted, **kwargs):
+        from unittest.mock import patch
+
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        with patch("hermes_cli.config.load_config",
+                   return_value={"agent": {"fast_mode_trusted_endpoints": trusted}}):
+            return resolve_fast_mode_overrides(model, **kwargs)
+
+    def test_opted_in_endpoint_matches_unrouted_answer(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        for model in ("gpt-5.4", "claude-opus-4-8"):
+            with self.subTest(model=model):
+                routed = self._resolve(
+                    model, self.TRUSTED,
+                    provider="llm-proxy", base_url=self.PROXY_BASE_URL)
+                self.assertIsNotNone(routed)
+                self.assertEqual(routed, resolve_fast_mode_overrides(model))
+
+    def test_endpoint_is_refused_until_opted_in(self):
+        self.assertIsNone(self._resolve(
+            "gpt-5.4", [], provider="llm-proxy", base_url=self.PROXY_BASE_URL))
+
+    def test_trust_does_not_extend_beyond_the_exact_pair(self):
+        for provider, base_url in (
+                ("llm-proxy", "https://staging.proxy.example.com/v1"),   # subdomain
+                ("llm-proxy", "https://proxy.example.com.evil.test/v1"), # suffix spoof
+                ("llm-proxy", "https://other-proxy.example/v1"),         # other host
+                ("openrouter", self.PROXY_BASE_URL)):                    # other provider
+            with self.subTest(provider=provider, base_url=base_url):
+                self.assertIsNone(self._resolve(
+                    "gpt-5.4", self.TRUSTED, provider=provider, base_url=base_url))
+
+    def test_malformed_entries_neither_crash_nor_widen(self):
+        for entry in ("", "llm-proxy", ":proxy.example.com", "llm-proxy:", None):
+            with self.subTest(entry=entry):
+                self.assertIsNone(self._resolve(
+                    "gpt-5.4", [entry],
+                    provider="llm-proxy", base_url=self.PROXY_BASE_URL))
+
+    def test_opt_in_does_not_override_model_support(self):
+        self.assertIsNone(self._resolve(
+            "claude-opus-4-6", self.TRUSTED,
+            provider="llm-proxy", base_url=self.PROXY_BASE_URL))
+
+    def test_first_party_routes_need_no_opt_in(self):
+        self.assertEqual(
+            self._resolve("gpt-5.4", [],
+                          provider="openai", base_url="https://api.openai.com/v1"),
+            {"service_tier": "priority"})
+
+
 
 class TestConfigDefault(unittest.TestCase):
     def test_default_config_has_service_tier(self):

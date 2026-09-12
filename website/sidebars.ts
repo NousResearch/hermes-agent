@@ -717,6 +717,7 @@ const sidebars: SidebarsConfig = {
         'integrations/nous-portal',
         'integrations/providers',
         'integrations/buzz',
+        'integrations/omarchy',
         'user-guide/features/mcp',
         'user-guide/features/acp',
         'user-guide/features/provider-routing',

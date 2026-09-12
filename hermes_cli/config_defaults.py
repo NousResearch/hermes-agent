@@ -1998,6 +1998,10 @@ DEFAULT_CONFIG = {
         # HERMES_MEDIA_TRUST_RECENT_SECONDS. Only consulted when strict is true.
         "trust_recent_files_seconds": 600,
         "api_server": {  # OpenAI-compatible API server platform (gateway/platforms/api_server.py).
+            # Preserve the established behavior in which authenticated API clients supply Chat
+            # Completions system messages or Responses/Runs instructions. Set false to make the
+            # active profile's display.personality or agent.system_prompt authoritative instead.
+            "client_managed_system_prompt": True,
             # Max concurrent agent runs. Requests to /v1/chat/completions, /v1/responses, and
             # /v1/runs beyond this get HTTP 429 + Retry-After, bounding CPU/memory/LLM-quota
             # exhaustion from a request flood. 0 = no cap.

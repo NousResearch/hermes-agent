@@ -150,6 +150,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "boolean",
         "description": "Run the local browser in headed mode (visible window). Also keeps the window open between turns; idle sessions are still reaped after browser.inactivity_timeout.",
     },
+    "gateway.api_server.client_managed_system_prompt": {
+        "type": "boolean",
+        "description": (
+            "Use Chat Completions system messages or Responses/Runs instructions as the API "
+            "request's additional prompt. Enabled by default for backward compatibility; disable "
+            "to use the active profile's display.personality or agent.system_prompt instead."
+        ),
+    },
     "plugins.hook_callback_timeout": {
         "type": "number",
         "description": (

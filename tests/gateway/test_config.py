@@ -449,7 +449,7 @@ class TestLoadGatewayConfig:
 
     def test_api_server_port_bridged_into_extra(self, tmp_path, monkeypatch):
         """``gateway.api_server.port`` must land in PlatformConfig.extra —
-        the adapter reads port/key/host/cors_origins/model_name from extra
+        the adapter reads its server-specific settings from extra
         (gateway/platforms/api_server.py), and from_dict discards unknown
         top-level keys, so without the bridge the port is silently lost."""
         self._clear_api_server_env(monkeypatch)
@@ -474,6 +474,33 @@ class TestLoadGatewayConfig:
         assert extra["host"] == "0.0.0.0"
         assert extra["key"] == "sekrit"
         assert extra["model_name"] == "my-hermes"
+
+    @pytest.mark.parametrize(
+        ("yaml_value", "expected"),
+        [
+            pytest.param("false", False, id="operator-managed"),
+            pytest.param("true", True, id="client-managed"),
+        ],
+    )
+    def test_api_server_client_managed_system_prompt_bridged_into_extra(
+        self, tmp_path, monkeypatch, yaml_value, expected,
+    ):
+        self._clear_api_server_env(monkeypatch)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  api_server:\n"
+            "    enabled: true\n"
+            f"    client_managed_system_prompt: {yaml_value}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        extra = config.platforms[Platform.API_SERVER].extra
+        assert extra["client_managed_system_prompt"] is expected
 
     def test_room_link_url_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """The supported config path advertises no endpoint until restart."""

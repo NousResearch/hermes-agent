@@ -8,7 +8,7 @@ Tests cover:
 - Auth (valid key, invalid key, no key configured)
 - /v1/models endpoint
 - /health endpoint
-- System prompt extraction
+- System prompt parsing and managed enforcement
 - Error handling (invalid JSON, missing fields)
 """
 
@@ -222,6 +222,7 @@ class TestAdapterInit:
         assert adapter._host == "127.0.0.1"
         assert adapter._port == 8642
         assert adapter._api_key == ""
+        assert adapter._client_managed_system_prompt is True
         assert adapter.platform == Platform.API_SERVER
 
     def test_custom_config_from_extra(self):
@@ -232,6 +233,7 @@ class TestAdapterInit:
                 "port": 9999,
                 "key": "sk-test",
                 "cors_origins": ["http://localhost:3000"],
+                "client_managed_system_prompt": True,
             },
         )
         adapter = APIServerAdapter(config)
@@ -239,6 +241,7 @@ class TestAdapterInit:
         assert adapter._port == 9999
         assert adapter._api_key == "sk-test"
         assert adapter._cors_origins == ("http://localhost:3000",)
+        assert adapter._client_managed_system_prompt is True
 
 
     def test_create_agent_forwards_runtime_config(self, monkeypatch):
@@ -288,6 +291,142 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+
+    @pytest.mark.parametrize(
+        ("extra", "expected_prompt"),
+        [
+            pytest.param({}, "Client-provided instruction", id="default-client-managed"),
+            pytest.param(
+                {"client_managed_system_prompt": False},
+                "Operator-managed instruction",
+                id="operator-managed",
+            ),
+            pytest.param(
+                {"client_managed_system_prompt": True},
+                "Client-provided instruction",
+                id="client-managed",
+            ),
+        ],
+    )
+    def test_create_agent_applies_configured_system_prompt_policy(
+        self, monkeypatch, extra, expected_prompt,
+    ):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_ephemeral_system_prompt",
+            staticmethod(lambda: "  Operator-managed instruction  "),
+        )
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra=extra))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(
+            session_id="api-session",
+            ephemeral_system_prompt="Client-provided instruction",
+        )
+
+        assert captured["ephemeral_system_prompt"] == expected_prompt
+
+    @pytest.mark.parametrize(
+        ("profile_config", "expected_overlay", "excluded_overlays"),
+        [
+            pytest.param(
+                "agent:\n  system_prompt: API SERVER MANAGED PROMPT\n",
+                "API SERVER MANAGED PROMPT",
+                ("CLIENT PROMPT MUST BE IGNORED",),
+                id="soul-and-system-prompt",
+            ),
+            pytest.param(
+                "display:\n"
+                "  personality: api-reviewer\n"
+                "agent:\n"
+                "  system_prompt: MANUAL PROMPT MUST BE SHADOWED\n"
+                "  personalities:\n"
+                "    api-reviewer: API SERVER PERSONALITY\n",
+                "API SERVER PERSONALITY",
+                ("CLIENT PROMPT MUST BE IGNORED", "MANUAL PROMPT MUST BE SHADOWED"),
+                id="soul-and-personality",
+            ),
+        ],
+    )
+    def test_operator_managed_policy_combines_soul_with_profile_prompt(
+        self, tmp_path, monkeypatch, profile_config, expected_overlay, excluded_overlays,
+    ):
+        """The default policy must match messaging gateways all the way to the wire prompt."""
+        from agent.turn_context import build_api_messages
+        from gateway import run as gateway_run
+        from run_agent import AIAgent as RealAgent
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("API SERVER SOUL IDENTITY\n", encoding="utf-8")
+        (hermes_home / "config.yaml").write_text(profile_config, encoding="utf-8")
+
+        def create_real_agent(**kwargs):
+            kwargs["skip_memory"] = True
+            return RealAgent(**kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", create_real_agent)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_key": "sk-test-api-server",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda: "test/model")
+        monkeypatch.setattr(
+            gateway_run.GatewayRunner,
+            "_load_reasoning_config",
+            staticmethod(lambda model="": {}),
+        )
+        monkeypatch.setattr(
+            gateway_run.GatewayRunner,
+            "_load_fallback_model",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 90)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+        monkeypatch.setattr("model_tools.get_tool_definitions", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("model_tools.check_toolset_requirements", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr("agent.process_bootstrap.OpenAI", MagicMock())
+
+        adapter = APIServerAdapter(PlatformConfig(
+            enabled=True,
+            extra={"client_managed_system_prompt": False},
+        ))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        with gateway_run._profile_runtime_scope(hermes_home):
+            agent = adapter._create_agent(
+                session_id="api-session",
+                ephemeral_system_prompt="CLIENT PROMPT MUST BE IGNORED",
+            )
+            base_prompt = agent._build_system_prompt()
+            api_messages, effective_prompt = build_api_messages(
+                agent,
+                [{"role": "user", "content": "hello"}],
+                current_turn_user_idx=0,
+                ext_prefetch_cache=None,
+                plugin_user_context=None,
+                moa_config=None,
+                active_system_prompt=base_prompt,
+            )
+
+        assert api_messages[0] == {"role": "system", "content": effective_prompt}
+        assert "API SERVER SOUL IDENTITY" in effective_prompt
+        assert expected_overlay in effective_prompt
+        assert effective_prompt.index("API SERVER SOUL IDENTITY") < effective_prompt.index(expected_overlay)
+        for excluded in excluded_overlays:
+            assert excluded not in effective_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -2582,6 +2721,9 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {})
+    )
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_ephemeral_system_prompt", staticmethod(lambda: "")
     )
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)

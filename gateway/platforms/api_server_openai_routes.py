@@ -428,8 +428,8 @@ class OpenAICompatRoutesMixin:
             return _invalid_request("Missing or invalid 'messages' field")
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
-        # System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
-        # (Anthropic rejects images there, OpenAI text models ignore them).
+        # Parse system messages for OpenAI compatibility and the stateless session fingerprint.
+        # _create_agent() sends this text upstream only when client-managed prompts are enabled.
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []
         for idx, msg in enumerate(messages):
@@ -833,6 +833,8 @@ class OpenAICompatRoutesMixin:
                 return _error_response(f"Previous response not found: {previous_response_id}", 404)
             conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")
+            # Preserve Responses metadata continuity. _create_agent() decides whether the managed
+            # prompt or these client instructions are sent upstream.
             if instructions is None:
                 instructions = stored.get("instructions")
         # All input messages but the last become history; the last is the user message.

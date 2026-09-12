@@ -1148,6 +1148,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        # Preserve the established OpenAI-compatible API behavior by default. Deployments can
+        # explicitly disable this to make the active profile's managed prompt authoritative.
+        self._client_managed_system_prompt: bool = _coerce_request_bool(
+            extra.get("client_managed_system_prompt"), default=True)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -2125,7 +2129,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
-        session ``/model`` override, disables the fallback chain and fails closed."""
+        session ``/model`` override, disables the fallback chain and fails closed. By default,
+        client system messages and Responses/Runs instructions retain their established behavior;
+        when ``client_managed_system_prompt`` is disabled, they are compatibility metadata only
+        and the active profile's config wins."""
         from run_agent import AIAgent
         from gateway.run import (
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
@@ -2159,10 +2166,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # after the precedence chain settles; an explicit request wins.
         if request_reasoning_config is None:
             request_reasoning_config = GatewayRunner._load_reasoning_config(model)
+        if self._client_managed_system_prompt:
+            effective_system_prompt = ephemeral_system_prompt or None
+        else:
+            # This runs inside the request profile scope, so multiplexed routes use that profile's
+            # managed prompt. In this explicit managed mode, API clients cannot replace it.
+            managed_system_prompt = (GatewayRunner._load_ephemeral_system_prompt() or "").strip()
+            effective_system_prompt = managed_system_prompt or None
         agent_kwargs = {
             "model": model, **runtime_kwargs, **_checkpoint_agent_kwargs(user_config),
             "max_iterations": max_iterations, "quiet_mode": True, "verbose_logging": False,
-            "ephemeral_system_prompt": ephemeral_system_prompt or None,
+            "ephemeral_system_prompt": effective_system_prompt,
             "enabled_toolsets": enabled_toolsets, "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,

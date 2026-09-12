@@ -37,10 +37,19 @@ def _isolate_env(tmp_path, monkeypatch):
 
 @pytest.fixture
 def _managed_tmp_root():
-    """A real platform temp root that is explicitly owned by Hermes."""
+    """A real but unowned platform temp root for ownership-boundary tests."""
     root = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-"))
     yield root
     shutil.rmtree(root, ignore_errors=True)
+
+
+def _owned_test_root(module, hermes_home):
+    """Add an isolated test-only immediate-cleanup root to one loaded module."""
+    parts = ("cache", "disk-cleanup", "turn-files")
+    module._MANAGED_HERMES_ROOTS[parts] = "test"
+    root = hermes_home.joinpath(*parts)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _load_lib():
@@ -71,6 +80,7 @@ def _load_plugin_init():
         ns = types.ModuleType("hermes_plugins")
         ns.__path__ = []
         sys.modules["hermes_plugins"] = ns
+    sys.modules.pop("hermes_plugins.disk_cleanup.disk_cleanup", None)
     mod = importlib.util.module_from_spec(spec)
     mod.__package__ = "hermes_plugins.disk_cleanup"
     mod.__path__ = [str(plugin_dir)]
@@ -129,33 +139,29 @@ class TestGuessCategory:
         assert summary["deleted"] == 0
         assert all(path.exists() for path in sentinels)
 
-    def test_system_temp_root_requires_process_registration(self, _managed_tmp_root):
+    def test_system_temp_name_and_manual_category_do_not_establish_ownership(
+        self, _isolate_env, _managed_tmp_root
+    ):
         dg = _load_lib()
         p = _managed_tmp_root / "anything.log"
         p.write_text("x", encoding="utf-8")
         assert dg.guess_category(p) is None
         assert dg.is_safe_path(p) is False
-        assert dg.register_system_temp_root(p) is True
-        assert dg.guess_category(p) == "test"
-        assert dg.is_safe_path(p) is True
+        assert dg.track(str(p), "test", silent=True) is False
 
-    def test_replaced_system_temp_root_loses_registration(self, _managed_tmp_root):
-        dg = _load_lib()
-        original_file = _managed_tmp_root / "original.log"
-        original_file.write_text("x", encoding="utf-8")
-        assert dg.register_system_temp_root(original_file) is True
-
-        displaced = _managed_tmp_root.with_name(f"{_managed_tmp_root.name}-displaced")
-        _managed_tmp_root.rename(displaced)
-        _managed_tmp_root.mkdir()
-        replacement_file = _managed_tmp_root / "replacement.log"
-        replacement_file.write_text("durable", encoding="utf-8")
-        try:
-            assert dg.guess_category(replacement_file) is None
-            assert dg.is_safe_path(replacement_file) is False
-        finally:
-            shutil.rmtree(_managed_tmp_root)
-            displaced.rename(_managed_tmp_root)
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(p),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": p.stat().st_size,
+        }]), encoding="utf-8")
+        auto, _prompt = dg.dry_run()
+        summary = dg.quick()
+        assert auto == []
+        assert summary["deleted"] == 0
+        assert p.read_text(encoding="utf-8") == "x"
 
     def test_owned_cache_file(self, _isolate_env):
         dg = _load_lib()
@@ -323,14 +329,41 @@ class TestStaleCronEntryMigration:
 
 
 class TestTrackForgetQuick:
-    def test_track_then_quick_deletes_test(self, _managed_tmp_root):
+    def test_track_then_quick_deletes_test(self, _isolate_env):
         dg = _load_lib()
-        p = _managed_tmp_root / "test_a.py"
+        p = _owned_test_root(dg, _isolate_env) / "test_a.py"
         p.write_text("x", encoding="utf-8")
         assert dg.track(str(p), "test", silent=True) is True
         summary = dg.quick()
         assert summary["deleted"] == 1
         assert not p.exists()
+
+    def test_auto_cleanup_never_recursively_deletes_a_tracked_directory(
+        self, _isolate_env
+    ):
+        dg = _load_lib()
+        directory = (
+            _isolate_env / "cache" / "vision" / "temp_vision_images" / "durable-dir"
+        )
+        directory.mkdir(parents=True)
+        victim = directory / "victim.txt"
+        victim.write_text("durable", encoding="utf-8")
+        assert dg.track(str(directory), "temp", silent=True) is False
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(directory),
+            "category": "temp",
+            "timestamp": "2025-01-01T00:00:00+00:00",
+            "size": 0,
+        }]), encoding="utf-8")
+
+        auto, _prompt = dg.dry_run()
+        summary = dg.quick()
+        assert auto == []
+        assert summary["deleted"] == 0
+        assert victim.read_text(encoding="utf-8") == "durable"
 
 
     def test_forget_removes_entry(self, _isolate_env):
@@ -363,9 +396,9 @@ class TestStatus:
 
 
 class TestDryRun:
-    def test_classifies_by_category(self, _isolate_env, _managed_tmp_root):
+    def test_classifies_by_category(self, _isolate_env):
         dg = _load_lib()
-        test_f = _managed_tmp_root / "test_x.py"
+        test_f = _owned_test_root(dg, _isolate_env) / "test_x.py"
         test_f.write_text("x", encoding="utf-8")
         big = _isolate_env / "big.bin"
         big.write_bytes(b"z" * 10)
@@ -381,9 +414,83 @@ class TestDryRun:
 # ---------------------------------------------------------------------------
 
 class TestPostToolCallHook:
-    def test_write_file_in_owned_temp_root_tracked(self, _isolate_env, _managed_tmp_root):
+    def test_preexisting_system_temp_file_is_never_claimed(
+        self, _isolate_env, _managed_tmp_root
+    ):
         pi = _load_plugin_init()
-        p = _managed_tmp_root / "created.py"
+        victim = _managed_tmp_root / "victim.txt"
+        victim.write_text("durable", encoding="utf-8")
+        output_only = _managed_tmp_root / "output-only.txt"
+
+        pi._on_pre_tool_call(
+            tool_name="terminal",
+            args={"command": f"cat {victim}"},
+            task_id="unowned", session_id="unowned", turn_id="unowned-turn",
+            tool_call_id="unowned-call",
+        )
+        output_only.write_text("not-created-by-the-command", encoding="utf-8")
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": f"cat {victim}"},
+            result=f"{victim}\n{output_only}\n",
+            task_id="unowned", session_id="unowned", turn_id="unowned-turn",
+            tool_call_id="unowned-call",
+        )
+        pi._on_session_end(
+            session_id="unowned", task_id="unowned", turn_id="unowned-turn",
+            completed=True, interrupted=False,
+        )
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert not tracked_file.exists() or json.loads(
+            tracked_file.read_text(encoding="utf-8")
+        ) == []
+        assert victim.read_text(encoding="utf-8") == "durable"
+        assert output_only.read_text(encoding="utf-8") == "not-created-by-the-command"
+
+    def test_new_system_temp_file_is_exactly_owned_and_replacement_survives(
+        self, _isolate_env, _managed_tmp_root, monkeypatch
+    ):
+        pi = _load_plugin_init()
+        paths = [
+            _managed_tmp_root / "unchanged.txt",
+            _managed_tmp_root / "replaced.txt",
+            _managed_tmp_root / "failed-call.txt",
+        ]
+        for index, path in enumerate(paths):
+            call_id = f"created-call-{index}"
+            args = {"path": str(path), "content": "created"}
+            pi._on_pre_tool_call(
+                tool_name="write_file", args=args, task_id="created",
+                session_id="created", turn_id="created-turn", tool_call_id=call_id,
+            )
+            path.write_text("created", encoding="utf-8")
+            pi._on_post_tool_call(
+                tool_name="write_file", args=args, result="OK", task_id="created",
+                session_id="created", turn_id="created-turn", tool_call_id=call_id,
+                status="error" if index == 2 else "ok",
+            )
+
+        other_profile = _isolate_env.parent / "other-profile"
+        other_profile.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(other_profile))
+        assert pi.dg.guess_category(paths[0]) is None
+        monkeypatch.setenv("HERMES_HOME", str(_isolate_env))
+
+        paths[1].unlink()
+        paths[1].write_text("replacement", encoding="utf-8")
+        pi._on_session_end(
+            session_id="created", task_id="created", turn_id="created-turn",
+            completed=True, interrupted=False,
+        )
+
+        assert not paths[0].exists()
+        assert paths[1].read_text(encoding="utf-8") == "replacement"
+        assert paths[2].read_text(encoding="utf-8") == "created"
+
+    def test_write_file_in_owned_temp_root_tracked(self, _isolate_env):
+        pi = _load_plugin_init()
+        p = _owned_test_root(pi.dg, _isolate_env) / "created.py"
         p.write_text("x", encoding="utf-8")
         pi._on_post_tool_call(
             tool_name="write_file",
@@ -397,9 +504,9 @@ class TestPostToolCallHook:
         assert data[0]["category"] == "test"
 
 
-    def test_terminal_command_picks_up_paths(self, _isolate_env, _managed_tmp_root):
+    def test_terminal_command_picks_up_paths(self, _isolate_env):
         pi = _load_plugin_init()
-        p = _managed_tmp_root / "created.log"
+        p = _owned_test_root(pi.dg, _isolate_env) / "created.log"
         p.write_text("x", encoding="utf-8")
         pi._on_post_tool_call(
             tool_name="terminal",
@@ -425,9 +532,10 @@ class TestPostToolCallHook:
 
 
 class TestOnSessionEndHook:
-    def test_only_cleans_the_turn_that_ended(self, _isolate_env, _managed_tmp_root):
+    def test_only_cleans_the_turn_that_ended(self, _isolate_env):
         pi = _load_plugin_init()
-        paths = [_managed_tmp_root / "turn-a.txt", _managed_tmp_root / "turn-b.txt"]
+        root = _owned_test_root(pi.dg, _isolate_env)
+        paths = [root / "turn-a.txt", root / "turn-b.txt"]
         for turn_id, p in zip(("turn-a", "turn-b"), paths):
             p.write_text("x", encoding="utf-8")
             pi._on_post_tool_call(

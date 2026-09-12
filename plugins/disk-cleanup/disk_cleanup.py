@@ -1,7 +1,7 @@
 """disk_cleanup — ephemeral file cleanup library behind the disk-cleanup plugin.
 
-Rules: files in Hermes-owned temporary roots delete at task end; managed cache
-artifacts after 7 days; cron-output after 14 days. Prompt-only: research
+Rules: exact platform-temp files proven new by a successful file-tool call delete at task end;
+managed cache artifacts after 7 days; cron-output after 14 days. Prompt-only: research
 (keep 10 newest, > 30 days), chrome-profile > 14 days, any file > 500 MB.
 Arbitrary paths under HERMES_HOME are never inferred to be disposable by name.
 """
@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,7 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 _LARGE_FILE_BYTES = 500 * 1024 * 1024
-_REGISTERED_SYSTEM_TEMP_ROOTS: Dict[str, Tuple[int, int]] = {}
+_REGISTERED_SYSTEM_TEMP_FILES: Dict[Tuple[str, str], Tuple[int, int]] = {}
 
 
 def _state_file(name: str) -> Path:
@@ -33,7 +34,7 @@ def _state_file(name: str) -> Path:
 
 
 def is_safe_path(path: Path) -> bool:
-    """Accept paths inside the profile or a process-registered Hermes temp root."""
+    """Accept profile paths or exact temp files proven new by a tool call."""
     try:
         lexical = _absolute_without_symlinks(path)
         resolved = path.resolve()
@@ -45,7 +46,7 @@ def is_safe_path(path: Path) -> bool:
         return _is_descendant(resolved, resolved_home)
     if _is_descendant(resolved, resolved_home):
         return True
-    return _system_temp_owner_root(path) is not None
+    return _registered_system_temp_file(path) is not None
 
 
 def _log(message: str) -> None:
@@ -132,7 +133,10 @@ def _is_descendant(path: Path, root: Path) -> bool:
 
 def _temp_roots() -> Set[Tuple[Path, Path]]:
     roots = set()
-    for candidate in (Path(tempfile.gettempdir()), Path("/tmp")):
+    candidates = [Path(tempfile.gettempdir())]
+    if os.name != "nt":
+        candidates.append(Path("/tmp"))
+    for candidate in candidates:
         with contextlib.suppress(OSError):
             lexical = _absolute_without_symlinks(candidate)
             resolved = candidate.resolve()
@@ -141,65 +145,86 @@ def _temp_roots() -> Set[Tuple[Path, Path]]:
     return roots
 
 
-def _candidate_system_temp_owner_root(path: Path) -> Optional[Path]:
-    """Find a real direct ``hermes-*`` child of a platform temp directory."""
+def _system_temp_file_key(path: Path) -> Optional[str]:
+    """Canonical key for a non-symlink path below a platform temp root."""
     try:
         lexical = _absolute_without_symlinks(path)
-        resolved = path.resolve()
+        resolved = path.resolve(strict=False)
         lexical_home = _absolute_without_symlinks(get_hermes_home())
         resolved_home = get_hermes_home().resolve()
     except (OSError, RuntimeError, ValueError):
         return None
-    # A lexical path that starts inside HOME but resolves outside is a symlink
-    # escape, not a system-temp candidate.
-    if _is_descendant(lexical, lexical_home):
+    if _is_descendant(lexical, lexical_home) or _is_descendant(resolved, resolved_home):
         return None
     for lexical_temp, resolved_temp in _temp_roots():
-        with contextlib.suppress(ValueError, OSError):
-            rel = lexical.relative_to(lexical_temp)
-            if len(rel.parts) < 2 or not rel.parts[0].startswith("hermes-"):
-                continue
-            lexical_owner = lexical_temp / rel.parts[0]
-            if lexical_owner.is_symlink() or not lexical_owner.is_dir():
-                continue
-            owner = lexical_owner.resolve()
-            owner_rel = owner.relative_to(resolved_temp)
-            if len(owner_rel.parts) != 1 or not _is_descendant(resolved, owner):
-                continue
-            # A test/profile HOME may itself be named hermes-*; never grant its
-            # outer directory ownership over sibling paths.
-            if resolved_home == owner or _is_descendant(resolved_home, owner):
-                continue
-            return owner
+        try:
+            lexical_rel = lexical.relative_to(lexical_temp)
+            resolved_rel = resolved.relative_to(resolved_temp)
+        except ValueError:
+            continue
+        if not lexical_rel.parts or lexical_rel != resolved_rel:
+            continue
+        current = lexical_temp
+        try:
+            for part in lexical_rel.parts:
+                current /= part
+                if current.is_symlink():
+                    raise ValueError("system temp candidate crosses a symlink")
+        except (OSError, ValueError):
+            continue
+        return str(resolved)
     return None
 
 
-def register_system_temp_root(path: Path) -> bool:
-    """Register a temp root observed in this process from an explicit file track."""
-    owner = _candidate_system_temp_owner_root(path)
-    if owner is None:
+def _register_created_system_temp_file(path: Path) -> bool:
+    """Register one temp file proven new by a matching successful Hermes file-tool call."""
+    key = _system_temp_file_key(path)
+    if key is None:
         return False
     try:
-        stat = owner.stat()
+        file_stat = Path(key).lstat()
+        profile_key = str(get_hermes_home().resolve())
     except (OSError, RuntimeError, ValueError):
         return False
-    _REGISTERED_SYSTEM_TEMP_ROOTS[str(owner)] = (stat.st_dev, stat.st_ino)
+    if not stat.S_ISREG(file_stat.st_mode):
+        return False
+    _REGISTERED_SYSTEM_TEMP_FILES[(profile_key, key)] = (file_stat.st_dev, file_stat.st_ino)
     return True
 
 
-def _system_temp_owner_root(path: Path) -> Optional[Path]:
-    """Return *path*'s still-identical temp root when this process registered it."""
-    owner = _candidate_system_temp_owner_root(path)
-    if owner is None:
+def _registered_system_temp_file(path: Path) -> Optional[Path]:
+    """Return the still-identical exact temp file registered by this process."""
+    key = _system_temp_file_key(path)
+    if key is None:
         return None
-    expected = _REGISTERED_SYSTEM_TEMP_ROOTS.get(str(owner))
+    try:
+        profile_key = str(get_hermes_home().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    registration_key = (profile_key, key)
+    expected = _REGISTERED_SYSTEM_TEMP_FILES.get(registration_key)
     if expected is None:
         return None
     try:
-        current = owner.stat()
+        current = Path(key).lstat()
     except (OSError, RuntimeError, ValueError):
         return None
-    return owner if (current.st_dev, current.st_ino) == expected else None
+    if not stat.S_ISREG(current.st_mode):
+        _REGISTERED_SYSTEM_TEMP_FILES.pop(registration_key, None)
+        return None
+    if (current.st_dev, current.st_ino) != expected:
+        _REGISTERED_SYSTEM_TEMP_FILES.pop(registration_key, None)
+        return None
+    return Path(key)
+
+
+def _forget_registered_system_temp_file(path: Path) -> None:
+    key = _system_temp_file_key(path)
+    if key is None:
+        return
+    with contextlib.suppress(OSError, RuntimeError, ValueError):
+        profile_key = str(get_hermes_home().resolve())
+        _REGISTERED_SYSTEM_TEMP_FILES.pop((profile_key, key), None)
 
 
 def _managed_category(path: Path) -> Optional[str]:
@@ -219,8 +244,7 @@ def _managed_category(path: Path) -> Optional[str]:
     with contextlib.suppress(ValueError):
         resolved.relative_to(resolved_home)
         return None
-    owner = _system_temp_owner_root(resolved)
-    return "test" if owner is not None and resolved != owner else None
+    return "test" if _registered_system_temp_file(path) is not None else None
 
 
 def _managed_sweep_root(path: Path) -> Optional[Path]:
@@ -232,11 +256,7 @@ def _managed_sweep_root(path: Path) -> Optional[Path]:
         with contextlib.suppress(ValueError):
             if resolved.relative_to(root).parts:
                 return root
-    with contextlib.suppress(ValueError):
-        resolved.relative_to(get_hermes_home().resolve())
-        return None
-    owner = _system_temp_owner_root(resolved)
-    return owner if owner is not None and resolved != owner else None
+    return None
 
 @functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
 def _protected_cron_paths(home: Path) -> frozenset:
@@ -271,8 +291,6 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         category = "other"
     try:
         lexical_path = Path(path_str).expanduser()
-        if category == "test" and guess_category(lexical_path) is None:
-            register_system_temp_root(lexical_path)
         path = lexical_path.resolve()
         exists = path.exists()
     except (OSError, RuntimeError, ValueError):
@@ -288,10 +306,14 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"REJECT: {path} ({category} is not owned by disk-cleanup)")
         return False
     try:
-        size = path.stat().st_size if path.is_file() else 0
+        file_stat = lexical_path.lstat()
     except OSError:
         _log(f"SKIP: {path} (cannot stat)")
         return False
+    if not stat.S_ISREG(file_stat.st_mode):
+        _log(f"REJECT: {path} (only regular files can be tracked)")
+        return False
+    size = file_stat.st_size
     tracked = load_tracked()
     if any(isinstance(item, dict) and item.get("path") == str(path) for item in tracked):
         return False
@@ -360,20 +382,35 @@ def _prompt_group(item: Dict, age: int) -> Optional[str]:
     return "large" if item["size"] > _LARGE_FILE_BYTES else None
 
 
+def _is_current_owned_file(item: Dict, path: Path) -> bool:
+    """Revalidate the complete automatic-deletion boundary for one file."""
+    try:
+        file_stat = path.lstat()
+        canonical = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    try:
+        return (
+            path.is_absolute()
+            and canonical == path
+            and stat.S_ISREG(file_stat.st_mode)
+            and is_safe_path(path)
+            and guess_category(path) == item.get("category")
+            and not _is_protected_cron_path(path)
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _delete_item(item: Dict) -> Tuple[bool, Optional[str]]:
     """Revalidate and delete one owned item. Returns ``(deleted, error)``."""
     p = Path(str(item.get("path", "")))
     try:
-        p = p.resolve()
-        if guess_category(p) != item.get("category"):
+        if not _is_current_owned_file(item, p):
             _log(f"SKIP unmanaged path before delete: {p}")
             return False, None
-        if p.is_file():
-            p.unlink()
-        elif p.is_dir():
-            shutil.rmtree(p)
-        else:
-            return False, None
+        p.unlink()
+        _forget_registered_system_temp_file(p)
     except (OSError, RuntimeError, ValueError) as e:
         _log(f"ERROR deleting {p}: {e}")
         return False, f"{p}: {e}"
@@ -386,11 +423,10 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     auto, prompt = [], []
     for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc)):
         cat = item.get("category")
-        if _is_auto_delete(cat, age) and guess_category(p) != cat:
-            continue
         if _is_auto_delete(cat, age):
-            auto.append(item)
-        elif _prompt_group(item, age):
+            if _is_current_owned_file(item, p):
+                auto.append(item)
+        elif _prompt_group(item, age) and is_safe_path(p):
             prompt.append(item)
     return auto, prompt
 
@@ -411,14 +447,11 @@ def quick(only_paths: Optional[Set[str]] = None) -> Dict[str, Any]:
             new_tracked.append(item)
             continue
         cat = item.get("category")
-        if _is_auto_delete(cat, age) and guess_category(p) != cat:
-            _log(f"SKIP stale {cat} entry: {p} (outside an owned ephemeral root)")
-            continue
-        if _is_protected_cron_path(p):
-            _log(f"SKIP protected cron path: {p}")
-            continue
         if not _is_auto_delete(cat, age):
             new_tracked.append(item)
+            continue
+        if not _is_current_owned_file(item, p):
+            _log(f"SKIP stale {cat} entry: {p} (not a current owned regular file)")
             continue
         if root := _managed_sweep_root(p):
             sweep_roots.add(root)
@@ -435,29 +468,43 @@ def quick(only_paths: Optional[Set[str]] = None) -> Dict[str, Any]:
     return {"deleted": deleted, "empty_dirs": empty_removed, "freed": freed, "errors": errors}
 
 
-def _subdirs(dirpath: Path, exclude: frozenset) -> List[Path]:
+def _is_real_descendant_dir(path: Path, root: Path) -> bool:
     try:
-        return [c for c in dirpath.iterdir() if c.is_dir() and not c.is_symlink() and c.name not in exclude]
+        return path.resolve(strict=True) == path and _is_descendant(path, root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _subdirs(dirpath: Path, root: Path, exclude: frozenset) -> List[Path]:
+    try:
+        return [
+            child for child in dirpath.iterdir()
+            if child.name not in exclude and _is_real_descendant_dir(child, root)
+        ]
     except OSError:
         return []
 
 
 def _sweep_empty_dirs(root: Path) -> int:
     """Remove empty descendants of one explicitly owned ephemeral root."""
+    if root not in _managed_hermes_roots() or root.is_symlink():
+        return 0
     removed = 0
     stack: List[Tuple[Path, bool]] = [
-        (top, False) for top in _subdirs(root, _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
+        (top, False) for top in _subdirs(root, root, _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
     while stack:
         dirpath, visited = stack.pop()
         if visited:
             with contextlib.suppress(OSError):
-                if not any(dirpath.iterdir()):
+                if _is_real_descendant_dir(dirpath, root) and not any(dirpath.iterdir()):
                     dirpath.rmdir()
                     removed += 1
                     _log(f"DELETED: {dirpath} (empty dir)")
             continue
         stack.append((dirpath, True))
-        stack.extend((child, False) for child in _subdirs(dirpath, _EMPTY_DIR_SWEEP_PRUNE_DIRS))
+        stack.extend(
+            (child, False) for child in _subdirs(dirpath, root, _EMPTY_DIR_SWEEP_PRUNE_DIRS)
+        )
     return removed
 
 

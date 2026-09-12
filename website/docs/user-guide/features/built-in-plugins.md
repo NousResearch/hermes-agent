@@ -71,13 +71,14 @@ Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engi
 
 ### disk-cleanup
 
-Tracks and removes files in ephemeral roots Hermes explicitly owns — generated media caches, cron run output, and platform temp directories named `hermes-*` — without requiring the agent to remember to call a tool. A filename such as `test_*` or `tmp_*` never establishes ownership by itself.
+Tracks and removes generated media caches, cron run output, and exact platform-temp files that Hermes observed as absent immediately before a tool call created them. A directory name, terminal output, manual category, or filename such as `test_*` / `tmp_*` never establishes ownership.
 
 **How it works:**
 
 | Hook | Behaviour |
 |---|---|
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file inside a Hermes-owned ephemeral root, track it silently. |
+| `pre_tool_call` | Before `write_file` / `patch`, record explicit platform-temp paths that do not yet exist. |
+| `post_tool_call` | Track owned-root files, plus exact new platform-temp files after a successful matching file-tool call. Terminal text can never establish external-temp ownership. |
 | `on_session_end` | Delete only immediate-cleanup files tracked by that exact turn and log a one-line summary. Concurrent and long-running bot turns remain isolated. |
 
 **Deletion rules:**
@@ -111,7 +112,7 @@ Tracks and removes files in ephemeral roots Hermes explicitly owns — generated
 | `tracked.json.bak` | Atomic-write backup of the above |
 | `cleanup.log` | Append-only audit trail of every track / skip / reject / delete |
 
-**Safety** — automatic deletion requires current membership in an explicit owned root: `$HERMES_HOME/cache/vision/temp_vision_images/`, `$HERMES_HOME/cache/video/temp_video_files/`, `$HERMES_HOME/cron/output/` (plus `cronjobs/output/`), or a platform temp directory whose top-level name starts with `hermes-`. Candidates are revalidated immediately before deletion, malformed tracking records are skipped, and one turn cannot clean another active turn's files. All other workspace and Hermes paths are durable regardless of their filename.
+**Safety** — automatic deletion requires current membership in an explicit owned root: `$HERMES_HOME/cache/vision/temp_vision_images/`, `$HERMES_HOME/cache/video/temp_video_files/`, or `$HERMES_HOME/cron/output/` (plus `cronjobs/output/`). Outside those roots, ownership is limited to the exact regular platform-temp file proven new by a matching successful `write_file` / `patch` call and bound to that file's filesystem identity; terminal text and its parent directory never grant ownership. Candidates are revalidated immediately before deletion, pre-existing/replaced files and malformed tracking records are skipped, and one turn cannot clean another active turn's files. All other workspace and Hermes paths are durable regardless of their filename.
 
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 

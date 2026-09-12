@@ -1,7 +1,8 @@
 name: disk-cleanup
-version: 2.1.0
-description: "Track and clean files in Hermes-owned temporary roots. Turn cleanup is isolated, automatic, and requires no agent action."
+version: 2.2.0
+description: "Clean owned cache/cron files and exact platform-temp files proven new by a tool call."
 author: "@LVT382009 (original), NousResearch (plugin port)"
 hooks:
+  - pre_tool_call
   - post_tool_call
   - on_session_end

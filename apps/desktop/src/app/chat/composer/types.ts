@@ -35,7 +35,8 @@ export interface ChatBarProps {
   busy: boolean
   disabled: boolean
   focusKey?: string | null
-  maxRecordingSeconds?: number
+  /** `undefined` while config is loading; `null` explicitly disables the cap. */
+  maxRecordingSeconds?: number | null
   state: ChatBarState
   gateway?: HermesGateway | null
   queueSessionKey?: string | null

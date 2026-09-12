@@ -172,6 +172,23 @@ class TestTelegramBotCommands:
         for name, _ in telegram_bot_commands():
             assert "-" not in name, f"Telegram command '{name}' contains a hyphen"
 
+    def test_no_unicode_dashes_in_descriptions(self):
+        """BotFather rejects setMyCommands descriptions with em/en dashes (#2925)."""
+        for name, desc in telegram_bot_commands():
+            assert not any(c in desc for c in "\u2012\u2013\u2014\u2015\u2212"), (
+                f"Telegram command '{name}' description has a Unicode dash: {desc!r}")
+
+    def test_unicode_dashes_folded_to_hyphen(self, monkeypatch):
+        """Stubbed registry entry with em/en dashes comes back hyphenated."""
+        fake = CommandDef(name="dashy", description="does a \u2014 b \u2013 c",
+                          category="Session")
+        monkeypatch.setattr("hermes_cli.commands_platforms._gateway_available_commands",
+                            lambda: [fake])
+        monkeypatch.setattr("hermes_cli.commands_platforms._iter_plugin_command_entries",
+                            lambda: iter([]))
+        assert ("dashy", "does a - b - c") in telegram_bot_commands(
+            include_plugins=False)
+
 
     def test_includes_builtin_commands_with_required_args(self):
         """Built-in arg-taking commands (e.g. /queue, /steer, /bg, /btw)

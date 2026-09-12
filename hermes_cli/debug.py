@@ -116,6 +116,10 @@ upload, but the following personal data is NOT redacted and will be public:
 The resulting URL is public to anyone who has the link. Pastes auto-delete
 after 6 hours, but may be archived by third parties in the meantime.
 
+If paste.rs is unreachable, uploads fall back to dpaste.com: those pastes
+stay public for the --expire window (default: 1 day) and CANNOT be deleted
+with `hermes debug delete`.
+
 Use --local to view the report without uploading.
 """
 
@@ -124,7 +128,8 @@ _GATEWAY_PRIVACY_NOTICE = (
     "(may contain conversation fragments) to a public paste service. "
     "Full logs are NOT included from the gateway — use `hermes debug share` "
     "from the CLI for full log uploads.\n"
-    "Pastes auto-delete after 6 hours.")
+    "Pastes auto-delete after 6 hours (dpaste.com fallback pastes: kept for "
+    "1 day, cannot be deleted).")
 
 
 def _extract_paste_id(url: str) -> Optional[str]:
@@ -136,10 +141,19 @@ def _extract_paste_id(url: str) -> Optional[str]:
     return None
 
 
+def _is_dpaste_url(url: str) -> bool:
+    """Whether *url* is a dpaste.com paste (no unauthenticated delete exists for those)."""
+    return url.strip().startswith(("https://dpaste.com/", "http://dpaste.com/"))
+
+
 def delete_paste(url: str) -> bool:
     """Delete a paste.rs paste (the only service with unauthenticated DELETE). True on success."""
     paste_id = _extract_paste_id(url)
     if not paste_id:
+        if _is_dpaste_url(url):
+            raise ValueError(
+                "Cannot delete: dpaste.com pastes cannot be deleted (anonymous "
+                "uploads have no owner token); they expire on their own.  Got: " + url)
         raise ValueError(f"Cannot delete: only paste.rs URLs are supported.  Got: {url}")
     req = urllib.request.Request(f"{_PASTE_RS_URL}{paste_id}", method="DELETE",
                                  headers={"User-Agent": _USER_AGENT})
@@ -175,7 +189,7 @@ def _upload_paste_rs(content: str) -> str:
     return _post_paste("paste.rs", _PASTE_RS_URL, content.encode("utf-8"), "text/plain; charset=utf-8")
 
 
-def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
+def _upload_dpaste_com(content: str, expiry_days: int = 1) -> str:
     boundary = "----HermesDebugBoundary9f3c"
     fields = (("content", content), ("syntax", "text"), ("expiry_days", str(expiry_days)))
     body = ("".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{n}"\r\n\r\n{v}\r\n'
@@ -184,8 +198,13 @@ def _upload_dpaste_com(content: str, expiry_days: int = 7) -> str:
                        f"multipart/form-data; boundary={boundary}")
 
 
-def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
-    """Upload *content* to a paste service, trying paste.rs then dpaste.com."""
+def upload_to_pastebin(content: str, expiry_days: int = 1) -> str:
+    """Upload *content* to a paste service, trying paste.rs then dpaste.com.
+
+    ``expiry_days`` applies only to the dpaste.com fallback (paste.rs pastes are
+    swept after 6h); dpaste.com's minimum is 1 day and anonymous pastes cannot
+    be deleted afterwards, so callers must not promise a shorter retention.
+    """
     errors: list[str] = []
     for service, upload in (
         ("paste.rs", lambda: _upload_paste_rs(content)),
@@ -406,12 +425,13 @@ class DebugShareResult:
     urls: dict  # label -> paste URL (e.g. {"Report": "...", "agent.log": "..."})
     failures: list  # human-readable "label: error" strings for optional uploads
     redacted: bool  # whether force-mode redaction was applied before upload
-    auto_delete_seconds: int  # how long until the pastes auto-delete
+    auto_delete_seconds: int  # how long until the pastes auto-delete (paste.rs only;
+    # dpaste.com fallbacks outlive this and cannot be deleted)
     report: str = ""  # the summary report text (kept for local fallback)
 
 
 def build_debug_share(
-    *, log_lines: int = 200, expiry: int = 7, redact: bool = True) -> DebugShareResult:
+        *, log_lines: int = 200, expiry: int = 1, redact: bool = True) -> DebugShareResult:
     """Collect the debug report + full logs, upload each, return the URLs.
 
     Shared by ``hermes debug share`` and the dashboard ``POST /api/ops/debug-share``. Blocking
@@ -460,7 +480,7 @@ def _confirm_upload(args) -> bool:
 def run_debug_share(args):
     """Collect debug report + full logs, upload each, print URLs."""
     log_lines = getattr(args, "lines", 200)
-    expiry = getattr(args, "expire", 7)
+    expiry = getattr(args, "expire", 1)
     redact = not getattr(args, "no_redact", False)
 
     if getattr(args, "local", False):
@@ -492,9 +512,18 @@ def run_debug_share(args):
         print(f"  {label:<{label_width}}  {url}")
     if result.failures:
         print(f"\n  (failed to upload: {', '.join(result.failures)})")
-    print(f"\n⏱  Pastes will auto-delete in {result.auto_delete_seconds // 3600} hours.\n"
-          "To delete now:  hermes debug delete <url>\n"
-          "\nShare these links with the Hermes team for support.")
+    dpaste_urls = [u for u in result.urls.values() if _is_dpaste_url(u)]
+    if dpaste_urls:
+        print(f"\n⏱  paste.rs pastes will auto-delete in "
+              f"{result.auto_delete_seconds // 3600} hours.")
+        print(f"⚠️  {len(dpaste_urls)} of {len(result.urls)} upload(s) fell back to "
+              f"dpaste.com: those pastes stay public for {expiry} day(s) and CANNOT be "
+              "deleted with `hermes debug delete`.\n"
+              "\nShare these links with the Hermes team for support.")
+    else:
+        print(f"\n⏱  Pastes will auto-delete in {result.auto_delete_seconds // 3600} hours.\n"
+              "To delete now:  hermes debug delete <url>\n"
+              "\nShare these links with the Hermes team for support.")
 
 
 _NOUS_PRIVACY_NOTICE = """\
@@ -588,7 +617,7 @@ Commands:
 
 Options (share):
   --lines N    Number of log lines to include (default: 200)
-  --expire N   Paste expiry in days (default: 7)
+  --expire N   dpaste.com fallback retention in days (default: 1)
   --local      Print report locally instead of uploading
   --nous       Upload to Nous-internal storage (private, staff-only,
                auto-deletes in 14 days) instead of a public paste

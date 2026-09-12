@@ -758,6 +758,7 @@ def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
             "base_url": base_url,
             "api_key": entry.get("api_key", ""),
             "key_env": entry.get("key_env") or entry.get("api_key_env", ""),
+            "key_cmd": entry.get("key_cmd", ""),
             "model": model,
             "models": entry.get("models", {}),
             "models_discovered": entry.get("models_discovered", False),
@@ -815,7 +816,16 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
             _add(f"group:{gid}", label, row["members"], bool(active_group) and gid == active_group)
         else:
             slug = row["slug"]
-            _add(slug, canonical_descs.get(slug, provider_labels.get(slug, slug)), [], bool(active) and slug == active)
+            label = canonical_descs.get(slug, provider_labels.get(slug, slug))
+            if slug == "nous":
+                # Same free-tier rule as the gateway/TUI pickers: relabel for a guest, hide
+                # when nous.guest is off, untouched for a real account.
+                from hermes_cli.model_switch_providers import _free_tier_nous_row
+                tier_row = _free_tier_nous_row({"name": label, "models": []})
+                if tier_row is None:
+                    continue
+                label = tier_row["name"]
+            _add(slug, label, [], bool(active) and slug == active)
 
     for key, provider_info in custom_provider_map.items():
         saved_model = provider_info.get("model", "")

@@ -30,6 +30,9 @@ export interface SidebarSessionGroup {
   isKanban?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   sourceId?: string
+  // Exact owner for gateway/profile sidebar sections; absent for workspace lanes.
+  connectionId?: null | string
+  profile?: string
 }
 
 /** A repo node: holds its branch/worktree lanes (`repo -> lane -> sessions`). */

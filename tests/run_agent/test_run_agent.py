@@ -862,11 +862,10 @@ class TestBuildSystemPrompt:
 
 
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
-        from agent.prompt_builder import MEMORY_GUIDANCE
-
         agent_with_memory_tool._memory_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
-        assert MEMORY_GUIDANCE in prompt
+        assert "Memory is the narrow exception" in prompt
+        assert "(skill_manage)" not in prompt
 
     def test_no_memory_guidance_when_both_builtin_stores_disabled(
         self, agent_with_memory_tool
@@ -895,13 +894,15 @@ class TestBuildSystemPrompt:
         MEMORY.md store that does not exist in this configuration, so the
         profile-specific block is injected instead.
         """
-        from agent.prompt_builder import MEMORY_GUIDANCE, USER_PROFILE_GUIDANCE
+        from agent.prompt_builder import MEMORY_GUIDANCE
 
         agent_with_memory_tool._memory_enabled = False
         agent_with_memory_tool._user_profile_enabled = True
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
-        assert USER_PROFILE_GUIDANCE in prompt
+        assert "memory tool (target='user')" in prompt
+        assert "never target='memory'" in prompt
+        assert "(skill_manage)" not in prompt
 
 
 

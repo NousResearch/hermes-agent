@@ -6,7 +6,7 @@ reached through the late-binding seam (cycle-safe).
 """
 
 import asyncio
-import functools
+import contextlib
 import json
 import logging
 import re
@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
+from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_chat import (
@@ -154,14 +155,31 @@ async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
 
 _CONSOLE_PROMPT = "hermes> "
 _CONSOLE_COMMAND_TIMEOUT_SECONDS = 60.0
+# Cancel/timeout interrupt the worker cooperatively; this bounds how long the prompt waits for it to exit.
+_CONSOLE_UNWIND_TIMEOUT_SECONDS = 10.0
 _CONSOLE_OUTPUT_LIMIT = 50000
 
 
-def _execute_console_line(engine: Any, line: str, *, confirmed: bool, profile: Optional[str]) -> Any:
+def _execute_console_line(
+    engine: Any, line: str, *, confirmed: bool, profile: Optional[str], scope: Optional[InterruptScope] = None,
+) -> Any:
     # _profile_scope swaps process-global skill module paths; keep it inside
     # the worker thread and never hold it across awaits.
-    with _profile_scope(profile):
+    with _profile_scope(profile), bind_interrupt_scope(scope):
         return engine.execute(line, confirmed=confirmed)
+
+
+async def _unwind_console_worker(worker: Any, scope: InterruptScope, reason: str) -> None:
+    """Stop the command's worker after cancel/timeout: asyncio can only drop the waiter, so interrupt
+    any agent the command forked (closing its provider request) and wait for the thread to exit."""
+    scope.cancel(f"Console command {reason}")
+    if worker.cancel():  # still queued: never ran
+        return
+    exited = asyncio.wrap_future(worker)
+    done, _ = await asyncio.wait({exited}, timeout=_CONSOLE_UNWIND_TIMEOUT_SECONDS)
+    if not done:
+        exited.cancel()
+        _log.warning("console worker still running %ss after %s", _CONSOLE_UNWIND_TIMEOUT_SECONDS, reason)
 
 
 class _ConsoleSender:
@@ -281,18 +299,17 @@ async def console_ws(ws: WebSocket) -> None:
 
     async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
         nonlocal active_task, pending_confirmation, command_generation
+        scope = InterruptScope()
+        worker = _get_console_executor().submit(
+            _execute_console_line, engine, line, confirmed=confirmed, profile=profile, scope=scope,
+        )
         try:
-            loop = asyncio.get_running_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _get_console_executor(),
-                    functools.partial(_execute_console_line, engine, line, confirmed=confirmed, profile=profile),
-                ),
-                timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
-            )
+            result = await asyncio.wait_for(asyncio.wrap_future(worker), timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
+            await _unwind_console_worker(worker, scope, "cancelled")
             raise
         except asyncio.TimeoutError:
+            await _unwind_console_worker(worker, scope, "timed out")
             if command_id == command_generation:
                 pending_confirmation = None
                 await out.error_then_complete(
@@ -343,8 +360,11 @@ async def console_ws(ws: WebSocket) -> None:
             if frame_type == "cancel":
                 if active_task and not active_task.done():
                     command_generation += 1
-                    active_task.cancel()
-                    active_task = None
+                    task, active_task = active_task, None
+                    task.cancel()
+                    # Report cancelled only once the worker (and any provider request it owns) is gone.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
                     pending_confirmation = None
                     await out.prompt(type="complete", status="cancelled")
                 elif pending_confirmation:

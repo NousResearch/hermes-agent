@@ -203,7 +203,7 @@ def _dump_subagent_timeout_diagnostic(
 # ── Per-run helpers ──────────────────────────────────────────────────────────
 
 class _Heartbeat:
-    """One child's parent-activity heartbeat on the shared periodic scheduler thread
+    """One child's parent-activity heartbeat via the shared periodic scheduler
     (``agent.periodic_scheduler``) — not one daemon thread per child. NOT started at construction:
     the caller calls ``start()`` inside its ``try`` so a failed schedule (OS thread exhaustion on
     first use) leaves ``handle`` None and ``stop()`` is a no-op."""

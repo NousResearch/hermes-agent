@@ -197,6 +197,7 @@ export interface SessionInfo {
   profile_name?: string
   project?: null | ProjectInfo
   reasoning_effort?: string
+  running?: boolean
   release_date?: string
   service_tier?: string
   skills: Record<string, string[]>
@@ -239,6 +240,13 @@ export interface SudoReq {
 export interface SecretReq {
   envVar: string
   prompt: string
+  requestId: string
+}
+
+/** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
+export interface VaultUnlockReq {
+  backend: string
+  displayName: string
   requestId: string
 }
 

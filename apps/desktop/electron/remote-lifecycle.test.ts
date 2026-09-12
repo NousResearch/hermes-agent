@@ -999,7 +999,14 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
   ])
 
-  const result = await connect(connectDeps(ssh, { adoptServedToken: async () => 'the-served-token' }))
+  const result = await connect(
+    connectDeps(ssh, {
+      adoptServedToken: async () => 'the-served-token',
+      platform: { os: 'Linux', arch: 'x86_64' }
+    })
+  )
+
+  assert.equal(ssh.calls.filter(command => command === 'uname -s; uname -m').length, 0)
   assert.equal(result.reused, false)
   assert.equal(result.remotePort, 51999)
   assert.equal(result.localPort, 50001)

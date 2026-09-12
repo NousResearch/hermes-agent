@@ -13,6 +13,7 @@ import os
 import shlex
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -398,6 +399,14 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         return _err(f"kanban swarm: {exc}", 2)
     if not workers:
         return _err("kanban swarm: at least one --worker is required", 2)
+    workers = [
+        replace(
+            spec,
+            goal_mode=bool(getattr(args, "worker_goal", False)),
+            goal_max_turns=getattr(args, "worker_goal_max_turns", None),
+        )
+        for spec in workers
+    ]
     with kbc.connect_closing() as conn:
         created = ks.create_swarm(
             conn, goal=args.goal, workers=workers, verifier_assignee=args.verifier,

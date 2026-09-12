@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hermes install-e2e leg player</title>
+<script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2128; --border: #30363d;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --gold: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #status {text-align: center; position: fixed; inset: 0; display: flex-col; align-items: center;
+    justify-content: center; color: var(--dim); font-size: 15px; z-index: 5; padding: 24px;}
+  #status.error { color: #f85149; }
+  #app { display: none; height: 100vh; flex-direction: column; }
+
+  /* header: title + controls */
+  header { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  header .title { font-weight: 600; white-space: nowrap; }
+  header .zipfile { color: var(--dim); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; flex: 1; direction: rtl; text-align: left; }
+
+  /* timer overlay: pinned top-left OVER the video */
+  #stage { position: relative; flex: 1; display: flex; flex-direction: column;
+    min-height: 0; }
+  #videoWrap { position: relative; background: #000; }
+  #video { width: 100%; max-height: 52vh; display: block; background: #000; }
+  #timer { position: absolute; top: 8px; left: 8px; z-index: 2;
+    background: rgba(0,0,0,.72); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; font-size: 15px; font-weight: 600;
+    color: var(--gold); pointer-events: none; }
+  #timer .total { color: var(--dim); font-weight: 400; }
+  #controls { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+    background: var(--panel2); border-bottom: 1px solid var(--border); }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  select, input[type=range] { accent-color: var(--accent); }
+  label { color: var(--dim); }
+  #offsetVal { color: var(--accent); min-width: 5em; display: inline-block; }
+
+  /* log area: tabs + panes */
+  #logs { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #tabs { display: flex; gap: 4px; padding: 6px 10px 0; background: var(--panel);
+    border-top: 1px solid var(--border); overflow-x: auto; }
+  #tabs button { border-radius: 6px 6px 0 0; border-bottom: none; background: var(--panel2);
+    color: var(--dim); }
+  #tabs button.active { color: var(--text); border-color: var(--accent);
+    box-shadow: inset 0 -2px 0 var(--accent); }
+  #tabs button .sz { color: var(--dim); font-size: 11px; }
+  #paneWrap { flex: 1; position: relative; min-height: 0; }
+  #pane { position: absolute; inset: 0; overflow: auto; background: var(--bg);
+    padding: 8px 10px; }
+  .line { white-space: pre-wrap; word-break: break-all; cursor: pointer;
+    border-radius: 3px; }
+  .line:hover { background: rgba(88,166,255,.08); }
+  .line .ts { color: var(--dim); margin-right: 8px; user-select: none; }
+  .line .file { color: #7ee787; margin-right: 8px; user-select: none; }
+  .line.synced { color: var(--accent); }
+  #noSync { color: var(--dim); padding: 4px 10px; font-size: 12px; }
+  #syncing { position: sticky; top: 0; z-index: 3; background: rgba(13,17,23,.9);
+    color: var(--accent); padding: 2px 10px; font-size: 12px; display: none;
+    border-bottom: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div id="status">loading…</div>
+<div id="app">
+  <header>
+    <span class="title">install-e2e leg player</span>
+    <span class="zipfile" id="zipName"></span>
+  </header>
+  <div id="stage">
+    <div id="videoWrap">
+      <video id="video" controls preload="metadata"></video>
+      <div id="timer">0:00<span class="total"> / 0:00</span></div>
+    </div>
+    <div id="controls">
+      <button id="play">▶</button>
+      <button id="skipBack">-10s</button>
+      <button id="skipFwd">+10s</button>
+      <select id="rate">
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+      <label>sync offset <input id="offset" type="range" min="-60" max="60" step="1" value="0"><span id="offsetVal">0s</span></label>
+      <label><input id="autoSync" type="checkbox" checked> follow</label>
+    </div>
+    <div id="logs">
+      <div id="tabs"></div>
+      <div id="paneWrap">
+        <div id="syncing">— following —</div>
+        <div id="pane"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+'use strict';
+/* Hermes install-e2e leg player.
+ *
+ * One static file. Point it at a run's artifact zip:
+ *   playback.html#zip=<artifact-zip-url>
+ * It unzips in-browser (JSZip from CDN), plays recording.mp4 (preferred) or
+ * recording.mkv, and renders every *.log with a top-left timer and
+ * video↔log sync. Sync axis: driver log lines carry a [+MM:SS] prefix,
+ * relative to driver start; the video starts a couple seconds before the
+ * driver (ffmpeg comes up first), so an offset slider aligns them.
+ */
+
+const $ = (id) => document.getElementById(id);
+
+function fmt(s) {
+  s = Math.max(0, Math.floor(s));
+  const m = Math.floor(s / 60), r = s % 60;
+  return `${m}:${String(r).padStart(2, '0')}`;
+}
+
+const statusEl = $('status');
+function fail(msg) {
+  statusEl.textContent = msg;
+  statusEl.className = 'error';
+}
+
+/* ── parse [+MM:SS] / [+MM:SS.mmm] line prefixes → seconds ─────────────── */
+const TS_RE = /^\[\+(\d+):(\d{2})(?:\.(\d{3}))?\]\s*/;
+function parseLines(text) {
+  const lines = [];
+  let prevTs = 0;
+  for (const raw of text.split('\n')) {
+    const m = raw.match(TS_RE);
+    if (m) {
+      prevTs = Number(m[1]) * 60 + Number(m[2]) + (m[3] ? Number(m[3]) / 1000 : 0);
+      lines.push({ ts: prevTs, text: raw.slice(m[0].length) });
+    } else {
+      lines.push({ ts: null, text: raw });
+    }
+  }
+  return lines;
+}
+
+/* ── app state ─────────────────────────────────────────────────────────── */
+const state = {
+  zipName: '', videoBlob: null, logs: new Map(), /* name → {lines, hasTs} */
+  activeTab: null, offset: 0, autoSync: true,
+};
+
+/* ── tabs ──────────────────────────────────────────────────────────────── */
+function renderTabs() {
+  const tabs = $('tabs');
+  tabs.innerHTML = '';
+  for (const name of [...state.logs.keys()]) {
+    const b = document.createElement('button');
+    b.textContent = name;
+    b.onclick = () => selectTab(name);
+    if (name === state.activeTab) b.classList.add('active');
+    tabs.appendChild(b);
+  }
+}
+
+function selectTab(name) {
+  state.activeTab = name;
+  renderTabs();
+  renderPane(true);
+}
+
+function ansiToHtml(text) {
+  const colors = {
+    30: 'black', 31: 'red', 32: 'green', 33: 'yellow',
+    34: 'blue', 35: 'magenta', 36: 'cyan', 37: 'white',
+    90: 'gray', 91: 'lightred', 92: 'lightgreen', 93: 'lightyellow',
+    94: 'lightblue', 95: 'lightmagenta', 96: 'lightcyan', 97: 'white'
+  };
+
+  const escapeHtml = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+  let html = '';
+  let openSpan = false;
+  const parts = text.split(/\x1b\[([0-9;]*)m/);
+
+  // parts alternates: [text, codes, text, codes, ...]
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 0) {
+      html += escapeHtml(parts[i]);
+    } else {
+      if (openSpan) { html += '</span>'; openSpan = false; }
+      const codes = parts[i].split(';').map(Number);
+      const styles = [];
+      for (const code of codes) {
+        if (code === 0) continue; // reset
+        if (code === 1) styles.push('font-weight:bold');
+        else if (colors[code]) styles.push(`color:${colors[code]}`);
+      }
+      if (styles.length) {
+        html += `<span style="${styles.join(';')}">`;
+        openSpan = true;
+      }
+    }
+  }
+  if (openSpan) html += '</span>';
+  return html;
+}
+
+function renderPane(scrollToEnd) {
+  const pane = $('pane');
+  const entry = state.logs.get(state.activeTab);
+  if (!entry) return;
+  pane.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const ln of entry.lines) {
+    const div = document.createElement('div');
+    div.className = 'line';
+    if (ln.ts !== null) {
+      const ts = document.createElement('span');
+      ts.className = 'ts';
+      ts.textContent = `[+${fmt(ln.ts)}]`;
+      div.appendChild(ts);
+      div.dataset.ts = String(ln.ts);
+      div.title = 'click to seek the video here';
+      div.onclick = () => {
+        $('video').currentTime = Math.max(0, ln.ts - state.offset);
+        $('video').play().catch(() => {});
+      };
+    }
+    if (ln.file) {
+      const file = document.createElement('span');
+      file.className = 'file';
+      file.textContent = `${ln.file}: `;
+      div.appendChild(file);
+    }
+    const text = document.createElement('span')
+    text.innerHTML =  ansiToHtml(ln.text);
+    div.appendChild(text);
+    frag.appendChild(div);
+  }
+  pane.appendChild(frag);
+  if (scrollToEnd) pane.scrollTop = pane.scrollHeight;
+}
+
+/* video-time → log line: last line with ts <= videoTime + offset */
+function syncPane() {
+  if (!state.autoSync) return;
+  const entry = state.logs.get(state.activeTab);
+  const pane = $('pane');
+  if (!entry || !entry.hasTs) return;
+  const t = $('video').currentTime + state.offset;
+  let target = null;
+  for (const div of pane.children) {
+    if (!div.dataset.ts) continue;
+    const ts = Number(div.dataset.ts);
+    if (ts <= t) target = div;
+    else break;
+  }
+  if (!target) return;
+  const syncing = $('syncing');
+  syncing.style.display = 'block';
+  syncing.textContent = `following @ ${fmt(t)} (+${state.offset}s offset)`;
+  const paneRect = pane.getBoundingClientRect();
+  const tRect = target.getBoundingClientRect();
+  const targetTop = tRect.top - paneRect.top + pane.scrollTop;
+  if (targetTop < pane.scrollTop || targetTop > pane.scrollTop + pane.clientHeight - 40) {
+    pane.scrollTop = targetTop - pane.clientHeight / 3;
+  }
+  for (const div of pane.children) div.classList.remove('synced');
+  target.classList.add('synced');
+}
+
+/* ── zip loading ───────────────────────────────────────────────────────── */
+/**
+ * Merge every log into one timeline, in time order, with each line
+ * filename-prefixed. Untimed lines inherit the previous timed line of
+ * their file so ordering within a file survives the sort.
+ * @param {Map<string, {lines: {ts: number | null, text: string}[]}>} logs
+ * @returns {{lines: {ts: number, text: string, file: string}[], hasTs: boolean}}
+ */
+function buildMergedLog(logs) {
+  /** @type {{ts: number, text: string, file: string}[]} */
+  const merged = [];
+  for (const [name, entry] of logs) {
+    let lastTs = 0;
+    for (const ln of entry.lines) {
+      if (ln.ts !== null) lastTs = ln.ts;
+      merged.push({ ts: lastTs, text: ln.text, file: name });
+    }
+  }
+  merged.sort((a, b) => a.ts - b.ts);
+  return { lines: merged, hasTs: true };
+}
+
+async function loadZipFromBlob(blob, label) {
+  const zip = await JSZip.loadAsync(await blob.arrayBuffer());
+  const names = Object.keys(zip.files).filter((n) => !zip.files[n].dir);
+
+  const videoName = names.find((n) => n === 'recording.mp4') ||
+                    names.find((n) => n === 'recording.mkv');
+  if (!videoName) throw new Error('no recording.mp4 / recording.mkv in the zip');
+  state.videoBlob = await zip.files[videoName].async('blob');
+
+  for (const n of names.filter((n) => n.endsWith('.log'))) {
+    const text = await zip.files[n].async('string');
+    const lines = parseLines(text);
+    state.logs.set(n, { lines, hasTs: lines.some((l) => l.ts !== null) });
+  }
+  if (state.logs.size === 0) throw new Error('no *.log files in the zip');
+  // The merged view comes first: one timeline across every log, synced
+  // to the video like any other tab.
+  state.logs = new Map([['ALL · merged', buildMergedLog(state.logs)], ...state.logs]);
+  state.zipName = label || 'leg artifact';
+  state.activeTab = [...state.logs.keys()][0];
+}
+
+async function loadZip(url) {
+  // GitHub artifact downloads are auth-gated: a cross-origin page (this
+  // file opened locally) cannot fetch them. The page then becomes the
+  // download-and-drop path — a normal link click DOES carry the user's
+  // GitHub session.
+  statusEl.innerHTML =
+    `<div>Download the zip from here: <a href="${url}" style="color:#58a6ff" id="egg">${url.split('/').pop()}</a></div>` +
+    `<div>then drop it anywhere on this page<br>(or click anywhere on the page to pick the file).</div>`;
+  statusEl.onclick = (e) => {
+    fileInput.click()
+  };
+  egg.onclick = (e) => {
+    e.stopPropagation();
+  }
+  return false;
+}
+
+/**
+ * Resolve the zip URL: hash param wins (?zip= gets stripped by GitHub's
+ * artifact redirect, the hash survives), then the query param.
+ * @returns {string | null}
+ */
+function resolveZipUrl() {
+  const m = location.hash.match(/(?:^|[#&])zip=([^&]+)/);
+  if (m) {
+    try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+  }
+  return new URLSearchParams(location.search).get('zip');
+}
+
+/* drag-drop + file picker: the universal transport for auth-gated zips */
+const fileInput = document.createElement('input');
+fileInput.type = 'file';
+fileInput.accept = '.zip,application/zip';
+fileInput.style.display = 'none';
+fileInput.addEventListener('change', async () => {
+  const f = fileInput.files && fileInput.files[0];
+  if (!f) return;
+  try {
+    await loadZipFromBlob(f, f.name);
+    boot();
+  } catch (e) {
+    fail(`could not load zip: ${e.message}`);
+  }
+});
+document.body.appendChild(fileInput);
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  const f = [...(e.dataTransfer?.files ?? [])][0];
+  if (!f || !/\.zip$/i.test(f.name)) { fail('drop a .zip artifact file'); return; }
+  try {
+    await loadZipFromBlob(f, f.name);
+    boot();
+  } catch (err) {
+    fail(`could not load zip: ${err.message}`);
+  }
+});
+
+/* ── boot ──────────────────────────────────────────────────────────────── */
+function boot() {
+  statusEl.style.display = 'none';
+  $('app').style.display = 'flex';
+  $('zipName').textContent = state.zipName;
+
+  const video = $('video');
+  video.src = URL.createObjectURL(state.videoBlob);
+  video.ontimeupdate = () => {
+    $('timer').innerHTML =
+      `${fmt(video.currentTime)}<span class="total"> / ${fmt(video.duration || 0)}</span>`;
+    syncPane();
+  };
+  video.onloadedmetadata = () => {
+    $('timer').innerHTML =
+      `${fmt(video.currentTime)}<span class="total"> / ${fmt(video.duration || 0)}</span>`;
+  };
+
+  $('play').onclick = () => {
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  };
+  $('skipBack').onclick = () => { video.currentTime = Math.max(0, video.currentTime - 10); };
+  $('skipFwd').onclick = () => { video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); };
+  $('rate').onchange = (e) => { video.playbackRate = Number(e.target.value); };
+  $('offset').oninput = (e) => {
+    state.offset = Number(e.target.value);
+    $('offsetVal').textContent = `${state.offset > 0 ? '+' : ''}${state.offset}s`;
+  };
+  $('autoSync').onchange = (e) => {
+    state.autoSync = e.target.checked;
+    $('syncing').style.display = state.autoSync ? 'block' : 'none';
+  };
+  video.addEventListener('play', () => { $('play').textContent = '⏸'; });
+  video.addEventListener('pause', () => { $('play').textContent = '▶'; });
+
+  renderTabs();
+  renderPane(true);
+}
+
+async function main() {
+  const zipUrl = resolveZipUrl();
+  if (zipUrl) {
+    loadZip(zipUrl)
+  } else {
+    // No zip param: this is the manual path — the leg player artifact
+    // page or a local copy. Drop or pick a leg zip.
+    statusEl.innerHTML =
+      'Drop a leg artifact zip anywhere on this page<br>(or click here to pick the file).';
+    statusEl.onclick = () => fileInput.click();
+  }
+}
+main();
+</script>
+</body>
+</html>

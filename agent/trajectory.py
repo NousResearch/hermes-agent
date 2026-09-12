@@ -1,9 +1,4 @@
-"""Trajectory saving utilities and static helpers.
-
-_convert_to_trajectory_format stays as an AIAgent method (batch_runner.py
-calls agent._convert_to_trajectory_format). Only the static helpers and
-the file-write logic live here.
-"""
+"""Trajectory saving + scratchpad helpers (``_convert_to_trajectory_format`` stays an AIAgent method — batch_runner.py calls it)."""
 
 import json
 import logging
@@ -36,10 +31,8 @@ def convert_scratchpad_to_think(content: str) -> str:
 
 
 def has_incomplete_scratchpad(content: str) -> bool:
-    """Check if content has an opening <REASONING_SCRATCHPAD> without a closing tag."""
-    if not content:
-        return False
-    return "<REASONING_SCRATCHPAD>" in content and "</REASONING_SCRATCHPAD>" not in content
+    """Whether content has an opening <REASONING_SCRATCHPAD> without a closing tag."""
+    return bool(content) and "<REASONING_SCRATCHPAD>" in content and "</REASONING_SCRATCHPAD>" not in content
 
 
 @contextmanager
@@ -99,32 +92,17 @@ def _trajectory_lock(filename: str):
                     pass
 
 
-def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
-                    completed: bool, filename: str = None):
-    """Append a trajectory entry to a JSONL file.
+def save_trajectory(trajectory: List[Dict[str, Any]], model: str, completed: bool, filename: str = None):
+    """Append a ShareGPT-format entry to a JSONL file (default trajectory_samples.jsonl / failed_trajectories.jsonl by ``completed``).
 
     Appends are serialized across processes with an advisory sidecar lock;
     if the lock cannot be acquired within
     :data:`TRAJECTORY_LOCK_TIMEOUT_SECONDS` the save is skipped (logged)
     rather than written unserialized.
-
-    Args:
-        trajectory: The ShareGPT-format conversation list.
-        model: Model name for metadata.
-        completed: Whether the conversation completed successfully.
-        filename: Override output filename. Defaults to trajectory_samples.jsonl
-                  or failed_trajectories.jsonl based on ``completed``.
     """
     if filename is None:
         filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
-
-    entry = {
-        "conversations": trajectory,
-        "timestamp": datetime.now().isoformat(),
-        "model": model,
-        "completed": completed,
-    }
-
+    entry = {"conversations": trajectory, "timestamp": datetime.now().isoformat(), "model": model, "completed": completed}
     try:
         with _trajectory_lock(filename):
             with open(filename, "a", encoding="utf-8") as f:

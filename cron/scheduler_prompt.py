@@ -77,6 +77,10 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
         # "self" = the job's own id: continuity across runs without touching session history.
         if isinstance(source_job_id, str) and source_job_id.strip().lower() == "self":
             source_job_id = str(job.get("id") or "")
+        if not isinstance(source_job_id, str):
+            logger.warning("context_from: skipping non-string job_id %r", source_job_id)
+            continue
+        source_job_id = source_job_id.strip()
         is_self = source_job_id == job.get("id")
         # Traversal guard — valid job IDs are hex strings.
         if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):

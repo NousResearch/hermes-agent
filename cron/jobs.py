@@ -217,8 +217,16 @@ def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:
                     return False
                 time.sleep(0.1)
     if msvcrt is not None:
-        getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
-        return True
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                lock_fd.seek(0)
+                getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1)
+                return True
+            except (OSError, IOError):
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.1)
     return None
 
 
@@ -1541,7 +1549,10 @@ def _normalize_context_from(value: Any) -> Optional[List[str]]:
     """Accept a job id or a list of ids; anything else is None."""
     if isinstance(value, str):
         value = [value]
-    return _normalize_str_list(value) if isinstance(value, list) else None
+    if not isinstance(value, list):
+        return None
+    cleaned = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return cleaned or None
 
 
 def _normalize_failure_deliver(value: Any) -> Optional[str]:
@@ -2391,7 +2402,7 @@ def _write_missed_oneshot_diagnostic(job: Dict[str, Any], next_run: str) -> None
         "missed-oneshot")
 
 
-def claim_dispatch(job_id: str) -> bool:
+def claim_dispatch(job_id: str, *, expected_fire_owner: Optional[str] = None) -> bool:
     """Atomically claim a finite one-shot dispatch BEFORE execution: ``repeat.completed`` is bumped
     and persisted under the jobs lock so a tick dying mid-execution cannot lose the dispatch
     (*at-most-times* instead of *at-least-once*). True if the caller may run the job; False when
@@ -2403,6 +2414,10 @@ def claim_dispatch(job_id: str) -> bool:
     self-destructs fires at most ``repeat.times`` times instead of infinitely (issue #38758).
     """
     def apply(jobs, i, job):
+        if expected_fire_owner is not None:
+            claim = job.get("fire_claim")
+            if not isinstance(claim, dict) or claim.get("by") != expected_fire_owner:
+                return False
         repeat = job.get("repeat") or {}
         times = repeat.get("times")
         # Recurring jobs use advance_next_run(); no/infinite repeat limit always dispatches.
@@ -2581,7 +2596,7 @@ def claim_job_for_fire(
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
-        if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+        if not manual_fire and job.get("schedule", {}).get("kind") in {"cron", "interval"}:
             nxt = compute_next_run(job["schedule"], now.isoformat())
             if nxt:
                 job["next_run_at"] = nxt
@@ -3112,13 +3127,16 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     return deleted
 
 
-def save_job_output(job_id: str, output: str):
+def save_job_output(job_id: str, output: str, execution_id: Optional[str] = None):
     """Save job output to file."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     _ensure_cron_dir(job_output_dir)
     _secure_dir(job_output_dir)
-    output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
+    suffix = execution_id or uuid.uuid4().hex
+    if not isinstance(suffix, str) or not suffix or any(c not in "0123456789abcdef" for c in suffix):
+        raise ValueError("execution_id must be a non-empty hexadecimal identifier")
+    output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}_{suffix}.md"
     atomic_write_text(output_file, output, tmp_prefix=".output_")
     _secure_file(output_file)
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).

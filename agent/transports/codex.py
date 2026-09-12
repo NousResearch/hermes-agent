@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Cron fires use ``cron_<job_id>_<YYYYMMDD_HHMMSS>``; the per-fire timestamp is
 # stripped so repeat fires of one job share a cache scope.
 # See #51395, #52295.
-_CRON_SESSION_ID_RE = re.compile(r"^(cron_.+)_\d{8}_\d{6}$")
+_CRON_SESSION_ID_RE = re.compile(r"^(cron_.+)_\d{8}_\d{6}(?:_[0-9a-f]+)?$")
 
 
 def _cache_scope_from_session_id(session_id: Optional[str]) -> str:

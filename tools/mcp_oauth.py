@@ -460,7 +460,9 @@ def _parse_redirect_query(query: str) -> dict[str, Any]:
     """code/state/error/iss from a redirect query string. ``iss`` (RFC 9207 issuer) is kept: mcp 2.0
     rejects a response omitting it when the server advertised ``authorization_response_iss_parameter_supported``."""
     params = parse_qs(query)
-    return {k: params.get(k, [None])[0] for k in ("code", "state", "error", "iss")}
+    # Only iss distinguishes an empty value from omission; keep other parsing unchanged.
+    iss = parse_qs(query, keep_blank_values=True).get("iss", [None])[0]
+    return {"iss": iss, **{k: params.get(k, [None])[0] for k in ("code", "state", "error")}}
 
 
 def _result_taken(result: dict) -> bool:
@@ -646,7 +648,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
     async def _wait():
         dashboard_flow = get_dashboard_oauth_flow()
         if dashboard_flow is not None:
-            # Dashboard flow speaks the legacy tuple; normalize to one shape.
+            # Preserve the callback issuer when adapting to the installed SDK.
             return _authorization_code_result(*await dashboard_flow.wait_for_callback())
         # The SDK entered the authorization-code flow, so any cached token is unusable. Reject BEFORE
         # binding: binding would block for the full timeout and collide with the TIME_WAIT port on retry.

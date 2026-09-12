@@ -271,6 +271,8 @@ mcp_servers:
 
 On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
 
+**Pitfall — `Authorization response missing iss parameter`.** Providers that advertise RFC 9207 issuer validation require the callback's `iss` parameter to reach the MCP SDK unchanged. Older Desktop/dashboard callback relays can drop it even after browser approval succeeds. Update both Desktop and its backend, restart them, and start a fresh sign-in. For interactive CLI paste-back, preserve the complete redirect URL, including `iss`. Do not disable issuer validation or substitute an issuer from discovery metadata.
+
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
 - **Hermes Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.

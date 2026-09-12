@@ -33,31 +33,42 @@ const invoke = (channel: string, ...args: unknown[]) => {
   return fn!({}, ...args)
 }
 
-test('listen binds a loopback listener and wait resolves with the redirect params', async () => {
-  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+test.each(['https://issuer.example/tenant/%2F/', '', null])(
+  'listen preserves the callback issuer %j without synthesizing or normalizing it',
+  async iss => {
+    const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
 
-  assert.match(redirectUri, /^http:\/\/127\.0\.0\.1:\d+\/callback$/)
+    assert.match(redirectUri, /^http:\/\/127\.0\.0\.1:\d+\/callback$/)
 
-  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
-    code: null | string
-    error: null | string
-    state: null | string
-  }>
+    const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
+      code: null | string
+      error: null | string
+      iss: null | string
+      state: null | string
+    }>
 
-  const res = await fetch(`${redirectUri}?code=abc123&state=st-1`)
+    const params = new URLSearchParams({ code: 'abc123', state: 'st-1' })
 
-  assert.equal(res.status, 200)
-  assert.match(await res.text(), /return to Hermes/)
+    if (iss !== null) {
+      params.set('iss', iss)
+    }
 
-  const result = await waitPromise
+    const res = await fetch(`${redirectUri}?${params}`)
 
-  assert.equal(result.code, 'abc123')
-  assert.equal(result.state, 'st-1')
-  assert.equal(result.error, null)
+    assert.equal(res.status, 200)
+    assert.match(await res.text(), /return to Hermes/)
 
-  // Listener is one-shot: the port must be closed after the callback.
-  await assert.rejects(fetch(`${redirectUri}?code=again&state=st-1`))
-})
+    const result = await waitPromise
+
+    assert.equal(result.code, 'abc123')
+    assert.equal(result.state, 'st-1')
+    assert.equal(result.error, null)
+    assert.equal(result.iss, iss)
+
+    // Listener is one-shot: the port must be closed after the callback.
+    await assert.rejects(fetch(`${redirectUri}?code=again&state=st-1`))
+  }
+)
 
 test('non-callback noise (favicon) does not settle the listener', async () => {
   const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }

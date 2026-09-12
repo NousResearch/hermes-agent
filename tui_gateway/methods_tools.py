@@ -1336,11 +1336,14 @@ def _(rid, params: dict) -> dict:
 
 @_mcp_rpc("oauth.callback", _NAME_SESSION)
 def _(rid, params: dict) -> dict:
-    """Relay a client-captured redirect (``code``/``state``/``error``) into a ``client_redirect_uri`` flow."""
+    """Relay a client-captured redirect, including its RFC 9207 issuer, without normalization."""
     code, state, error = (str(params.get(k) or "") or None for k in ("code", "state", "error"))
+    iss = params.get("iss")
+    if iss is not None and not isinstance(iss, str):
+        return _err(rid, 4063, "iss must be a string or null")
     deliver = _tools_mod("tui_gateway.mcp_oauth_sessions").deliver_callback_flow
     return _ok(rid, deliver(
-        _str_arg(params, "session_id"), _str_arg(params, "name"), code=code, state=state, error=error))
+        _str_arg(params, "session_id"), _str_arg(params, "name"), code=code, state=state, error=error, iss=iss))
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────

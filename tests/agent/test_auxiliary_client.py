@@ -3062,6 +3062,34 @@ class TestCodexAdapterReasoningTranslation:
         adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
         return adapter, captured_kwargs
 
+    def test_reasoning_replay_is_scoped_to_auxiliary_wire_model(self):
+        real_client = MagicMock()
+        real_client.base_url = "https://responses.example.com/v1/"
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.7-sol")
+        history = [
+            {
+                "role": "assistant",
+                "content": "done",
+                "codex_reasoning_items": [{
+                    "type": "reasoning",
+                    "encrypted_content": "model-a-blob",
+                    "_issuer_kind": "other:https://responses.example.com/v1",
+                    "_issuer_model": "gpt-5.6-sol",
+                }],
+            },
+            {"role": "user", "content": "next"},
+        ]
+
+        foreign, _, _ = adapter._build_responses_kwargs({"messages": history})
+        same, _, _ = adapter._build_responses_kwargs({
+            "model": "gpt-5.6-sol-900k", "messages": history,
+        })
+
+        assert not any(item.get("type") == "reasoning" for item in foreign["input"])
+        replayed = [item for item in same["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in replayed] == ["model-a-blob"]
+        assert "_issuer_model" not in replayed[0]
+
 
 
     def test_reasoning_effort_low_passed_through(self):

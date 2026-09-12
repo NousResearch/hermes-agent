@@ -84,11 +84,17 @@ def _prompt_filled_window(agent: Any, response: Any) -> Optional[tuple[int, int]
     return (prompt, ctx) if prompt and ctx - prompt < _MIN_CONTINUATION_HEADROOM else None
 
 
-def normalize_response_for_agent(agent: Any, response: Any) -> Any:
+def normalize_response_for_agent(
+    agent: Any, response: Any, *, issuer_model: Any = None,
+) -> Any:
     """One OpenAI-style message from any transport; Anthropic strips the OAuth tool prefix."""
     if agent.api_mode == "anthropic_messages":
         return agent._get_transport().normalize_response(
             response, strip_tool_prefix=agent._is_anthropic_oauth
+        )
+    if agent.api_mode == "codex_responses":
+        return agent._get_transport().normalize_response(
+            response, issuer_model=issuer_model
         )
     return agent._get_transport().normalize_response(response)
 

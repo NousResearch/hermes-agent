@@ -115,11 +115,13 @@ def _relay_thinking(agent: Any, content: str) -> None:
 def normalize_model_response(
     agent: Any, *, response: Any, messages: Any, api_messages: Any, conversation_history: Any,
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
-    effective_task_id: Any, turn_id: Any,
+    effective_task_id: Any, turn_id: Any, response_issuer_model: Any,
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
-    assistant_message = normalize_response_for_agent(agent, response)
+    assistant_message = normalize_response_for_agent(
+        agent, response, issuer_model=response_issuer_model
+    )
     finish_reason = assistant_message.finish_reason
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ResponseIntakeVerdict:

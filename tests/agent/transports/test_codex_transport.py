@@ -39,6 +39,80 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_custom_endpoint_reasoning_replay_is_scoped_to_wire_model(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        transport = ResponsesApiTransport()
+        base_url = "https://responses.example.com/v1"
+        transport.build_kwargs(
+            model="gpt-5.6-sol-900k", messages=[{"role": "user", "content": "first"}],
+            tools=[], base_url=base_url,
+        )
+        normalized = transport.normalize_response(SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(
+                    type="reasoning", id="rs_a", encrypted_content="model-a-blob", summary=[],
+                ),
+                SimpleNamespace(
+                    type="message", role="assistant", status="completed",
+                    content=[SimpleNamespace(type="output_text", text="done")], id="msg_a",
+                ),
+            ],
+        ))
+        reasoning = normalized.provider_data["codex_reasoning_items"]
+        legacy_reasoning = {
+            "type": "reasoning",
+            "encrypted_content": "legacy-endpoint-only-blob",
+            "_issuer_kind": "other:https://responses.example.com/v1",
+        }
+        history = [
+            {
+                "role": "assistant",
+                "content": "done",
+                "codex_reasoning_items": reasoning + [legacy_reasoning],
+            },
+            {"role": "user", "content": "next"},
+        ]
+
+        same_model = transport.build_kwargs(
+            model="gpt-5.6-sol", messages=history, tools=[], base_url=base_url + "/",
+        )
+        other_model = transport.build_kwargs(
+            model="gpt-5.7-sol", messages=history, tools=[], base_url=base_url,
+        )
+
+        assert reasoning[0]["_issuer_model"] == "gpt-5.6-sol"
+        replayed = [item for item in same_model["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in replayed] == ["model-a-blob"]
+        assert "_issuer_model" not in replayed[0]
+        assert not any(item.get("type") == "reasoning" for item in other_model["input"])
+
+    def test_reasoning_provenance_uses_request_override_wire_model(self):
+        from agent.transports.codex import ResponsesApiTransport
+
+        transport = ResponsesApiTransport()
+        kw = transport.build_kwargs(
+            model="model-a", messages=[{"role": "user", "content": "first"}], tools=[],
+            base_url="https://responses.example.com/v1",
+            request_overrides={"model": "gpt-5.6-sol-900k"},
+        )
+        normalized = transport.normalize_response(SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(
+                    type="reasoning", id="rs_override", encrypted_content="blob", summary=[],
+                ),
+                SimpleNamespace(
+                    type="message", role="assistant", status="completed",
+                    content=[SimpleNamespace(type="output_text", text="done")], id="msg_override",
+                ),
+            ],
+        ))
+
+        assert kw["model"] == "gpt-5.6-sol"
+        assert normalized.provider_data["codex_reasoning_items"][0]["_issuer_model"] == "gpt-5.6-sol"
+
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
             model="gpt-6-astra",
@@ -892,7 +966,7 @@ class TestCodexBuildKwargs:
 
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
 
@@ -1074,7 +1148,7 @@ class TestOpencodeReservedToolAliases:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
         names = [tc.name for tc in normalized.tool_calls]
@@ -1178,7 +1252,7 @@ class TestXaiReservedToolSearchAlias:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         # Pair the response with a real request so provenance is recorded.
         transport.build_kwargs(
@@ -1208,7 +1282,7 @@ class TestXaiReservedToolSearchAlias:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         return transport.normalize_response(response)
 

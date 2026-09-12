@@ -1340,8 +1340,13 @@ class _CodexCompletionsAdapter:
         # includes assistant tool_calls + role="tool" results). The shared converter encodes assistant tool
         # calls as `function_call` items and tool results as `function_call_output` items with a valid
         # call_id, so every Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _classify_responses_issuer,
+            _wire_model_identity,
+        )
         model = kwargs.get("model", self._model)
+        wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
         is_xai = base_url_host_matches(host, "x.ai") or base_url_host_matches(host, "api.x.ai")
         is_copilot = base_url_host_matches(host, "githubcopilot.com")
@@ -1364,11 +1369,16 @@ class _CodexCompletionsAdapter:
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=is_copilot, native_compaction_eligible=False
+            replay_messages, is_github_responses=is_copilot,
+            current_issuer_kind=_classify_responses_issuer(
+                is_xai_responses=is_xai, is_github_responses=is_github,
+                is_codex_backend=base_url_host_matches(host, "chatgpt.com"), base_url=host,
+            ),
+            current_issuer_model=wire_model, native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
-            "model": _strip_codex_ctx_variant(model), "instructions": instructions,
+            "model": wire_model, "instructions": instructions,
             "input": input_items or [{"role": "user", "content": ""}], "store": False,
         }
         # Forward the chat.completions timeout; otherwise a Codex stream can sit behind a

@@ -98,7 +98,8 @@ def _warn_native_compaction_suppressed_by_checkpoint_gate() -> None:
 
 
 def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, is_xai_responses: bool = False,
-                                         is_github_responses: bool = False) -> Optional[List[Dict[str, Any]]]:
+                                         is_github_responses: bool = False,
+                                         model: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """Return the ``context_management`` payload for this request, or None ("do not send").
 
     Every gate is re-checked per request so a mid-session model switch or the in-session
@@ -116,7 +117,8 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     if getattr(agent, "compression_checkpoint_required", False) is True:
         _warn_native_compaction_suppressed_by_checkpoint_gate()
         return None
-    if is_xai_responses or is_github_responses or not is_native_compaction_model(getattr(agent, "model", None)):
+    effective_model = getattr(agent, "model", None) if model is None else model
+    if is_xai_responses or is_github_responses or not is_native_compaction_model(effective_model):
         return None
     trusted_proxy = bool(getattr(agent, "capabilities", {}).get("openai_native_compaction", False))
     if not trusted_proxy and not is_direct_openai_route(getattr(agent, "base_url", None), is_codex_backend=is_codex_backend):

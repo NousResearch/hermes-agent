@@ -11,11 +11,35 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from urllib.parse import urlsplit, urlunsplit
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
+
+
+def _canonical_responses_base_url(base_url: Any) -> str:
+    """Stable custom-endpoint identity across SDK trailing-slash normalization."""
+    raw = str(base_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlsplit(raw)
+    except ValueError:
+        return raw.rstrip("/")
+    if not parsed.scheme or not parsed.netloc:
+        return raw.rstrip("/")
+    return urlunsplit((
+        parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"),
+        parsed.query, parsed.fragment,
+    ))
+
+
+def _canonical_issuer_kind(issuer: Any) -> Any:
+    if not (isinstance(issuer, str) and issuer.startswith("other:")):
+        return issuer
+    return f"other:{_canonical_responses_base_url(issuer.removeprefix('other:'))}"
 
 
 def _classify_responses_issuer(
@@ -27,11 +51,19 @@ def _classify_responses_issuer(
     for flag, kind in ((is_xai_responses, "xai_responses"), (is_github_responses, "github_responses"), (is_codex_backend, "codex_backend")):
         if flag:
             return kind
-    return f"other:{base_url}" if base_url else "other"
+    normalized_url = _canonical_responses_base_url(base_url)
+    return f"other:{normalized_url}" if normalized_url else "other"
 
 
 # Per-process throttle for the cross-issuer skip warning.
 _CROSS_ISSUER_WARN_EMITTED = False
+
+
+def _wire_model_identity(model: Any) -> Optional[str]:
+    """Canonical Responses wire model used for encrypted-reasoning provenance."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
+    return str(strip_codex_context_variant_suffix(model or "")).strip() or None
 
 # Codex/Harmony tool-call serialization leaked into assistant text (no structured function_call).
 _TOOL_CALL_LEAK_PATTERN = re.compile(r"(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*", re.IGNORECASE)
@@ -329,13 +361,15 @@ def _assistant_message_item(raw: Dict[str, Any], content: List[Dict[str, Any]], 
 
 
 def _replay_reasoning_items(
-    msg: Dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str], native_compaction_eligible: bool,
+    msg: Dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str],
+    current_issuer_model: Optional[str], native_compaction_eligible: bool,
 ) -> List[Dict[str, Any]]:
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
     checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
-    another issuer (HTTP 400); unstamped legacy items pass. ``id`` (store=False lookups 404) and
-    ``_issuer_kind`` are stripped."""
+    another issuer/model route. Legacy endpoint-stamped items without model provenance drop when the
+    current model is known; ordinary assistant text remains replayable. ``id`` (store=False lookups
+    404) and Hermes provenance fields are stripped."""
     global _CROSS_ISSUER_WARN_EMITTED
     replayed: List[Dict[str, Any]] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
@@ -345,16 +379,25 @@ def _replay_reasoning_items(
         if (item_id and item_id in seen_item_ids) or (ri.get("type") == "compaction" and not native_compaction_eligible):
             continue
         item_issuer = ri.get("_issuer_kind")
-        if current_issuer_kind is not None and item_issuer is not None and item_issuer != current_issuer_kind:
+        item_model = ri.get("_issuer_model")
+        foreign_issuer = (
+            current_issuer_kind is not None and item_issuer is not None
+            and _canonical_issuer_kind(item_issuer) != _canonical_issuer_kind(current_issuer_kind)
+        )
+        foreign_model = current_issuer_model is not None and (
+            (item_model is not None and item_model != current_issuer_model)
+            or (item_model is None and item_issuer is not None)
+        )
+        if foreign_issuer or foreign_model:
             if not _CROSS_ISSUER_WARN_EMITTED:
                 logger.warning(
-                    "Dropping reasoning item minted by %s while calling %s — encrypted_content is sealed to "
-                    "its issuer. This happens when a session switches model providers mid-conversation.",
-                    item_issuer, current_issuer_kind,
+                    "Dropping reasoning item minted by %s/%s while calling %s/%s — encrypted_content is "
+                    "sealed to its issuer and model.",
+                    item_issuer, item_model, current_issuer_kind, current_issuer_model,
                 )
                 _CROSS_ISSUER_WARN_EMITTED = True
             continue
-        replayed.append({k: v for k, v in ri.items() if k not in ("id", "_issuer_kind")})
+        replayed.append({k: v for k, v in ri.items() if k not in ("id", "_issuer_kind", "_issuer_model")})
         if item_id:
             seen_item_ids.add(item_id)
     return replayed
@@ -417,6 +460,7 @@ def _tool_output_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
+    current_issuer_model: Optional[str] = None,
     native_compaction_eligible: bool = False,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
@@ -425,7 +469,8 @@ def _chat_messages_to_responses_input(
     ``replay_encrypted_reasoning``: per-session kill switch, threaded False by
     ``AIAgent._disable_codex_reasoning_replay`` after an ``invalid_encrypted_content`` 400.
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
-    ``current_issuer_kind``: cross-issuer guard; foreign-stamped items drop, legacy items replay.
+    ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; foreign-stamped items drop,
+    as do endpoint-stamped legacy items without model provenance when the current model is known.
     ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
     so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:
@@ -487,6 +532,7 @@ def _chat_messages_to_responses_input(
             continue
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
+            current_issuer_model=current_issuer_model,
             native_compaction_eligible=native_compaction_eligible,
         )
         emit(reasoning_items, msg)
@@ -556,13 +602,16 @@ def _native_responses_replay_items(
         return None
     route = classify_responses_route(agent)._asdict()
     from agent.native_compaction import native_compaction_context_management
-    if not native_compaction_context_management(agent, **route):
+    from agent.fast_mode import effective_request_overrides
+    effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))
+    if not native_compaction_context_management(agent, **route, model=effective_model):
         return None
     try:
         items = _chat_messages_to_responses_input(
             messages, is_xai_responses=route["is_xai_responses"], is_github_responses=route["is_github_responses"],
             replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
             current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
+            current_issuer_model=_wire_model_identity(effective_model),
             native_compaction_eligible=True,
         )
     except Exception:
@@ -903,7 +952,9 @@ def _response_tool_call(item: Any, item_type: str, index: int) -> SimpleNamespac
     )
 
 
-def _capture_encrypted_item(item: Any, item_type: str, issuer_kind: Optional[str]) -> Optional[Dict[str, Any]]:
+def _capture_encrypted_item(
+    item: Any, item_type: str, issuer_kind: Optional[str], issuer_model: Optional[str],
+) -> Optional[Dict[str, Any]]:
     """``{type, encrypted_content[, _issuer_kind]}`` for replay, or None without a blob. Reasoning
     items also carry ``id`` + ``summary`` (required by the API on replay); transient ``rs_tmp_`` skip."""
     encrypted = getattr(item, "encrypted_content", None)
@@ -912,6 +963,8 @@ def _capture_encrypted_item(item: Any, item_type: str, issuer_kind: Optional[str
     raw_item: Dict[str, Any] = {"type": item_type, "encrypted_content": encrypted}
     if issuer_kind:
         raw_item["_issuer_kind"] = issuer_kind
+    if issuer_model:
+        raw_item["_issuer_model"] = issuer_model
     if item_type != "reasoning":
         return raw_item
     item_id = getattr(item, "id", None)
@@ -937,7 +990,7 @@ class _OutputScan:
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
         self.saw_commentary_phase = self.saw_final_answer_phase = self.saw_reasoning_item = False
 
-    def scan(self, output: List[Any], issuer_kind: Optional[str]) -> None:
+    def scan(self, output: List[Any], issuer_kind: Optional[str], issuer_model: Optional[str]) -> None:
         for item in output:
             item_type = getattr(item, "type", None)
             item_status = _lower_or_none(getattr(item, "status", None))
@@ -954,7 +1007,7 @@ class _OutputScan:
                         self.reasoning_parts.append(reasoning_text)
                 # Compaction checkpoints ride the codex_reasoning_items sidecar (persistence,
                 # replay, cross-issuer guard and kill switch for free).
-                raw_item = _capture_encrypted_item(item, item_type, issuer_kind)
+                raw_item = _capture_encrypted_item(item, item_type, issuer_kind, issuer_model)
                 if raw_item is not None:
                     self.reasoning_items_raw.append(raw_item)
                     if item_type == "compaction":
@@ -982,9 +1035,11 @@ class _OutputScan:
         ))
 
 
-def _normalize_codex_response(response: Any, *, issuer_kind: Optional[str] = None) -> tuple[Any, str]:
+def _normalize_codex_response(
+    response: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
+) -> tuple[Any, str]:
     """Normalize a Responses API object to ``(assistant_message, finish_reason)``.
-    ``issuer_kind`` is stamped onto captured reasoning items for cross-issuer replay drops."""
+    Issuer endpoint/model provenance is stamped onto captured reasoning items for replay filtering."""
     response_status = _lower_or_none(getattr(response, "status", None))
     incomplete_reason = str(_field(getattr(response, "incomplete_details", None), "reason", "") or "").strip().lower()
     response_incomplete_content_filter = response_status == "incomplete" and incomplete_reason == "content_filter"
@@ -1008,7 +1063,7 @@ def _normalize_codex_response(response: Any, *, issuer_kind: Optional[str] = Non
     if response_status in {"failed", "cancelled"}:
         raise RuntimeError(_format_responses_error(getattr(response, "error", None), response_status))
     scan = _OutputScan(response_status)
-    scan.scan(output, issuer_kind)
+    scan.scan(output, issuer_kind, issuer_model)
     tool_calls, reasoning_parts = scan.tool_calls, scan.reasoning_parts
     final_text = "\n".join(scan.content_parts).strip()
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):

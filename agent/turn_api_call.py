@@ -8,6 +8,7 @@ redirect ``_model_request_active`` bracket and the response-vs-redirect crossing
 
 from __future__ import annotations
 
+from copy import deepcopy
 from contextlib import nullcontext
 from dataclasses import dataclass
 import logging
@@ -36,8 +37,58 @@ class ApiCallVerdict:
 
     action: str
     response: Any
+    response_issuer_model: Any
     thinking_spinner: Any
     interrupted: Any
+
+
+def _codex_request_for_dispatch(
+    agent: Any, request: Any, built_model: Any, api_messages: Any, *,
+    built_with_native_compaction: bool, built_input: Any,
+) -> tuple[Any, Any]:
+    """Bind encrypted replay and response provenance to the final middleware model."""
+    from agent.codex_responses_adapter import _wire_model_identity
+
+    dispatched_model = _wire_model_identity(
+        request.get("model") if isinstance(request, dict) else None
+    )
+    if dispatched_model == _wire_model_identity(built_model) or not isinstance(request, dict):
+        return request, dispatched_model
+    input_items = request.get("input")
+    request = dict(request)
+    request.pop("context_management", None)
+    if (
+        built_with_native_compaction
+        and isinstance(api_messages, list)
+        and input_items == built_input
+    ):
+        from agent.codex_responses_adapter import classify_responses_route
+
+        route = classify_responses_route(agent)._asdict()
+        source_messages = agent._prepare_messages_for_non_vision_model(api_messages)
+        if source_messages and source_messages[0].get("role") == "system":
+            source_messages = source_messages[1:]
+        request["input"] = agent._get_transport().convert_messages(
+            source_messages,
+            replay_encrypted_reasoning=bool(
+                getattr(agent, "_codex_reasoning_replay_enabled", True)
+            ),
+            base_url=agent.base_url,
+            context_management=None,
+            model=dispatched_model,
+            **route,
+        )
+        return request, dispatched_model
+    if not isinstance(input_items, list):
+        return request, dispatched_model
+    request["input"] = [
+        item for item in input_items
+        if not (
+            isinstance(item, dict)
+            and item.get("type") in {"reasoning", "compaction"}
+        )
+    ]
+    return request, dispatched_model
 
 
 def _should_stream(agent: Any) -> bool:
@@ -62,14 +113,39 @@ def perform_api_call(
     agent: Any, *, api_kwargs: Any, _original_api_kwargs: Any, _llm_middleware_trace: Any,
     _moa_prepared_request: Any, _retry: Any, thinking_spinner: Any, retry_count: Any,
     api_call_count: Any, api_request_id: Any, effective_task_id: Any, turn_id: Any,
-    interrupted: Any,
+    interrupted: Any, api_messages: Any,
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
+    response_issuer_model = None
+    built_issuer_model = None
+    built_input = None
+    built_with_native_compaction = False
+    if agent.api_mode == "codex_responses":
+        from agent.codex_responses_adapter import _wire_model_identity
+
+        built_issuer_model = _wire_model_identity(
+            _original_api_kwargs.get("model")
+            if isinstance(_original_api_kwargs, dict)
+            else None
+        )
+        response_issuer_model = _wire_model_identity(
+            api_kwargs.get("model") if isinstance(api_kwargs, dict) else None
+        )
+        built_input = deepcopy(
+            _original_api_kwargs.get("input")
+            if isinstance(_original_api_kwargs, dict)
+            else None
+        )
+        built_with_native_compaction = (
+            isinstance(_original_api_kwargs, dict)
+            and "context_management" in _original_api_kwargs
+        )
 
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(
-            action=action, response=response, thinking_spinner=thinking_spinner,
+            action=action, response=response, response_issuer_model=response_issuer_model,
+            thinking_spinner=thinking_spinner,
             interrupted=interrupted,
         )
 
@@ -80,7 +156,13 @@ def perform_api_call(
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):
+        nonlocal response_issuer_model
         if agent.api_mode == "codex_responses":
+            next_api_kwargs, response_issuer_model = _codex_request_for_dispatch(
+                agent, next_api_kwargs, built_issuer_model, api_messages,
+                built_with_native_compaction=built_with_native_compaction,
+                built_input=built_input,
+            )
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
                 sanitize_harmony_tokens=agent._is_codex_backend(),

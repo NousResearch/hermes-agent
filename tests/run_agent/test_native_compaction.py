@@ -85,6 +85,15 @@ class TestRequestGate:
             {"type": "compaction", "compact_threshold": DEFAULT_COMPACT_THRESHOLD}
         ]
 
+    def test_effective_request_model_governs_eligibility(self):
+        agent = _agent(model="gpt-5.5")
+        payload = native_compaction_context_management(
+            agent, is_codex_backend=False, model="gpt-5.6-sol",
+        )
+        assert payload == [
+            {"type": "compaction", "compact_threshold": DEFAULT_COMPACT_THRESHOLD}
+        ]
+
     def test_codex_backend_gets_payload(self):
         payload = native_compaction_context_management(
             _agent(base_url="https://chatgpt.com/backend-api/codex"),
@@ -692,6 +701,7 @@ class TestCheckpointGatedOnCurrentEligibility:
                         "type": "compaction",
                         "encrypted_content": "blob",
                         "_issuer_kind": "codex_backend",
+                        "_issuer_model": "gpt-5.6",
                     }
                 ],
             },

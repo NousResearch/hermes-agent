@@ -887,6 +887,11 @@ SKILL_MANAGE_SCHEMA = {
             # Also accepted, never advertised: the legacy flat single-op fields, and
             # `absorbed_into` on delete ops (curator-only vocabulary; the curator's
             # prompt documents it and the delete guard's error re-teaches it).
+            # EXCEPTION: the curator consolidation fork advertises `absorbed_into`
+            # fork-locally (agent/curator.py::_advertise_absorbed_into, #97959) —
+            # its delete guard refuses deletes without it, so the fork is the one
+            # context that MUST see the parameter. Every other session keeps the
+            # lean shared schema.
         },
         "required": ["operations"],
     },

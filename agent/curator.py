@@ -697,6 +697,7 @@ def _write_run_report(
     tool_calls = llm_meta.get("tool_calls", []) or []
     after_by_name, before_by_name = _by_name(after_report), _by_name(before_report)
     diff = _diff_and_classify(before_names, set(after_by_name), tool_calls, llm_meta.get("final", "") or "")
+    refused_deletes = _refused_consolidation_deletes(before_names, set(after_by_name), tool_calls)
     states = ((n, (before_by_name.get(n) or {}).get("state"), (after_by_name.get(n) or {}).get("state")) for n in sorted(diff.after_names & before_names))
     transitions = [{"name": n, "from": b, "to": a} for n, b, a in states if b and a and b != a]
     tc_counts: Dict[str, int] = dict(Counter(tc.get("name", "unknown") for tc in tool_calls))
@@ -710,8 +711,10 @@ def _write_run_report(
             "archived_this_run": len(diff.removed), "added_this_run": len(diff.added),
             "consolidated_this_run": len(diff.consolidated), "pruned_this_run": len(diff.pruned),
             "state_transitions": len(transitions), "cron_jobs_rewritten": jobs_updated, "tool_calls_total": sum(tc_counts.values()),
+            "refused_consolidation_deletes": len(refused_deletes),
         },
         "tool_call_counts": tc_counts, "archived": diff.removed, "consolidated": diff.consolidated, "pruned": diff.pruned,
+        "refused_consolidation_delete_names": sorted(refused_deletes),
         "pruned_names": [p["name"] for p in diff.pruned], "added": diff.added, "state_transitions": transitions, "cron_rewrites": cron_rewrites,
         "llm_final": llm_meta.get("final", ""), "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"), "tool_calls": llm_meta.get("tool_calls", []),
@@ -787,6 +790,10 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
         f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**",
         f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**", f"- new skills this run: **{counts.get('added_this_run', 0)}**",
         f"- state transitions (active ↔ stale ↔ archived): **{counts.get('state_transitions', 0)}**", "",
+        *([f"> ⚠ Refused consolidation deletes: **{counts.get('refused_consolidation_deletes', 0)}** — the review fork "
+           f"asked to delete {', '.join(f'`{n}`' for n in (p.get('refused_consolidation_delete_names') or [])[:10])} but every delete was "
+           "refused (guard fail-closed: missing `absorbed_into`?). Consolidation did NOT complete.\n"]
+          if counts.get("refused_consolidation_deletes") else []),
     ]
     for key, title, intro, render, show, hint in _REPORT_SECTIONS:
         items = p.get(key) or []
@@ -858,6 +865,17 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
                 prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
             llm_meta = _run_llm_review(prompt)
             final_summary = f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
+            # A pass whose consolidation deletes were ALL refused still reads as
+            # success in the LLM's own summary — surface the refusal count so
+            # `hermes curator status` can't look healthy while consolidation
+            # silently never completes (#97959).
+            refused = _refused_consolidation_deletes(
+                before_names, {r.get("name") for r in skill_usage.curated_report()},
+                llm_meta.get("tool_calls", []) or [])
+            if refused:
+                names_preview = ", ".join(sorted(refused)[:5])
+                final_summary = (f"{final_summary}; ⚠ {len(refused)} consolidation delete(s) refused "
+                                 f"({names_preview}) — see run report")
     except Exception as e:
         logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
         final_summary = f"{prefix}{auto_summary}; llm: error ({e})"
@@ -1010,6 +1028,112 @@ def _resolve_review_provider() -> tuple:
     return rp, model_name, provider, overrides
 
 
+_ABSORBED_INTO_PROP = {
+    "type": "string",
+    "description": (
+        "delete only: the umbrella skill that absorbs this skill's "
+        "content. The consolidation delete guard refuses a delete "
+        "without it — the umbrella must already exist."),
+}
+
+
+def _with_absorbed_into(function: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of a ``skill_manage`` function schema advertising ``absorbed_into``.
+
+    Every container on the path is copied: entries in ``get_tool_definitions``'s
+    memoized result are shared process-wide and must never be edited in place.
+    """
+    params = function["parameters"]
+    properties = params["properties"]
+    operations = properties["operations"]
+    items = operations["items"]
+    return {
+        **function,
+        "parameters": {
+            **params,
+            "properties": {
+                **properties,
+                "operations": {
+                    **operations,
+                    "items": {
+                        **items,
+                        "properties": {
+                            **items["properties"],
+                            "absorbed_into": _ABSORBED_INTO_PROP,
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def _advertise_absorbed_into(enabled_toolsets):
+    """The fork's ``tools[]`` with ``skill_manage`` advertising ``absorbed_into``.
+
+    The handler has always accepted ``absorbed_into`` on delete and the
+    curator's delete guard REFUSES deletes that omit it (#97959), yet the
+    shared schema deliberately omits the parameter (token cost on every call
+    of every other session). The consolidation pass — the only caller that
+    needs it — therefore gets it fork-locally: the shared
+    ``SKILL_MANAGE_SCHEMA`` stays byte-identical, and a fresh list is built
+    here so the memoized ``get_tool_definitions`` cache is never mutated.
+    Returns the list unchanged when ``skill_manage`` is absent.
+    """
+    from model_tools import get_tool_definitions
+    tools = get_tool_definitions(enabled_toolsets=enabled_toolsets, quiet_mode=True) or []
+    out = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        try:
+            if function and function.get("name") == "skill_manage":
+                tool = {**tool, "function": _with_absorbed_into(function)}
+        except (KeyError, TypeError):
+            pass  # unexpected schema shape — advertise the shared one as-is
+        out.append(tool)
+    return out
+
+
+def _refused_consolidation_deletes(before_names, after_names, tool_calls):
+    """Names the fork tried to delete but are still present after the run.
+
+    A refused consolidation delete leaves the skill on disk (the guard is
+    fail-closed), so a delete-targeted skill in both snapshots was refused.
+    Counts distinct skills, not calls — model retries on the same refusal must
+    not inflate the number. Unparseable/truncated arguments are skipped (the
+    llm_meta tool_calls list caps arguments at 400 chars).
+    """
+    if not before_names or not tool_calls:
+        return set()
+    still_present = {n for n in before_names if n in after_names}
+    if not still_present:
+        return set()
+    refused = set()
+    for call in tool_calls:
+        if not isinstance(call, dict) or call.get("name") != "skill_manage":
+            continue
+        args = call.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                continue  # truncated/garbage — never guess
+        if not isinstance(args, dict):
+            continue
+        if isinstance(args.get("operations"), list):
+            targets = [op for op in args["operations"]
+                       if isinstance(op, dict) and op.get("action") == "delete"]
+        elif args.get("action") == "delete":
+            targets = [args]
+        else:
+            continue
+        for op in targets:
+            name = op.get("name")
+            if isinstance(name, str) and name in still_present:
+                refused.add(name)
+    return refused
+
+
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
     """Spawn an AIAgent fork on the review prompt. Returns ``final`` (untruncated response), ``summary`` (240-char cap),
     ``model``/``provider`` (what ran), ``tool_calls`` ([{name, arguments}], truncated) and ``error``. Never raises."""
@@ -1047,6 +1171,14 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # write guards (external/bundled/hub) fire; turn_context binds this onto
         # the write-origin ContextVar at turn start.
         review_agent._memory_write_origin = "background_review"
+        # The fork's sole delete is a consolidation delete, which the guard only
+        # accepts with absorbed_into — advertise it fork-locally (#97959). Built
+        # fresh (never edits the memoized get_tool_definitions result), and pinned:
+        # a between-turns MCP refresh would rebuild tools[] from the registry and
+        # silently drop the augmentation.
+        review_agent.tools = _advertise_absorbed_into(["skills"])
+        review_agent.valid_tool_names = {t["function"]["name"] for t in review_agent.tools} if review_agent.tools else set()
+        review_agent._skip_mcp_refresh = True
         # Silence the fork's tool-call chatter (CLI synchronous foreground runs).
         with open(os.devnull, "w", encoding="utf-8") as devnull, \
              contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):

@@ -68,6 +68,44 @@ def test_accepts_caip_solana_network():
     assert chosen["amount_usdc"] == 0.05
 
 
+def test_empty_accepts_is_not_ok(capsys):
+    mod = load_mod()
+    old = sys.stdin
+    sys.stdin = type("S", (), {"read": lambda self: json.dumps({"accepts": []})})()
+    try:
+        code = mod.main([])
+    finally:
+        sys.stdin = old
+    out = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert out["ok"] is False
+    assert out["accepts"] == []
+
+
+def test_strips_curl_header_prefix():
+    mod = load_mod()
+    raw = (
+        "HTTP/2 402\r\n"
+        "payment-required: ignore\r\n"
+        "content-type: application/json\r\n"
+        "\r\n"
+        + json.dumps(
+            {
+                "accepts": [
+                    {
+                        "network": "solana",
+                        "maxAmountRequired": "5000",
+                        "payTo": "F1AbWuXJcBT9arW9wc6Xr2vom5NBtngWsz6Ht16jRBLM",
+                    }
+                ]
+            }
+        )
+    )
+    body = mod.load_body(raw)
+    chosen = mod.pick_row(mod.quote_rows(body))
+    assert chosen["amount_usdc"] == 0.005
+
+
 def test_main_prints_json(capsys):
     mod = load_mod()
     body = json.dumps(

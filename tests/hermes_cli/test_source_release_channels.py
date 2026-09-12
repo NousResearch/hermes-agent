@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from hermes_cli import main, update_cmd
+from hermes_cli.source_releases import resolve_source_release
 from hermes_cli.update_channel import set_install_channel
 
 
@@ -96,8 +97,9 @@ def releases(tmp_path, monkeypatch):
     thread.join()
 
 
-def test_stable_resolution_uses_promoted_pointer_not_highest_tag(releases):
-    assert update_cmd._resolve_latest_release_tag(["git"], releases.root) == (
+@pytest.mark.parametrize("git_cmd", [["git"], None], ids=["git", "no-git"])
+def test_stable_resolution_uses_promoted_pointer_not_highest_tag(releases, git_cmd):
+    assert resolve_source_release("stable", git_cmd, releases.root) == (
         releases.tags["stable"], releases.commits[1],
     )
     assert releases.requests
@@ -156,8 +158,6 @@ def test_source_check_honors_transient_channel_without_rewriting_record(releases
 
 
 def test_fork_origin_uses_its_own_published_release_not_the_official_pointer(releases):
-    from hermes_cli.source_releases import resolve_source_release
-
     url = "https://github.com/Fixture/hermes-agent.git"
     git(releases.root, "config", "remote.origin.url", url)
     git(releases.root, "config", f"url.{releases.origin}.insteadOf", url)
@@ -189,9 +189,10 @@ def test_zip_fallback_keeps_selected_repository_and_commit(releases, monkeypatch
     assert seen == [f"https://github.com/Fixture/hermes-agent/archive/{releases.commits[2]}.zip"]
 
 
-def test_selected_draft_never_falls_back_to_other_tags(releases):
+@pytest.mark.parametrize("git_cmd", [["git"], None], ids=["git", "no-git"])
+def test_selected_draft_never_falls_back_to_other_tags(releases, git_cmd):
     releases.responses[f"/repos/NousResearch/hermes-agent/releases/tags/{releases.tags['stable']}"]["draft"] = True
-    assert update_cmd._resolve_latest_release_tag(["git"], releases.root) == (None, None)
+    assert resolve_source_release("stable", git_cmd, releases.root) == (None, None)
     assert not any("/tags?" in path for path in releases.requests)
 
 
@@ -204,8 +205,6 @@ def test_main_check_still_uses_branch_without_release_requests(releases, capsys)
 
 @pytest.mark.parametrize("channel", ["stable", "canary"])
 def test_origin_tag_cannot_substitute_a_fork_commit(releases, channel):
-    from hermes_cli.source_releases import resolve_source_release
-
     git(releases.origin, "tag", "-f", releases.tags[channel], releases.commits[3])
     assert resolve_source_release(channel, ["git"], releases.root) == (None, None)
     # Without git, the same selection remains pinned to the official commit.
@@ -216,8 +215,6 @@ def test_origin_tag_cannot_substitute_a_fork_commit(releases, channel):
 
 @pytest.mark.parametrize("channel", ["stable", "canary"])
 def test_missing_pointers_fall_back_only_to_published_releases(releases, channel):
-    from hermes_cli.source_releases import resolve_source_release
-
     releases.responses.pop("/releases/stable/release-candidates.json")
     releases.responses.pop(f"/releases/{channel}/index.html")
     published = releases.responses[f"/repos/NousResearch/hermes-agent/releases/tags/{releases.tags[channel]}"]

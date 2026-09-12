@@ -1,11 +1,11 @@
-"""Tests for the stable update channel (tag-tracking) in hermes_cli/update_cmd.py."""
+"""Release-tag parsing and source-update channel selection policy."""
 
 from unittest.mock import patch
 
 from hermes_cli.update_cmd import (
     _latest_release_tag_from_ls_remote,
     _parse_release_tag,
-    _stable_channel_active,
+    _source_update_channel,
 )
 
 
@@ -83,18 +83,20 @@ class _Args:
         self.channel = channel
 
 
-class TestStableChannelActive:
+class TestSourceUpdateChannel:
     def test_explicit_branch_always_wins(self):
         """--branch means main-style behavior regardless of channel config."""
-        assert _stable_channel_active(_Args(branch="bb/gui")) is False
+        assert _source_update_channel(_Args(branch="bb/gui", channel="stable")) == "main"
+        assert _source_update_channel(channel="canary", branch_explicit=True) == "main"
 
     def test_transient_channel_flag_wins(self):
         """--channel is the per-invocation override (--set-channel persists);
         no config read happens when it is present."""
-        assert _stable_channel_active(_Args(channel="stable")) is True
-        assert _stable_channel_active(_Args(channel="main")) is False
-        # Canary is a distinct release channel, never stable.
-        assert _stable_channel_active(_Args(channel="canary")) is False
+        with patch("hermes_cli.config.load_config") as load_config:
+            for channel in ("stable", "main", "canary"):
+                assert _source_update_channel(_Args(channel=channel)) == channel
+                assert _source_update_channel(channel=channel) == channel
+            load_config.assert_not_called()
 
     def test_per_install_record_activates(self, tmp_path, monkeypatch):
         from hermes_cli.update_channel import install_id
@@ -111,7 +113,7 @@ class TestStableChannelActive:
 
         monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", root)
         with patch("hermes_cli.config.load_config", return_value=config):
-            assert _stable_channel_active(_Args()) is True
+            assert _source_update_channel(_Args()) == "stable"
 
     def test_no_record_stays_main(self, tmp_path, monkeypatch):
         root = tmp_path / "install"
@@ -123,8 +125,8 @@ class TestStableChannelActive:
 
         monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", root)
         with patch("hermes_cli.config.load_config", return_value={"update": {"installs": {}}}):
-            assert _stable_channel_active(_Args()) is False
+            assert _source_update_channel(_Args()) == "main"
 
     def test_config_failure_defaults_to_main(self):
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
-            assert _stable_channel_active(_Args()) is False
+            assert _source_update_channel(_Args()) == "main"

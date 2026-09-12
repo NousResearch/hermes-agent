@@ -648,11 +648,6 @@ def _latest_release_tag_from_ls_remote(output: str):
         return None, None
     tag = best[1]
     return tag, shas.get(tag)
-def _resolve_latest_release_tag(git_cmd, cwd):
-    """Resolve the published stable release (historical updater import surface)."""
-    from hermes_cli.source_releases import resolve_source_release
-
-    return resolve_source_release("stable", git_cmd, cwd)
 
 
 def _source_update_channel(args=None, *, channel=None, branch_explicit=False) -> str:
@@ -671,20 +666,6 @@ def _source_update_channel(args=None, *, channel=None, branch_explicit=False) ->
     except Exception as exc:
         logger.debug("Could not load config for channel resolution: %s", exc)
     return resolve_update_channel(config, _m().PROJECT_ROOT)
-
-
-def _stable_channel_active(args) -> bool:
-    """Historical stable-only predicate; canary is a separate release channel."""
-    from hermes_cli.update_channel import CHANNEL_STABLE
-
-    return _source_update_channel(args) == CHANNEL_STABLE
-
-
-def _github_latest_release():
-    """Resolve the same stable release when local Git is unavailable."""
-    from hermes_cli.source_releases import resolve_source_release
-
-    return resolve_source_release("stable")
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, channel=None):

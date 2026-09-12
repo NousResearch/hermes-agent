@@ -16,7 +16,8 @@ import os
 import signal
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from typing import cast
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -425,6 +426,1361 @@ class TestSubprocessCompatHelpers:
         # First element is either an absolute path (sh found) or the bare
         # name (fallback) — both are acceptable behaviours.
 
+    def test_resolve_node_command_uses_bootstrap_cwd_before_windows_path(
+        self, tmp_path, monkeypatch
+    ):
+        """A bare command must not bind an executable from Hermes's cwd."""
+        from hermes_cli import _subprocess_compat as sc
+
+        launch_cwd = tmp_path / "hermes-launch"
+        bootstrap_cwd = tmp_path / "n8n"
+        path_dir = tmp_path / "python-bin"
+        for directory in (launch_cwd, bootstrap_cwd, path_dir):
+            directory.mkdir()
+        attacker = launch_cwd / "python3.EXE"
+        safe_python = path_dir / "python3.EXE"
+        attacker.touch()
+        safe_python.touch()
+
+        probes = []
+
+        def windows_which(command):
+            probes.append(command)
+            candidate = Path(command)
+            if candidate == Path("python3"):
+                return str(attacker)
+            if candidate == bootstrap_cwd / "python3":
+                return None
+            if candidate == path_dir / "python3":
+                return str(safe_python)
+            return None
+
+        monkeypatch.chdir(launch_cwd)
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        monkeypatch.setenv("PATH", str(path_dir))
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", windows_which)
+
+        assert sc.resolve_node_command(
+            "python3", ["-m", "venv", ".venv"], cwd=bootstrap_cwd
+        ) == [str(safe_python), "-m", "venv", ".venv"]
+        assert "python3" not in probes
+
+    def test_resolve_node_command_does_not_treat_drive_relative_name_as_bare(
+        self, monkeypatch
+    ):
+        """Windows drive-relative names must not enter bare-command lookup."""
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = cast(Path, PureWindowsPath(r"D:\bootstrap\repo"))
+        resolved = r"D:\bootstrap\repo\python.EXE"
+        probes = []
+
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            sc,
+            "_which_windows_command_from_cwd",
+            lambda *args, **kwargs: pytest.fail(
+                "drive-relative executable entered bare-command lookup"
+            ),
+        )
+        monkeypatch.setattr(
+            sc,
+            "_which_windows_explicit_command",
+            lambda name, *, allowed_root: probes.append((name, allowed_root))
+            or resolved,
+        )
+
+        assert sc.resolve_node_command(
+            r"D:python", ["--version"], cwd=bootstrap_cwd
+        ) == [resolved, "--version"]
+        assert probes == [(r"D:python", None)]
+
+    def test_resolve_node_command_honors_default_windows_cwd_search(
+        self, tmp_path, monkeypatch
+    ):
+        """Without the opt-out, the child cwd precedes explicit PATH entries."""
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "project"
+        path_dir = tmp_path / "python-bin"
+        bootstrap_cwd.mkdir()
+        path_dir.mkdir()
+        local_python = bootstrap_cwd / "python3.EXE"
+        path_python = path_dir / "python3.EXE"
+        local_python.touch()
+        path_python.touch()
+
+        def windows_which(command):
+            candidate = Path(command)
+            if candidate == bootstrap_cwd / "python3":
+                return str(local_python)
+            if candidate == path_dir / "python3":
+                return str(path_python)
+            return None
+
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        monkeypatch.setenv("PATH", str(path_dir))
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", windows_which)
+
+        assert sc.resolve_node_command("python3", [], cwd=bootstrap_cwd) == [
+            str(local_python)
+        ]
+
+    def test_resolve_node_command_skips_windows_cwd_when_opted_out(
+        self, tmp_path, monkeypatch
+    ):
+        """The cmd.exe opt-out must restrict a bare bootstrap name to PATH."""
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "cloned-repository"
+        path_dir = tmp_path / "python-bin"
+        bootstrap_cwd.mkdir()
+        path_dir.mkdir()
+        local_python = bootstrap_cwd / "python3.EXE"
+        path_python = path_dir / "python3.EXE"
+        local_python.touch()
+        path_python.touch()
+        probes = []
+
+        def windows_which(command):
+            probes.append(Path(command))
+            candidate = Path(command)
+            if candidate == bootstrap_cwd / "python3":
+                return str(local_python)
+            if candidate == path_dir / "python3":
+                return str(path_python)
+            return None
+
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "")
+        monkeypatch.setenv("PATH", str(path_dir))
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", windows_which)
+
+        assert sc.resolve_node_command("python3", [], cwd=bootstrap_cwd) == [
+            str(path_python)
+        ]
+        assert bootstrap_cwd / "python3" not in probes
+
+    @pytest.mark.parametrize(
+        ("search_cwd", "opt_out", "expected_location"),
+        [
+            (False, False, "path"),
+            (True, True, "path"),
+            (True, False, "cwd"),
+        ],
+        ids=("search-disabled", "environment-opt-out", "search-enabled"),
+    )
+    def test_resolve_node_command_applies_empty_path_cwd_search_policy(
+        self, tmp_path, monkeypatch, search_cwd, opt_out, expected_location
+    ):
+        """Empty PATH entries cannot bypass an explicit cwd-search opt-out."""
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "cloned-repository"
+        path_dir = tmp_path / "python-bin"
+        bootstrap_cwd.mkdir()
+        path_dir.mkdir()
+        local_python = bootstrap_cwd / "python3.EXE"
+        path_python = path_dir / "python3.EXE"
+        local_python.touch()
+        path_python.touch()
+
+        if opt_out:
+            monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        else:
+            monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        monkeypatch.setenv("PATH", os.pathsep.join(("", str(path_dir))))
+        monkeypatch.setenv("PATHEXT", ".EXE")
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+
+        expected = local_python if expected_location == "cwd" else path_python
+        assert sc.resolve_node_command(
+            "python3", [], cwd=bootstrap_cwd, search_cwd=search_cwd
+        ) == [str(expected)]
+        if expected_location == "path":
+            monkeypatch.setenv("PATH", "")
+            assert sc.resolve_node_command(
+                "python3", [], cwd=bootstrap_cwd, search_cwd=search_cwd
+            ) == [str(bootstrap_cwd / "<PATH>" / "python3")]
+
+    def test_resolve_node_command_anchors_relative_windows_path_to_child_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        """An explicit relative PATH entry stays child-cwd-relative under opt-out."""
+        from hermes_cli import _subprocess_compat as sc
+
+        launch_cwd = tmp_path / "hermes-launch"
+        bootstrap_cwd = tmp_path / "cloned-repository"
+        relative_bin = bootstrap_cwd / "tools"
+        for directory in (launch_cwd, bootstrap_cwd, relative_bin):
+            directory.mkdir()
+        attacker = launch_cwd / "python3.EXE"
+        path_python = relative_bin / "python3.EXE"
+        attacker.touch()
+        path_python.touch()
+        probes = []
+
+        def windows_which(command):
+            probes.append(Path(command))
+            candidate = Path(command)
+            if candidate == Path("python3"):
+                return str(attacker)
+            if candidate == relative_bin / "python3":
+                return str(path_python)
+            return None
+
+        monkeypatch.chdir(launch_cwd)
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv("PATH", "tools")
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", windows_which)
+
+        assert sc.resolve_node_command("python3", [], cwd=bootstrap_cwd) == [
+            str(path_python)
+        ]
+        assert probes == []
+
+    def test_resolve_node_command_uses_non_searching_opt_out_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        """A PATH miss cannot fall back to a repository executable."""
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "cloned-repository"
+        path_dir = tmp_path / "empty-bin"
+        bootstrap_cwd.mkdir()
+        path_dir.mkdir()
+        (bootstrap_cwd / "python3.EXE").touch()
+
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv("PATH", str(path_dir))
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda command: None)
+
+        assert sc.resolve_node_command("python3", [], cwd=bootstrap_cwd) == [
+            str(path_dir / "python3")
+        ]
+
+    def test_resolve_node_command_anchors_missing_windows_command_to_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        """A miss must not leave CreateProcessW a bare-name fallback."""
+        from hermes_cli import _subprocess_compat as sc
+
+        launch_cwd = tmp_path / "hermes-launch"
+        bootstrap_cwd = tmp_path / "n8n"
+        launch_cwd.mkdir()
+        bootstrap_cwd.mkdir()
+        attacker = launch_cwd / "python3.EXE"
+        attacker.touch()
+
+        def windows_which(command):
+            if Path(command) == Path("python3"):
+                return str(attacker)
+            return None
+
+        monkeypatch.chdir(launch_cwd)
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", windows_which)
+
+        assert sc.resolve_node_command(
+            "python3", ["-m", "venv", ".venv"], cwd=bootstrap_cwd
+        ) == [str(bootstrap_cwd / "python3"), "-m", "venv", ".venv"]
+
+    def test_resolve_node_command_anchors_shim_node_fallback_to_bootstrap_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        """A supported shim must not bind Node from Hermes's launch cwd."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        launch_cwd = tmp_path / "hermes-launch"
+        bootstrap_cwd = tmp_path / "project"
+        yarn_package = tmp_path / "yarn"
+        yarn_bin = yarn_package / "bin"
+        node_bin = tmp_path / "node-bin"
+        for directory in (launch_cwd, bootstrap_cwd, yarn_bin, node_bin):
+            directory.mkdir(parents=True)
+
+        attacker = launch_cwd / "node.exe"
+        safe_node = node_bin / "node.EXE"
+        shim = yarn_bin / "yarn.CMD"
+        entrypoint = yarn_bin / "yarn.js"
+        attacker.touch()
+        safe_node.touch()
+        entrypoint.touch()
+        shim.write_text(
+            '@echo off\r\nnode "%~dp0\\yarn.js" %*\r\n', encoding="utf-8"
+        )
+        (yarn_package / "package.json").write_text(
+            json.dumps({"name": "yarn", "bin": {"yarn": "bin/yarn.js"}}),
+            encoding="utf-8",
+        )
+
+        probes = []
+
+        def windows_which(command):
+            probes.append(command)
+            candidate = Path(command)
+            if candidate == Path("node.exe"):
+                return str(attacker)
+            if candidate == yarn_bin / "yarn":
+                return str(shim)
+            if candidate == node_bin / "node":
+                return str(safe_node)
+            return None
+
+        monkeypatch.chdir(launch_cwd)
+        monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
+        monkeypatch.setenv("PATH", os.pathsep.join((str(yarn_bin), str(node_bin))))
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", windows_which)
+
+        assert sc.resolve_node_command(
+            "yarn", ["--version"], cwd=bootstrap_cwd
+        ) == [str(safe_node), str(entrypoint.resolve()), "--version"]
+        assert probes == []
+
+    def test_resolve_node_command_skips_windows_cwd_for_shim_node_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        """Node fallback follows the same PATH-only opt-out as bootstrap names."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "cloned-repository"
+        yarn_package = tmp_path / "yarn"
+        yarn_bin = yarn_package / "bin"
+        node_bin = tmp_path / "node-bin"
+        for directory in (bootstrap_cwd, yarn_bin, node_bin):
+            directory.mkdir(parents=True)
+
+        local_node = bootstrap_cwd / "node.EXE"
+        path_node = node_bin / "node.EXE"
+        shim = yarn_bin / "yarn.CMD"
+        entrypoint = yarn_bin / "yarn.js"
+        local_node.touch()
+        path_node.touch()
+        entrypoint.touch()
+        shim.write_text(
+            '@echo off\r\nnode "%~dp0\\yarn.js" %*\r\n', encoding="utf-8"
+        )
+        (yarn_package / "package.json").write_text(
+            json.dumps({"name": "yarn", "bin": {"yarn": "bin/yarn.js"}}),
+            encoding="utf-8",
+        )
+        probes = []
+
+        def windows_which(command):
+            probes.append(Path(command))
+            candidate = Path(command)
+            if candidate == yarn_bin / "yarn":
+                return str(shim)
+            if candidate == bootstrap_cwd / "node":
+                return str(local_node)
+            if candidate == node_bin / "node":
+                return str(path_node)
+            return None
+
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv("PATH", os.pathsep.join((str(yarn_bin), str(node_bin))))
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", windows_which)
+
+        assert sc.resolve_node_command(
+            "yarn", ["--version"], cwd=bootstrap_cwd
+        ) == [str(path_node), str(entrypoint.resolve()), "--version"]
+        assert probes == []
+
+    def test_node_executable_preserves_windows_path_pathext_order(
+        self, tmp_path, monkeypatch
+    ):
+        """Do not skip an earlier PATH node.cmd for a later node.exe."""
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "project"
+        first_bin = tmp_path / "first-bin"
+        second_bin = tmp_path / "second-bin"
+        for directory in (bootstrap_cwd, first_bin, second_bin):
+            directory.mkdir()
+        first_node = first_bin / "node.CMD"
+        second_node = second_bin / "node.EXE"
+        first_node.touch()
+        second_node.touch()
+
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv("PATH", os.pathsep.join((str(first_bin), str(second_bin))))
+        monkeypatch.setenv("PATHEXT", ".CMD;.EXE")
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+
+        assert sc._node_executable(
+            tmp_path / "yarn.cmd", prefer_adjacent=False, cwd=bootstrap_cwd
+        ) is None
+
+    def test_windows_explicit_path_probe_applies_pathext_without_shutil_which(
+        self, tmp_path, monkeypatch
+    ):
+        """Python 3.11 must find suffixed executables for explicit directories."""
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "project"
+        path_dir = tmp_path / "python-bin"
+        bootstrap_cwd.mkdir()
+        path_dir.mkdir()
+        python = path_dir / "python3.EXE"
+        python.touch()
+
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv("PATH", str(path_dir))
+        monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            sc.shutil,
+            "which",
+            lambda command: pytest.fail(
+                f"explicit Windows probe delegated to shutil.which: {command}"
+            ),
+        )
+
+        assert sc.resolve_node_command("python3", [], cwd=bootstrap_cwd) == [
+            str(python)
+        ]
+
+    def test_windows_explicit_suffixed_path_precedes_pathext_expansion(
+        self, tmp_path, monkeypatch
+    ):
+        """An existing suffixed path must not lose to PATHEXT expansion."""
+        from hermes_cli import _subprocess_compat as sc
+
+        path_dir = tmp_path / "bin"
+        path_dir.mkdir()
+        exact = path_dir / "tool.exe"
+        expanded = path_dir / "tool.exe.COM"
+        exact.touch()
+        expanded.touch()
+
+        monkeypatch.setenv("PATHEXT", ".COM;.CMD")
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+
+        assert sc.resolve_node_command(str(exact), []) == [str(exact)]
+
+    def test_node_executable_strips_pathext_entry_whitespace(
+        self, tmp_path, monkeypatch
+    ):
+        """Accept whitespace-formatted PATHEXT while retaining dotted suffixes."""
+        from hermes_cli import _subprocess_compat as sc
+
+        bootstrap_cwd = tmp_path / "project"
+        node_bin = tmp_path / "node-bin"
+        bootstrap_cwd.mkdir()
+        node_bin.mkdir()
+        node = node_bin / "node.EXE"
+        node.touch()
+
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv("PATH", str(node_bin))
+        monkeypatch.setenv("PATHEXT", ".COM; .EXE; .CMD")
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+
+        assert sc._node_executable(
+            tmp_path / "yarn.cmd", prefer_adjacent=False, cwd=bootstrap_cwd
+        ) == str(node)
+
+    def test_node_executable_keeps_posix_path_resolution_with_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        """Supplying a child cwd must not change the POSIX lookup seam."""
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node"
+        probes = []
+
+        def posix_which(command):
+            probes.append(command)
+            return str(node) if command == "node" else None
+
+        monkeypatch.setattr(sc, "IS_WINDOWS", False)
+        monkeypatch.setattr(sc.shutil, "which", posix_which)
+
+        assert sc._node_executable(
+            tmp_path / "yarn.cmd", prefer_adjacent=False, cwd=tmp_path / "project"
+        ) == str(node)
+        assert probes == ["node"]
+
+    def test_resolve_node_command_unwraps_windows_npm_shim(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        shim = tmp_path / "npm.cmd"
+        package = tmp_path / "node_modules" / "npm"
+        entrypoint = package / "bin" / "npm-cli.js"
+        entrypoint.parent.mkdir(parents=True)
+        node.touch()
+        entrypoint.touch()
+        shim.write_text(
+            "@ECHO off\r\n"
+            "GOTO start\r\n"
+            ":find_dp0\r\n"
+            "SET dp0=%~dp0\r\n"
+            "EXIT /b\r\n"
+            ":start\r\n"
+            "SETLOCAL\r\n"
+            "CALL :find_dp0\r\n"
+            'IF EXIST "%dp0%\\node.exe" (\r\n'
+            '  SET "_prog=%dp0%\\node.exe"\r\n'
+            ") ELSE (\r\n"
+            '  SET "_prog=node"\r\n'
+            ")\r\n"
+            "\r\n"
+            "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "
+            'set PATHEXT=%PATHEXT:;.JS;=;% & "%_prog%"  '
+            '"%dp0%\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n',
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps({"name": "npm", "bin": {"npm": "bin/npm-cli.js"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("npm", ["install", "pkg@^1.2.3"]) == [
+            str(node.resolve()),
+            str(entrypoint.resolve()),
+            "install",
+            "pkg@^1.2.3",
+        ]
+
+    @pytest.mark.parametrize(
+        ("preamble", "launch_prefix"),
+        [
+            (
+                ":: Created by npm, please don't edit manually.\r\n\r\n",
+                "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ",
+            ),
+            (
+                "\r\n\r\n",
+                "ENDLOCAL & (CALL) || TITLE %COMSPEC% & ",
+            ),
+        ],
+    )
+    def test_resolve_node_command_accepts_supported_npm_shim_wrappers(
+        self, tmp_path, monkeypatch, preamble, launch_prefix
+    ):
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        shim = tmp_path / "npm.cmd"
+        package = tmp_path / "node_modules" / "npm"
+        entrypoint = package / "bin" / "npm-cli.js"
+        entrypoint.parent.mkdir(parents=True)
+        node.touch()
+        entrypoint.touch()
+        shim.write_text(
+            preamble + "@ECHO off\r\n"
+            "GOTO start\r\n"
+            ":find_dp0\r\n"
+            "SET dp0=%~dp0\r\n"
+            "EXIT /b\r\n"
+            ":start\r\n"
+            "SETLOCAL\r\n"
+            "CALL :find_dp0\r\n"
+            'IF EXIST "%dp0%\\node.exe" (\r\n'
+            '  SET "_prog=%dp0%\\node.exe"\r\n'
+            ") ELSE (\r\n"
+            '  SET "_prog=node"\r\n'
+            ")\r\n"
+            "\r\n" + launch_prefix + 'set PATHEXT=%PATHEXT:;.JS;=;% & "%_prog%"  '
+            '"%dp0%\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n',
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps({"name": "npm", "bin": {"npm": "bin/npm-cli.js"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("npm", ["install"]) == [
+            str(node.resolve()),
+            str(entrypoint.resolve()),
+            "install",
+        ]
+
+    @pytest.mark.parametrize(
+        ("npm_version", "command"),
+        [
+            ("11.12.1", "npm"),
+            ("11.17.0", "npm"),
+            ("11.17.0", "npx"),
+            ("12.0.2", "npm"),
+            ("12.0.2", "npx"),
+        ],
+    )
+    def test_resolve_node_command_accepts_current_npm_cli_launcher(
+        self, tmp_path, monkeypatch, npm_version, command
+    ):
+        """Use the exact bin/npm.cmd and bin/npx.cmd from supported npm tags."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        shim = tmp_path / f"{command}.cmd"
+        package = tmp_path / "node_modules" / "npm"
+        cli = command.upper()
+        cli_file = f"{command}-cli.js"
+        entrypoint = package / "bin" / cli_file
+        prefix_probe = package / "bin" / "npm-prefix.js"
+        entrypoint.parent.mkdir(parents=True)
+        node.touch()
+        entrypoint.touch()
+        prefix_probe.touch()
+        shim.write_text(
+            ":: Created by npm, please don't edit manually.\r\n"
+            "@ECHO OFF\r\n"
+            "\r\n"
+            "SETLOCAL\r\n"
+            "\r\n"
+            'SET "NODE_EXE=%~dp0\\node.exe"\r\n'
+            'IF NOT EXIST "%NODE_EXE%" (\r\n'
+            '  SET "NODE_EXE=node"\r\n'
+            ")\r\n"
+            "\r\n"
+            'SET "NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js"\r\n'
+            f'SET "{cli}_CLI_JS=%~dp0\\node_modules\\npm\\bin\\{cli_file}"\r\n'
+            'FOR /F "delims=" %%F IN (\'CALL "%NODE_EXE%" "%NPM_PREFIX_JS%"\') DO (\r\n'
+            f'  SET "NPM_PREFIX_{cli}_CLI_JS=%%F\\node_modules\\npm\\bin\\{cli_file}"\r\n'
+            ")\r\n"
+            f'IF EXIST "%NPM_PREFIX_{cli}_CLI_JS%" (\r\n'
+            f'  SET "{cli}_CLI_JS=%NPM_PREFIX_{cli}_CLI_JS%"\r\n'
+            ")\r\n"
+            "\r\n"
+            f'"%NODE_EXE%" "%{cli}_CLI_JS%" %*\r\n',
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "npm",
+                    "version": npm_version,
+                    "bin": {command: f"bin/{cli_file}"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+        monkeypatch.setattr(
+            sc.subprocess,
+            "run",
+            lambda *args, **kwargs: sc.subprocess.CompletedProcess(
+                args[0], 0, stdout="", stderr=""
+            ),
+        )
+
+        assert sc.resolve_node_command(command, ["install"]) == [
+            str(node.resolve()),
+            str(entrypoint.resolve()),
+            "install",
+        ]
+
+    @pytest.mark.parametrize("command", ["npm", "npx"])
+    def test_resolve_node_command_preserves_cwd_sensitive_npm_1202_prefix_selection(
+        self, tmp_path, monkeypatch, command
+    ):
+        """Mirror npm 12.0.2 selecting a project .npmrc global prefix."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node_bin = tmp_path / "node-bin"
+        node = node_bin / "node.EXE"
+        shim = tmp_path / f"{command}.CMD"
+        local_package = tmp_path / "node_modules" / "npm"
+        global_prefix = tmp_path / "global-prefix"
+        global_package = global_prefix / "node_modules" / "npm"
+        project = tmp_path / "project"
+        cli = command.upper()
+        cli_file = f"{command}-cli.js"
+        local_entrypoint = local_package / "bin" / cli_file
+        global_entrypoint = global_package / "bin" / cli_file
+        prefix_probe = local_package / "bin" / "npm-prefix.js"
+        local_entrypoint.parent.mkdir(parents=True)
+        global_entrypoint.parent.mkdir(parents=True)
+        project.mkdir()
+        node_bin.mkdir()
+        (project / ".npmrc").write_text(
+            f"prefix={global_prefix}\n", encoding="utf-8"
+        )
+        node.touch()
+        local_entrypoint.touch()
+        global_entrypoint.touch()
+        prefix_probe.touch()
+        shim.write_text(
+            ":: Created by npm, please don't edit manually.\r\n"
+            "@ECHO OFF\r\n\r\nSETLOCAL\r\n\r\n"
+            'SET "NODE_EXE=%~dp0\\node.exe"\r\n'
+            'IF NOT EXIST "%NODE_EXE%" (\r\n'
+            '  SET "NODE_EXE=node"\r\n)\r\n\r\n'
+            'SET "NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js"\r\n'
+            f'SET "{cli}_CLI_JS=%~dp0\\node_modules\\npm\\bin\\{cli_file}"\r\n'
+            'FOR /F "delims=" %%F IN (\'CALL "%NODE_EXE%" "%NPM_PREFIX_JS%"\') DO (\r\n'
+            f'  SET "NPM_PREFIX_{cli}_CLI_JS=%%F\\node_modules\\npm\\bin\\{cli_file}"\r\n'
+            ")\r\n"
+            f'IF EXIST "%NPM_PREFIX_{cli}_CLI_JS%" (\r\n'
+            f'  SET "{cli}_CLI_JS=%NPM_PREFIX_{cli}_CLI_JS%"\r\n'
+            ")\r\n\r\n"
+            f'"%NODE_EXE%" "%{cli}_CLI_JS%" %*\r\n',
+            encoding="utf-8",
+        )
+        for package, version in ((local_package, "12.0.2"), (global_package, "12.0.2")):
+            (package / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "npm",
+                        "version": version,
+                        "bin": {command: f"bin/{cli_file}"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        calls = []
+
+        def run_prefix(argv, **kwargs):
+            calls.append((argv, kwargs))
+            probe_cwd = Path(kwargs.get("cwd") or Path.cwd())
+            npmrc = probe_cwd / ".npmrc"
+            configured_prefix = (
+                Path(npmrc.read_text(encoding="utf-8").split("=", 1)[1].strip())
+                if npmrc.is_file()
+                else tmp_path
+            )
+            return sc.subprocess.CompletedProcess(
+                argv, 0, stdout=f"{configured_prefix}\n", stderr=""
+            )
+
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setenv(
+            "PATH", os.pathsep.join((str(tmp_path), str(node_bin)))
+        )
+
+        probes = []
+
+        def windows_which(name):
+            probes.append(name)
+            candidate = Path(name)
+            if candidate == project / command:
+                return None
+            if candidate == tmp_path / command:
+                return str(shim)
+            if candidate == node_bin / "node":
+                return str(node)
+            return None
+
+        monkeypatch.setattr(
+            sc.shutil,
+            "which",
+            windows_which,
+        )
+        monkeypatch.setattr(sc.subprocess, "run", run_prefix)
+
+        assert sc.resolve_node_command(command, ["--version"], cwd=project) == [
+            str(node.resolve()),
+            str(global_entrypoint.resolve()),
+            "--version",
+        ]
+        assert calls == [
+            (
+                [str(node.resolve()), str(prefix_probe.resolve())],
+                {
+                    "capture_output": True,
+                    "check": False,
+                    "creationflags": sc.windows_hide_flags(),
+                    "cwd": str(project),
+                    "shell": False,
+                    "text": True,
+                    "timeout": 10,
+                },
+            )
+        ]
+        assert probes == []
+
+    def test_resolve_node_command_rejects_unbound_npm_prefix_selection(
+        self, tmp_path, monkeypatch
+    ):
+        """Never replace npm's selected global CLI with the adjacent package."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        shim = tmp_path / "npm.cmd"
+        local_package = tmp_path / "node_modules" / "npm"
+        global_prefix = tmp_path / "global-prefix"
+        global_entrypoint = global_prefix / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        local_entrypoint = local_package / "bin" / "npm-cli.js"
+        prefix_probe = local_package / "bin" / "npm-prefix.js"
+        local_entrypoint.parent.mkdir(parents=True)
+        global_entrypoint.parent.mkdir(parents=True)
+        node.touch()
+        local_entrypoint.touch()
+        global_entrypoint.touch()
+        prefix_probe.touch()
+        shim.write_text(
+            ":: Created by npm, please don't edit manually.\r\n"
+            "@ECHO OFF\r\n\r\nSETLOCAL\r\n\r\n"
+            'SET "NODE_EXE=%~dp0\\node.exe"\r\n'
+            'IF NOT EXIST "%NODE_EXE%" (\r\n  SET "NODE_EXE=node"\r\n)\r\n\r\n'
+            'SET "NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js"\r\n'
+            'SET "NPM_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npm-cli.js"\r\n'
+            'FOR /F "delims=" %%F IN (\'CALL "%NODE_EXE%" "%NPM_PREFIX_JS%"\') DO (\r\n'
+            '  SET "NPM_PREFIX_NPM_CLI_JS=%%F\\node_modules\\npm\\bin\\npm-cli.js"\r\n'
+            ")\r\n"
+            'IF EXIST "%NPM_PREFIX_NPM_CLI_JS%" (\r\n'
+            '  SET "NPM_CLI_JS=%NPM_PREFIX_NPM_CLI_JS%"\r\n'
+            ")\r\n\r\n"
+            '"%NODE_EXE%" "%NPM_CLI_JS%" %*\r\n',
+            encoding="utf-8",
+        )
+        (local_package / "package.json").write_text(
+            json.dumps({"name": "npm", "bin": {"npm": "bin/npm-cli.js"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+        monkeypatch.setattr(
+            sc.subprocess,
+            "run",
+            lambda argv, **kwargs: sc.subprocess.CompletedProcess(
+                argv, 0, stdout=f"{global_prefix}\n", stderr=""
+            ),
+        )
+
+        assert sc.resolve_node_command("npm", ["install"]) == [str(shim), "install"]
+
+    def test_resolve_node_command_accepts_corepack_0346_nodewin_launcher(
+        self, tmp_path, monkeypatch
+    ):
+        """Use Corepack 0.34.6's exact shims/nodewin/yarn.cmd body."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        shim = tmp_path / "yarn.cmd"
+        package = tmp_path / "node_modules" / "corepack"
+        entrypoint = package / "dist" / "yarn.js"
+        entrypoint.parent.mkdir(parents=True)
+        node.touch()
+        entrypoint.touch()
+        shim.write_text(
+            "@SETLOCAL\r\n"
+            '@IF EXIST "%~dp0\\node.exe" (\r\n'
+            '  "%~dp0\\node.exe"  "%~dp0\\node_modules\\corepack\\dist\\yarn.js" %*\r\n'
+            ") ELSE (\r\n"
+            "  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+            '  node  "%~dp0\\node_modules\\corepack\\dist\\yarn.js" %*\r\n'
+            ")\r\n",
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "corepack",
+                    "version": "0.34.6",
+                    "bin": {"yarn": "dist/yarn.js"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("yarn", ["--version"]) == [
+            str(node.resolve()),
+            str(entrypoint.resolve()),
+            "--version",
+        ]
+
+    @pytest.mark.parametrize(
+        ("pathext", "expected_native"),
+        [
+            (".JS;.COM;.EXE;.CMD", False),
+            (".COM;.JS;.EXE;.CMD", True),
+            (".COM;.EXE;.CMD;.JS", False),
+        ],
+        ids=("js-first", "js-interior", "js-last"),
+    )
+    def test_corepack_node_lookup_applies_boundary_sensitive_js_removal(
+        self, tmp_path, monkeypatch, pathext, expected_native
+    ):
+        """Match Corepack's literal interior ``;.JS;`` substitution."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        project = tmp_path / "project"
+        package = tmp_path / "corepack"
+        shim_dir = package / "shims"
+        node_js_dir = tmp_path / "node-js"
+        node_exe_dir = tmp_path / "node-exe"
+        entrypoint = package / "dist" / "yarn.js"
+        shim = shim_dir / "yarn.CMD"
+        node_js = node_js_dir / "node.JS"
+        node_exe = node_exe_dir / "node.EXE"
+        for directory in (project, shim_dir, node_js_dir, node_exe_dir):
+            directory.mkdir(parents=True)
+        entrypoint.parent.mkdir()
+        entrypoint.touch()
+        node_js.touch()
+        node_exe.touch()
+        shim.write_text(
+            "@SETLOCAL\r\n"
+            '@IF EXIST "%~dp0\\node.exe" (\r\n'
+            '  "%~dp0\\node.exe"  "%~dp0\\..\\dist\\yarn.js" %*\r\n'
+            ") ELSE (\r\n"
+            "  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+            '  node  "%~dp0\\..\\dist\\yarn.js" %*\r\n'
+            ")\r\n",
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "corepack",
+                    "version": "0.34.6",
+                    "bin": {"yarn": "./dist/yarn.js"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("NoDefaultCurrentDirectoryInExePath", "1")
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join((str(shim_dir), str(node_js_dir), str(node_exe_dir))),
+        )
+        monkeypatch.setenv("PATHEXT", pathext)
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+
+        expected = (
+            [str(node_exe), str(entrypoint.resolve()), "--version"]
+            if expected_native
+            else [str(shim), "--version"]
+        )
+        assert sc.resolve_node_command("yarn", ["--version"], cwd=project) == expected
+
+    def test_resolve_node_command_accepts_corepack_0346_package_launcher(
+        self, tmp_path, monkeypatch
+    ):
+        """Use Corepack 0.34.6's exact shims/yarn.cmd package body."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        package = tmp_path / "corepack"
+        shim = package / "shims" / "yarn.cmd"
+        entrypoint = package / "dist" / "yarn.js"
+        shim.parent.mkdir(parents=True)
+        entrypoint.parent.mkdir()
+        node.touch()
+        entrypoint.touch()
+        shim.write_text(
+            "@SETLOCAL\r\n"
+            '@IF EXIST "%~dp0\\node.exe" (\r\n'
+            '  "%~dp0\\node.exe"  "%~dp0\\..\\dist\\yarn.js" %*\r\n'
+            ") ELSE (\r\n"
+            "  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+            '  node  "%~dp0\\..\\dist\\yarn.js" %*\r\n'
+            ")\r\n",
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "corepack",
+                    "version": "0.34.6",
+                    "bin": {"yarn": "./dist/yarn.js"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            sc.shutil,
+            "which",
+            lambda name: str(shim) if name == "yarn" else str(node),
+        )
+
+        assert sc.resolve_node_command("yarn", ["--version"]) == [
+            str(node.resolve()),
+            str(entrypoint.resolve()),
+            "--version",
+        ]
+
+    def test_resolve_node_command_accepts_yarn_legacy_cmd_shim(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        shim = tmp_path / "yarn.cmd"
+        package = tmp_path / "node_modules" / "yarn"
+        entrypoint = package / "bin" / "yarn.js"
+        entrypoint.parent.mkdir(parents=True)
+        node.touch()
+        entrypoint.touch()
+        shim.write_text(
+            '@IF EXIST "%~dp0\\node.exe" (\r\n'
+            '  "%~dp0\\node.exe" "%~dp0\\node_modules\\yarn\\bin\\yarn.js" %*\r\n'
+            ") ELSE (\r\n"
+            "  @SETLOCAL\r\n"
+            "  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+            '  node "%~dp0\\node_modules\\yarn\\bin\\yarn.js" %*\r\n'
+            ")",
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps({"name": "yarn", "bin": {"yarn": "bin/yarn.js"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("yarn", ["--version"]) == [
+            str(node.resolve()),
+            str(entrypoint.resolve()),
+            "--version",
+        ]
+
+    def test_resolve_node_command_accepts_yarn_classic_12222_launcher(
+        self, tmp_path, monkeypatch
+    ):
+        """Use Yarn Classic 1.22.22's exact bin/yarn.cmd body."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        package = tmp_path / "yarn"
+        shim = package / "bin" / "yarn.cmd"
+        entrypoint = package / "bin" / "yarn.js"
+        shim.parent.mkdir(parents=True)
+        node.touch()
+        entrypoint.touch()
+        shim.write_text('@echo off\r\nnode "%~dp0\\yarn.js" %*\r\n', encoding="utf-8")
+        (package / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "yarn",
+                    "version": "1.22.22",
+                    "bin": {"yarn": "./bin/yarn.js", "yarnpkg": "./bin/yarn.js"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            sc.shutil,
+            "which",
+            lambda name: str(shim) if name == "yarn" else str(node),
+        )
+
+        assert sc.resolve_node_command("yarn", ["--version"]) == [
+            str(node),
+            str(entrypoint.resolve()),
+            "--version",
+        ]
+
+    def test_resolve_node_command_accepts_yarn_classic_12222_delegate(
+        self, tmp_path, monkeypatch
+    ):
+        """Resolve Yarn Classic's exact yarnpkg.cmd delegation without cmd.exe."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        node = tmp_path / "node.exe"
+        package = tmp_path / "yarn"
+        yarn_shim = package / "bin" / "yarn.cmd"
+        yarnpkg_shim = package / "bin" / "yarnpkg.cmd"
+        entrypoint = package / "bin" / "yarn.js"
+        yarn_shim.parent.mkdir(parents=True)
+        node.touch()
+        entrypoint.touch()
+        yarn_shim.write_text(
+            '@echo off\r\nnode "%~dp0\\yarn.js" %*\r\n', encoding="utf-8"
+        )
+        yarnpkg_shim.write_text(
+            '@echo off\r\n"%~dp0\\yarn.cmd" %*\r\n', encoding="utf-8"
+        )
+        (package / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "yarn",
+                    "version": "1.22.22",
+                    "bin": {"yarn": "./bin/yarn.js", "yarnpkg": "./bin/yarn.js"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            sc.shutil,
+            "which",
+            lambda name: str(yarnpkg_shim) if name == "yarnpkg" else str(node),
+        )
+
+        assert sc.resolve_node_command("yarnpkg", ["--version"]) == [
+            str(node),
+            str(entrypoint.resolve()),
+            "--version",
+        ]
+
+    @pytest.mark.parametrize(
+        ("command", "body"),
+        [
+            ("yarn", '@echo off\r\n@set FOO=bar\r\nnode "%~dp0\\yarn.js" %*\r\n'),
+            ("yarn", '@echo off\r\nnode --no-warnings "%~dp0\\yarn.js" %*\r\n'),
+            ("yarnpkg", '@echo off\r\n"%~dp0\\custom.cmd" %*\r\n'),
+        ],
+    )
+    def test_resolve_node_command_rejects_custom_yarn_classic_launcher(
+        self, tmp_path, monkeypatch, command, body
+    ):
+        from hermes_cli import _subprocess_compat as sc
+
+        shim = tmp_path / f"{command}.cmd"
+        (tmp_path / "yarn.js").touch()
+        shim.write_text(body, encoding="utf-8")
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command(command, ["--version"]) == [
+            str(shim),
+            "--version",
+        ]
+
+    @pytest.mark.parametrize(
+        "unsafe_fragment",
+        [
+            "@SET NODE_PATH=C:\\generated\\node_modules\r\n",
+            "@SET FOO=bar\r\n",
+        ],
+    )
+    def test_resolve_node_command_rejects_legacy_environment_assignment(
+        self, tmp_path, monkeypatch, unsafe_fragment
+    ):
+        from hermes_cli import _subprocess_compat as sc
+
+        shim = tmp_path / "yarn.cmd"
+        shim.write_text(
+            unsafe_fragment
+            + '@IF EXIST "%~dp0\\node.exe" (\r\n'
+            '  "%~dp0\\node.exe" "%~dp0\\node_modules\\yarn\\bin\\yarn.js" %*\r\n'
+            ") ELSE (\r\n"
+            "  @SETLOCAL\r\n"
+            "  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+            '  node "%~dp0\\node_modules\\yarn\\bin\\yarn.js" %*\r\n'
+            ")",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("yarn", ["--version"]) == [
+            str(shim),
+            "--version",
+        ]
+
+    @pytest.mark.parametrize(
+        ("environment", "interpreter_args"),
+        [
+            ("@SET FOO=bar\r\n", ""),
+            ("", "--no-warnings "),
+            ("@SET FOO=bar\r\n", "--no-warnings "),
+        ],
+    )
+    def test_resolve_node_command_rejects_cmd_shim_flags_and_environment(
+        self, tmp_path, monkeypatch, environment, interpreter_args
+    ):
+        """Never drop shebang variables or interpreter arguments."""
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        shim = tmp_path / "demo.cmd"
+        package = tmp_path / "node_modules" / "demo"
+        entrypoint = package / "demo.js"
+        package.mkdir(parents=True)
+        entrypoint.touch()
+        shim.write_text(
+            "@ECHO off\r\n"
+            "GOTO start\r\n"
+            ":find_dp0\r\n"
+            "SET dp0=%~dp0\r\n"
+            "EXIT /b\r\n"
+            ":start\r\n"
+            "SETLOCAL\r\n"
+            "CALL :find_dp0\r\n"
+            f"{environment}"
+            'IF EXIST "%dp0%\\node.exe" (\r\n'
+            '  SET "_prog=%dp0%\\node.exe"\r\n'
+            ") ELSE (\r\n"
+            '  SET "_prog=node"\r\n'
+            ")\r\n"
+            "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "
+            f'"%_prog%" {interpreter_args}'
+            '"%dp0%\\node_modules\\demo\\demo.js" %*\r\n',
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps({"name": "demo", "bin": {"demo": "demo.js"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("demo", ["arg"]) == [str(shim), "arg"]
+
+    def test_resolve_node_command_rejects_legacy_shim_with_split_targets(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import _subprocess_compat as sc
+
+        shim = tmp_path / "yarn.cmd"
+        shim.write_text(
+            '@IF EXIST "%~dp0\\node.exe" (\r\n'
+            '  "%~dp0\\node.exe" "%~dp0\\node_modules\\yarn\\bin\\yarn.js" %*\r\n'
+            ") ELSE (\r\n"
+            "  @SETLOCAL\r\n"
+            "  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+            '  node "%~dp0\\custom.js" %*\r\n'
+            ")",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("yarn", ["--version"]) == [
+            str(shim),
+            "--version",
+        ]
+
+    def test_resolve_node_command_rejects_custom_npm_shim_preamble(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        shim = tmp_path / "npm.cmd"
+        package = tmp_path / "node_modules" / "npm"
+        entrypoint = package / "bin" / "npm-cli.js"
+        entrypoint.parent.mkdir(parents=True)
+        entrypoint.touch()
+        shim.write_text(
+            ":: custom wrapper\r\n"
+            "@ECHO off\r\n"
+            "GOTO start\r\n"
+            ":find_dp0\r\n"
+            "SET dp0=%~dp0\r\n"
+            "EXIT /b\r\n"
+            ":start\r\n"
+            "SETLOCAL\r\n"
+            "CALL :find_dp0\r\n"
+            'IF EXIST "%dp0%\\node.exe" (\r\n'
+            '  SET "_prog=%dp0%\\node.exe"\r\n'
+            ") ELSE (\r\n"
+            '  SET "_prog=node"\r\n'
+            ")\r\n"
+            "\r\n"
+            "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "
+            'set PATHEXT=%PATHEXT:;.JS;=;% & "%_prog%"  '
+            '"%dp0%\\node_modules\\npm\\bin\\npm-cli.js" %*\r\n',
+            encoding="utf-8",
+        )
+        (package / "package.json").write_text(
+            json.dumps({"name": "npm", "bin": {"npm": "bin/npm-cli.js"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("npm", ["install"]) == [str(shim), "install"]
+
+    def test_resolve_node_command_keeps_unknown_batch_visible(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import _subprocess_compat as sc
+
+        shim = tmp_path / "legacy.cmd"
+        shim.touch()
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("legacy", ["arg"]) == [str(shim), "arg"]
+
+    def test_resolve_node_command_rejects_custom_batch_with_colliding_bin(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+
+        from hermes_cli import _subprocess_compat as sc
+
+        shim = tmp_path / "legacy.cmd"
+        package = tmp_path / "node_modules" / "legacy"
+        entrypoint = package / "bin" / "legacy.js"
+        custom_target = tmp_path / "custom.js"
+        entrypoint.parent.mkdir(parents=True)
+        shim.write_text(
+            "@ECHO off\r\n"
+            "GOTO start\r\n"
+            ":find_dp0\r\n"
+            "SET dp0=%~dp0\r\n"
+            "EXIT /b\r\n"
+            ":start\r\n"
+            "SETLOCAL\r\n"
+            "CALL :find_dp0\r\n"
+            'IF EXIST "%dp0%\\node.exe" (\r\n'
+            '  SET "_prog=%dp0%\\node.exe"\r\n'
+            ") ELSE (\r\n"
+            '  SET "_prog=node"\r\n'
+            ")\r\n"
+            "\r\n"
+            "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "
+            'set PATHEXT=%PATHEXT:;.JS;=;% & "%_prog%"  '
+            '"%dp0%\\custom.js" %*\r\n',
+            encoding="utf-8",
+        )
+        entrypoint.touch()
+        custom_target.touch()
+        (package / "package.json").write_text(
+            json.dumps({"name": "legacy", "bin": {"legacy": "bin/legacy.js"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+        monkeypatch.setattr(sc.shutil, "which", lambda name: str(shim))
+
+        assert sc.resolve_node_command("legacy", ["arg"]) == [str(shim), "arg"]
+
 
     @pytest.mark.windows_only
     def test_windows_detach_flags_exclude_detached_process(self):
@@ -453,6 +1809,19 @@ class TestSubprocessCompatHelpers:
         assert not sc.windows_detach_flags_without_breakaway() & 0x00000008, (
             "DETACHED_PROCESS must not be in the no-breakaway fallback either."
         )
+
+    @pytest.mark.parametrize(
+        ("is_windows", "expected"),
+        [(False, 0), (True, 0x08000000)],
+    )
+    def test_windows_hide_flags_match_platform(
+        self, monkeypatch, is_windows, expected
+    ):
+        from hermes_cli import _subprocess_compat as sc
+
+        monkeypatch.setattr(sc, "IS_WINDOWS", is_windows)
+
+        assert sc.windows_hide_flags() == expected
 
     @pytest.mark.windows_only
     def test_windows_detach_flags_includes_breakaway_from_job(self):

@@ -48,7 +48,11 @@ def _result(authority, record):
     row = get_session_admission(authority.db, admission_id=record['admission_id'])
     if row is None:
         raise RuntimeStoreError('storage_unavailable')
-    status = {'queued': 'queued', 'started': 'claimed', 'unknown': 'ambiguous', 'terminal': 'ambiguous'}[row['status']]
+    # A terminal row without a result blob is still definitive when the outcome says the
+    # input never ran (cancelled) or was refused/failed; ambiguous is reserved for the
+    # durable unknown state and for missing evidence (completed/interrupted without result).
+    status = {'queued': 'queued', 'started': 'claimed', 'unknown': 'ambiguous',
+              'terminal': {'cancelled': 'cancelled', 'rejected': 'failed', 'failed': 'failed'}.get(row['outcome'], 'ambiguous')}[row['status']]
     # Read only this admission's committed result, never transcript recency.
     from gateway.session_results import admission_result
     saved = admission_result(authority.db, record['admission_id'])

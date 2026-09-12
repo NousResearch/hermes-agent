@@ -102,7 +102,7 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
 
         env = prepare_windows_environment(source=repo, state=repo / "apps/desktop/build/.build-deps", env=env)
     workspaces = ["apps/desktop"] + ([] if variant == "light" else ["ui-tui", "web"])
-    run([node, "scripts/build/node-deps.mjs", "--source", str(repo),
+    run([node, "scripts/build/node-deps.mjs", "--source", str(repo), "--reuse",
          *[arg for workspace in workspaces for arg in ("--workspace", workspace)]], cwd=repo, env=env)
     payload = repo / "apps/desktop/build/agent-payload"
     if variant == "light":

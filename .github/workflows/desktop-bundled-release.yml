@@ -402,8 +402,9 @@ jobs:
           restore-keys: |
             eb2-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Cache node_modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore prepared desktop dependencies
+        id: node-modules-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             node_modules
@@ -412,25 +413,27 @@ jobs:
             ui-tui/packages/*/node_modules
             web/node_modules
             tests-js/node_modules
-          key: node-modules-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json') }}
-          # npm ci rm -rf's node_modules before installing, so a restore is
-          # never shipped stale — but a restore-key hit still makes the
-          # reinstall incremental (postinstall outputs like node-pty's
-          # prebuilds/ and esbuild's platform binary survive in place).
-          # The build-bundled install-stamp gate (lock sha + node + npm +
-          # target) is the real guard against stale trees shipping.
-          restore-keys: |
-            node-modules-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-
+          # No partial restore: npm ci deletes both the tree and native outputs.
+          key: desktop-node-deps-v1-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', 'apps/*/package.json', 'ui-tui/package.json', 'ui-tui/packages/*/package.json', 'web/package.json', 'tests-js/package.json', '.npmrc', 'scripts/build/node-deps.mjs') }}
 
-      - name: Cache node-pty prebuilds (postinstall output, emulated-gyp tax on arm64)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Prepare desktop dependencies
+        shell: bash
+        run: node scripts/build/node-deps.mjs --source . --workspace apps/desktop --workspace ui-tui --workspace web --reuse
+
+      # Save before packaging: a later build/signing failure must not lose this work,
+      # and builder mutations must not become the next job's dependency input.
+      - name: Save prepared desktop dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            node_modules/node-pty/prebuilds
-            node_modules/node-pty/build
-          key: node-pty-prebuilds-${{ matrix.target.label }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            node-pty-prebuilds-${{ matrix.target.label }}-
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            web/node_modules
+            tests-js/node_modules
+          key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
 
       - name: Azure login (OIDC)
         if: vars.AZURE_CLIENT_ID != ''
@@ -663,8 +666,9 @@ jobs:
           restore-keys: |
             eb2-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Cache node_modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore prepared desktop dependencies
+        id: node-modules-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             node_modules
@@ -673,25 +677,27 @@ jobs:
             ui-tui/packages/*/node_modules
             web/node_modules
             tests-js/node_modules
-          key: node-modules-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json') }}
-          # npm ci rm -rf's node_modules before installing, so a restore is
-          # never shipped stale — but a restore-key hit still makes the
-          # reinstall incremental (postinstall outputs like node-pty's
-          # prebuilds/ and esbuild's platform binary survive in place).
-          # The build-bundled install-stamp gate (lock sha + node + npm +
-          # target) is the real guard against stale trees shipping.
-          restore-keys: |
-            node-modules-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-
+          # No partial restore: npm ci deletes both the tree and native outputs.
+          key: desktop-node-deps-v1-${{ matrix.target.label }}-node${{ steps.pm.outputs.node-version }}-npm${{ steps.pm.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', 'apps/*/package.json', 'ui-tui/package.json', 'ui-tui/packages/*/package.json', 'web/package.json', 'tests-js/package.json', '.npmrc', 'scripts/build/node-deps.mjs') }}
 
-      - name: Cache node-pty prebuilds (postinstall output)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Prepare desktop dependencies
+        shell: bash
+        run: node scripts/build/node-deps.mjs --source . --workspace apps/desktop --workspace ui-tui --workspace web --reuse
+
+      # Save before packaging: a later build/signing failure must not lose this work,
+      # and builder mutations must not become the next job's dependency input.
+      - name: Save prepared desktop dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            node_modules/node-pty/prebuilds
-            node_modules/node-pty/build
-          key: node-pty-prebuilds-${{ matrix.target.label }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            node-pty-prebuilds-${{ matrix.target.label }}-
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            web/node_modules
+            tests-js/node_modules
+          key: ${{ steps.node-modules-cache.outputs.cache-primary-key }}
 
       # Commit artifacts are downloadable too. Require signing for them,
       # candidates, and published tags before building any payload.

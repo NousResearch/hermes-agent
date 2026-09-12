@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -29,7 +30,7 @@ export function npmCommand({ env = process.env } = {}) {
 }
 
 /** Install the full requested workspace union in one strict, locked operation. */
-export function prepareNodeDependencies({ source, workspaces, env = process.env }) {
+export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false }) {
   source = resolve(source)
   if (!Array.isArray(workspaces) || workspaces.length === 0) {
     throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
@@ -45,7 +46,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env 
       throw new Error(`Unknown or missing locked workspace: ${workspace}`)
     }
     return path
-  }))]
+  }))].sort()
   const [node, npm] = npmCommand({ env })
   const npmVersion = execFileSync(node, [npm, '--version'], { cwd: source, env, encoding: 'utf8' }).trim()
   const { satisfies } = createRequire(npm)('semver')
@@ -53,17 +54,48 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env 
     const range = manifest.engines?.[name]
     if (range && !satisfies(version, range)) throw new Error(`${name} ${version} violates ${range}`)
   }
-  execFileSync(node, [npm, 'ci', '--no-audit', '--no-fund', '--engine-strict', '--include=dev',
+  const args = ['ci', '--no-audit', '--no-fund', '--engine-strict', '--include=dev',
     '--include=optional', '--include-workspace-root=true',
     ...selected.flatMap(workspace => ['--workspace', workspace]),
-  ], { cwd: source, env, stdio: 'inherit' })
+  ]
+  // This receipt certifies dependency preparation, never compiled product freshness.
+  // Keep it inside the cached tree so a clean npm ci also removes the receipt.
+  const receipt = join(source, 'node_modules/.hermes-node-deps')
+  const hiddenLock = join(source, 'node_modules/.package-lock.json')
+  const inputs = createHash('sha256').update(JSON.stringify({
+    node: process.versions.node, npm: npmVersion, platform: process.platform, arch: process.arch, args,
+    config: Object.entries(env).filter(([key]) => /^npm_config_/i.test(key) && !/^npm_config_(cache|offline|prefer_offline)$/i.test(key)).sort(),
+  }))
+  const files = ['package-lock.json', '.npmrc', ...Object.keys(lock.packages)
+    .filter(path => !path.split('/').includes('node_modules'))
+    .map(path => join(path, 'package.json'))].sort()
+  for (const file of files) {
+    inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
+  }
+  const key = inputs.digest('hex')
+  if (reuse && existsSync(receipt) && existsSync(hiddenLock)) {
+    const installed = readFileSync(hiddenLock)
+    const expected = `${key}\n${createHash('sha256').update(installed).digest('hex')}\n`
+    if (readFileSync(receipt, 'utf8') === expected && Object.keys(JSON.parse(installed).packages)
+      .every(path => existsSync(join(source, path)))) {
+      console.log(`node-deps: reusing completed install (${selected.join(', ')})`)
+      return { source, workspaces: selected }
+    }
+  }
+  // npm can fail during validation before deleting node_modules. Invalidate first.
+  rmSync(receipt, { force: true })
+  execFileSync(node, [npm, ...args], { cwd: source, env, stdio: 'inherit' })
+  if (reuse) {
+    writeFileSync(receipt, `${key}\n${createHash('sha256').update(readFileSync(hiddenLock)).digest('hex')}\n`)
+  }
   return { source, workspaces: selected }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const { values } = parseArgs({ options: {
     source: { type: 'string' }, workspace: { type: 'string', multiple: true },
+    reuse: { type: 'boolean', default: false },
   } })
   if (!values.source) throw new Error('--source is required')
-  prepareNodeDependencies({ source: values.source, workspaces: values.workspace })
+  prepareNodeDependencies({ source: values.source, workspaces: values.workspace, reuse: values.reuse })
 }

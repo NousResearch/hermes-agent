@@ -46,8 +46,19 @@ The prepared source needs these inputs:
 
 Request the complete workspace union once. A later, narrower `npm ci` can
 remove dependencies that another product needs. This provider modifies the
-prepared workspace. It does not build a frontend or publish a completion stamp.
+prepared workspace. It does not build a frontend.
 Nix supplies dependencies through `importNpmLock` instead of this command.
+
+`--reuse` opts into reusing a completed dependency install. Desktop bundles use
+this with CI's cached `node_modules` tree. The receipt lives inside that tree
+and matches the lockfile, local package manifests, project npm configuration,
+Node/npm versions, OS/architecture, and exact workspace union. It also checks
+npm's installed-tree lock and the presence of its recorded package directories.
+A missing or mismatched receipt runs a clean `npm ci`; failed installs cannot
+leave a reusable receipt. Omit `--reuse` to force a clean dependency install.
+The receipt does not validate arbitrary edits inside installed packages and
+never skips product compilation. CI saves the prepared tree before packaging
+can mutate it, and before unrelated build/signing failures can discard it.
 
 ## Frontend products
 

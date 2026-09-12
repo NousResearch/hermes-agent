@@ -704,6 +704,100 @@ def test_create_explicit_scratch_ignores_ambient_board_project(
     assert create(**explicit) == ("scratch", None)
     assert create() == (("worktree", project_id) if target_scoped else ("scratch", None))
 
+def test_create_lane_lint_rejects_wrong_lane_assignee(worker_env):
+    """AC1 (t_bc08efc3): a [Bob]-prefixed (build-lane) card must refuse a rodge
+    (review-lane) assignee at mint — card NOT created, error names the mismatch —
+    and accept the lane-matched bob or an explicit assignee_override opt-out."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # 1. Wrong-lane assignee -> hard-fail naming the mismatch; card NOT created.
+    out = json.loads(kt._handle_create({
+        "title": "[Bob] Implement X",
+        "assignee": "rodge",
+    }))
+    assert "error" in out, out
+    err = out["error"]
+    assert "build" in err, err            # names the title lane
+    assert "bob" in err, err              # names the expected owner
+    assert "rodge" in err, err            # names the offending assignee
+    assert "assignee_override" in err, err  # points at the escape hatch
+    conn = kb.connect()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE title LIKE '[Bob] Implement%'"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [], "a mismatched card must not be created"
+
+    # 2. Lane-matched assignee (bob) succeeds.
+    ok = json.loads(kt._handle_create({
+        "title": "[Bob] Implement X",
+        "assignee": "bob",
+    }))
+    assert ok["ok"] is True, ok
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, ok["task_id"])
+    finally:
+        conn.close()
+    assert task is not None
+    assert task.assignee == "bob"
+
+    # 3. Explicit override allows the legitimate cross-lane case.
+    over = json.loads(kt._handle_create({
+        "title": "[Bob] Implement Y",
+        "assignee": "rodge",
+        "assignee_override": True,
+    }))
+    assert over["ok"] is True, over
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, over["task_id"])
+    finally:
+        conn.close()
+    assert task is not None
+    assert task.assignee == "rodge"
+
+
+def test_create_lane_lint_ignores_non_role_assignee_and_unmarked_title(worker_env):
+    """AC1 (t_bc08efc3): the lint never over-fires — a lane title paired with a
+    generic (non-role) assignee, or a title with no lane marker, creates normally."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Lane-shaped title but assignee is not a routed role profile -> no lint.
+    out = json.loads(kt._handle_create({
+        "title": "[Bob] Implement X",
+        "assignee": "engineer",
+    }))
+    assert out["ok"] is True, out
+
+    # Unmarked title, role assignee -> no lint (title implies no lane).
+    out2 = json.loads(kt._handle_create({
+        "title": "child task",
+        "assignee": "rodge",
+    }))
+    assert out2["ok"] is True, out2
+
+    # Verbatim 'assignee_override' false still lints.
+    out3 = json.loads(kt._handle_create({
+        "title": "[Bob] Implement Z",
+        "assignee": "steve-o",
+        "assignee_override": False,
+    }))
+    assert "error" in out3, out3
+    conn = kb.connect()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE title LIKE '[Bob] Implement%'"
+        ).fetchall()
+    finally:
+        conn.close()
+    # Only the one legitimate card created above (the Z+steve-o card was rejected).
+    assert len(rows) == 1, rows
+
 
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb

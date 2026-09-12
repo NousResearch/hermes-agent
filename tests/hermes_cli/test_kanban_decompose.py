@@ -511,6 +511,48 @@ def test_dry_run_fanout_writes_nothing(kanban_home):
     assert len(all_tasks) == 1
 
 
+def test_decompose_role_map_routes_lane_children_deterministically(kanban_home):
+    """AC2 (t_bc08efc3): a lane-shaped child title is routed by the role-map,
+    NOT the LLM's free-text roster string — Implement->bob, Review->rodge,
+    Verify->steve-o — regardless of what the LLM emitted."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    # The LLM mis-emits every assignee to a DIFFERENT lane; the role-map must win.
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "route by lane",
+        "tasks": [
+            {"title": "Implement the widget", "body": "build it",
+             "assignee": "rodge", "parents": []},
+            {"title": "Review the widget diff", "body": "check it",
+             "assignee": "steve-o", "parents": [0]},
+            {"title": "Verify the widget renders", "body": "qa it",
+             "assignee": "bob", "parents": [0]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "bob", "rodge", "steve-o"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me", dry_run=True)
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    plan = outcome.dry_run_plan
+    assert plan is not None and len(plan) == 3
+    assert plan[0]["title"] == "Implement the widget"
+    assert plan[0]["assignee"] == "bob"      # LLM said rodge; role-map wins
+    assert plan[1]["title"] == "Review the widget diff"
+    assert plan[1]["assignee"] == "rodge"    # LLM said steve-o; role-map wins
+    assert plan[2]["title"] == "Verify the widget renders"
+    assert plan[2]["assignee"] == "steve-o"  # LLM said bob; role-map wins
+
+
 def test_dry_run_single_task_writes_nothing(kanban_home):
     """--dry-run on a fanout=false response returns the spec but writes nothing."""
     with kbc.connect() as conn:

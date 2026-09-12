@@ -383,7 +383,22 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing,
         chosen = _normalize_assignee_choice(
             assignee, default_assignee=routing.default_assignee, valid_names=routing.valid_names,
         )
-        if isinstance(assignee, str) and assignee.strip() and assignee.strip() not in routing.valid_names:
+# Deterministic role-map (platform fix-C1, t_bc08efc3): a LANE-shaped
+        # child title (Implement/Build/FIX -> build; Review/Verify/... ) is
+        # routed by the role-map, NEVER by the LLM's free-text roster pick — so
+        # an ``Implement X`` child cannot land on rodge/steve-o. The role-map
+        # profile wins as long as it is an installed profile; otherwise the
+        # existing null/unknown -> default normalization stands.
+        from hermes_cli.kanban_role_map import canonical_assignee_for_title
+
+        _lane_profile = canonical_assignee_for_title(title, valid_names=valid_names)
+        if _lane_profile is not None:
+            chosen = _lane_profile
+        if (
+            isinstance(assignee, str)
+            and assignee.strip()
+            and assignee.strip() not in valid_names
+        ):
             logger.info(
                 "decompose: task %s child %d picked unknown assignee %r — "
                 "routing to default_assignee %r",

@@ -221,6 +221,16 @@ function fakeChild({ code = 0, stdout = '', stderr = '', errorEvent = null, hang
   }
 
   if (hang) {
+    process.nextTick(() => {
+      if (stdout) {
+        child.stdout.emit('data', Buffer.from(stdout))
+      }
+
+      if (stderr) {
+        child.stderr.emit('data', Buffer.from(stderr))
+      }
+    })
+
     return child // never emits close → drives the timeout path
   }
 
@@ -413,6 +423,35 @@ test('open() surfaces a classified auth error', async () => {
     (err: any) => {
       assert.equal(err.kind, SSH_ERROR.AUTH_FAILED)
       assert.match(err.message, /ssh-agent|ssh-add/)
+
+      return true
+    }
+  )
+})
+
+test('open() turns a Tailscale browser-check timeout into safe interactive-auth guidance', async () => {
+  const checkUrl = 'https://login.tailscale.com/a/example-one-time-check'
+
+  const spawnFn = scriptedSpawn(args => {
+    if (args.includes('check')) {
+      return { code: 255 }
+    }
+
+    return {
+      hang: true,
+      stderr: `# Tailscale SSH requires an additional check.\n# To authenticate, visit: ${checkUrl}\n`
+    }
+  })
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d', connectTimeoutMs: 20 })
+
+  await assert.rejects(
+    () => conn.open(),
+    (err: any) => {
+      assert.equal(err.kind, SSH_ERROR.INTERACTIVE_AUTH)
+      assert.match(err.message, /Tailscale SSH requires an interactive browser check/)
+      assert.match(err.message, /ssh me@box true/)
+      assert.doesNotMatch(err.message, /login\.tailscale\.com|example-one-time-check/)
 
       return true
     }

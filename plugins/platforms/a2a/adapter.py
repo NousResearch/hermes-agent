@@ -334,7 +334,9 @@ class A2AAdapter(BasePlatformAdapter):
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
+                with self._pending_lock:
+                    live = set(self._pending)
+                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT, skip_ids=live):
                     logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
                     protocol.metrics.tasks_failed += 1
             except Exception:
@@ -595,15 +597,37 @@ class A2AAdapter(BasePlatformAdapter):
         return state, reply
 
     @staticmethod
-    def _await_future(fut: Future, deadline: float, keepalive, on_timeout: tuple[str, str]) -> tuple[str, str]:
-        """Block until ``fut`` resolves or ``deadline`` passes (-> ``on_timeout``). ``keepalive`` runs
-        every _SSE_KEEPALIVE seconds while waiting; if it raises, the client is gone and we stop."""
+    def _await_future(
+        fut: Future,
+        deadline: float,
+        keepalive,
+        on_timeout: tuple[str, str],
+        *,
+        persist_after_deadline: bool = False,
+    ) -> tuple[str, str]:
+        """Block until ``fut`` resolves. Subscribe/watch may return ``on_timeout`` at the
+        deadline. Inbound ``message/send`` keeps waiting: observation timeout is not
+        TASK_STATE_FAILED (A2A §3.1.3). ``keepalive`` runs every _SSE_KEEPALIVE seconds;
+        if it raises, the client is gone and we stop."""
+        logged_observation_timeout = False
         while True:
+            remaining = deadline - time.time()
+            if keepalive:
+                wait = _SSE_KEEPALIVE
+            elif remaining > 0:
+                wait = remaining
+            else:
+                wait = _SSE_KEEPALIVE if persist_after_deadline else max(0.0, remaining)
             try:
-                return fut.result(timeout=_SSE_KEEPALIVE if keepalive else max(0.0, deadline - time.time()))
+                return fut.result(timeout=wait)
             except FuturesTimeout:
-                if time.time() >= deadline:
+                if time.time() >= deadline and not persist_after_deadline:
                     return on_timeout
+                if persist_after_deadline and remaining <= 0 and not logged_observation_timeout:
+                    logger.info(
+                        "A2A: observation window elapsed; task stays non-terminal until the session replies"
+                    )
+                    logged_observation_timeout = True
                 if keepalive:
                     try:
                         keepalive()
@@ -613,8 +637,13 @@ class A2AAdapter(BasePlatformAdapter):
                 return on_timeout
 
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
-        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
-                                  (protocol.STATE_FAILED, "[agent did not reply in time]"))
+        return self._await_future(
+            pending["future"],
+            pending["started"] + _reply_timeout(),
+            keepalive,
+            (protocol.STATE_FAILED, "[agent did not reply in time]"),
+            persist_after_deadline=True,
+        )
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)

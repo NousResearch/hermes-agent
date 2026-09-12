@@ -498,6 +498,10 @@ class TestTaskStore:
         assert store.get("t-new")["state"] == protocol.STATE_SUBMITTED
         # Second sweep does nothing (already terminal).
         assert store.fail_orphans(timeout_seconds=300) == []
+        store.create("t-live", "c1", "p")
+        store._tasks["t-live"]["created_at"] = time.time() - 600
+        assert store.fail_orphans(timeout_seconds=300, skip_ids={"t-live"}) == []
+        assert store.get("t-live")["state"] == protocol.STATE_SUBMITTED
 
     def test_list_newest_first_with_filters(self):
         store = protocol.TaskStore()

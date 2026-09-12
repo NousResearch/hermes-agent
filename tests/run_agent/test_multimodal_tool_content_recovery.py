@@ -211,6 +211,26 @@ class TestRecoveryEndToEndClassification:
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
         assert result.retryable is True
 
+    def test_commandcode_invalid_input_messages_n_content_classifies(self):
+        """Regression test for #107457: commandcode 400 Invalid input + messages.N.content."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "Error code: 400 - {'error': {'message': 'Invalid input', "
+                "'type': 'invalid_request_error', 'param': 'messages.13.content'}}"
+            ),
+            body={
+                "error": {
+                    "message": "Invalid input",
+                    "type": "invalid_request_error",
+                    "param": "messages.13.content",
+                }
+            },
+        )
+        result = classify_api_error(err, provider="custom", model="deepseek/deepseek-v4.1-flash")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
 
 class TestOpenCodeGoProactiveToolResultDowngrade:
     def _multimodal_result(self, png_b64: str = "iVBORw0KGgoAAAA"):

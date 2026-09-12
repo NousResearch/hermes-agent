@@ -1313,9 +1313,64 @@ class TestMultimodalToolContentUnsupported:
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
         assert result.retryable is True
 
+    def test_commandcode_invalid_input_messages_n_content(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'Invalid input', 'type': 'invalid_request_error', 'param': 'messages.13.content'}}",
+            status_code=400,
+            body={"error": {"message": "Invalid input", "type": "invalid_request_error", "param": "messages.13.content"}},
+        )
+        result = classify_api_error(e, provider="custom", model="deepseek/deepseek-v4.1-flash")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
 
+    def test_commandcode_invalid_input_body_param_without_dump(self):
+        """body.error.param is enough — SDK ``__str__`` sometimes omits the dump."""
+        e = MockAPIError(
+            "Error code: 400",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "Invalid input",
+                    "type": "invalid_request_error",
+                    "param": "messages.151.content",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="custom", model="deepseek/deepseek-v4.1-flash")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
 
+    def test_commandcode_invalid_input_role_param_stays_format_error(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'Invalid input', 'type': 'invalid_request_error', 'param': 'messages.0.role'}}",
+            status_code=400,
+            body={"error": {"message": "Invalid input", "type": "invalid_request_error", "param": "messages.0.role"}},
+        )
+        result = classify_api_error(e, provider="custom", model="deepseek/deepseek-v4.1-flash")
+        assert result.reason == FailoverReason.format_error
 
+    def test_commandcode_invalid_input_tool_call_id_param_stays_format_error(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'Invalid input', 'type': 'invalid_request_error', 'param': 'messages.2.tool_call_id'}}",
+            status_code=400,
+            body={"error": {"message": "Invalid input", "type": "invalid_request_error", "param": "messages.2.tool_call_id"}},
+        )
+        result = classify_api_error(e, provider="custom", model="deepseek/deepseek-v4.1-flash")
+        assert result.reason == FailoverReason.format_error
+
+    def test_bare_invalid_input_stays_format_error(self):
+        e = MockAPIError("Invalid input", status_code=400, body={"error": {"message": "Invalid input"}})
+        result = classify_api_error(e, provider="custom", model="deepseek/deepseek-v4.1-flash")
+        assert result.reason == FailoverReason.format_error
+
+    def test_messages_n_content_without_invalid_input_stays_format_error(self):
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'Bad request', 'type': 'invalid_request_error', 'param': 'messages.13.content'}}",
+            status_code=400,
+            body={"error": {"message": "Bad request", "type": "invalid_request_error", "param": "messages.13.content"}},
+        )
+        result = classify_api_error(e, provider="custom", model="deepseek/deepseek-v4.1-flash")
+        assert result.reason == FailoverReason.format_error
 
     def test_unrelated_400_is_not_misclassified(self):
         """Make sure the patterns don't false-positive on normal 400s."""

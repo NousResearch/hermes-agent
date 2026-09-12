@@ -764,12 +764,64 @@ def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
     return result_fn(**(_V_RATE_LIMIT if transient else _V_BILLING))
 
 
+def _is_messages_n_content_param(param: str) -> bool:
+    """True for OpenAI-compat ``messages.<int>.content`` (not ``.role`` / ``.tool_call_id``)."""
+    p = param.strip().lower()
+    if not (p.startswith("messages.") and p.endswith(".content")):
+        return False
+    mid = p[len("messages."):-len(".content")]
+    return bool(mid) and mid.isdigit()
+
+
+def _body_error_param(body: Any) -> str:
+    """``body.error.param`` (or top-level ``param``); ``_build_error_msg`` does not append it."""
+    if not isinstance(body, dict):
+        return ""
+    err = _error_obj(body)
+    raw = err.get("param") if err.get("param") is not None else body.get("param")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _dump_has_messages_n_content_param(text: str) -> bool:
+    """Scan an SDK dump for ``'param': 'messages.N.content'`` / ``\"param\": \"...\"``."""
+    for prefix in ("'param': '", '"param": "', "'param': \"", '"param": \''):
+        start = 0
+        while True:
+            idx = text.find(prefix, start)
+            if idx < 0:
+                break
+            value = text[idx + len(prefix):]
+            end = 0
+            while end < len(value) and value[end] not in "'\"":
+                end += 1
+            if _is_messages_n_content_param(value[:end]):
+                return True
+            start = idx + 1
+    return False
+
+
+def _is_invalid_input_messages_content(c: "_Ctx") -> bool:
+    """commandcode 400: ``Invalid input`` AND param ``messages.N.content`` (#107457).
+
+    Bare ``invalid input`` stays ``format_error`` — do not OR-match it via
+    ``_MULTIMODAL_TOOL_CONTENT_PATTERNS``. Read ``body.error.param``; the dump
+    path is only a fallback when the SDK ``__str__`` included the envelope.
+    """
+    if "invalid input" not in c.msg:
+        return False
+    if _is_messages_n_content_param(_body_error_param(c.body)):
+        return True
+    return _dump_has_messages_n_content_param(c.msg)
+
+
 def _classify_400(c: _Ctx) -> Verdict:
     """400 Bad Request — image/tool shapes, request-shape rejections, overflow, or generic."""
     msg, code = c.msg, c.code
     verdict = _first_match(msg, _IMAGE_TOOL_RULES)
     if verdict is not None:
         return verdict
+    if _is_invalid_input_messages_content(c):
+        return _V_MULTIMODAL
     # Invalid encrypted reasoning replay blob (OpenAI Responses); before
     # overflow because "encrypted content … could not be verified" trips it.
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (

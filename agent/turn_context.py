@@ -437,6 +437,16 @@ def _publish_runtime_main(agent: Any) -> None:
             )},
             cache_scope=_cache_scope,
         )
+    # Tell the repair-stats collector which model is live for this turn so
+    # repair events can be attributed per model (same binding point as
+    # set_runtime_main above; observability stays strictly best-effort).
+    try:
+        from agent.tool_repair_stats import set_current_model as _set_repair_model
+
+        _set_repair_model(getattr(agent, "model", "") or "")
+    except Exception:
+        pass
+
 
 
 def _refresh_mcp_tools_between_turns(agent: Any) -> None:

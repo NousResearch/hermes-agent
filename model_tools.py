@@ -639,6 +639,15 @@ class _CallIds:
         """Same fields with None -> "" (hook/middleware wire contract)."""
         return {k: v or "" for k, v in asdict(self).items()}
 
+def _try_record_repair(pattern: str, tool_name: str) -> None:
+    """Record a repair observability event.  No-op when stats unavailable."""
+    try:
+        from agent.tool_repair_stats import record_repair, RepairPattern
+
+        record_repair(RepairPattern(pattern), tool_name)
+    except Exception:
+        pass
+
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
     """Derive (status, error_type, error_message) from a tool result for observer hooks."""

@@ -581,6 +581,7 @@ class CLIModalMixin:
         The single-question path below is unchanged. See #18450.
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from hermes_cli.terminal_notify import prompt_body
         from tools.clarify_gateway import resolve_clarify_timeout
 
         if questions:
@@ -601,7 +602,7 @@ class CLIModalMixin:
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
         self._clarify_freetext = is_open_ended  # open-ended → straight to freetext
         self._clarify_multi_base = None
-        self._ring_bell(prompt=True, context="clarify")
+        self._ring_bell(prompt=True, context=prompt_body("clarify", question))
         self._paint_now()
 
         result = self._poll_modal_queue(response_queue, "_clarify_deadline")
@@ -702,6 +703,7 @@ class CLIModalMixin:
         the deadline expires with partial answers; a cancel string passes through unchanged so the
         tool core resolves the batch empty."""
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from hermes_cli.terminal_notify import prompt_body
         from tools.clarify_gateway import resolve_clarify_timeout
 
         timeout = resolve_clarify_timeout(CLI_CONFIG)
@@ -721,7 +723,7 @@ class CLIModalMixin:
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
-        self._ring_bell(prompt=True, context="clarify")
+        self._ring_bell(prompt=True, context=prompt_body("clarify", state["question"]))
         self._paint_now()
 
         result = self._poll_modal_queue(response_queue, "_clarify_deadline")

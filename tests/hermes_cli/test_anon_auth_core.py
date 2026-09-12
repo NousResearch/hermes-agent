@@ -443,6 +443,44 @@ class TestBootstrapIsTheOneCreator:
         assert anon_auth.ensure_portal_identity(explicit=True) is None
         assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
 
+    def test_inventory_probes_run_with_the_imds_probe_silenced_and_restore_it(self, portal, monkeypatch):
+        """The bootstrap runs on every boot, so its ``resolve_provider("auto")`` probes must not
+        pay botocore's EC2 instance-metadata lookup: on a host that silently drops 169.254.169.254
+        the connect burns its full timeout each launch (~8 s measured, #20764). The boto3 chain
+        must be consulted with AWS_EC2_METADATA_DISABLED set, and the environment restored."""
+        import agent.bedrock_adapter as ba
+        seen = []
+
+        def _recording_chain():
+            seen.append(os.environ.get("AWS_EC2_METADATA_DISABLED"))
+            return False
+
+        monkeypatch.setattr(ba, "_boto3_chain_has_credentials", _recording_chain)
+        monkeypatch.delenv("AWS_EC2_METADATA_DISABLED", raising=False)
+        prev = os.environ.get("AWS_EC2_METADATA_DISABLED")  # what the bootstrap must leave in place
+
+        fb = self._fresh()
+        record = fb.run_bootstrap()
+
+        assert seen and all(v == "true" for v in seen), \
+            "the bootstrap's inventory probes must silence the IMDS probe while they run"
+        assert os.environ.get("AWS_EC2_METADATA_DISABLED") == prev, \
+            "the silencing is scoped to the inventory, never the process"
+        assert record.other_providers is False and record.inference_provider == "nous"
+
+    def test_inventory_still_counts_explicit_aws_env_credentials_with_imds_silenced(self, portal, monkeypatch):
+        """Silencing IMDS must not cost the explicit AWS signals: the env-var groups of the
+        boto3 chain resolve without instance metadata, so a host exporting an IAM key pair still
+        counts as carrying its own inference and the mint must not claim ``active_provider``."""
+        monkeypatch.setattr("agent.bedrock_adapter._boto3_chain_has_credentials", lambda: False)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-aws-key-id")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-aws-secret")
+        fb = self._fresh()
+        record = fb.run_bootstrap()
+        assert record.other_providers is True and record.inference_provider == "nous"
+        assert _load_auth_store().get("active_provider") != "nous", \
+            "a mint beside an explicit AWS credential must not hijack inference"
+
 
 class TestIdentityOfRecordIsTheSharedStore:
     def test_stale_profile_guest_adopts_a_newer_shared_account(self, portal, tmp_path):

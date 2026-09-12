@@ -732,13 +732,17 @@ class EmailAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _allow_all_senders() -> bool:
-        """True when the operator opted into any sender (EMAIL_ or GATEWAY_ALLOW_ALL_USERS)."""
-        return (_get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY)
+        """True when the operator opted into any sender (EMAIL_ or GATEWAY_ALLOW_ALL_USERS).
+
+        Both names go through the scoped reader: under multiplex ``os.environ`` is the DEFAULT
+        profile's opt-in, and borrowing it opened every secondary mailbox to any sender."""
+        return any(_get_secret(name, "").strip().lower() in _TRUTHY
+                   for name in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"))
 
     @staticmethod
     def _allowlist_in_effect() -> bool:
         """True when EMAIL_/GATEWAY_ALLOWED_USERS gates access (without one the gateway default-denies, so the spoofable From: grants nothing)."""
-        return bool(_get_secret("EMAIL_ALLOWED_USERS", "").strip() or os.getenv("GATEWAY_ALLOWED_USERS", "").strip())
+        return any(_get_secret(name, "").strip() for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"))
 
     def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
         """Pre-dispatch sender gate: self, automated, allowlist, From: authentication."""

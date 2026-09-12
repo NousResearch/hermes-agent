@@ -92,7 +92,13 @@ _UNCACHED = object()  # compute() result that must not be memoized
 
 
 def _memo(cache_name: str, compute):
-    """Return the cached value under module global ``cache_name``, computing (and storing) it once."""
+    """Return the cached value under module global ``cache_name``, computing (and storing) it once.
+
+    Not consulted under a routed profile (HERMES_HOME override): every memo here is derived from the
+    launch home (its skills tree, its checkout), and the TUI gateway calls these per profile."""
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is not None:
+        return compute()
     cached = globals()[cache_name]
     if cached is not None:
         return cached[0]

@@ -17,6 +17,11 @@ loaded), multi-platform delivery.
 Hardening invariants — each guards a real failure; don't weaken without answering for it:
 - **3-minute hard interrupt** on cron sessions: runaway loops cannot monopolise the scheduler.
 - Catch-up window = half the period, clamped to 120s–2h; 120s grace for missed one-shots.
+- Every recurring occurrence is accounted for: `tick()` advances `next_run_at` BEFORE dispatch
+  (at-most-once across a mid-run crash) and stamps `pending_slot` in the same save; a scan that
+  finds the stamp with a dead owner restores the instant ONCE (`cron/occurrences.py`), the
+  executions ledger's `scheduled_instant` blocks a second fire, `cron.catch_up_missed: false`
+  skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
 - File lock `~/.hermes/cron/.tick.lock` prevents duplicate ticks across processes.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the

@@ -26,7 +26,7 @@ import {
 import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
-import { clearAllTranscriptTails } from '@/store/transcript-tail'
+import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
 // True while a connection switch is mid-flight — a Settings → Gateway apply
@@ -233,7 +233,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // owner, so a survivor from the old backend would sit beside the new one and
   // fail the unique-match lookup that shows "Show earlier".
   clearTranscriptTails()
-  clearAllTranscriptTails()
+  clearTranscriptTailPaging()
 
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.

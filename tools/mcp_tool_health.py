@@ -127,7 +127,7 @@ class MCPServerHealthMixin:
         from tools.registry import registry
         for tool_name in tool_names:
             if registry.get_toolset_for_tool(tool_name) == f"mcp-{self.name}":
-                _registration._deregister_mcp_tool_all_scopes(self.name, tool_name)
+                _registration._deregister_mcp_tool_all_scopes(self, tool_name)
 
     async def _refresh_tools(self):
         """Re-fetch tools on ``tools/list_changed`` and update the registry. The lock serializes rapid-fire

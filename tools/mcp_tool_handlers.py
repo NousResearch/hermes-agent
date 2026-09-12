@@ -41,8 +41,10 @@ _STDIO_OUTCOME_UNCERTAIN_MSG = (
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
-    if (_core._server_trust_levels.get(server_name, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
-            or _core._tool_read_only_hints.get(server_name, {}).get(tool_name) is True):
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key(server_name)
+    if (_core._server_trust_levels.get(key, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
+            or _core._tool_read_only_hints.get(key, {}).get(tool_name) is True):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
@@ -67,8 +69,10 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
     half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown."""
-    failures = _core._server_error_counts.get(server_name, 0)
-    age = time.monotonic() - _core._server_breaker_opened_at.get(server_name, 0.0)
+    from tools.mcp_tool_scope import _resolve_server_key
+    key = _resolve_server_key(server_name)
+    failures = _core._server_error_counts.get(key, 0)
+    age = time.monotonic() - _core._server_breaker_opened_at.get(key, 0.0)
     if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:
         return None
     return tool_error(f"MCP server '{server_name}' is unreachable after {failures} consecutive failures. "
@@ -120,8 +124,9 @@ def _mcp_loop_running() -> bool:
 def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
     """The registered server object when it can be signalled to reconnect, else None.
     With *require_loop*, also None unless the MCP loop is running (nothing to wait on)."""
+    from tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
-        srv = _core._servers.get(server_name)
+        srv = _core._servers.get(_resolve_server_key(server_name))
     ok = srv is not None and hasattr(srv, "_reconnect_event") and (_mcp_loop_running() or not require_loop)
     return srv if ok else None
 
@@ -591,9 +596,12 @@ _make_get_prompt_handler = _make_utility_handler(
 
 def _make_check_fn(server_name: str):
     """Connection-alive check; lazy (schema-cache registered) servers count as available."""
+    from tools.mcp_tool_scope import _resolve_server_key
+
     def _check() -> bool:
         with _core._lock:
-            server = _core._servers.get(server_name)
+            key = _resolve_server_key(server_name)
+            server = _core._servers.get(key)
             return ((server is not None and (server.session is not None or server._is_recycled_stdio()))
-                    or server_name in _core._lazy_server_configs)
+                    or key in _core._lazy_server_configs)
     return _check

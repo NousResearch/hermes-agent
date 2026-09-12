@@ -19,6 +19,7 @@ import {
   activeBots,
   botCanonicalSessionId,
   botRowOwnsWorkspace,
+  botWorkingMood,
   previewKind,
   rosterActivityMatches,
   workerActiveAt
@@ -96,6 +97,18 @@ describe('which bots are working right now', () => {
     row({ last_session: { id: 'b', last_active: secondsAgo(400) }, name: 'scribe' }),
     row({ name: 'analyst' })
   ]
+
+  it('shares source-exact group presence between row mood and the active filter', () => {
+    const local = row({ name: 'default', connectionId: 'local' })
+    const remote = row({ name: 'default', connectionId: 'remote', remoteSource: true })
+    const groupKeys = new Set(['remote::default'])
+    expect(activeBots([local, remote], null, false, NOW, 'local', groupKeys)).toEqual([remote])
+    expect(botWorkingMood(remote, null, false, 'local', NOW, groupKeys)).toBe('think')
+    expect(botWorkingMood(local, null, false, 'local', NOW, groupKeys)).toBe('idle')
+    groupKeys.clear()
+    expect(activeBots([local, remote], null, false, NOW, 'local', groupKeys)).toEqual([])
+    expect(botWorkingMood(remote, null, false, 'local', NOW, groupKeys)).toBe('idle')
+  })
 
   it('counts the focused live turn only for its connection-qualified owner', () => {
     const local = row({ name: 'analyst', connectionId: 'local' })

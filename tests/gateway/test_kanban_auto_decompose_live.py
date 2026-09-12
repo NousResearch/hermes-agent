@@ -11,7 +11,18 @@ from __future__ import annotations
 
 import pytest
 
-from gateway.kanban_watchers_common import _resolve_auto_decompose_settings
+from gateway.kanban_watchers_common import _board_slugs, _resolve_auto_decompose_settings
+
+
+def test_dispatch_board_allowlist_filters_registered_boards():
+    class FakeKanban:
+        DEFAULT_BOARD = "default"
+
+        @staticmethod
+        def list_boards(include_archived=False):
+            return [{"slug": "default"}, {"slug": "shattered-flames-server"}]
+
+    assert _board_slugs(FakeKanban(), ("shattered-flames-server",)) == ["shattered-flames-server"]
 
 
 def test_enabled_by_default_when_key_absent():

@@ -189,6 +189,11 @@ type KanbanMessages = {
   projectHintPre: string
   projectHintCmd: string
   createBoard: string
+  // per-board dispatch overrides (board settings dialog)
+  boardDispatchEnabled: string
+  boardAutoDecomposeEnabled: string
+  boardReviewDispatchEnabled: string
+  boardOverrideHint: string
   // orchestration
   orchestratorProfile: string
   defaultAssignee: string
@@ -402,6 +407,10 @@ export const en: KanbanMessages = {
     'New tasks run in the project’s repo (a worktree per task); each task can still override its workspace at creation. Manage projects with ',
   projectHintCmd: 'hermes project',
   createBoard: 'Create board',
+  boardDispatchEnabled: 'Dispatch tasks on this board',
+  boardAutoDecomposeEnabled: 'Auto-decompose triage tasks on this board',
+  boardReviewDispatchEnabled: 'Auto-dispatch review tasks on this board',
+  boardOverrideHint: 'Off overrides the global switch for this board only. On means this board follows the global setting.',
   orchestratorProfile: 'Orchestrator profile',
   defaultAssignee: 'Default assignee',
   defaultParen: '(default)',
@@ -613,6 +622,10 @@ const ja: KanbanMessages = {
     '新しいタスクはプロジェクトのリポジトリで実行されます（タスクごとに worktree）。各タスクは作成時にワークスペースを上書きできます。プロジェクトの管理は ',
   projectHintCmd: 'hermes project',
   createBoard: 'ボードを作成',
+  boardDispatchEnabled: 'このボードでタスクをディスパッチする',
+  boardAutoDecomposeEnabled: 'このボードでトリアージタスクを自動分解する',
+  boardReviewDispatchEnabled: 'このボードでレビュータスクを自動ディスパッチする',
+  boardOverrideHint: 'オフにするとこのボードだけグローバル設定を上書きします。オンの場合はグローバル設定に従います。',
   orchestratorProfile: 'オーケストレータープロフィール',
   defaultAssignee: 'デフォルトの担当',
   defaultParen: '（既定）',
@@ -822,6 +835,10 @@ const zh: KanbanMessages = {
     '新任务将在项目的仓库中运行（每个任务一个 worktree）；每个任务在创建时仍可覆盖其工作区。管理项目请使用 ',
   projectHintCmd: 'hermes project',
   createBoard: '创建面板',
+  boardDispatchEnabled: '在此面板上分派任务',
+  boardAutoDecomposeEnabled: '在此面板上自动分解分诊任务',
+  boardReviewDispatchEnabled: '在此面板上自动分派审核任务',
+  boardOverrideHint: '关闭仅覆盖此面板的全局开关；开启则跟随全局设置。',
   orchestratorProfile: '编排者配置档',
   defaultAssignee: '默认负责人',
   defaultParen: '（默认）',
@@ -1030,6 +1047,10 @@ const zhHant: KanbanMessages = {
     '新任務將在專案的儲存庫中執行（每個任務一個 worktree）；每個任務在建立時仍可覆寫其工作區。管理專案請使用 ',
   projectHintCmd: 'hermes project',
   createBoard: '建立面板',
+  boardDispatchEnabled: '在此面板上派送任務',
+  boardAutoDecomposeEnabled: '在此面板上自動分解分診任務',
+  boardReviewDispatchEnabled: '在此面板上自動派送審核任務',
+  boardOverrideHint: '關閉僅覆蓋此面板的全域開關；開啟則跟隨全域設定。',
   orchestratorProfile: '編排者設定檔',
   defaultAssignee: '預設負責人',
   defaultParen: '（預設）',

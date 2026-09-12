@@ -140,6 +140,12 @@ export interface BoardMeta {
   /** First-class Project the board is scoped to (id) + resolved name. */
   project_id?: null | string
   project_name?: null | string
+  /** Per-board narrowing-only overrides of the global dispatch/decompose/
+   *  review-dispatch switches. Absent/true = inherit the global setting;
+   *  false = this board is skipped regardless of the global switch. */
+  dispatch_enabled?: boolean
+  auto_decompose_enabled?: boolean
+  review_dispatch_enabled?: boolean
 }
 
 /** POST /boards/{slug}/export — the archive the backend wrote. */

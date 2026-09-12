@@ -110,6 +110,8 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    deploy_deferred: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, running_deploy_id)`` deferred by deploy serialization."""
     parent_gated: list[str] = field(default_factory=list)
     """FLEET: ready task ids skipped this tick because at least one parent was
     not terminal-successful. Left gated (demoted back to ``todo``) and NOT
@@ -1898,10 +1900,24 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, title, assignee FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+
+
+def _running_deploy_id(conn: sqlite3.Connection) -> Optional[str]:
+    """Return the running deploy-shaped task, if any."""
+    from hermes_cli.kanban_decompose import _is_deploy_shaped
+    for row in conn.execute("SELECT id, title FROM tasks WHERE status = 'running'"):
+        if _is_deploy_shaped(row["title"] or ""):
+            return row["id"]
+    return None
+
+
+def _is_deploy_shaped_title(title: str) -> bool:
+    from hermes_cli.kanban_decompose import _is_deploy_shaped
+    return _is_deploy_shaped(title or "")
 
 
 def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
@@ -2019,10 +2035,20 @@ def _dispatch_once_locked(
         model_rules=model_rules,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
+    running_deploy_id = _running_deploy_id(conn)
     spawned = 0
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
+        if running_deploy_id and _is_deploy_shaped_title(row["title"]):
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    _kb._append_event(
+                        conn, row["id"], "deploy_deferred",
+                        {"reason": "deploy_serialization", "running_task": running_deploy_id},
+                    )
+            result.deploy_deferred.append((row["id"], running_deploy_id))
+            continue
         # FLEET: pre-spawn parent-readiness gate. ``recompute_ready`` normally
         # gates promotion, but a racy writer (manual unblock, stale-claim
         # re-release, a parent reopened after a child was promoted) can leave a

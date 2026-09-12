@@ -1403,6 +1403,76 @@ def test_dispatch_max_in_progress_blocks_review_when_at_limit(
     assert review_task.status == "review"
 
 
+# Dispatcher deploy serialization
+# ---------------------------------------------------------------------------
+
+
+def test_ac1_deploy_ready_card_is_deferred_while_deploy_runs(
+    kanban_home, all_assignees_spawnable,
+):
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="deploy fleet", assignee="alice")
+        kb.claim_task(conn, running)
+        deferred = kb.create_task(conn, title="release fleet", assignee="bob")
+        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (deferred,),
+        ).fetchone()
+
+    assert spawns == []
+    assert res.deploy_deferred == [(deferred, running)]
+    assert events[0] == "deploy_deferred"
+    assert "deploy_serialization" in events[1]
+
+
+def test_ac2_non_deploy_card_dispatches_while_deploy_runs(
+    kanban_home, all_assignees_spawnable,
+):
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="deploy fleet", assignee="alice")
+        kb.claim_task(conn, running)
+        normal = kb.create_task(conn, title="update dashboard", assignee="bob")
+        res = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert normal in [item[0] for item in res.spawned]
+    assert spawns == [normal]
+
+
+def test_ac3_deferred_deploy_dispatches_after_running_deploy_terminal(
+    kanban_home, all_assignees_spawnable,
+):
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kbc.connect() as conn:
+        running = kb.create_task(conn, title="deploy fleet", assignee="alice")
+        kb.claim_task(conn, running)
+        deferred = kb.create_task(conn, title="release fleet", assignee="bob")
+        first = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert first.deploy_deferred == [(deferred, running)]
+        kb.block_task(conn, running, reason="finished", kind="operator_hold")
+        second = kbd.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert deferred in [item[0] for item in second.spawned]
+    assert spawns == [deferred]
+
+
 # Dispatcher pre-spawn parent-readiness gate
 # ---------------------------------------------------------------------------
 

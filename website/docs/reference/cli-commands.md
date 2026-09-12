@@ -846,12 +846,17 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--live]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--live` | Run real backend probes, including MCP connections and tool discovery. |
+
+The **MCP Servers** section checks `mcp_servers` in the active profile's `config.yaml`: entry shape, command resolution using the server's effective `PATH`, declared environment values, and HTTP URLs and headers. It skips disabled servers and reports fields to fix without printing configured values. This section does not start servers, connect to them, or change their configuration, including with `--fix`.
+
+Use `hermes doctor --live` when you also want to check MCP connections and tool discovery. Live probes can start configured commands and make network requests.
 
 ## `hermes dump`
 

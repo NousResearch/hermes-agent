@@ -773,11 +773,12 @@ def display_hermes_home() -> str:
 
 def profile_cli_selector() -> str:
     """``-p <name> `` (trailing space) pinning copy-pasteable ``hermes ...`` guidance to the
-    active NAMED profile, else ``""``: a bare ``hermes`` follows the sticky ``active_profile``
-    file, which can name a different database than the one that failed (#105887). A custom
-    home outside the profile tree has no selector (only HERMES_HOME names it)."""
+    active profile, else ``""``: a bare ``hermes`` follows the sticky ``active_profile`` file,
+    which can name a different database than the one that failed (#105887). This includes the
+    default profile. A custom home outside the profile tree has no selector (only HERMES_HOME
+    names it)."""
     name = profile_name_for_home(get_hermes_home())
-    return f"-p {name} " if name and name != "default" else ""
+    return f"-p {name} " if name else ""
 
 
 def secure_parent_dir(path: Path) -> None:

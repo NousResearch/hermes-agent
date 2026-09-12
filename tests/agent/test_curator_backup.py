@@ -52,6 +52,71 @@ def _write_skill(skills_dir: Path, name: str, body: str = "body") -> Path:
 
 
 
+def test_snapshot_skips_absolute_symlink_and_records_manifest(backup_env, tmp_path):
+    """An absolute symlink (e.g. the installed cua-driver link) records an absolute
+    linkname that rollback's extraction filter refuses (#109331). The snapshot must
+    omit the member and record it in the manifest so every successful snapshot is
+    restorable by ``curator rollback`` on the same installation."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    external = tmp_path / "external-driver"
+    external.mkdir()
+    (skills / "cua-driver").symlink_to(external)  # absolute target
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+
+    with tarfile.open(snap / "skills.tar.gz", "r:gz") as tf:
+        names = tf.getnames()
+    assert "alpha/SKILL.md" in names
+    assert "cua-driver" not in names
+
+    manifest = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["skipped_absolute_links"] == ["cua-driver"]
+
+
+def test_snapshot_with_absolute_symlink_round_trips_through_rollback(backup_env, tmp_path):
+    """End-to-end regression: a snapshot created on an installation whose live skills
+    tree contains an absolute symlink must pass rollback validation unchanged."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    external = tmp_path / "external-driver"
+    external.mkdir()
+    (skills / "cua-driver").symlink_to(external)
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+
+    _write_skill(skills, "gamma")  # diverge the live tree after the snapshot
+    ok, msg, _ = cb.rollback(backup_id=snap.name)
+    assert ok, msg
+
+    assert (skills / "alpha" / "SKILL.md").exists()
+    assert not (skills / "gamma").exists()
+    assert not (skills / "cua-driver").exists()  # skipped at backup time, recorded in manifest
+
+
+def test_snapshot_keeps_relative_symlink_member(backup_env):
+    """Only absolute link targets are skipped; an in-tree relative symlink is a
+    legitimate skills-tree member and must keep being archived."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    (skills / "rel-link").symlink_to("alpha")  # relative target
+
+    snap = cb.snapshot_skills(reason="manual")
+    assert snap is not None
+
+    with tarfile.open(snap / "skills.tar.gz", "r:gz") as tf:
+        names = tf.getnames()
+    assert "rel-link" in names
+
+    manifest = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert "skipped_absolute_links" not in manifest
+
+
 def test_snapshot_uniquifies_when_same_second(backup_env, monkeypatch):
     """Two snapshots in the same wallclock second must not clobber each
     other. The module appends a counter to the second snapshot's id."""

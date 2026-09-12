@@ -107,6 +107,13 @@ def get_keep() -> int:
 
 
 # --- Snapshot ---
+def _is_absolute_link_target(linkname: str) -> bool:
+    """True when a symlink's recorded target is absolute: POSIX ``/``, a Windows drive
+    letter (``C:\\...``), or a UNC path (``\\\\server\\share``). Rollback's tarfile
+    ``"data"`` extraction filter refuses such links, so snapshots must not archive them."""
+    return linkname.startswith("/") or linkname.startswith("\\\\") or (len(linkname) >= 2 and linkname[1] == ":")
+
+
 def _count_skill_files(base: Path) -> int:
     try:
         return sum(1 for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p))
@@ -114,7 +121,8 @@ def _count_skill_files(base: Path) -> int:
         return 0
 
 
-def _write_manifest(dest: Path, reason: str, archive_path: Path, skills_counted: int, cron_info: Dict[str, Any]) -> None:
+def _write_manifest(dest: Path, reason: str, archive_path: Path, skills_counted: int, cron_info: Dict[str, Any],
+                    skipped_absolute_links: Optional[List[str]] = None) -> None:
     cron_jobs: Dict[str, Any] = {"backed_up": bool(cron_info.get("backed_up", False)), "jobs_count": int(cron_info.get("jobs_count", 0))}
     if not cron_info.get("backed_up"):
         cron_jobs["reason"] = cron_info.get("reason", "not captured")
@@ -122,6 +130,8 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path, skills_counted:
         cron_jobs["parse_warning"] = cron_info["parse_warning"]
     manifest = {"id": dest.name, "reason": reason, "created_at": datetime.now(timezone.utc).isoformat(), "archive": archive_path.name,
                 "archive_bytes": archive_path.stat().st_size, "skill_files": skills_counted, "cron_jobs": cron_jobs}
+    if skipped_absolute_links:
+        manifest["skipped_absolute_links"] = skipped_absolute_links
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -155,15 +165,28 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         return None
 
     archive = dest / _ARCHIVE_NAME
+    skipped_absolute_links: List[str] = []
+
+    def _snapshot_member(ti: tarfile.TarInfo):
+        # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested _EXCLUDE_TOP_LEVEL paths too.
+        if any(p in _EXCLUDE_TOP_LEVEL for p in Path(ti.name).parts):
+            return None
+        # An absolute symlink records an absolute linkname, which rollback's extraction filter
+        # (tarfile "data") refuses — a snapshot that cannot be restored must not be reported as
+        # success. Skip the link member and record it in the manifest instead (#109331).
+        if ti.issym() and _is_absolute_link_target(ti.linkname):
+            skipped_absolute_links.append(ti.name)
+            return None
+        return ti
+
     try:
         with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
             for entry in sorted(skills.iterdir()):
                 if entry.name not in _EXCLUDE_TOP_LEVEL:
-                    # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested _EXCLUDE_TOP_LEVEL paths too.
-                    tf.add(str(entry), arcname=entry.name, recursive=True,
-                           filter=lambda ti: None if any(p in _EXCLUDE_TOP_LEVEL for p in Path(ti.name).parts) else ti)
+                    tf.add(str(entry), arcname=entry.name, recursive=True, filter=_snapshot_member)
         # Cron capture is additive and never fails the snapshot; the manifest records whether it happened so rollback can say "no cron data".
-        _write_manifest(dest, reason, archive, _count_skill_files(skills), _backup_cron_jobs_into(dest))
+        _write_manifest(dest, reason, archive, _count_skill_files(skills), _backup_cron_jobs_into(dest),
+                        skipped_absolute_links=skipped_absolute_links)
     except (OSError, tarfile.TarError) as e:
         logger.debug("Curator snapshot failed: %s", e, exc_info=True)
         shutil.rmtree(dest, ignore_errors=True)  # clean up partial snapshot

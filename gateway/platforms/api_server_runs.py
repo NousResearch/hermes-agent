@@ -247,23 +247,25 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
 
 def _resolve_conversation_history(
     self, body: dict, raw_input: Any, *, _openai_error
-) -> "tuple[List[Dict[str, str]], Any, Any, web.Response | None]":
+) -> "tuple[List[Dict[str, Any]], Any, Any, web.Response | None]":
     """Return ``(history, instructions, stored_session_id, error)``; precedence:
     ``conversation_history`` > ``previous_response_id`` chain > all-but-last ``input`` messages."""
+    from gateway.platforms.api_server import _multimodal_validation_error
+    from gateway.platforms.api_server_openai_routes import (
+        _ResponsesInputItemError, _parse_responses_input_items)
     instructions = body.get("instructions")
     previous_response_id = body.get("previous_response_id")
-    conversation_history: List[Dict[str, str]] = []
+    conversation_history: List[Dict[str, Any]] = []
     raw_history = body.get("conversation_history")
     if raw_history:
         if not isinstance(raw_history, list):
             return [], instructions, None, _json_error(
                 _openai_error, "'conversation_history' must be an array of message objects", status=400)
-        for i, entry in enumerate(raw_history):
-            if not isinstance(entry, dict) or {"role", "content"} - set(entry):
-                return [], instructions, None, _json_error(
-                    _openai_error, f"conversation_history[{i}] must have 'role' and 'content' fields",
-                    status=400)
-            conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+        try:
+            conversation_history = _parse_responses_input_items(raw_history)
+        except _ResponsesInputItemError as exc:
+            return [], instructions, None, _multimodal_validation_error(
+                exc.original, param=exc.param("conversation_history"))
         if previous_response_id:
             logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
     stored_session_id = None
@@ -275,13 +277,10 @@ def _resolve_conversation_history(
             if instructions is None:
                 instructions = stored.get("instructions")
     if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
-        for msg in raw_input[:-1]:
-            if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                content = msg["content"]
-                if isinstance(content, list):  # flatten multi-part content blocks to text
-                    content = " ".join(p.get("text", "") for p in content
-                                       if isinstance(p, dict) and p.get("type") == "text")
-                conversation_history.append({"role": msg["role"], "content": str(content)})
+        try:
+            conversation_history = _parse_responses_input_items(raw_input[:-1])
+        except _ResponsesInputItemError as exc:
+            return [], instructions, None, _multimodal_validation_error(exc.original, param=exc.param("input"))
     return conversation_history, instructions, stored_session_id, None
 
 
@@ -407,12 +406,15 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     raw_input = body.get("input")
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
-    if isinstance(raw_input, str):
-        user_message = raw_input
-    else:
-        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
-    if not user_message:
-        return _json_error(_openai_error, "No user message found in input", status=400)
+    from gateway.platforms.api_server_openai_routes import _ResponsesInputItemError, _parse_responses_input_items
+    last_index = len(raw_input) - 1 if isinstance(raw_input, list) else 0
+    try:
+        parsed = _parse_responses_input_items([raw_input[last_index] if isinstance(raw_input, list) else raw_input])
+    except _ResponsesInputItemError as exc:
+        return _api_server._multimodal_validation_error(exc.original, param=f"input[{last_index}].{exc.field}")
+    if not parsed or parsed[-1].get("role") != "user":
+        return _json_error(_openai_error, "'input' must end with a user message", status=400)
+    user_message = parsed[-1]["content"]
     try:
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:

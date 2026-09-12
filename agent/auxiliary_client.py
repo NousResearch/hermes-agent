@@ -1364,7 +1364,13 @@ class _CodexCompletionsAdapter:
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=is_copilot, native_compaction_eligible=False
+            replay_messages, is_github_responses=is_copilot,
+            is_azure_foundry=(
+                str(_runtime_main_value("provider") or "").strip().lower() == "azure-foundry"
+                or base_url_host_matches(host, "services.ai.azure.com")
+                or base_url_host_matches(host, "openai.azure.com")
+            ),
+            native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.

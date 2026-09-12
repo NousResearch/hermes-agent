@@ -141,7 +141,8 @@ BODY_OWNER_RE = re.compile(
 
 
 def _row(con, sql, args=()):
-    return con.execute(sql, args).fetchone()
+    r = con.execute(sql, args).fetchone()
+    return dict(r) if r is not None else None
 
 
 def mint_assignee(con, task_id, payload):
@@ -294,7 +295,7 @@ def actionable(con, c):
         # a card already parked as operator_hold / needs_input at mint is not a
         # NEW routing defect to re-route — someone already holds it for review.
         row = _row(con, "SELECT block_kind FROM tasks WHERE id=?", (c["id"],))
-        if row and row[0] in ("operator_hold", "card_defect", "needs_input", "capability"):
+        if row and row["block_kind"] in ("operator_hold", "card_defect", "needs_input", "capability"):
             return False
     rr = _row(con, "SELECT COUNT(*) n FROM task_runs WHERE task_id=? AND outcome IN ('completed','done')", (c["id"],))
     if rr and rr["n"]:
@@ -304,18 +305,62 @@ def actionable(con, c):
 
 def already_flagged(con, c):
     """True iff a prior run posted the [routing-audit] mismatch comment."""
-    return bool(_row(con, "SELECT COUNT(*) n FROM task_comments WHERE task_id=? AND body LIKE '%[routing-audit] mismatch%'", (c["id"],)).get("n"))
+    row = _row(con, "SELECT COUNT(*) n FROM task_comments WHERE task_id=? AND body LIKE '%[routing-audit] mismatch%'", (c["id"],))
+    return bool(row and row.get("n"))
 
 
-def apply_actions(con, flags, dry_run=True):
-    """Comment + block each actionable flag (no-op for dry-run/live cron)."""
+def _post_comment(con, c):
+    """Insert the [routing-audit] mismatch comment (author = this watchdog)."""
+    body = (
+        f"## [routing-audit] mismatch\n\n"
+        f"**Expected owner:** {c['expected']} ({c['lane']}-lane)  \n"
+        f"**Mint assignee:** {c['mint']}  \n"
+        f"**Reason:** {c['reason']}  \n"
+        f"\nFlagged by the daily assignee-mismatch auditor. Re-routing is the PM's "
+        f"(Jobsy's) call — this card is **not** self-corrected."
+    )
+    con.execute(
+        "INSERT INTO task_comments(task_id, author, body, created_at) VALUES(?,?,?,?)",
+        (c["id"], "assignee-mismatch-watch", body, int(time.time())),
+    )
+
+
+def _block(con, c):
+    """Block the card kind=needs_input so it surfaces for the PM to re-route.
+
+    Mirrors the lifecycle's public block writes: set tasks.block_kind, move the
+    row to status 'blocked', and append a 'blocked' task_event. Idempotent guard
+    lives in the caller (already_flagged / actionable)."""
+    now = int(time.time())
+    con.execute("UPDATE tasks SET block_kind='needs_input', status='blocked' WHERE id=?",
+                (c["id"],))
+    con.execute(
+        "INSERT INTO task_events(task_id, kind, payload, created_at) VALUES(?,?,?,?)",
+        (c["id"], "blocked",
+         json.dumps({"reason": c["reason"], "kind": "needs_input",
+                     "recurrences": 0, "source_status": c["status"],
+                     "by": "assignee-mismatch-watch"}),
+         now),
+    )
+
+
+def apply_actions(con, flags, commit=True):
+    """Comment + block each actionable mismatch. Returns the list acted on.
+
+    Idempotent: a card already carrying the [routing-audit] mismatch marker is
+    skipped, so a daily re-scan never duplicates a flag. Only actionable cards
+    (not done/archived, nothing ran, not already held) are touched."""
     acted = []
     for c in flags:
         if not actionable(con, c):
             continue
         if already_flagged(con, c):
             continue
+        _post_comment(con, c)
+        _block(con, c)
         acted.append(c)
+    if commit and acted:
+        con.commit()
     return acted
 
 
@@ -339,7 +384,8 @@ def render_table(flags, gaps, show_headers=True):
 
 
 def run(args):
-    con = sqlite3.connect(f"file:{KANBAN_DB}?mode=ro", uri=True)
+    # --apply needs write access (post comment + block); default is read-only.
+    con = sqlite3.connect(KANBAN_DB if args.apply else f"file:{KANBAN_DB}?mode=ro", uri=not args.apply)
     con.row_factory = sqlite3.Row
     flags, gaps = scan(con, args.days)
     show_gaps = args.audit or args.gap
@@ -349,10 +395,10 @@ def run(args):
         acted = apply_actions(con, flags)
         con.close()
         if acted:
-            print(f"[routing-audit] {len(acted)} actionable mismatches NOT flagged here —"
-                  f" this scanner is read-only; re-routing is Jobsy's call. Full table:\n{body}")
+            print(f"[routing-audit] flagged+blocked {len(acted)} actionable mismatch(es) "
+                  f"for Jobsy to re-route. Full table:\n{body}")
         else:
-            print(body or "no actionable mismatches")
+            print(body or "no actionable mismatches (all flags already done/archived/held)")
         return body, acted
 
     con.close()
@@ -453,7 +499,10 @@ def main(argv=None):
     ap.add_argument("--days", type=int, default=1, help="window in days (default 1, cron daily)")
     ap.add_argument("--audit", action="store_true", help="print full mismatch table always")
     ap.add_argument("--gap", action="store_true", help="also report auto-decomposer gap cards")
-    ap.add_argument("--apply", action="store_true", help="comment+block actionable flags (default report-only)")
+    ap.add_argument("--apply", dest="apply", action="store_true", default=True,
+                    help="comment+block actionable flags (default ON for the watchdog; use --no-apply to only report)")
+    ap.add_argument("--no-apply", dest="apply", action="store_false",
+                    help="report-only: never mutate cards")
     ap.add_argument("--selftest", action="store_true", help="run self-test fixtures and exit")
     args = ap.parse_args(argv)
 
@@ -462,7 +511,7 @@ def main(argv=None):
         print(msg)
         return 0 if ok else 1
 
-    body, _ = run(args)
+    body, acted = run(args)
     if args.audit:
         print(body or "[routing-audit] no mismatches in window")
     return 0

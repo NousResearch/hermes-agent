@@ -35,7 +35,7 @@ def db(tmp_path):
         CREATE TABLE task_runs(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
             profile TEXT, outcome TEXT, summary TEXT);
         CREATE TABLE task_comments(id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT,
-            body TEXT, created_at INTEGER);
+            author TEXT, body TEXT, created_at INTEGER);
     """)
     yield con
     con.close()
@@ -93,3 +93,25 @@ def test_ac3_auto_decomposer_gap_never_flagged(db):
 def test_selftest_passes():
     ok, msg = aw.run_selftest()
     assert ok, msg
+
+
+def test_apply_blocks_actionable_and_is_idempotent(db):
+    """A live (todo, never-run) build-lane->rodge card is commented+blocked ONCE;
+    a second apply run is a no-op (no duplicate comment)."""
+    mint(db, "t_live", "[Bob] Implement live-flag check", '{"assignee": "rodge"}')
+    flags, _ = aw.scan(db, 30)
+    acted = aw.apply_actions(db, flags, commit=True)
+
+    assert len(acted) == 1 and acted[0]["id"] == "t_live"
+    row = db.execute("SELECT status, block_kind FROM tasks WHERE id='t_live'").fetchone()
+    assert row["status"] == "blocked" and row["block_kind"] == "needs_input"
+    n = db.execute("SELECT COUNT(*) n FROM task_comments WHERE task_id='t_live'").fetchone()["n"]
+    assert n == 1
+    n_ev = db.execute("SELECT COUNT(*) n FROM task_events WHERE task_id='t_live' AND kind='blocked'").fetchone()["n"]
+    assert n_ev == 1
+
+    # idempotent: already flagged => skipped
+    acted2 = aw.apply_actions(db, flags, commit=True)
+    assert acted2 == []
+    n2 = db.execute("SELECT COUNT(*) n FROM task_comments WHERE task_id='t_live'").fetchone()["n"]
+    assert n2 == 1

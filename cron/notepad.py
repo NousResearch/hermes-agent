@@ -74,6 +74,9 @@ def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
     _validate(job_id, key, value)
     now = _hermes_now().isoformat()
     with _transaction() as conn:
+        # The size check and write must serialize across CLI processes too;
+        # a SELECT alone does not start sqlite3's implicit transaction.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """SELECT COALESCE(SUM(LENGTH(CAST(key AS BLOB))
                  + LENGTH(CAST(value AS BLOB))), 0)

@@ -61,6 +61,13 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
     return isinstance(exp, (int, float)) and float(exp) <= (time.time() + max(0, int(skew_seconds)))
 
 
+def _codex_access_token_looks_usable(access_token: Any) -> bool:
+    """Return True when a Codex access token has JWT structure and an exp claim."""
+    claims = _decode_jwt_claims(access_token)
+    exp = claims.get("exp")
+    return isinstance(exp, (int, float))
+
+
 def _codex_base_url() -> str:
     return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
 
@@ -394,6 +401,15 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         tokens = json.loads(auth_path.read_text(encoding="utf-8-sig")).get("tokens")
         if not (isinstance(tokens, dict) and tokens.get("access_token")
                 and tokens.get("refresh_token")):
+            return None
+        # Real Codex CLI access tokens are JWTs with an exp claim. A placeholder or
+        # non-JWT string would pass the expiring check (no claims → "not expiring")
+        # and get persisted as working credentials.
+        if not _codex_access_token_looks_usable(tokens["access_token"]):
+            logger.debug(
+                "Codex CLI tokens at %s are not importable — access_token is not a JWT with exp.",
+                auth_path,
+            )
             return None
         # Importing stale tokens that can't be refreshed would leave the user with
         # "Login successful!" but no working credentials.

@@ -322,6 +322,11 @@ so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Direct manipulation & performance
 
+Double clicking a pane sash distributes the visible flexible tracks in that
+split evenly, subject to their size constraints. Fixed tracks return to their
+declared sizes. Hidden and minimized tracks retain their state; nested split
+weights and sizes on the other axis stay independent. The result persists.
+
 The app should feel instant under real load — long transcripts, several panes,
 live streams. Design toward that:
 

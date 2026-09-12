@@ -964,6 +964,7 @@ export async function requestGatewayForProfile<T>(
   timeoutMs?: number,
   signal?: AbortSignal
 ): Promise<T> {
+  await ensureGatewayForProfile(profile)
   const route = await gatewayForProfile(profile, true)
 
   try {

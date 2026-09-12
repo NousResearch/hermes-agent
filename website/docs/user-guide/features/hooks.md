@@ -459,6 +459,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+| `pre_compression` | Observer | Immediately before context compression discards old messages, while the full pre-compression transcript is still available; return ignored. | `messages` (snapshot), `session_id`, `platform`, `compression_count`, `in_place` | Full pre-compression transcript snapshot. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
@@ -1039,6 +1040,28 @@ def my_callback(session_id: str, platform: str, **kwargs):
 **Return value:** Ignored.
 
 **Use cases:** Reset per-session caches keyed by `session_id`, emit "session rotated" analytics, prime a fresh state bucket.
+
+---
+
+### `pre_compression`
+
+Fires once immediately before context compression discards old messages, while the complete pre-compression transcript is still available. This lets plugins capture, journal, or persist about-to-be-summarized conversation history before compression compacts it.
+
+**Type:** Observer (return value is ignored).
+
+**Payload:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `messages` | `list` | Snapshot of the full pre-compression message history. Must not be mutated by plugins. |
+| `session_id` | `str` | Active session ID. |
+| `platform` | `str` | Messaging platform or CLI/TUI surface. |
+| `compression_count` | `int` | Current compression count for the session. |
+| `in_place` | `bool` | Whether compaction is occurring in-place or via session rotation. |
+
+**Return value:** Ignored.
+
+**Use cases:** Archiving or journaling full transcripts prior to LLM summarization, context-loss auditing, external memory sync.
 
 ---
 

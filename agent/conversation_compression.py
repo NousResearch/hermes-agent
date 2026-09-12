@@ -3423,6 +3423,27 @@ def _run_summary_phase(
             bypass_cooldown=bypass_cooldown,
         )
         messages_before_compression = copy.deepcopy(messages)
+
+        # Notify plugins before compression discards context, so they can
+        # capture or journal the full pre-compression transcript. Fires AFTER
+        # the memory provider's on_pre_compress and snapshot capture, but BEFORE
+        # compress_fn runs, so `messages` is still the complete, unsummarised history.
+        # Observer-only: return values are ignored.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            _invoke_hook(
+                "pre_compression",
+                messages=copy.deepcopy(messages_before_compression),
+                session_id=agent.session_id,
+                platform=getattr(agent, "platform", "") or "",
+                compression_count=getattr(
+                    agent.context_compressor, "compression_count", 0
+                ),
+                in_place=in_place,
+            )
+        except Exception as _hook_exc:
+            logger.debug("pre_compression hook failed: %s", _hook_exc)
         _activity_heartbeat = _CompressionActivityHeartbeat(
             agent, commit_fence=commit_fence, emit_client_status=lease.status_emitted,
         ).start()

@@ -94,6 +94,7 @@ Session hooks describe conversation boundaries and resets:
 | `on_session_end` | A `run_conversation` call ends, including interrupted or incomplete turns. |
 | `on_session_finalize` | CLI or gateway tears down an active session identity. |
 | `on_session_reset` | CLI or gateway moves from an old session identity to a new one. |
+| `pre_compression` | Context compression is about to run and discard/summarize messages. |
 
 Common fields include `session_id`, `completed`, `interrupted`, `reason`,
 `old_session_id`, and `new_session_id` where available.

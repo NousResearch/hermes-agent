@@ -94,3 +94,50 @@ def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch)
     with contextlib.redirect_stdout(buf):
         cr.cron_status()
     assert "NOT fire" not in buf.getvalue() and "multiplexer" in buf.getvalue()
+
+
+def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):
+    """`/api/status?profile=X` and `/api/messaging/platforms?profile=X` share this ladder: a served
+    profile has no gateway.pid/gateway_state.json, so without the multiplexer rung the dashboard said
+    "stopped" while `hermes -p X status` said running. Alpha's `<X>:<platform>` entries project as its own."""
+    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    (served_root / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "hermes_home": str(served_root), "gateway_state": "running",
+        "served_profiles": ["default", "coder"],
+        "platforms": {"api_server": {"state": "connected"}, "coder:telegram": {"state": "connected"}}}))
+    coder = served_root / "profiles" / "coder"
+    live = resolve_gateway_liveness(profile_dir=coder, health_probe=None, use_cache=False)
+    assert live.running is True and live.pid == os.getpid() and live.source == "multiplexer"
+    assert profile_platforms_from_multiplexer(live.runtime, "coder") == {"telegram": {"state": "connected"}}
+    # An unserved profile keeps the historical "stopped" answer.
+    other = resolve_gateway_liveness(profile_dir=served_root / "profiles" / "other", health_probe=None, use_cache=False)
+    assert other.running is False
+
+
+def test_dashboard_lifecycle_verbs_target_the_multiplexer(served_root, monkeypatch):
+    """`gateway restart` for a served profile restarts the multiplexer (a `-p X` child only exits 78 into
+    the action log); `start`/`stop` refuse; a profile with its own gateway is managed normally."""
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
+    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
+    # This process's own HERMES_HOME is coder's; the restart child must still run under the DEFAULT
+    # home (the multiplexer's) — a bare `gateway restart` here would inherit coder's home and exit 78.
+    restart = _gateway_subcommand("coder", "restart")
+    assert restart[-2:] == ["gateway", "restart"] and "coder" not in restart
+    assert _profile_action_environment(restart)["HERMES_HOME"] == str(served_root)
+    assert multiplexed_profile_refusal("coder", "stop") and multiplexed_profile_refusal("coder", "start")
+    assert _gateway_subcommand("other", "restart") == ["-p", "other", "gateway", "restart"]
+    assert multiplexed_profile_refusal("other", "stop") is None
+    # coder started its own gateway with --force: it is that gateway the verbs address.
+    monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: True)
+    assert _gateway_subcommand("coder", "restart") == ["-p", "coder", "gateway", "restart"]
+    assert multiplexed_profile_refusal("coder", "stop") is None
+
+
+def test_cli_stop_refuses_for_a_served_profile_without_its_own_gateway(served_root, monkeypatch):
+    import hermes_cli.gateway as gw
+    monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
+    with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
+        gw._cmd_stop(argparse.Namespace(system=False, all=False))
+    assert exc.value.code == gw.GATEWAY_FATAL_CONFIG_EXIT_CODE

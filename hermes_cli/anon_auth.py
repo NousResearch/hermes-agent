@@ -284,7 +284,28 @@ def _mint_locked(
 
 # Per-process memo: one failed mint is enough for a process (a 429 or a closed gate must not be hit
 # twice); ``clear_dead_guest`` resets it because a retired credential is a reason to mint again.
+# The bool is the unscoped (launch profile) slot; routed multiplex profiles each get their own entry
+# in the set — profile A's 429 must not stop profile B from ever getting an identity.
 _mint_failed = False
+_mint_failed_homes: set[str] = set()
+
+
+def _mint_failed_for_profile() -> bool:
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _mint_failed
+    return hermes_home_key() in _mint_failed_homes
+
+
+def _set_mint_failed(failed: bool) -> None:
+    global _mint_failed
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        _mint_failed = failed
+    elif failed:
+        _mint_failed_homes.add(hermes_home_key())
+    else:
+        _mint_failed_homes.discard(hermes_home_key())
 
 
 def _reconcile_and_provision(*, timeout_seconds: float, carries_inference: bool = True) -> Optional[Dict[str, Any]]:
@@ -346,16 +367,15 @@ def ensure_portal_identity(
     """
     if not explicit:
         raise ValueError("ensure_portal_identity: only explicit creators may call this (explicit=True)")
-    global _mint_failed
     if not guest_enabled():
         return None
-    if _mint_failed and not current_nous_state():
-        return None  # this process already tried and failed; do not hammer the portal
+    if _mint_failed_for_profile() and not current_nous_state():
+        return None  # this profile already tried and failed in this process; do not hammer the portal
     try:
         return _reconcile_and_provision(
             timeout_seconds=timeout_seconds, carries_inference=carries_inference)
     except Exception:
-        _mint_failed = True
+        _set_mint_failed(True)
         raise
 
 
@@ -401,8 +421,7 @@ def clear_dead_guest(reason: str, *, dead_token: Optional[str] = None) -> None:
             shared = _read_shared_nous_state()
             if token and is_guest_state(shared) and shared.get("anon_token") == token:
                 _clear_shared_nous_state(reason)
-    global _mint_failed
-    _mint_failed = False
+    _set_mint_failed(False)
     logger.info("Nous free-tier identity retired (%s); a new one is set up on next use", reason)
 
 

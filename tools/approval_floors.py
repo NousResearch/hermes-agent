@@ -195,7 +195,7 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
     if not command or _has_allowlist_shell_operator(command):
         return False
     with _a._lock:
-        patterns = tuple(_a._permanent_approved)
+        patterns = tuple(_a._permanent_set())
     for pattern in patterns:
         pattern = pattern.strip() if isinstance(pattern, str) else ""
         if pattern and (command == pattern or (any(ch in pattern for ch in "*?[")

@@ -36,6 +36,51 @@ def test_gateway_trust_env_reads_config(tmp_path, monkeypatch, yaml_body, expect
     assert gw_base.resolve_proxy_url("X_PLATFORM_PROXY") == "http://127.0.0.1:1080"
 
 
+class TestResolveProxyUrlMultiplexScope:
+    """A secondary multiplex profile's own TELEGRAM_PROXY/DISCORD_PROXY/etc. must gate its
+    adapter, not the default profile's YAML-to-env bridge output sitting in the shared
+    process's os.environ (the #72348 class, applied to this shared chokepoint used by
+    Telegram, Discord, Mattermost, Matrix, SMS, and Slack)."""
+
+    def test_scoped_profile_uses_its_own_value(self, monkeypatch):
+        from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+        monkeypatch.setenv("DISCORD_PROXY", "http://default-profile-proxy:8080")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+
+        set_multiplex_active(True)
+        token = set_secret_scope({"DISCORD_PROXY": "http://secondary-profile-proxy:9090"})
+        try:
+            assert gw_base.resolve_proxy_url("DISCORD_PROXY") == "http://secondary-profile-proxy:9090"
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+    def test_scoped_profile_without_own_value_does_not_borrow_default(self, monkeypatch):
+        from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+
+        monkeypatch.setenv("DISCORD_PROXY", "http://default-profile-proxy:8080")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+
+        set_multiplex_active(True)
+        token = set_secret_scope({})
+        try:
+            assert gw_base.resolve_proxy_url("DISCORD_PROXY") is None
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+    def test_unscoped_default_profile_still_reads_env(self, monkeypatch):
+        """Control: outside multiplex (or the default profile), the legacy env read is
+        unchanged."""
+        monkeypatch.setenv("DISCORD_PROXY", "http://default-profile-proxy:8080")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        assert gw_base.resolve_proxy_url("DISCORD_PROXY") == "http://default-profile-proxy:8080"
+
+
 def test_no_bare_trust_env_literal_in_adapters():
     """Every aiohttp session in gateway/ + plugins/platforms/ must go through gateway_trust_env()."""
     bare = re.compile(r"trust_env\s*=\s*(True|False)\b")

@@ -23,6 +23,26 @@ _PREVIEW_SCAFFOLD_WINDOW = 400
 _PREVIEW_MAX_CHARS = 60
 
 
+def routed_sessions_setting(key: str, env_var: str) -> Any:
+    """``sessions.<key>`` for the profile whose state.db this process is touching.
+
+    ``gateway/run.py`` bridges the LAUNCH profile's ``sessions.*`` into ``env_var`` (the cross-process
+    carrier CLI/cron children read). Under a multiplexer a routed turn runs with a HERMES_HOME override
+    and that env slot holds the default profile's value, so a served profile with different
+    ``sessions.*`` settings must read its own config.yaml. Unscoped: the env bridge, as before.
+    Returns ``None`` when neither source sets the key.
+    """
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override():
+        try:
+            from hermes_cli.config import load_config_readonly
+            return (load_config_readonly().get("sessions") or {}).get(key)
+        except Exception:
+            return None
+    return os.environ.get(env_var)
+
+
 def escape_like(text: str) -> str:
     """Escape LIKE wildcards (``%``, ``_``) so derived text matches literally; pair with ``ESCAPE '\\'``.
     ``_`` is common in branch names/titles/paths and a substring match must not silently widen."""

@@ -324,7 +324,7 @@ class TestSpillover:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         # Reset the once-per-process prune flag so each test is independent.
         import tools.tool_result_storage as trs
-        monkeypatch.setattr(trs, "_spillover_pruned_once", False)
+        monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
         yield
 
     def test_env_none_persists_to_spillover(self):

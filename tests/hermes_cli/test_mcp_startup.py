@@ -21,11 +21,11 @@ def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
     try:
-        mcp_startup._mcp_discovery_started = False
-        mcp_startup._mcp_discovery_thread = None
+        mcp_startup._mcp_discovery_started = set()
+        mcp_startup._mcp_discovery_thread = {}
         yield
     finally:
-        thread = mcp_startup._mcp_discovery_thread
+        thread = mcp_startup._current_home_thread()
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
@@ -96,8 +96,9 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         while calls["mcp"] == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert calls["mcp"] == 1
-        assert mcp_startup._mcp_discovery_thread is not None
-        assert mcp_startup._mcp_discovery_thread.is_alive()
+        thread = mcp_startup._current_home_thread()
+        assert thread is not None
+        assert thread.is_alive()
     finally:
         stop.set()
 
@@ -149,7 +150,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
 
     assert calls["background"] == 0
     assert calls["inline"] == 0
-    assert mcp_startup._mcp_discovery_thread is None
+    assert mcp_startup._current_home_thread() is None
 
 
 def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
@@ -229,8 +230,9 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
         logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
         thread_name="test-mcp-discovery",
     )
-    assert mcp_startup._mcp_discovery_thread is not None
-    mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+    thread = mcp_startup._current_home_thread()
+    assert thread is not None
+    thread.join(timeout=1.0)
 
     assert state["during_discover"] is True
     assert state["active"] is False
@@ -268,8 +270,9 @@ def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch):
             logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
             thread_name="test-mcp-discovery",
         )
-        assert mcp_startup._mcp_discovery_thread is not None
-        mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+        thread = mcp_startup._current_home_thread()
+        assert thread is not None
+        thread.join(timeout=1.0)
     finally:
         reset_secret_scope(token)
 

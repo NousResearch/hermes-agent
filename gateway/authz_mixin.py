@@ -406,6 +406,23 @@ class GatewayAuthorizationMixin:
     def _adapter_extra_for_source(self, source) -> dict:
         return _adapter_config_extra(self._adapter_for_source(source))
 
+    def _slack_bot_policy_authorizes(self, source: SessionSource) -> bool:
+        """Apply Slack's exact peer-bot policy from the receiving adapter's config."""
+        extra = self._adapter_extra_for_source(source)
+        allow_bots = str(
+            extra.get("allow_bots", _platform_gate_env("SLACK_ALLOW_BOTS", "none"))
+        ).lower().strip()
+        if allow_bots not in {"mentions", "all"}:
+            return False
+        user_id = str(source.user_id or "").strip()
+        # Workflow Builder messages may not carry a stable bot/app/user ID.
+        if not user_id:
+            return True
+        allowed_bots = _coerce_allow_set(
+            extra.get("allowed_bots", _platform_gate_env("SLACK_ALLOWED_BOTS", ""))
+        )
+        return "*" in allowed_bots or user_id in allowed_bots
+
     def _own_policy_authorizes(self, source, user_id, is_group, adapter_profile) -> Optional[bool]:
         """Own-policy adapter verdict when no env allowlist exists; None = no verdict.
 
@@ -574,6 +591,12 @@ class GatewayAuthorizationMixin:
         # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
+
+        # A Slack peer bot never borrows a human/chat/pairing grant. The source
+        # retains the receiving adapter, so multiplexed profiles evaluate their
+        # own allow_bots/allowed_bots policy.
+        if source.platform == Platform.SLACK and getattr(source, "is_bot", False):
+            return self._slack_bot_policy_authorizes(source)
 
         adapter_profile = self._adapter_profile_for_source(source)
         is_group = source.chat_type in _GROUP_CHAT_TYPES

@@ -250,6 +250,13 @@ export interface VaultUnlockReq {
   requestId: string
 }
 
+/** New login for the current page — identifier visible, password masked. */
+export interface VaultSaveLoginReq {
+  origin: string
+  requestId: string
+  site: string
+}
+
 export interface PanelData {
   sections: PanelSection[]
   title: string

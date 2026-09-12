@@ -183,4 +183,20 @@ describe('dismissSensitivePrompt', () => {
     expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
     await pending
   })
+
+  it('declines a save-login prompt without putting credentials in the transcript', async () => {
+    resetOverlayState()
+    patchOverlayState({
+      vaultSaveLogin: { origin: 'https://example.test', requestId: 'save-1', site: 'Example' }
+    })
+    const rpc = vi.fn().mockResolvedValue(null)
+    const sys = vi.fn()
+
+    const pending = dismissSensitivePrompt(getOverlayState(), rpc, sys)
+
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+    expect(sys).toHaveBeenCalledWith('login was not saved')
+    expect(rpc).toHaveBeenCalledWith('vault.save_login.respond', { login: '', request_id: 'save-1' })
+    await pending
+  })
 })

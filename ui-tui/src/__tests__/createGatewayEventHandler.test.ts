@@ -92,6 +92,25 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().tools).toEqual([])
   })
 
+  it('opens and expires only the matching vault save-login request', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { origin: 'https://example.test', request_id: 'save-1', site: 'Example' },
+      type: 'vault.save_login.request'
+    } as any)
+
+    expect(getOverlayState().vaultSaveLogin).toEqual({
+      origin: 'https://example.test',
+      requestId: 'save-1',
+      site: 'Example'
+    })
+    onEvent({ payload: { request_id: 'stale' }, type: 'vault.save_login.expire' } as any)
+    expect(getOverlayState().vaultSaveLogin?.requestId).toBe('save-1')
+    onEvent({ payload: { request_id: 'save-1' }, type: 'vault.save_login.expire' } as any)
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

@@ -1408,7 +1408,15 @@ def _discover_context_engines() -> list[tuple[str, str]]:
 _get_current_memory_provider = functools.partial(_config_str, "memory", "provider", default="")
 _get_current_context_engine = functools.partial(_config_str, "context", "engine", default="compressor")
 _save_memory_provider = functools.partial(_write_config_value, "memory", "provider")
-_save_context_engine = functools.partial(_write_config_value, "context", "engine")
+
+
+def _normalize_context_engine_name(name: Any) -> str:
+    from agent.agent_init import _normalize_context_engine_name as _normalize
+    return _normalize(name)
+
+
+def _save_context_engine(value: Any) -> None:
+    _write_config_value("context", "engine", _normalize_context_engine_name(value))
 
 
 # (title, default label, default name, current-value reader, discovery fn, saver) per provider

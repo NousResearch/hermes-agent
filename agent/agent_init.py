@@ -1738,6 +1738,13 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     return _config_context_length, _custom_providers, _effective_context_length, _model_cfg
 
 
+def _normalize_context_engine_name(name: Any) -> str:
+    token = str(name or "").strip()
+    if token.lower() in {"", "default", "custom"}:
+        return "compressor"
+    return token
+
+
 def _select_context_engine(_agent_cfg):
     """Config-driven context engine: ``context.engine`` → plugins/context_engine/<name>/ →
     general plugin system → None (built-in ContextCompressor)."""
@@ -1745,6 +1752,7 @@ def _select_context_engine(_agent_cfg):
     with suppress(Exception):
         _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
         _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
+    _engine_name = _normalize_context_engine_name(_engine_name)
     if _engine_name == "compressor":
         return None  # built-in; don't auto-activate plugins
     _selected_engine = None

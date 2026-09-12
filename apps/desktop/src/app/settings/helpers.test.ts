@@ -40,6 +40,13 @@ describe('settings helpers', () => {
     expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
   })
 
+  it('does not shadow the backend schema options for context.engine', () => {
+    // context.engine options are discovery-driven and served by the backend
+    // config schema (merged per-request), just like memory.provider.
+    expect(enumOptionsFor('context.engine', '', {})).toBeUndefined()
+    expect(enumOptionsFor('context.engine', 'lcm', {})).toBeUndefined()
+  })
+
   describe('isExternalMemoryProvider', () => {
     it('treats only real plugin names as external providers', () => {
       expect(isExternalMemoryProvider('honcho')).toBe(true)

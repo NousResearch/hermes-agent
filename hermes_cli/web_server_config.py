@@ -120,7 +120,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.resume_display": _select("How resumed sessions display history", "minimal", "full", "off"),
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),
     "approvals.mode": _select("Dangerous command approval mode", "manual", "smart", "off"),
-    "context.engine": _select("Context management engine", "default", "custom"),
+    "context.engine": _select("Context management engine", "compressor"),
     "human_delay.mode": _select("Simulated typing delay mode", "off", "typing", "fixed"),
     "logging.level": _select("Log level for agent.log", "DEBUG", "INFO", "WARNING", "ERROR"),
     "agent.service_tier": _select(
@@ -324,6 +324,34 @@ def _memory_provider_schema_options(cfg: Dict[str, Any]) -> List[str]:
     return options
 
 
+def _context_engine_schema_options(cfg: Dict[str, Any]) -> List[str]:
+    """``[compressor]`` plus discovered plugin engines and the current non-alias name."""
+    from agent.agent_init import _normalize_context_engine_name
+
+    options = ["compressor"]
+    seen = {"compressor"}
+    try:
+        from hermes_cli.plugins_cmd import _discover_context_engines
+        for name, _desc in _discover_context_engines():
+            token = str(name or "").strip()
+            if not token:
+                continue
+            normalized = _normalize_context_engine_name(token)
+            if normalized == "compressor" or token in seen:
+                continue
+            options.append(token)
+            seen.add(token)
+    except Exception:
+        pass
+    context = cfg.get("context")
+    current = _normalize_context_engine_name(
+        context.get("engine") if isinstance(context, dict) else None
+    )
+    if current not in seen:
+        options.append(current)
+    return options
+
+
 def _schema_select_options(key: str) -> Optional[List[str]]:
     entry = CONFIG_SCHEMA.get(key)
     options = entry.get("options") if isinstance(entry, dict) else None
@@ -358,6 +386,10 @@ def _schema_with_dynamic_provider_options() -> Dict[str, Dict[str, Any]]:
             merge(f"{kind}.provider", _custom_provider_options(kind, list(existing), cfg))
 
     merge("memory.provider", _memory_provider_schema_options(cfg))
+    try:
+        merge("context.engine", _context_engine_schema_options(cfg))
+    except Exception:
+        pass
 
     tb_options = _schema_select_options("terminal.backend")
     if tb_options is not None:

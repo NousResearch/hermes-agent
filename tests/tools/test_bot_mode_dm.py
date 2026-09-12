@@ -852,16 +852,20 @@ def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
 
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bot_mode_dm, "_dm_fallback_dir", lambda: tmp_path / "fallback")
 
     dm_dir = bot_mode_dm._dm_dir()
 
     if hasattr(os, "getuid"):
         assert dm_dir.name == f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
+        # POSIX contract only: a Windows directory always reports 0o777 and chmod() there
+        # toggles just the read-only bit, so the directory ACL is what protects it.
+        assert dm_dir.stat().st_mode & 0o777 == 0o700
     else:
         assert dm_dir.name == bot_mode_dm._DM_DIR_NAME
-    assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX mode contract")
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None
@@ -884,3 +888,97 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+# --- Unusable temp root: degrade to the private fallback (the reported WinError 5) ---
+
+
+def _deny_canonical(monkeypatch, canonical: Path):
+    """Make only the canonical directory's writability probe fail, WinError 5 shaped."""
+    def probe(path):
+        if Path(path) == canonical:
+            raise PermissionError(13, "Acces refuse", str(path), 5)
+    monkeypatch.setattr(bot_mode_dm, "_probe_writable", probe)
+
+
+def test_dm_dir_falls_back_when_canonical_path_is_not_usable(tmp_path, monkeypatch):
+    """A canonical path that cannot become a directory must degrade, not fail the send."""
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    fallback = tmp_path / "home" / "cache" / "dm-tmp"
+    monkeypatch.setattr(bot_mode_dm, "_dm_fallback_dir", lambda: fallback)
+    (tmp_path / bot_mode_dm._DM_DIR_NAME).write_text("not a directory", encoding="utf-8")
+
+    assert bot_mode_dm._dm_dir() == fallback
+    assert fallback.is_dir()
+    assert bot_mode_dm._dm_dir() == fallback  # idempotent: one stable fallback, not churn
+
+
+def test_dm_dir_falls_back_when_write_probe_is_denied(tmp_path, monkeypatch):
+    """[WinError 5]: the canonical dir exists but denies creating a file in it."""
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    fallback = tmp_path / "home" / "cache" / "dm-tmp"
+    monkeypatch.setattr(bot_mode_dm, "_dm_fallback_dir", lambda: fallback)
+    _deny_canonical(monkeypatch, tmp_path / bot_mode_dm._DM_DIR_NAME)
+
+    assert bot_mode_dm._dm_dir() == fallback
+
+
+def test_write_dm_file_uses_the_fallback_when_temp_root_is_denied(tmp_path, monkeypatch):
+    """Regression: a stale ACL on the temp dir must not disable agent-to-agent DMs."""
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    fallback = tmp_path / "home" / "cache" / "dm-tmp"
+    monkeypatch.setattr(bot_mode_dm, "_dm_fallback_dir", lambda: fallback)
+    _deny_canonical(monkeypatch, tmp_path / bot_mode_dm._DM_DIR_NAME)
+
+    payload = bot_mode_dm._write_dm_file("secret payload")
+
+    assert Path(payload).parent == fallback
+    assert Path(payload).read_text(encoding="utf-8") == "secret payload"
+
+
+def test_dm_dir_fails_closed_when_no_location_is_usable(tmp_path, monkeypatch):
+    """Both locations denied: a named error, never a silent write to an arbitrary path."""
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bot_mode_dm, "_dm_fallback_dir", lambda: tmp_path / "home" / "cache" / "dm-tmp")
+
+    def probe(path):
+        raise PermissionError(13, "Acces refuse", str(path), 5)
+
+    monkeypatch.setattr(bot_mode_dm, "_probe_writable", probe)
+
+    with pytest.raises(PermissionError, match="no usable DM directory"):
+        bot_mode_dm._dm_dir()
+
+
+def test_sweeper_covers_the_fallback_directory(tmp_path, monkeypatch):
+    """Fallback payloads expire too: a later process with a healthy temp root would
+    otherwise never sweep them, breaking the stale-payload bound."""
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    fallback = tmp_path / "home" / "cache" / "dm-tmp"
+    fallback.mkdir(parents=True)
+    monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(bot_mode_dm, "_dm_fallback_dir", lambda: fallback)
+
+    stale = fallback / "dm-stale.txt"
+    fresh = fallback / "dm-fresh.txt"
+    for path in (stale, fresh):
+        path.write_text("secret", encoding="utf-8")
+    now = time.time()
+    old = now - bot_mode_dm._DM_STALE_SECONDS - 1
+    os.utime(stale, (old, old))
+
+    bot_mode_dm.cleanup_bot_dm_cache(now=now)
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert fallback.exists()  # sweeping must not create or remove directories
+
+
+def test_probe_leaves_no_file_behind(tmp_path):
+    """The writability probe must be invisible: no residue in the DM directory."""
+    target = tmp_path / "probe-target"  # dedicated dir: pytest's tmp_path also holds the
+    target.mkdir()                      # suite's isolated HERMES_HOME
+    bot_mode_dm._probe_writable(target)
+
+    assert list(target.iterdir()) == []

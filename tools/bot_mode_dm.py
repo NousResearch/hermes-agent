@@ -289,13 +289,33 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
         return None
 
 
-def _dm_dir() -> Path:
+def _dm_canonical_dir() -> Path:
+    """The shared-temp-root location: per-uid on POSIX, per-user by ACL on Windows."""
     uid_getter = getattr(os, "getuid", None)
     uid = uid_getter() if callable(uid_getter) else None
-    path = Path(tempfile.gettempdir()) / (f"{_DM_DIR_NAME}-{uid}" if uid is not None else _DM_DIR_NAME)
-    path.mkdir(mode=0o700, exist_ok=True)
-    # Shared POSIX temp roots need a per-user directory. Fail closed if an
-    # attacker pre-created the expected path or replaced it with a symlink.
+    return Path(tempfile.gettempdir()) / (f"{_DM_DIR_NAME}-{uid}" if uid is not None else _DM_DIR_NAME)
+
+
+def _dm_fallback_dir() -> Path:
+    """Private per-user fallback outside the shared temp root.
+
+    Deterministic rather than ``mkdtemp``: ``_dm_dir()`` stays idempotent, housekeeping can
+    find the directory from any process (a fresh process with a healthy temp root would
+    otherwise never sweep it, breaking the stale-payload bound), and no per-call directory
+    churn accumulates in the user's home.
+    """
+    return Path(_default_home()) / "cache" / "dm-tmp"
+
+
+def _assert_usable_dm_dir(path: Path, uid: Optional[int]) -> None:
+    """Fail closed on a pre-created path.
+
+    ``S_ISDIR`` is checked on every platform: it is the only guard against an attacker (or a
+    stray process) pre-creating the expected path as a symlink/junction. The ownership check
+    and the ``0o700`` repair only mean something on POSIX — on Windows ``os.getuid`` is
+    absent and a directory's mode always reads as ``0o777``, so the chmod is cosmetic and the
+    directory ACL is what actually protects the path.
+    """
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode):
         raise PermissionError(f"DM temp path is not a directory: {path}")
@@ -303,21 +323,86 @@ def _dm_dir() -> Path:
         raise PermissionError(f"DM temp directory is owned by another user: {path}")
     if stat.S_IMODE(info.st_mode) != 0o700:
         path.chmod(0o700)
-    return path
+
+
+def _probe_writable(path: Path) -> None:
+    """Prove *path* can host a payload file, before a real message depends on it.
+
+    An existing directory with a denying ACL (the reported Windows ``[WinError 5]``), a
+    read-only volume, or a full disk all surface here instead of later, mid-send.
+    """
+    fd, probe = tempfile.mkstemp(prefix=".probe-", suffix=".txt", dir=path)
+    os.close(fd)
+    with contextlib.suppress(OSError):
+        os.unlink(probe)
+
+
+def _prepare_dm_dir(path: Path, uid: Optional[int]) -> None:
+    # parents=True: the fallback lives under ``<hermes home>/cache``, which may not exist yet
+    # on a fresh home; the canonical temp-root parent always does.
+    path.mkdir(mode=0o700, exist_ok=True, parents=True)
+    _assert_usable_dm_dir(path, uid)
+    _probe_writable(path)
+
+
+def _dm_dir() -> Path:
+    """Directory holding DM payload files.
+
+    Prefers the canonical shared-temp-root path. If that cannot be prepared — a stale
+    directory whose ACL denies the current user, a pre-created non-directory, an unwritable
+    or full temp volume — fall back to a private per-user directory instead of failing every
+    send. A stale ACL must degrade a message delivery (or fall back to another directory),
+    never disable the whole agent-to-agent messaging layer.
+    """
+    uid_getter = getattr(os, "getuid", None)
+    uid = uid_getter() if callable(uid_getter) else None
+    canonical = _dm_canonical_dir()
+    try:
+        _prepare_dm_dir(canonical, uid)
+        return canonical
+    except OSError as exc:
+        # Debug-level with the exception: an unusable temp dir is a degraded-but-working
+        # condition, and the previous silent swallow here is why the breakage went unnoticed.
+        logger.warning("DM directory %s unusable, falling back to %s: %s", canonical, _dm_fallback_dir(), exc)
+    fallback = _dm_fallback_dir()
+    try:
+        _prepare_dm_dir(fallback, uid)
+    except OSError as exc:
+        raise PermissionError(f"no usable DM directory: {canonical} and {fallback} both failed ({exc})") from exc
+    return fallback
+
+
+def _dm_sweep_locations() -> list[tuple[Path, str]]:
+    """Every directory that can hold DM payload files, canonical first.
+
+    Built without creating anything: housekeeping must not bring directories into existence.
+    The fallback is listed unconditionally — sweeping only ``_dm_dir()`` would leave fallback
+    payloads from an earlier process in place forever once the temp root recovers.
+    """
+    temp_root = Path(tempfile.gettempdir())
+    return [
+        (temp_root, "hermes-dm-*.txt"),
+        (temp_root, "hermes-relay-dm-*.txt"),
+        (_dm_canonical_dir(), "*.txt"),
+        (_dm_fallback_dir(), "*.txt"),
+    ]
 
 
 def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now: float | None = None) -> int:
     """Delete orphaned DM payload files older than *max_age_hours*; returns count.
     Same contract as the other ``cleanup_*_cache`` helpers (hourly gateway housekeeping);
-    legacy temp-root locations from versions predating the dedicated directory are swept too."""
+    legacy temp-root locations from versions predating the dedicated directory are swept too,
+    along with the private fallback directory used when the temp root is unusable."""
     cutoff = (time.time() if now is None else now) - max_age_hours * 3600
-    temp_root = Path(tempfile.gettempdir())
-    locations = [(temp_root, "hermes-dm-*.txt"), (temp_root, "hermes-relay-dm-*.txt")]
-    with contextlib.suppress(OSError):
-        locations.append((_dm_dir(), "*.txt"))
     from tools.bot_relay import unlink_files_older_than
 
-    return sum(unlink_files_older_than(d, pattern, cutoff) for d, pattern in locations)
+    total = 0
+    for directory, pattern in _dm_sweep_locations():
+        # A location can be unreadable (permissions) or absent; neither is fatal, and neither
+        # may abort the sweep of the remaining locations.
+        with contextlib.suppress(OSError):
+            total += unlink_files_older_than(directory, pattern, cutoff)
+    return total
 
 
 def _unlink_dm_file(path: str) -> None:

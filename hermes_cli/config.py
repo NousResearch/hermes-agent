@@ -1168,6 +1168,26 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
+def validate_terminal_env_vars(value: Any) -> Dict[str, str]:
+    """Validate literal local subprocess settings for config check and runtime."""
+    from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
+
+    if not isinstance(value, dict):
+        raise ValueError("Invalid value for terminal.env_vars (expected a KEY: VALUE mapping). Check config.yaml.")
+    result = {}
+    for name, raw in value.items():
+        if not isinstance(name, str) or not _SHELL_ENV_NAME_RE.fullmatch(name):
+            raise ValueError(
+                f"Invalid name for terminal.env_vars: {name!r} "
+                "(expected letters, digits and underscores, not starting with a digit). Check config.yaml.")
+        if not isinstance(raw, (str, int, float, bool)):
+            raise ValueError(
+                f"Invalid value for terminal.env_vars.{name}: {raw!r} "
+                "(expected str/int/float/bool, not list/dict/null). Check config.yaml.")
+        result[name] = str(raw)
+    return result
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1179,6 +1199,12 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             return [config_load_issue(exc)]
 
     issues: List[ConfigIssue] = []
+    terminal = config.get("terminal")
+    if isinstance(terminal, dict) and "env_vars" in terminal:
+        try:
+            validate_terminal_env_vars(terminal["env_vars"])
+        except ValueError as exc:
+            _issue(issues, "error", str(exc), "Correct terminal.env_vars in config.yaml")
     _validate_voice(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
@@ -2010,7 +2036,7 @@ TERMINAL_CONFIG_ENV_MAP = {
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
             "docker_persist_across_processes", "docker_shared_container_key",
-            "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
+            "docker_orphan_reaper", "sandbox_dir", "persistent_shell", "env_vars")}}
 
 
 def _terminal_env_value(value: Any) -> str:

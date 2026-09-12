@@ -4,7 +4,7 @@
 The minimum-viable replacement for pytest-xdist + a subprocess-isolation
 plugin. Discovers test files under ``tests/`` (excluding integration/e2e
 unless explicitly requested), then runs one ``python -m pytest <file>``
-subprocess per file, with bounded parallelism (default: ``os.cpu_count()``).
+subprocess per file, with bounded parallelism (default: 3 workers).
 
 Why per-file rather than per-test?
     Per-test spawn overhead (~250ms × 17k tests = 70min CPU minimum)
@@ -31,7 +31,7 @@ Usage:
     a literal ``--`` is also passed through, and stacks with bare flags.
 
 Environment:
-    HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
+    HERMES_TEST_WORKERS  Override worker count (default: 3)
     HERMES_TEST_PATHS    Override discovery roots (colon-sep; on Windows
                          ';' also works and drive letters are handled;
                          default: 'tests')
@@ -781,8 +781,9 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4) * 2),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count*2)",
+        # argparse converts string defaults only when no CLI override is given.
+        default=os.environ.get("HERMES_TEST_WORKERS") or 3,
+        help="Parallel worker count (default: $HERMES_TEST_WORKERS or 3)",
     )
     parser.add_argument(
         "--paths",
@@ -914,6 +915,11 @@ def main() -> int:
     i = 0
     while i < len(before):
         tok = before[i]
+        # Keep negative jobs values with their flag for argparse validation.
+        if tok in {"-j", "--jobs"} and i + 1 < len(before):
+            our_args.extend(before[i:i + 2])
+            i += 2
+            continue
         if tok.startswith("-") and not _is_our_flag(tok):
             bare_passthrough.append(tok)
             # Pull the value token for space-separated value flags.
@@ -926,6 +932,8 @@ def main() -> int:
         i += 1
 
     args = parser.parse_args(our_args)
+    if args.jobs <= 0:
+        parser.error(f"argument -j/--jobs: must be a positive integer, got {args.jobs!r}")
 
     # ── Node-id selectors → file + ``-k`` filter ────────────────────────────
     # This runner is FILE-granular: it spawns one ``pytest <file>`` per test

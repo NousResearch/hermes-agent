@@ -1,0 +1,2114 @@
+[
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "acceptance-gate-verifier",
+    "sha256": "c9f4ede505cf2fdf9f15444d5c2ea9f70bb948c7d955098f6e627701d8a7dd5a"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "acquisition-worker",
+    "sha256": "1f01e27e7e4e12341b310616f122c4690d32594156f69c258a6123bc6d4f3b53"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "architecture-steward",
+    "sha256": "a0961e7eb592d5c03e3dc99b3b242f85fc0cddee4449a31536489a0d3e4a5381"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "archivist",
+    "sha256": "04ceb0c142f37da524bccee82de85a950e67185b3d59dec653a685416aea83cc"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "arts-director",
+    "sha256": "693448b186db43d8a56abca912706ee9a88bff8f5bdac2d897842e917e56b366"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "burndown-patch-steward",
+    "sha256": "011b0a7d398685833db6489f96ebb47a8a2dcc3571915cdb5c71c3347abf4863"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "capability-planner",
+    "sha256": "c6c5ae78aec0308b38037bb6862d8a36607ea9857246e3e3776e655d066f88a9"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "cataloger",
+    "sha256": "1f01e27e7e4e12341b310616f122c4690d32594156f69c258a6123bc6d4f3b53"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "ci-frontend-fixer",
+    "sha256": "fbc7684c69b29f88436d48aadc25f2beef727b2ae10071201285fda5372c5925"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "ci-general-fixer",
+    "sha256": "90df0b94a8540ef00b1c65563be7434634e2d639806995666d69b74fa52bd52e"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "ci-hygiene-fixer",
+    "sha256": "f20103d43ce3dfc6d93b18877a93470a53282f8566fe5fc5ca8a87f511d25bd5"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "ci-repair-steward",
+    "sha256": "f877240b9e86670a19c870b6e21812438065653e77eaf956739f297173bfed9f"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "ci-static-fixer",
+    "sha256": "66e0ca0296d38ce4f02e4498f9bc3c300d46bd9c8fd7bc32cede3bf066924b71"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "ci-test-fixer",
+    "sha256": "1a0b59f1026aec7de84bc53da7ffc9678f986a8aa9d197f71291ce7b7ddb6c47"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "citation-verifier",
+    "sha256": "b4df5fc3aa692d0925deae894d1e0085f577027c2e3b415870fe550dd165c857"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "coding-expert",
+    "sha256": "c585c2a1f767f8eb4dad23c805c279b093085dbdba2348ea90d94c3eeff58829"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "community-scout",
+    "sha256": "d5975dcb242d271dd1e0ef31b79916ad19e123ac6ef84bf59392a2c8b14ca618"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "concept-artist",
+    "sha256": "693448b186db43d8a56abca912706ee9a88bff8f5bdac2d897842e917e56b366"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "content-classifier",
+    "sha256": "1f01e27e7e4e12341b310616f122c4690d32594156f69c258a6123bc6d4f3b53"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "copilot-learning-steward",
+    "sha256": "88adbe9582f64416bd9bdafdedf39806d95bf60e35351565e5713ae2c5920bc9"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "data-authority-patch-steward",
+    "sha256": "0e16c3bb173c6248ec3d8e24847b10e4fa52911810e1da52a4ed336e5c0bb48f"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "dependency-tooling-health-sentinel",
+    "sha256": "9c8eb8246f39d165387ba35105b3697afd9ec28a33b0598d42621b8df8260200"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "digest-editor",
+    "sha256": "04ceb0c142f37da524bccee82de85a950e67185b3d59dec653a685416aea83cc"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "discovery-broker",
+    "sha256": "1f01e27e7e4e12341b310616f122c4690d32594156f69c258a6123bc6d4f3b53"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "editor",
+    "sha256": "693448b186db43d8a56abca912706ee9a88bff8f5bdac2d897842e917e56b366"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "experimentalist",
+    "sha256": "28b8ebc10d8d2b40c27d01adeb36619c8e88fb3d9136778d1ee449c2893cf764"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "balanced",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "federation-steward",
+    "sha256": "bf011fe0991f6f1d076d81b6a553ba69f8861f249f41fe8c923db847198d6553"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "hermes-issue-scout",
+    "sha256": "a1758884177dac6e0407b384401e07a5108ba9ceaceebe70ff606a158f202207"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "hermes-maintenance-steward",
+    "sha256": "55fcbeb55fa670fca196470ce4e0b6631a113b7a53de849d1f01aa3f0139ec17"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "hermes-pr-feedback",
+    "sha256": "1daadf5c539d8e8706a92587bc9514c8e10407867f1a65d7fe799860b93f4b40"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "hermes-upstream-auditor",
+    "sha256": "4a92c130661e3938852149402c40e3db79784cb2dedb5e013236a19cce4dfb77"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "hermes-white-knight",
+    "sha256": "1606aa38fd506a5268c5191d2a5aecf1967c3e7ca559c44abca81964774b81f5"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "hermesdevelopment",
+    "sha256": "e57e91f3a596be609fa16f0383e832088ac409ea3091eb5f3a4cb011698c5f29"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "image-generator",
+    "sha256": "693448b186db43d8a56abca912706ee9a88bff8f5bdac2d897842e917e56b366"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "independent-auditor",
+    "sha256": "d5b8ff312fdaed18e75a1c63f8edcba19eef7c0fb21e95c3a68e7015eda90ee8"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "intake-router",
+    "sha256": "1f01e27e7e4e12341b310616f122c4690d32594156f69c258a6123bc6d4f3b53"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "librarian",
+    "sha256": "db66dd532365aa0f667b52248d6d0efbed7acfeed994bebc6f65c099ea52f779"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "luna-auditor",
+    "sha256": "bfce11b88e13a72ebc7e7ec629733f67474c977acfd13715a69f16568d7a42a7"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "lunabot-issue-fixer",
+    "sha256": "34f3cd645d318314c05a9ffab6debe62366942f6d132c063e02c4f72f61ea7bd"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "lunabot-issue-reporter",
+    "sha256": "0fc02be0d8d2a6c236c909b8ffbe27c7fb85f4135a06eb9308718cf5831e0e79"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "lunabot-research-lab-director",
+    "sha256": "31fb4f6fd77213e8db7d233e5a2796904fce614b7d78a1aef9c279fb80752cd4"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "market-data-authority-auditor",
+    "sha256": "6930e8ba08279046e15cd7a2fce5f30195645e59120868db968e0f8d0f641670"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "media-renderer",
+    "sha256": "693448b186db43d8a56abca912706ee9a88bff8f5bdac2d897842e917e56b366"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "memory-curator",
+    "sha256": "db66dd532365aa0f667b52248d6d0efbed7acfeed994bebc6f65c099ea52f779"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "memory-intake",
+    "sha256": "1f01e27e7e4e12341b310616f122c4690d32594156f69c258a6123bc6d4f3b53"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "memory-validator",
+    "sha256": "e032b58e681e96fd558a4936ef25d06dd3c2e8773ebc2476477690a4b6094837"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "mission-control-ux-auditor",
+    "sha256": "2371e8d32458e90cc646cc24eca879b8a526a5b3d04867c9f9862b3e5314017c"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "nerdy-content-scout",
+    "sha256": "d5975dcb242d271dd1e0ef31b79916ad19e123ac6ef84bf59392a2c8b14ca618"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "observatory",
+    "sha256": "28b8ebc10d8d2b40c27d01adeb36619c8e88fb3d9136778d1ee449c2893cf764"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "operations-steward",
+    "sha256": "72f99a8384ab235c3f5e13c11f775f97ae62bb0cb7839e3ac1e3826c144a8dd8"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "paper-ingester",
+    "sha256": "04ceb0c142f37da524bccee82de85a950e67185b3d59dec653a685416aea83cc"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "paper-safety-guardian",
+    "sha256": "7bfbc0f35889c4b9fc5e2edb1ee441fc3ecf038ddaad1d6a336cc63346a0b8f8"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "pathologist",
+    "sha256": "c6489738264c2a0ca20fa22fe43e8dbe96e339b189966408e5ec881ead3514f7"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "performance-lab",
+    "sha256": "28b8ebc10d8d2b40c27d01adeb36619c8e88fb3d9136778d1ee449c2893cf764"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "performance-patch-steward",
+    "sha256": "e6039d004a65b8d5370b39a05b783320436bd696ea0164062723156d1ec34b28"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "performance-sentinel",
+    "sha256": "e2a53f2d905e73990f82cad1cf0378b3ef2a2e97b16477e6430300aba708067f"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "post-merge-verifier",
+    "sha256": "b99e8b5e94ad4df9a833614e94ed1d709e3b37ab34fc49df19842f6b00bd4e5d"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "pr-local-ci-auditor",
+    "sha256": "87a47e35a3048d407a04af7f67e7ec1f78810b5561c15d2ca5c85278fdc1767e"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "pr-merge-maintainer",
+    "sha256": "624fc9c33f4c91f8b24b4b7d7447d133594fe7905d9334d4f1603f067e1514f2"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "pr-repair-steward",
+    "sha256": "3ead232ccfb54d98b882f04877cc07a7554b5f6ede19a545362b7a7b1eeedaf2"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "prior-art-scout",
+    "sha256": "c6489738264c2a0ca20fa22fe43e8dbe96e339b189966408e5ec881ead3514f7"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "publication-curator",
+    "sha256": "04ceb0c142f37da524bccee82de85a950e67185b3d59dec653a685416aea83cc"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "red-team",
+    "sha256": "3ca4646c17851fc8e25ed786c16f22c51953575fbbd183c19dd70632e24386eb"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "release-maintenance-steward",
+    "sha256": "860d616c01296d2e81e701a4e2afa35250f9ae4858144382814bd4d111e6f528"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "release-steward",
+    "sha256": "41f5a5e63900451f9629984a162749e543472fa906d56178ceccd10855f0aba3"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "replicator",
+    "sha256": "c6489738264c2a0ca20fa22fe43e8dbe96e339b189966408e5ec881ead3514f7"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "research-experiment-runner",
+    "sha256": "9dc5a03cf624267bbe39dcc505bdac2dc11d62526680aba918ff9e5c9d990bb0"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "research-promotion-maintainer",
+    "sha256": "86022d92c7c150ea669088c4224c30583e1c2348dcdd113e6afe9aa35c61d380"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "research-scout",
+    "sha256": "f524b49c9446a8e80a6763d4af2897c70b2fe0f6b3a05b407ed3720689cf763b"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "researcher-a",
+    "sha256": "9b7ef4a6a41ba7c4dad2cd0836defdfedbfa64e0e7ca67379627d0ab5e928738"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "balanced",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "resource-scheduler",
+    "sha256": "bf011fe0991f6f1d076d81b6a553ba69f8861f249f41fe8c923db847198d6553"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "retrieval-librarian",
+    "sha256": "04ceb0c142f37da524bccee82de85a950e67185b3d59dec653a685416aea83cc"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "revenue-artifact-auditor",
+    "sha256": "f38b2e9787088b87f7dd97f1820a6f689dacfbaa5c628e052cf22b7547288af7"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "revenue-compliance-guardian",
+    "sha256": "39c7ee855898cc14ead872d4f66df5e7f150ef75eff51ee70134aa7a2b980132"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "revenue-lab-steward",
+    "sha256": "358397952b2eeb44069e2bd806c9961b7d25df0f9937d2e1433cbb87165c6729"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "revenue-outcome-analyst",
+    "sha256": "d53f0b0d087ec3ae4899a4aaab84f7e0715e59db3aa775897049c86c05423897"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "revenue-routing-analyst",
+    "sha256": "f38b2e9787088b87f7dd97f1820a6f689dacfbaa5c628e052cf22b7547288af7"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "revenue-scout",
+    "sha256": "9e9061d5ac399ba7cc7e91504c8798b3c5a73ebb2a671cab6eea2d13146202f2"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "review-verification-steward",
+    "sha256": "15c2c4d378bba8ad629e38c0b09f844fdd1c6acd464c36a86b446d52fc16a559"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "route-execution-boundary-auditor",
+    "sha256": "f7846d6ce1ca75f7742b5483e10d9905214a024096c5545857f629c6554d6560"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "runtime-correctness-steward",
+    "sha256": "58e1246bf6e9f9181f3998d4b9190c6a43df069fcbb641d5e91d65c0b35c6474"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "safety-guardian",
+    "sha256": "3ca4646c17851fc8e25ed786c16f22c51953575fbbd183c19dd70632e24386eb"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "sandbox",
+    "sha256": "6760428c6cee7e11d5df8c4ee5dee6bbb282d45b56fc9b5b21de551106b25ab3"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "scientific-validator",
+    "sha256": "7172b0756a92d6c08caed8ae3eea6fffbb204fa5fbd099e337ef5cd3db2bbe8e"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "scientist",
+    "sha256": "c6489738264c2a0ca20fa22fe43e8dbe96e339b189966408e5ec881ead3514f7"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "source-verifier",
+    "sha256": "b4df5fc3aa692d0925deae894d1e0085f577027c2e3b415870fe550dd165c857"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "storyboarder",
+    "sha256": "693448b186db43d8a56abca912706ee9a88bff8f5bdac2d897842e917e56b366"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "structural-ratchet-steward",
+    "sha256": "6f3a666e2c38de19496cc9f2b8b473ea3a1c09d6724c6d68ae075b74d549f6f6"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "analysis",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "synthesizer",
+    "sha256": "c6489738264c2a0ca20fa22fe43e8dbe96e339b189966408e5ec881ead3514f7"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "task-intake-router",
+    "sha256": "ffb665f9b754a39b2b61953d28f627809d3c880eaa7b08af56d183f93b0bf8c5"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "medium"
+    },
+    "profile": "task-orchestrator",
+    "sha256": "a27be1d64ac18793838cf579a80154b45d16527d7398101ce2a722e67b2ce63f"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Qwen3.8-27B-UD-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "coding",
+    "model": {
+      "default": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+      "provider": "llamacpp",
+      "reasoning_effort": "none"
+    },
+    "profile": "test-contract-steward",
+    "sha256": "bef3654d72319438e5657707a185a00a46fabd2941d3dc042caba7912bc6b1ba"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "medium"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "meituan/longcat-2.0:free",
+      "provider": "nous",
+      "reasoning_effort": "none"
+    },
+    "profile": "transcript-ingester",
+    "sha256": "1f01e27e7e4e12341b310616f122c4690d32594156f69c258a6123bc6d4f3b53"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "visual-reviewer",
+    "sha256": "2edcbc8573979d7d2bea7cefaf9e088056da406ace069099a983088f152d9542"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "thinkingmachines/inkling-small:free",
+        "provider": "openrouter",
+        "reasoning_effort": "high"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": "quality_focused",
+    "model": {
+      "default": "gpt-5.6-luna",
+      "provider": "openai-codex",
+      "reasoning_effort": "high"
+    },
+    "profile": "worktree-change-governance-steward",
+    "sha256": "a29072ec65199c9484db3944cfe144a4eb5544dd7d1a9e12a53cea0e8dd0b318"
+  },
+  {
+    "fallbacks": [
+      {
+        "model": "meituan/longcat-2.0:free",
+        "provider": "nous",
+        "reasoning_effort": "none"
+      },
+      {
+        "model": "Devstral-Small-2-24B-Instruct-2512-Q4_K_M",
+        "provider": "llamacpp",
+        "reasoning_effort": "none"
+      }
+    ],
+    "moa_active": null,
+    "model": {
+      "default": "thinkingmachines/inkling-small:free",
+      "provider": "openrouter",
+      "reasoning_effort": "medium"
+    },
+    "profile": "writer",
+    "sha256": "5e7cf53f241f4e11fc8ec79885b5ba60cfb0b4e5060e2c82c1ae695ef2df87e5"
+  }
+]

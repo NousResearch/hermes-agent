@@ -132,6 +132,19 @@ class TestSmartApprovePolicyInjection(unittest.TestCase):
 
     @patch("tools.approval_context._get_approval_config")
     @patch("agent.auxiliary_client.call_llm")
+    def test_smart_approve_uses_reasoning_safe_token_budget(
+        self, mock_call_llm, mock_cfg
+    ):
+        mock_call_llm.return_value = _make_response("APPROVE")
+        mock_cfg.return_value = {"mode": "smart"}
+
+        assert _smart_approve("echo hi", "flagged") == "approve"
+        _, kwargs = mock_call_llm.call_args
+        assert kwargs.get("max_tokens") == 64
+
+
+    @patch("tools.approval_context._get_approval_config")
+    @patch("agent.auxiliary_client.call_llm")
     def test_smart_approve_failure_logs_warning_and_escalates(
         self, mock_call_llm, mock_cfg
     ):

@@ -948,11 +948,13 @@ def _refresh_windows_gateway_launchers() -> None:
     Launchers are written once at install, so old installs kept launching via ``pythonw.exe`` (``sys.stderr is
     None`` death). The task's /TR points at a stable path, so rewriting in place retargets it without UAC.
 
-    The Scheduled Task / Startup-folder launchers (``gateway.cmd`` + ``gateway.vbs``) are persistence
-    artifacts written once at install time — ``hermes update`` never touched them, so installs created
-    before the hidden-console rework (aa2ae36c3f) kept launching the gateway through ``pythonw.exe``
-    forever: every descendant spawn flashed a conhost (#54220/#56747) and, since #70344, the console-less
-    gateway died at startup with ``RuntimeError: sys.stderr is None`` (#71671).
+    The Scheduled Task / Startup-folder launchers (``gateway.cmd`` + ``gateway.vbs``/``.js``) are
+    persistence artifacts written once at install time — ``hermes update`` never touched them, so
+    installs created before the hidden-console rework (aa2ae36c3f) kept launching the gateway through
+    ``pythonw.exe`` forever: every descendant spawn flashed a conhost (#54220/#56747) and, since
+    #70344, the console-less gateway died at startup with ``RuntimeError: sys.stderr is None``
+    (#71671). File rewrite alone also leaves a ``.vbs`` task action on hosts without the VBScript
+    engine, so refresh re-registers the task / Startup entry when they are already installed.
     """
     from hermes_cli.update_cmd import _m
     if not _m()._is_windows():
@@ -960,7 +962,7 @@ def _refresh_windows_gateway_launchers() -> None:
     with _best_effort('Could not refresh Windows gateway launchers after update: %s'):
         from hermes_cli import gateway_windows
         if gateway_windows.is_installed():
-            gateway_windows._write_task_script()
+            gateway_windows._refresh_installed_launchers()
             print("  ✓ Refreshed Windows gateway launcher scripts")
 
 

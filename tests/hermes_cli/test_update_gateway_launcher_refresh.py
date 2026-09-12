@@ -87,6 +87,49 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_refresh_windows_gateway_launchers_retargets_js_when_no_vbscript_engine(monkeypatch, tmp_path):
+    """When vbscript.dll is gone, refresh must re-register the task at the .js launcher."""
+    import hermes_cli.main as cli_main
+    from hermes_cli.update_cmd_windows import _refresh_windows_gateway_launchers
+
+    xml_seen = {}
+    script_path = tmp_path / "Hermes_Gateway.cmd"
+    script_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: False, raising=False)
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: None)
+
+    def fake_schtasks(args):
+        if args[0] == "/Delete":
+            return (0, "SUCCESS", "")
+        if args[0] == "/Create":
+            xml_path = Path(args[args.index("/XML") + 1])
+            xml_seen["text"] = xml_path.read_text(encoding="utf-16")
+            return (0, "SUCCESS", "")
+        return (0, "", "")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+
+    _refresh_windows_gateway_launchers()
+
+    xml = xml_seen["text"]
+    assert "<Command>wscript.exe</Command>" in xml
+    assert "//B //Nologo" in xml
+    assert "Hermes_Gateway.js" in xml
+    assert "Hermes_Gateway.vbs" not in xml
+    assert "cmd.exe" not in xml.lower()
+    assert "powershell.exe" not in xml.lower()
+    assert "<Command>pythonw.exe</Command>" not in xml
+
+
 
 
 

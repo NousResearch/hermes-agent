@@ -102,10 +102,31 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
 
 def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
                                  mcp_server_names: List[str] | None = None) -> List[str]:
-    """Return ACP toolsets plus explicit MCP server toolsets for this session."""
-    names = [n for n in (toolsets or ["hermes-acp"]) if n]
-    names += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
-    return list(dict.fromkeys(names))
+    """Return ACP toolsets plus explicit MCP server toolsets for this session.
+
+    Plugin toolsets are folded in through the canonical platform resolution used by
+    cli/api_server (``_enabled_plugin_toolsets``): an active plugin toolset (rlm,
+    project, ...) is exposed unless it is platform-default-off or recorded as known
+    for the ACP platform. Without this, ACP sessions could never see plugin-registered
+    tools even though the plugin system prompt section is injected.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _enabled_plugin_toolsets, _get_plugin_toolset_keys
+        cfg = load_config()
+        configured = (cfg.get("platform_toolsets") or {}).get("acp")
+        if isinstance(configured, list):
+            base = [str(x) for x in configured if x]
+        else:
+            base = [n for n in (toolsets or ["hermes-acp"]) if n]
+        plugin_keys = _get_plugin_toolset_keys()
+        if plugin_keys:
+            base = sorted(set(base) | _enabled_plugin_toolsets(cfg, "acp", base, plugin_keys))
+    except Exception:
+        # Fallback: previous behaviour (base only, no plugin folding).
+        base = [n for n in (toolsets or ["hermes-acp"]) if n]
+    base += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
+    return list(dict.fromkeys(base))
 
 
 def _parse_model_config(mc: Any) -> dict:

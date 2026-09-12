@@ -106,6 +106,10 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     the child has a Wayland display). Used by every spawn site (MCP, status, doctor, install) so CLI and gateway
     runtimes share one policy."""
     env = dict(os.environ if base_env is None else base_env)
+    # A running Bot Desktop for this profile owns the agent's screen: DISPLAY/XAUTHORITY/DBUS point there so
+    # cua-driver never acts on a seat the human is sitting at (#90374 class) and headless hosts get a display.
+    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
+    env = _bot_desktop_env(env)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     if sys.platform == "linux" and env.get("WAYLAND_DISPLAY") and bool(_computer_use_cfg().get("native_wayland", False)):

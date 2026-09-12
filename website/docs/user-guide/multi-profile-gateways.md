@@ -707,6 +707,102 @@ grep -H 'TELEGRAM_BOT_TOKEN\|DISCORD_BOT_TOKEN' \
      ~/.hermes/.env ~/.hermes/profiles/*/.env
 ```
 
+## Migrating from per-profile gateways
+
+If your profiles each run their own gateway today (one systemd unit or launchd
+agent per profile), you can fold them into a single multiplexed default gateway
+with one command — and roll back with another. Standalone per-profile gateways
+remain fully supported; this is an optional migration, not a removal.
+
+```bash
+hermes gateway migrate --multiplex --dry-run   # print the plan and any blockers; changes nothing
+hermes gateway migrate --multiplex             # apply (asks for confirmation on a TTY; -y skips)
+hermes gateway migrate --standalone            # roll back to per-profile gateways
+```
+
+### What `hermes update` does
+
+After a successful update, when the install has two or more profiles, at least
+one secondary profile runs its own gateway (a live process or an installed
+service) and `gateway.multiplex_profiles` is off, `hermes update` runs the same
+preflight:
+
+- **Nothing blocks it** → the migration runs automatically (the same code path
+  as `hermes gateway migrate --multiplex --yes`) and prints what it did. This
+  is deterministic and never prompts, so it also runs on headless/cron updates.
+- **Something blocks it** → a warning block lists each blocker with its exact
+  fix and the one-liner to run later. Nothing is changed.
+
+Single-profile installs are never migrated (there is nothing to gain), and an
+install that is already multiplexing is left alone.
+
+### What the migration does
+
+1. Stops each secondary profile's standalone gateway and uninstalls its
+   service (systemd user/system unit or launchd agent). What was removed is
+   recorded in `~/.hermes/gateway_migration.json` for rollback.
+2. Sets `gateway.multiplex_profiles: true` in the **default** profile's
+   `config.yaml`.
+3. Restarts the default gateway — or installs and starts it on the same service
+   manager the secondaries were using, so a systemd-managed fleet stays
+   systemd-managed.
+4. Waits for the default gateway to record `served_profiles` covering every
+   profile, then prints a summary.
+
+### Blockers and fixes
+
+| Blocker | Why | Fix |
+|---|---|---|
+| Two profiles configure the same platform credential (e.g. the same `TELEGRAM_BOT_TOKEN`) | Under one process a bot token can only be polled once; the multiplexer would park the duplicate and that profile's bot would go silent | Remove the token from the second profile, or keep it in `default` and route that profile's chats with [`profile_routes`](#routing-shared-bot-chats-to-profiles-profile_routes) |
+| A secondary profile enables a port-binding platform that has **no** `/p/<profile>/` ingress on the default listener | The multiplexer skips that whole profile (see [rule 2](#2-http-inbound-platforms-are-reached-via-a-pprofile-url-prefix)) | Disable the platform in that profile (`platforms.<name>.enabled: false`), or keep the profile on a standalone gateway with `hermes -p <name> gateway start --force` |
+
+The credential check reuses the gateway's own conflict detection, so its verdict
+matches what the multiplexer does at startup. Which port-binding platforms have
+a `/p/<profile>/` ingress is read from the adapters themselves (each declares
+`serves_profile_prefix`), so the preflight stays correct as new HTTP-inbound
+adapters gain the prefix.
+
+### What changes for inbound-port profiles
+
+A secondary profile that used `api_server` or `webhook` on its own port is
+**not** blocked — but its URL changes. The preflight prints the exact new URL,
+for example:
+
+```
+Profile 'coder': api_server moves onto the default listener at
+http://127.0.0.1:8642/p/coder/v1/... (its key/secret is unchanged; update
+clients that call the old per-profile port).
+```
+
+The profile's own `API_SERVER_KEY` / webhook secret keeps authenticating the
+prefixed URL; nothing else about the key changes.
+
+### Profiles created after the migration
+
+The multiplexer snapshots the profile set at startup. `hermes profile create`
+prints the reminder when a live multiplexer is detected: run
+`hermes gateway restart` (from the default profile) and the new profile is
+served.
+
+### Rollback
+
+```bash
+hermes gateway migrate --standalone
+```
+
+reads `gateway_migration.json`, sets `gateway.multiplex_profiles` back to its
+previous value, restarts the default gateway, and reinstalls/starts every
+recorded per-profile service. The manifest is removed once everything is back.
+If no manifest exists (you enabled multiplexing by hand), leave multiplex mode
+with `hermes config set gateway.multiplex_profiles false && hermes gateway restart`
+and reinstall the per-profile services you want.
+
+Not covered automatically: s6-supervised containers (set the flag on the
+default profile and restart the container) and Windows Scheduled Tasks (set the
+flag, stop the per-profile tasks, `hermes gateway restart`). The dashboard's
+System page offers the same migration as a button when the preflight finds an
+eligible install.
+
 ## Updating the code
 
 `hermes update` pulls the latest code once and syncs new bundled skills into
@@ -716,6 +812,11 @@ every profile:
 hermes update
 hermes-gateways restart
 ```
+
+Running gateways are restarted by the update itself; on an install that still
+runs one gateway per profile, the update then offers the
+[migration to a single multiplexed gateway](#migrating-from-per-profile-gateways)
+— automatically when nothing blocks it, otherwise as a warning with the fixes.
 
 User-modified skills are never overwritten.
 

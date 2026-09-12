@@ -24,6 +24,7 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "popen_detached_with_breakaway_fallback",
     "bounded_git_probe",
     "bounded_probe_run",
     "noninteractive_git_env",
@@ -209,6 +210,33 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+def popen_detached_with_breakaway_fallback(argv, **kwargs):
+    """``subprocess.Popen`` detached, retrying without ``CREATE_BREAKAWAY_FROM_JOB`` when denied.
+
+    Some Windows hosts wrap every process they launch in a Job Object that does not set
+    ``JOB_OBJECT_LIMIT_BREAKAWAY_OK`` — **Task Scheduler does exactly this for every task it
+    starts**, which is the normal way a gateway comes back after a reboot.  When
+    ``CREATE_BREAKAWAY_FROM_JOB`` is requested from inside such a job, ``CreateProcess`` fails
+    outright with ``ERROR_ACCESS_DENIED`` (``PermissionError``, ``WinError 5``) instead of merely
+    ignoring the flag, so the detached child can *never* start on the auto-start path even though
+    the same spawn works fine from a plain shell.
+
+    Mirror ``gateway_windows._spawn_detached``: retry once with
+    :func:`windows_detach_flags_without_breakaway`, which drops only that bit.  On POSIX the
+    retry is meaningless (there is no breakaway concept), so the original error propagates.
+
+    ``kwargs`` must not contain ``creationflags`` — the detach flags own that slot.
+    """
+    try:
+        return subprocess.Popen(argv, **windows_detach_popen_kwargs(), **kwargs)
+    except OSError:
+        if not IS_WINDOWS:
+            raise
+        return subprocess.Popen(
+            argv, creationflags=windows_detach_flags_without_breakaway(), **kwargs
+        )
 
 
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no

@@ -19,7 +19,9 @@ import re
 import shutil
 import stat as stat_mod
 import subprocess
+import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
@@ -29,6 +31,8 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from utils import env_int
 
 logger = logging.getLogger(__name__)
+
+_LEDGER_LOCK = threading.RLock()
 
 CHECKPOINT_BASE = get_hermes_home() / "checkpoints"
 _CHECKPOINT_BASE_AT_IMPORT = CHECKPOINT_BASE
@@ -182,8 +186,9 @@ def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
             ledger = dict(sorted(ledger.items(), key=ts, reverse=True)[:_LEDGER_MAX_ENTRIES])
         path = _ledger_path(store, dir_hash)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.with_suffix(".json.tmp").write_text(json.dumps(ledger), encoding="utf-8")
-        path.with_suffix(".json.tmp").replace(path)
+        tmp = path.with_suffix(f".json.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+        tmp.write_text(json.dumps(ledger), encoding="utf-8")
+        tmp.replace(path)
     except OSError:
         logger.debug("Failed to save agent-write ledger for %s", dir_hash, exc_info=True)
 
@@ -601,7 +606,10 @@ class CheckpointManager:
             if digest is None:
                 return
             store, dir_hash = _store_path(), _project_hash(self.get_working_dir_for_path(str(path)))
-            _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
+            with _LEDGER_LOCK:
+                ledger = _load_ledger(store, dir_hash)
+                ledger[str(path)] = {"sha256": digest, "ts": time.time()}
+                _save_ledger(store, dir_hash, ledger)
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
 

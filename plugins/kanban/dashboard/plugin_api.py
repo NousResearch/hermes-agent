@@ -941,7 +941,9 @@ def terminate_run_endpoint(run_id: int, payload: TerminateRunBody, board: Option
         r = _require_run(conn, run_id)
         if r.ended_at is not None:
             raise _conflict(f"run {run_id} already ended")
-        if not kanban_db.reclaim_task(conn, r.task_id, reason=payload.reason):
+        if not kanban_db.reclaim_task(
+            conn, r.task_id, reason=payload.reason, expected_run_id=run_id,
+        ):
             raise _conflict(f"cannot terminate run {run_id}: task {r.task_id} is no longer in a reclaimable state")
         return {"ok": True, "run_id": run_id, "task_id": r.task_id}
 

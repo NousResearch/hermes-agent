@@ -2405,27 +2405,41 @@ def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: in
 
 def reclaim_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None, signal_fn=None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Operator reclaim regardless of TTL: release the claim, restore the source
-    phase, reset the failure counter. False when not running."""
+    phase, reset the failure counter. False when not running.
+
+    ``expected_run_id`` (run-scoped terminate) refuses before signaling when the
+    live ``current_run_id`` is missing or belongs to a successor. Omitted
+    (operator ``POST /tasks/{id}/reclaim`` / CLI) keeps task-level reclaim.
+    """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, claim_lock, worker_pid, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
     ).fetchone()
     if not row:
         return False
     if row["status"] != "running" and row["claim_lock"] is None:
         # Nothing to reclaim — already ready / blocked / done.
         return False
+    if expected_run_id is not None and int(row["current_run_id"] or -1) != int(expected_run_id):
+        return False
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(row["worker_pid"], prev_lock, signal_fn=signal_fn)
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
-        cur = conn.execute(
+        sql = (
             "UPDATE tasks SET status = ?, claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?", (retry_status, task_id, prev_lock),
+            "AND claim_lock IS ?"
         )
+        params: list = [retry_status, task_id, prev_lock]
+        if expected_run_id is not None:
+            sql += " AND current_run_id = ?"
+            params.append(int(expected_run_id))
+        cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             return False
         _record_reclaim(

@@ -1291,9 +1291,33 @@ export function useSessionActions({
               busyRef.current = running
               setBusy(running)
               setAwaitingResponse(running && !pendingClarify)
+
+              // View-only: project the pending clarify onto the pre-hydration
+              // transcript for this publish so `needsInput: true` is never
+              // shown ahead of an answerable row (#108718). The cache entry
+              // above stays unprojected — hydration below re-derives the
+              // authoritative transcript from scratch, and folding this
+              // synthetic row into that pipeline would leave a duplicate
+              // once the persisted transcript carries the same call under a
+              // different message id.
+              //
+              // An unproven warm cache (no matching persisted-display
+              // provenance) still has its history suppressed pending REST
+              // proof, but the clarify projection must survive that gate: it
+              // is derived from the just-returned activate snapshot, not from
+              // the unverified cache, so it is projected onto the (possibly
+              // empty) suppressed transcript rather than being wiped with it.
+              const earlyClarifyBase = suppressUnprovenWarmTranscript ? [] : activatedMessages
+
+              const earlyClarifyProjection = pendingClarify
+                ? restorePendingClarifyToolCall(earlyClarifyBase, pendingClarifyToolPayload(pendingClarify))
+                : null
+
               syncSessionStateToView(
                 cachedRuntimeId,
-                suppressTranscriptForView(activatedLivenessState, suppressUnprovenWarmTranscript)
+                earlyClarifyProjection
+                  ? { ...activatedLivenessState, messages: earlyClarifyProjection.messages }
+                  : suppressTranscriptForView(activatedLivenessState, suppressUnprovenWarmTranscript)
               )
 
               // session.activate is the ordering barrier for reconnect recovery:

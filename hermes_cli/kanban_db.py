@@ -3433,14 +3433,18 @@ def invalidate_descendants_for_parent_reopen(
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
+    reason: Optional[str] = None,
 ) -> bool:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+    ``reason`` (when given) rides on the audit comment and the ``specified``
+    event without affecting the field diff.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
+    reason_text = reason.strip() if reason and reason.strip() else None
     with write_txn(conn):
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
@@ -3472,14 +3476,21 @@ def specify_triage_task(
             return False
         if changed_fields and author and author.strip():
             # Not add_comment (own txn + 'commented' event); 'specified' below records it.
+            detail = "Specified — updated " + ", ".join(changed_fields) + " and promoted to todo."
+            if reason_text:
+                detail += " Reason: " + reason_text
             _insert_comment(
-                conn, task_id, author.strip(),
-                "Specified — updated " + ", ".join(changed_fields) + " and promoted to todo.",
+                conn, task_id, author.strip(), detail,
                 int(time.time()),
             )
+        event_payload: dict[str, Any] = {}
+        if changed_fields:
+            event_payload["changed_fields"] = changed_fields
+        if reason_text:
+            event_payload["reason"] = reason_text
         _append_event(
             conn, task_id, "specified",
-            {"changed_fields": changed_fields} if changed_fields else None,
+            event_payload or None,
         )
     # Own IMMEDIATE txn (outside the one above): a parent-free specified task
     # flips to 'ready' now instead of idling until the next tick.

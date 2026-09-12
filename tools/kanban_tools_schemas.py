@@ -513,3 +513,36 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+KANBAN_SPECIFY_SCHEMA = _schema(
+    "kanban_specify",
+    (
+        "Flesh out a triage-column task into a concrete spec WITHOUT any "
+        "LLM call: update its title, body, and/or assignee (only the "
+        "fields you pass) and promote it triage → todo in one atomic "
+        "transaction. Omitted fields are preserved exactly, including "
+        "the task_type marker on the first body line, so pass the body "
+        "verbatim when you only retitle. With no open parents it lands "
+        "in ready via the post-write recompute; with open parents it "
+        "stays in todo until they are done. Orchestrator-only — hidden "
+        "from dispatcher-spawned task workers. Fails closed unless the "
+        "task is still in triage."
+    ),
+    {
+        "task_id": _prop("string", "Task in the triage column to specify."),
+        "title": _prop("string", (
+                "Optional replacement title (blank/whitespace is "
+                "rejected). Omit to keep the current title.")),
+        "body": _prop("string", (
+                "Optional replacement body. Omit to keep the current "
+                "body byte-exact — including the task_type marker that "
+                "must stay on line 1.")),
+        "assignee": _prop("string", (
+                "Optional replacement assignee profile name. Omit to "
+                "keep the current assignee.")),
+        "reason": _prop("string", (
+                "Why you are specifying this task. Recorded in the "
+                "audit trail.")),
+    },
+    ["task_id"],
+)

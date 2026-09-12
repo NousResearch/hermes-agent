@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseTranscriptDirective } from './transcript-directives'
+import { describeDirectiveParseFailure, parseTranscriptDirective } from './transcript-directives'
 
 describe('parseTranscriptDirective', () => {
   it('parses a bare directive with no attributes', () => {
@@ -60,6 +60,42 @@ describe('parseTranscriptDirective', () => {
 
   it('bounds pathological input instead of scanning it', () => {
     expect(parseTranscriptDirective(`::x{${'a="b" '.repeat(400)}}`)).toBeNull()
+  })
+
+  // Braces inside a quoted attribute value are content, not structure: a
+  // follow-up prompt naming a git stash (`stash@{0}`) used to print as raw
+  // source because the body rejected every brace.
+  it('keeps braces that appear inside quoted values', () => {
+    const source = '::followup{p1="apply stash@{0} onto main" p2="drop stash@{2}"}'
+
+    expect(parseTranscriptDirective(source)).toEqual({
+      name: 'followup',
+      attrs: { p1: 'apply stash@{0} onto main', p2: 'drop stash@{2}' },
+      source
+    })
+  })
+
+  it('still rejects braces outside quotes, so nesting cannot be smuggled in', () => {
+    expect(parseTranscriptDirective('::preview{file="a.html" {nested}}')).toBeNull()
+    expect(parseTranscriptDirective('::preview{{file="a.html"}')).toBeNull()
+  })
+
+  it('does not backtrack on unbalanced quotes', () => {
+    // The value alternation must not turn a quote storm into exponential work.
+    // Only timing is asserted — whether these shapes parse is pre-existing
+    // behaviour this change deliberately leaves alone.
+    const started = performance.now()
+
+    parseTranscriptDirective(`::x{${'"'.repeat(600)}}`)
+    parseTranscriptDirective(`::x{${'a="{'.repeat(200)}}`)
+
+    expect(performance.now() - started).toBeLessThan(250)
+  })
+
+  it('reports a quoted-brace directive as parseable, not as a drop', () => {
+    // The diagnostic path and the parser must agree: a directive that now
+    // parses must not also be described as a failure.
+    expect(describeDirectiveParseFailure('::followup{p1="stash@{0}"}')).toBeNull()
   })
 })
 

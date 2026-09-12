@@ -133,11 +133,11 @@ Memory is a frozen snapshot — changes made during a session don't appear in th
 
 ### Don't Break the Prompt Cache
 
-Most LLM providers cache the conversation prefix (system prompt + history). If you keep your system prompt stable (same context files, same memory), subsequent messages in a session get **cache hits** that are significantly cheaper. The cache is keyed to the model and account — so an explicit `/model` switch, an [automatic provider fallback](../user-guide/features/fallback-providers.md), or a [credential-pool rotation](../user-guide/features/credential-pools.md) all force the next turn to re-read the entire conversation at full input price. Occasional switches are fine; frequent switching in a long session multiplies your cost.
+Many LLM providers cache the exact rendered conversation prefix, including system instructions, tool definitions, and history. Hermes keeps these stable and append-only within a session. An explicit `/model` switch, an [automatic provider fallback](../user-guide/features/fallback-providers.md), a [credential-pool rotation](../user-guide/features/credential-pools.md), or a change to earlier context makes the next request cold. Occasional switches are fine; frequent switching in a long session multiplies cost.
 
 ### Use /compress Before Hitting Limits
 
-Long sessions accumulate tokens. When you notice responses slowing down or getting truncated, run `/compress`. This summarizes the conversation history, preserving key context while dramatically reducing token count. Use `/usage` to check where you stand.
+Long sessions accumulate tokens. When you notice responses slowing down or getting truncated, run `/compress`. This summarizes the conversation history and reduces token count. Compression changes the prefix, so the first request afterwards may have a lower cache-hit rate; the smaller context can still be cheaper overall. Use `/usage` and `agent.log` to inspect reported token and cache counters.
 
 ### Delegate for Parallel Work
 
@@ -149,7 +149,7 @@ Instead of running terminal commands one at a time, ask the agent to write a scr
 
 ### Choose the Right Model
 
-Use `/model` to switch models mid-session. Use a frontier model (Claude Sonnet/Opus, GPT-4o) for complex reasoning and architecture decisions. Switch to a faster model for simple tasks like formatting, renaming, or boilerplate generation. Keep in mind each switch resets the prompt cache (see above), so on long sessions it's often cheaper to start a fresh session on the other model than to bounce back and forth.
+Choose the model that matches the task before starting a long session. If you switch with `/model` mid-session, expect a cold prefix on the next request because cache state is model-specific. Prefer a new session when you are changing both the task and the model.
 
 :::tip
 Run `/usage` periodically to see your token consumption. Run `/insights` for a broader view of usage patterns over the last 30 days. To see what your *fixed* per-message cost is before any conversation — system prompt, skills index, memory, tool schemas — run [`hermes prompt-size`](/reference/cli-commands#hermes-prompt-size) (works offline).

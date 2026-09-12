@@ -227,7 +227,7 @@ describe('project-associated new-session drag sources', () => {
             isMain: true,
             label: 'main',
             path: '/repo',
-            sessions: [{ id: 'main-session' } as SessionInfo]
+            sessions: [{ git_branch: 'main', id: 'main-session' } as SessionInfo]
           })
         ]}
         onNewSessionSplit={onNewSessionSplit}
@@ -242,6 +242,114 @@ describe('project-associated new-session drag sources', () => {
     expect(vi.mocked(switchBranchInRepo).mock.invocationCallOrder[0]).toBeLessThan(
       onNewSessionSplit.mock.invocationCallOrder[0]
     )
+  })
+
+  it('keeps a master-only checkout when main is only the missing-branch display fallback', async () => {
+    const onNewSession = vi.fn()
+
+    render(
+      <SidebarWorkspaceGroup
+        group={group({
+          id: '/repo::branch::main',
+          isMain: true,
+          label: 'main',
+          path: '/repo',
+          sessions: [{ git_branch: null, id: 'master-session' } as SessionInfo]
+        })}
+        onNewSession={onNewSession}
+        renderRows={() => null}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'New session in main' }))
+
+    await waitFor(() => expect(onNewSession).toHaveBeenCalledWith('/repo'))
+    expect(switchBranchInRepo).not.toHaveBeenCalled()
+  })
+
+  it.each(['master', 'release/custom'])(
+    'switches to the recorded %s branch before creating a session',
+    async branch => {
+      const onNewSession = vi.fn()
+      vi.mocked(switchBranchInRepo).mockResolvedValue(undefined)
+
+      render(
+        <SidebarWorkspaceGroup
+          group={group({
+            id: `/repo::branch::${branch}`,
+            isMain: true,
+            label: branch,
+            path: '/repo',
+            sessions: [{ git_branch: branch, id: `${branch}-session` } as SessionInfo]
+          })}
+          onNewSession={onNewSession}
+          renderRows={() => null}
+        />
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: `New session in ${branch}` }))
+
+      await waitFor(() => expect(onNewSession).toHaveBeenCalledWith('/repo'))
+      expect(switchBranchInRepo).toHaveBeenCalledWith('/repo', branch)
+      expect(vi.mocked(switchBranchInRepo).mock.invocationCallOrder[0]).toBeLessThan(
+        onNewSession.mock.invocationCallOrder[0]
+      )
+    }
+  )
+
+  it('uses an authoritative live branch target when historical session branches disagree', async () => {
+    const onNewSession = vi.fn()
+    vi.mocked(switchBranchInRepo).mockResolvedValue(undefined)
+
+    render(
+      <SidebarWorkspaceGroup
+        group={group({
+          branchTarget: 'release/live',
+          id: '/repo::branch::release/live',
+          isMain: true,
+          label: 'release/live',
+          path: '/repo',
+          sessions: [
+            { git_branch: 'main', id: 'main-session' } as SessionInfo,
+            { git_branch: 'master', id: 'master-session' } as SessionInfo
+          ]
+        })}
+        onNewSession={onNewSession}
+        renderRows={() => null}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'New session in release/live' }))
+
+    await waitFor(() => expect(onNewSession).toHaveBeenCalledWith('/repo'))
+    expect(switchBranchInRepo).toHaveBeenCalledWith('/repo', 'release/live')
+  })
+
+  it('retains the checkout when recorded branch data is ambiguous', async () => {
+    const onNewSession = vi.fn()
+
+    render(
+      <SidebarWorkspaceGroup
+        group={group({
+          branchTarget: null,
+          id: '/repo::branch::main',
+          isMain: true,
+          label: 'main',
+          path: '/repo',
+          sessions: [
+            { git_branch: 'main', id: 'main-session' } as SessionInfo,
+            { git_branch: 'master', id: 'master-session' } as SessionInfo
+          ]
+        })}
+        onNewSession={onNewSession}
+        renderRows={() => null}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'New session in main' }))
+
+    await waitFor(() => expect(onNewSession).toHaveBeenCalledWith('/repo'))
+    expect(switchBranchInRepo).not.toHaveBeenCalled()
   })
 
   it('drags from an entered-project repo + with that repo cwd', () => {

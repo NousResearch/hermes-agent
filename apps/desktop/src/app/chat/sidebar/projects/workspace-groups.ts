@@ -16,6 +16,9 @@ export interface SidebarSessionGroup {
   label: string
   path: null | string
   sessions: SessionInfo[]
+  // Authoritative branch for mutations when known from the live worktree
+  // probe. Unlike `label`, this never contains a display fallback.
+  branchTarget?: null | string
   // Profile color for the ALL-profiles view; absent for workspace groups.
   color?: null | string
   // True when this group is a repo's main checkout (vs a linked worktree).
@@ -212,7 +215,8 @@ export function mergeRepoWorktreeGroups(
   // branch, defaulting to `main`. Known only when the local git probe ran;
   // remote backends keep the backend's recorded-branch main lane untouched.
   const mainWorktree = (discoveredWorktrees ?? []).find(w => w.isMain)
-  const homeBranch = mainWorktree && !mainWorktree.detached ? mainWorktree.branch?.trim() || DEFAULT_BRANCH_LABEL : ''
+  const homeBranchTarget = mainWorktree && !mainWorktree.detached ? mainWorktree.branch?.trim() || '' : ''
+  const homeLabel = mainWorktree && !mainWorktree.detached ? homeBranchTarget || DEFAULT_BRANCH_LABEL : ''
 
   // Reconcile a LINKED worktree lane against git truth so its label AND path
   // describe the SAME worktree. Two repair directions:
@@ -255,14 +259,15 @@ export function mergeRepoWorktreeGroups(
   // Fold every main-checkout lane into one home lane labeled by the live branch
   // (the root dir is only ever on one branch); reconcile the linked worktrees.
   // Always shown, even with no sessions on the current branch yet. Remote
-  // backends (no probe → no homeBranch) keep their main lanes untouched.
+  // backends (no probe → no homeLabel) keep their main lanes untouched.
   const mainGroups = repo.groups.filter(group => group.isMain)
   const reconciled = repo.groups.filter(group => !group.isMain).map(reconcile)
 
-  if (homeBranch) {
+  if (homeLabel) {
     reconciled.push({
-      id: branchLaneId(repo.id, homeBranch),
-      label: homeBranch,
+      branchTarget: homeBranchTarget || null,
+      id: branchLaneId(repo.id, homeLabel),
+      label: homeLabel,
       path: repo.path,
       isMain: true,
       isHome: true,
@@ -311,7 +316,7 @@ export function mergeRepoWorktreeGroups(
     }
 
     // The home checkout is already the collapsed home lane (above).
-    if (worktree.isMain && homeBranch) {
+    if (worktree.isMain && homeLabel) {
       continue
     }
 
@@ -516,9 +521,17 @@ function liveLaneForRepo(repoRoot: string, session: SessionInfo): null | Sidebar
       : { id: worktreeRoot, isMain: false, label: slug, path: worktreeRoot, sessions: [] }
   }
 
-  const branch = (session.git_branch || '').trim() || DEFAULT_BRANCH_LABEL
+  const branchTarget = (session.git_branch || '').trim()
+  const branch = branchTarget || DEFAULT_BRANCH_LABEL
 
-  return { id: branchLaneId(repoRoot, branch), isMain: true, label: branch, path: repoRoot, sessions: [] }
+  return {
+    branchTarget: branchTarget || null,
+    id: branchLaneId(repoRoot, branch),
+    isMain: true,
+    label: branch,
+    path: repoRoot,
+    sessions: []
+  }
 }
 
 const NO_REMOVED: ReadonlySet<string> = new Set()

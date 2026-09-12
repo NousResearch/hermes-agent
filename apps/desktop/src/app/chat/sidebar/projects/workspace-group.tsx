@@ -39,6 +39,26 @@ interface SidebarWorkspaceGroupProps {
   onRemove?: () => void
 }
 
+function workspaceBranchTarget(group: SidebarSessionGroup): null | string {
+  const liveBranch = group.branchTarget?.trim()
+
+  if (liveBranch) {
+    return liveBranch
+  }
+
+  const recordedBranches = [
+    ...new Set(
+      group.sessions.map(session => session.git_branch?.trim()).filter((branch): branch is string => Boolean(branch))
+    )
+  ]
+
+  if (recordedBranches.length === 1) {
+    return recordedBranches[0]
+  }
+
+  return null
+}
+
 export function SidebarWorkspaceGroup({
   group,
   renderRows,
@@ -91,14 +111,17 @@ export function SidebarWorkspaceGroup({
       return true
     }
 
-    // Main-checkout lanes are branch-labeled views over the same repo root path.
-    // Clicking "+" on `main` should open on `main`, not whatever branch the root
-    // currently sits on (`test0`, etc.), so explicitly switch first.
-    if (group.isMain && group.path && group.label) {
+    // Main-checkout lanes are branch-labeled views over the same repo root path,
+    // but the label may be the display-only `main` fallback for a legacy row.
+    // Switch only with live or recorded branch truth; otherwise retain the
+    // checkout's current branch.
+    const branchTarget = workspaceBranchTarget(group)
+
+    if (group.isMain && group.path && branchTarget) {
       try {
-        await switchBranchInRepo(group.path, group.label)
+        await switchBranchInRepo(group.path, branchTarget)
       } catch (err) {
-        notifyError(err, t.statusStack.coding.switchFailed(group.label))
+        notifyError(err, t.statusStack.coding.switchFailed(branchTarget))
 
         return false
       }

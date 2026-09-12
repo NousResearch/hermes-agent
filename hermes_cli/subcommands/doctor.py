@@ -12,7 +12,11 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
         description="Diagnose issues with Hermes Agent setup")
     doctor_parser.add_argument(
         "--fix", action="store_true", help="Attempt to fix issues automatically")
-    doctor_parser.add_argument(
+    mode_group = doctor_parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--quick", action="store_true",
+        help="Skip npm audits and API connectivity checks for a faster local run.")
+    mode_group.add_argument(
         "--live", action="store_true",
         help="Opt-in: run one bounded, read-only real-call health probe per "
             "configured tool backend (Firecrawl/FAL/browser/MCP/TTS/STT) "

@@ -1043,6 +1043,11 @@ def check_all_command_guards(command: str, env_type: str,
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
+    # Cron jobs are unattended even when their host gateway exports interactive
+    # approval flags. Ignore those flags so cron_mode resolves deterministically.
+    if _is_cron_approval_context():
+        is_cli = is_gateway = is_ask = False
+
     # Outside CLI/gateway/ask flows we never block on approvals: each
     # unattended context applies its configured deny/approve mode, else allow.
     if not is_cli and not is_gateway and not is_ask:

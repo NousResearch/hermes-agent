@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 from typing import Callable
 from typing import Mapping
+from typing import NamedTuple
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -170,6 +171,77 @@ def _worktree_branch_for(task_id: str) -> str:
     return f"{_WORKTREE_DEFAULT_BRANCH_PREFIX}{task_id}"
 
 
+# Which lever picked the anchor repo. ``prose`` = an absolute path token in the
+# card's own text named a git repo; ``board_default`` = nothing in the prose
+# resolved, so the board's ``default_workdir`` decided — a guess, because a card
+# may target a sibling repo it names only in prose (measured: card t_ef94e814
+# targeted gamified-plant and was anchored to sams-app). The source is recorded
+# on the upgrade event so the guess is visible instead of silent.
+ANCHOR_SOURCE_PROSE = "prose"
+ANCHOR_SOURCE_BOARD_DEFAULT = "board_default"
+
+# Canonical worktree layout ``<repo>/.worktrees/<task-id>``, mirrored from
+# ``kanban_db_workspace`` (line ~416) — used to recognise a prose path that names
+# a worktree which no longer exists.
+_WORKTREES_DIRNAME = ".worktrees"
+
+
+class _RepoAnchor(NamedTuple):
+    """A repo a card's worktree can anchor on, plus the lever that found it.
+
+    ``prose_path`` is the path token the card actually named (prose anchors only)
+    so the caller can tell a live path from one that is gone — a card whose prose
+    points into a *sibling card's deleted worktree* resolves through its enclosing
+    repo, which is how one card silently anchored on the wrong repo entirely.
+    """
+
+    repo: Path
+    source: str
+    prose_path: Optional[str] = None
+
+
+def _prose_names_repo(title: Optional[str], body: Optional[str], repo: Path) -> bool:
+    """Whether the card prose names ``repo`` by its basename (word-bounded, any case).
+
+    Used to tell an unconfirmed board-default anchor — the card never mentions
+    the repo its worktree landed on — from one the card's own prose confirms:
+    ``sams-app`` matches ``sams-app`` but not ``sams-app-old`` or ``x.sams-app``.
+    """
+    name = repo.name
+    if not name:
+        return False
+    return re.search(
+        rf"(?<![\w.-]){re.escape(name)}(?![\w.-])",
+        f"{title or ''}\n{body or ''}",
+        re.IGNORECASE,
+    ) is not None
+
+
+def _sibling_repo_named_in_prose(
+    title: Optional[str], body: Optional[str], repo: Path,
+) -> Optional[str]:
+    """A git repo next to ``repo`` that the card prose names, else ``None``.
+
+    Cheap and precise: one directory listing of the anchor's parent, then a
+    word-bounded name check per sibling repo. Catches the measured failure
+    directly — the card says ``gamified-plant`` while the board default anchored
+    the worktree to the sibling ``sams-app`` — without guessing which words in a
+    body are repo names.
+    """
+    parent = repo.parent
+    try:
+        siblings = sorted(
+            p.name for p in parent.iterdir()
+            if p.is_dir() and p.name != repo.name and (p / ".git").exists()
+        )
+    except OSError:
+        return None
+    for name in siblings:
+        if _prose_names_repo(title, body, Path(name)):
+            return name
+    return None
+
+
 # A path token in card prose: words beginning with /, ~/, or $HOME/.
 _REPO_PATH_PATTERN = re.compile(r"""(?:^|[\s(=\\"'`])(?P<path>(?:~/|/|\$HOME(?:/|$))[^\s,;)"']+)""")
 
@@ -178,13 +250,16 @@ def _card_repo_anchor(
     title: Optional[str],
     body: Optional[str],
     board: Optional[str] = None,
-) -> Optional[Path]:
-    """Return a git repo root the card's title/body references, else ``None``.
+) -> "Optional[_RepoAnchor]":
+    """Return a git repo root the card references, with the lever that found it.
 
     Every absolute / ~-prefixed path token in the card prose is expanded and
     checked with ``git rev-parse --show-toplevel`` (via ``_kbw._git_toplevel``);
-    the first that names a git repo wins. Falls back to the board's
-    ``default_workdir`` when it (or a parent) is a git repo.
+    the first that names a git repo wins (``source=ANCHOR_SOURCE_PROSE``). Only
+    when the prose resolves nothing does the board's ``default_workdir`` decide
+    (``source=ANCHOR_SOURCE_BOARD_DEFAULT``) — the caller must treat that as a
+    guess, because a card targeting a sibling repo names it in prose only, and
+    a bare repo name is not a path token.
     """
     text = f"{title or ''}\n{body or ''}"
     for m in _REPO_PATH_PATTERN.finditer(text):
@@ -204,13 +279,33 @@ def _card_repo_anchor(
             p = p.parent
         top = _kbw._git_toplevel(p)
         if top is not None:
-            return top
+            return _RepoAnchor(top, ANCHOR_SOURCE_PROSE, expanded)
     if board:
         default_workdir = (_kb.read_board_metadata(board).get("default_workdir") or "").strip()
         if default_workdir:
             top = _kbw._git_toplevel(Path(os.path.expanduser(default_workdir)))
             if top is not None:
-                return top
+                return _RepoAnchor(top, ANCHOR_SOURCE_BOARD_DEFAULT)
+    return None
+
+
+def _gone_prose_worktree(prose_path: Optional[str]) -> Optional[str]:
+    """The ``.worktrees/<id>`` directory a prose path names, when it is gone.
+
+    A card may name a file that does not exist yet inside a repo — normal, and not
+    flagged. A card naming a *deleted worktree* is different: the anchor resolves
+    through the enclosing repo, so the card that says "continue in
+    .../sams-app/.worktrees/t_ef94e814" gets a worktree on sams-app while meaning
+    something else entirely. Only that shape is reported.
+    """
+    if not prose_path:
+        return None
+    parts = Path(prose_path).parts
+    for i, part in enumerate(parts):
+        if part == _WORKTREES_DIRNAME and i + 1 < len(parts):
+            candidate = Path(*parts[: i + 2])
+            if not candidate.exists():
+                return str(candidate)
     return None
 
 
@@ -227,6 +322,17 @@ def _maybe_upgrade_repo_scratch(
     isolated ``worktree`` so concurrent workers never share a checkout.
     Otherwise emit a ``scratch_repo_reference_warning`` event (advisory) and
     leave it as scratch. Returns the (possibly refreshed) Task.
+
+    A board-default anchor is a guess, and is surfaced as one: the upgrade event
+    carries ``anchor_source``, and when the card's own prose never names the
+    anchored repo — or names a sibling repo that exists next to it — a
+    ``workspace_anchor_fallback`` event records the hazard (the worktree may sit
+    on a repo the card never meant to touch).
+
+    A prose anchor is not automatically trustworthy either: when the path the card
+    names is gone from disk (a sibling card's deleted worktree is the common case)
+    the anchor resolves through its enclosing repo, so a
+    ``workspace_anchor_unverified`` event records that too.
     """
     if (task.workspace_kind or "scratch") != "scratch":
         return task
@@ -246,29 +352,94 @@ def _maybe_upgrade_repo_scratch(
             )
         return task
     branch = task.branch_name or _worktree_branch_for(task.id)
+    # A board-default anchor is a guess. Flag it whenever the card's own prose
+    # (`a`) never names the repo it landed on, or (`b`) names a *sibling* repo
+    # that exists next to it — so the wrong-repo hazard is on the board instead
+    # of invisible in a workspace path.
+    names_anchor_repo = _prose_names_repo(task.title, task.body, anchor.repo)
+    sibling_named: Optional[str] = None
+    if anchor.source == ANCHOR_SOURCE_BOARD_DEFAULT:
+        sibling_named = _sibling_repo_named_in_prose(task.title, task.body, anchor.repo)
+    unconfirmed_fallback = (
+        anchor.source == ANCHOR_SOURCE_BOARD_DEFAULT
+        and (sibling_named is not None or not names_anchor_repo)
+    )
+    # The prose lever misses too: a card naming a worktree that is gone from disk
+    # resolves through the enclosing repo, so the anchor silently lands on whatever
+    # repo used to contain it — the measured shape of the card that filed this one.
+    gone_worktree = (
+        _gone_prose_worktree(anchor.prose_path)
+        if anchor.source == ANCHOR_SOURCE_PROSE
+        else None
+    )
     with _kb.write_txn(conn):
         conn.execute(
             "UPDATE tasks SET workspace_kind='worktree', workspace_path=?, branch_name=? "
             "WHERE id=?",
-            (str(anchor), branch, task.id),
+            (str(anchor.repo), branch, task.id),
         )
         _kb._append_event(
             conn, task.id, "workspace_upgraded_to_worktree",
             {
                 "from": "scratch",
                 "to": "worktree",
-                "repo": str(anchor),
+                "repo": str(anchor.repo),
                 "branch": branch,
+                "anchor_source": anchor.source,
                 "reason": "card references a git repo; per-task worktree isolation "
                           "prevents concurrent workers sharing one checkout",
             },
         )
+        if unconfirmed_fallback:
+            _kb._append_event(
+                conn, task.id, "workspace_anchor_fallback",
+                {
+                    "repo": str(anchor.repo),
+                    "branch": branch,
+                    "anchor_source": anchor.source,
+                    "board": board or "",
+                    "card_names_repo_in_prose": names_anchor_repo,
+                    "sibling_repo_named_in_prose": sibling_named,
+                    "reason": "card prose resolves no repo path, so the board's "
+                              "default_workdir decided the anchor — verify this is the "
+                              "repo the card targets, or pin workspace_path on the card",
+                },
+            )
+        if gone_worktree:
+            _kb._append_event(
+                conn, task.id, "workspace_anchor_unverified",
+                {
+                    "repo": str(anchor.repo),
+                    "branch": branch,
+                    "anchor_source": anchor.source,
+                    "prose_worktree": gone_worktree,
+                    "reason": "the card names a worktree that is not on disk, so the "
+                              "anchor resolved to its enclosing repo — this worktree "
+                              "may be on a repo the card never meant; pin "
+                              "workspace_path on the card",
+                },
+            )
     refreshed = _kb.get_task(conn, task.id)
     _kb._log.info(
-        "kanban dispatch: upgraded %s from scratch to worktree on %s (%s) — "
-        "repo-card isolation (post-mortem 2026-09-07)",
-        task.id, anchor, branch,
+        "kanban dispatch: upgraded %s from scratch to worktree on %s (%s, "
+        "anchor_source=%s) — repo-card isolation (post-mortem 2026-09-07)",
+        task.id, anchor.repo, branch, anchor.source,
     )
+    if unconfirmed_fallback:
+        _kb._log.warning(
+            "kanban dispatch: %s anchored to %s via the board's own default_workdir "
+            "(the card prose resolves no repo path%s) — the worktree may sit on the "
+            "wrong repo; pin workspace_path on the card",
+            task.id, anchor.repo,
+            f", and names the sibling repo {sibling_named}" if sibling_named else "",
+        )
+    if gone_worktree:
+        _kb._log.warning(
+            "kanban dispatch: %s names the worktree %s, which is not on disk — "
+            "anchored to its enclosing repo %s; the worktree may sit on the wrong "
+            "repo; pin workspace_path on the card",
+            task.id, gone_worktree, anchor.repo,
+        )
     return refreshed or task
 
 

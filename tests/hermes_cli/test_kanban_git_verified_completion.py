@@ -39,8 +39,8 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
-def _make_git_repo(base: Path) -> str:
-    repo = base / "repo"
+def _make_git_repo(base: Path, name: str = "repo") -> str:
+    repo = base / name
     repo.mkdir(parents=True, exist_ok=True)
 
     def git(*args, **kw):
@@ -156,3 +156,184 @@ def test_default_spawn_force_loads_git_verify_skill(kanban_home, monkeypatch):
     i = args.index("--skills")
     assert i + 1 < len(args)
     assert args[i + 1] == kbd.DEFAULT_GIT_VERIFY_SKILL
+
+
+# ---------------------------------------------------------------------------
+# Anchor source: a board-default anchor is a guess, and must say so
+# (card t_31f36f49 — a card targeting gamified-plant was anchored, via the
+# board default_workdir fallback, to the sibling repo sams-app).
+# ---------------------------------------------------------------------------
+
+
+def _payloads(conn, tid, kind):
+    return [e.payload for e in kb.list_events(conn, tid) if e.kind == kind]
+
+
+def test_prose_anchor_records_anchor_source(kanban_home, tmp_path):
+    """Invariant: the upgrade event names the lever that picked the repo."""
+    repo = _make_git_repo(tmp_path)
+    conn = kbc.connect()
+    try:
+        tid = _mk(conn, body=f"implement the fix in {repo}/src/main.py")
+        task = kb.get_task(conn, tid)
+
+        kbd._maybe_upgrade_repo_scratch(conn, task, board=None)
+
+        payloads = _payloads(conn, tid, "workspace_upgraded_to_worktree")
+        assert len(payloads) == 1
+        assert payloads[0]["anchor_source"] == kbd.ANCHOR_SOURCE_PROSE
+        assert payloads[0]["repo"] == str(Path(repo).resolve())
+        # The prose itself named the repo — nothing to flag.
+        assert _payloads(conn, tid, "workspace_anchor_fallback") == []
+    finally:
+        conn.close()
+
+
+def test_board_default_anchor_without_prose_confirmation_is_flagged(kanban_home, tmp_path):
+    """The regression card t_31f36f49 measured: prose names no repo path and no
+    repo name, so the board's default_workdir decides — the worktree lands on a
+    sibling repo the card never mentions. That guess must be visible on the
+    board, not just in the workspace path."""
+    repo = _make_git_repo(tmp_path)
+    kb.create_board("sibling-probe", default_workdir=repo)
+    conn = kbc.connect(board="sibling-probe")
+    try:
+        tid = _mk(conn, body="Apply the same .worktrees/ ignore rule to gamified-plant")
+        task = kb.get_task(conn, tid)
+
+        upgraded = kbd._maybe_upgrade_repo_scratch(conn, task, board="sibling-probe")
+
+        assert upgraded.workspace_kind == "worktree"
+        assert Path(upgraded.workspace_path).resolve() == Path(repo).resolve()
+        payloads = _payloads(conn, tid, "workspace_upgraded_to_worktree")
+        assert payloads[0]["anchor_source"] == kbd.ANCHOR_SOURCE_BOARD_DEFAULT
+
+        flagged = _payloads(conn, tid, "workspace_anchor_fallback")
+        assert len(flagged) == 1
+        assert flagged[0]["repo"] == str(Path(repo).resolve())
+        assert flagged[0]["anchor_source"] == kbd.ANCHOR_SOURCE_BOARD_DEFAULT
+        assert flagged[0]["board"] == "sibling-probe"
+        assert flagged[0]["card_names_repo_in_prose"] is False
+        assert flagged[0]["sibling_repo_named_in_prose"] is None
+    finally:
+        conn.close()
+
+
+def test_sibling_repo_named_in_prose_is_flagged(kanban_home, tmp_path):
+    """The measured shape of t_ef94e814: the card is about gamified-plant and
+    mentions the board repo in passing (``sams-app.sh``). Anchoring on sams-app
+    must still be flagged — a sibling repo is what the card is actually about,
+    and the passing mention is not confirmation."""
+    ws = tmp_path / "workspace"
+    sams = _make_git_repo(ws, "sams-app")
+    _make_git_repo(ws, "gamified-plant")
+    kb.create_board("sams-probe", default_workdir=sams)
+    conn = kbc.connect(board="sams-probe")
+    try:
+        tid = _mk(
+            conn,
+            body="Port the ignore rules to gamified-plant, same sweep as sams-app.sh",
+        )
+        task = kb.get_task(conn, tid)
+
+        kbd._maybe_upgrade_repo_scratch(conn, task, board="sams-probe")
+
+        flagged = _payloads(conn, tid, "workspace_anchor_fallback")
+        assert len(flagged) == 1
+        assert flagged[0]["repo"] == str(Path(sams).resolve())
+        assert flagged[0]["sibling_repo_named_in_prose"] == "gamified-plant"
+        # "sams-app.sh" is not the repo name — the prose never names the anchor.
+        assert flagged[0]["card_names_repo_in_prose"] is False
+    finally:
+        conn.close()
+
+
+def test_prose_path_gone_from_disk_is_flagged(kanban_home, tmp_path):
+    """A card naming a *deleted* sibling worktree inside a repo resolves through
+    the enclosing repo, so the worktree lands on a repo the card never meant.
+    Measured on t_31f36f49 itself, whose prose pointed at
+    ``.../sams-app/.worktrees/t_ef94e814`` after that worktree was gone."""
+    repo = _make_git_repo(tmp_path)
+    (Path(repo) / ".worktrees").mkdir(exist_ok=True)
+    gone = Path(repo) / ".worktrees" / "t_ef94e814"
+    assert not gone.exists()
+    conn = kbc.connect(board="default")
+    try:
+        tid = _mk(conn, body=f"Continue the audit in {gone}/docs (checkout was there)")
+        task = kb.get_task(conn, tid)
+
+        kbd._maybe_upgrade_repo_scratch(conn, task, board="default")
+
+        # The anchor is still the enclosing repo — but it says why it is a guess.
+        upgraded = _payloads(conn, tid, "workspace_upgraded_to_worktree")
+        assert upgraded[0]["anchor_source"] == kbd.ANCHOR_SOURCE_PROSE
+        assert upgraded[0]["repo"] == str(Path(repo).resolve())
+        unverified = _payloads(conn, tid, "workspace_anchor_unverified")
+        assert len(unverified) == 1
+        assert unverified[0]["prose_worktree"] == str(gone)
+        assert unverified[0]["repo"] == str(Path(repo).resolve())
+    finally:
+        conn.close()
+
+
+def test_live_prose_path_is_not_flagged(kanban_home, tmp_path):
+    """A file the card is about to create is a normal prose path, not a hazard —
+    flagging it would be noise an operator learns to ignore."""
+    repo = _make_git_repo(tmp_path)
+    (Path(repo) / "docs").mkdir(exist_ok=True)
+    conn = kbc.connect(board="default")
+    try:
+        tid = _mk(conn, body=f"Edit {repo}/docs/new-file.md in place")
+        task = kb.get_task(conn, tid)
+
+        kbd._maybe_upgrade_repo_scratch(conn, task, board="default")
+
+        assert _payloads(conn, tid, "workspace_anchor_unverified") == []
+        assert _payloads(conn, tid, "workspace_anchor_fallback") == []
+    finally:
+        conn.close()
+
+
+def test_existing_worktree_path_is_not_flagged(kanban_home, tmp_path):
+    """A card that names a worktree which *is* on disk resolves cleanly."""
+    repo = _make_git_repo(tmp_path)
+    live = Path(repo) / ".worktrees" / "t_alive"
+    live.mkdir(parents=True)
+    conn = kbc.connect(board="default")
+    try:
+        tid = _mk(conn, body=f"The checkout is at {live} — keep going")
+        task = kb.get_task(conn, tid)
+
+        kbd._maybe_upgrade_repo_scratch(conn, task, board="default")
+
+        assert _payloads(conn, tid, "workspace_anchor_unverified") == []
+    finally:
+        conn.close()
+
+
+def test_board_default_anchor_confirmed_by_prose_is_not_flagged(kanban_home, tmp_path):
+    """A board-default anchor is fine when the card's own prose names that repo;
+    flagging it would be noise an operator learns to ignore."""
+    repo = _make_git_repo(tmp_path)
+    kb.create_board("self-probe", default_workdir=repo)
+    conn = kbc.connect(board="self-probe")
+    try:
+        tid = _mk(conn, body="Update the repo README and .gitignore")
+        task = kb.get_task(conn, tid)
+
+        kbd._maybe_upgrade_repo_scratch(conn, task, board="self-probe")
+
+        payloads = _payloads(conn, tid, "workspace_upgraded_to_worktree")
+        assert payloads[0]["anchor_source"] == kbd.ANCHOR_SOURCE_BOARD_DEFAULT
+        assert _payloads(conn, tid, "workspace_anchor_fallback") == []
+    finally:
+        conn.close()
+
+
+def test_prose_names_repo_is_word_bounded(tmp_path):
+    """Basename matching must not fire on a longer or dotted name."""
+    repo = Path(tmp_path) / "sams-app"
+    assert kbd._prose_names_repo("fix sams-app now", None, repo)
+    assert kbd._prose_names_repo(None, "SAMS-APP deploy notes", repo)
+    assert not kbd._prose_names_repo("fix sams-app-old now", None, repo)
+    assert not kbd._prose_names_repo("see x.sams-app for detail", None, repo)

@@ -11544,6 +11544,10 @@ async function ensureRegistryBackend(
   })
 
   if (primary) {
+    // Register this profile's backend mode so WSL-bridge eligibility reflects
+    // whether the backend is local vs. remote (#102868).
+    setWslBridgeProfileState(profileKey, primary.mode !== 'remote')
+
     return {
       ...primary,
       profile: profileKey,
@@ -11561,6 +11565,10 @@ async function ensureRegistryBackend(
     const primaryDescriptor = await ensureBackend(profile, { passive })
 
     if (registrySourceOwnsPrimaryBackend(registry, id, primaryDescriptor)) {
+      // Register this profile's backend mode so WSL-bridge eligibility reflects
+      // whether the backend is local vs. remote (#102868).
+      setWslBridgeProfileState(profileKey, primaryDescriptor.mode !== 'remote')
+
       return {
         ...primaryDescriptor,
         profile: profileKey,
@@ -11608,6 +11616,11 @@ async function ensureRegistryBackend(
         promotePoolEntry(existingLocal)
       }
 
+      // Register this profile's backend mode so WSL-bridge eligibility reflects
+      // whether the backend is local vs. remote. Registry 'local' sources always
+      // mean local mode (#102868).
+      setWslBridgeProfileState(profileKey, true)
+
       return existingLocal.connectionPromise
     }
 
@@ -11637,6 +11650,13 @@ async function ensureRegistryBackend(
 
       await teardownFailedLocalBackend(localRoute.poolKey, localEntry)
       throw error
+    }).then(connection => {
+      // Register this profile's backend mode so WSL-bridge eligibility reflects
+      // whether the backend is local vs. remote. Registry 'local' sources always
+      // mean local mode (#102868).
+      setWslBridgeProfileState(profileKey, true)
+
+      return connection
     })
     backendPool.set(localRoute.poolKey, localEntry)
     startPoolIdleReaper()
@@ -11711,6 +11731,12 @@ async function ensureRegistryBackend(
     }
 
     throw error
+  }).then(connection => {
+    // Register this profile's backend mode so WSL-bridge eligibility reflects
+    // whether the backend is local vs. remote (#102868).
+    setWslBridgeProfileState(profileKey, connection.mode !== 'remote')
+
+    return connection
   })
   backendPool.set(key, entry)
   startPoolIdleReaper()

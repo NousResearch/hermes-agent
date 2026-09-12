@@ -876,8 +876,17 @@ def handle_function_call(
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id)
     start = time.monotonic()
 
+    accounting_done = False
+
     def _emit(result: Any, **extra: Any) -> Any:
         """Emit post_tool_call with this call's identity fields; returns *result*."""
+        nonlocal accounting_done
+        # Nested RPCs and connector entries bypass the agent result-commit seam.
+        # Count once even if a later result transform fails and re-enters _emit.
+        if not accounting_done and extra.get("status") not in {"blocked", "cancelled"}:
+            accounting_done = True
+            from agent.free_tier import record_dispatch_completion
+            record_dispatch_completion(function_name, function_args, tool_call_id)
         _emit_post_tool_call_hook(function_name=function_name, function_args=function_args, result=result,
                                   **asdict(ids), middleware_trace=list(trace), **extra)
         return result

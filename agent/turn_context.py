@@ -891,7 +891,7 @@ def build_turn_context(
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
-    agent._restore_primary_runtime()
+    # Primary fallback restoration precedes free-tier admission in conversation_loop.
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 

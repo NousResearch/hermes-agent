@@ -1,6 +1,12 @@
 import { atom } from 'nanostores'
 
-import { getActionStatus, restartGateway } from '@/hermes'
+import {
+  getActionStatus,
+  getApiRequestConnection,
+  getApiRequestProfile,
+  type ProfileScope,
+  restartGateway
+} from '@/hermes'
 import { translateNow } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import type { ActionResponse } from '@/types/hermes'
@@ -19,10 +25,10 @@ export const $gatewayRestarting = atom(false)
 // non-zero exit so the caller can surface the failure. In no-service installs
 // the child becomes the foreground gateway and never exits, so "still running
 // when the window closes" counts as success.
-async function awaitAction(name: string): Promise<void> {
+async function awaitAction(name: string, scope: ProfileScope): Promise<void> {
   for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
     await new Promise(resolve => window.setTimeout(resolve, POLL_INTERVAL_MS))
-    const status = await getActionStatus(name, POLL_TIMEOUT_S)
+    const status = await getActionStatus(name, POLL_TIMEOUT_S, scope)
 
     if (!status.running) {
       if (status.exit_code != null && status.exit_code !== 0) {
@@ -40,16 +46,20 @@ async function awaitAction(name: string): Promise<void> {
 // `void runGatewayRestart()`, and a failure is the only thing that toasts.
 // Resolves `true` when the restart child completed cleanly (callers that keep
 // a "restart needed" banner clear it on that signal only).
-export async function runGatewayRestart(): Promise<boolean> {
+export async function runGatewayRestart(
+  scope = { connectionId: getApiRequestConnection(), profile: getApiRequestProfile() }
+): Promise<boolean> {
   $gatewayRestarting.set(true)
 
   try {
-    const started: ActionResponse = await restartGateway()
-    await awaitAction(started.name)
+    const started: ActionResponse = await restartGateway(scope)
+    await awaitAction(started.name, scope)
 
     return true
   } catch (err) {
-    notifyError(err, translateNow('commandCenter.gatewayRestartFailed'))
+    if (getApiRequestProfile() === scope.profile && getApiRequestConnection() === scope.connectionId) {
+      notifyError(err, translateNow('commandCenter.gatewayRestartFailed'))
+    }
 
     return false
   } finally {
@@ -61,10 +71,11 @@ export async function runGatewayRestart(): Promise<boolean> {
 // credentials) instead of one this app requested. Same indicator, same bounded
 // poll; resolves `false` on a non-zero exit so the caller can re-arm its banner.
 export async function watchGatewayRestartOutcome(): Promise<boolean> {
+  const scope = { connectionId: getApiRequestConnection(), profile: getApiRequestProfile() }
   $gatewayRestarting.set(true)
 
   try {
-    await awaitAction(GATEWAY_RESTART_ACTION)
+    await awaitAction(GATEWAY_RESTART_ACTION, scope)
 
     return true
   } catch {

@@ -19,15 +19,17 @@ describe('Webhook REST parity helpers', () => {
   })
 
   it('lists webhooks from the admin endpoint', async () => {
-    await getWebhooks()
+    await getWebhooks('worker')
 
-    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/webhooks' }))
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/webhooks', profile: 'worker' }))
   })
 
   it('enables the webhook platform with POST', async () => {
-    await enableWebhooks()
+    await enableWebhooks('worker')
 
-    expect(api).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', path: '/api/webhooks/enable' }))
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'POST', path: '/api/webhooks/enable', profile: 'worker' })
+    )
   })
 
   it('creates a subscription with the full payload', async () => {
@@ -40,25 +42,30 @@ describe('Webhook REST parity helpers', () => {
       prompt: 'summarize the push'
     }
 
-    await createWebhook(body)
+    await createWebhook(body, 'worker')
 
-    expect(api).toHaveBeenCalledWith(expect.objectContaining({ body, method: 'POST', path: '/api/webhooks' }))
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ body, method: 'POST', path: '/api/webhooks', profile: 'worker' })
+    )
   })
 
   it('encodes the name when deleting a subscription', async () => {
-    await deleteWebhook('my hook')
+    await deleteWebhook('my hook', 'worker')
 
-    expect(api).toHaveBeenCalledWith(expect.objectContaining({ method: 'DELETE', path: '/api/webhooks/my%20hook' }))
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'DELETE', path: '/api/webhooks/my%20hook', profile: 'worker' })
+    )
   })
 
   it('toggles a subscription enabled state via PUT', async () => {
-    await setWebhookEnabled('github-push', false)
+    await setWebhookEnabled('github-push', false, 'worker')
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         body: { enabled: false },
         method: 'PUT',
-        path: '/api/webhooks/github-push/enabled'
+        path: '/api/webhooks/github-push/enabled',
+        profile: 'worker'
       })
     )
   })

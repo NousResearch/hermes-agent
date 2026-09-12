@@ -174,6 +174,44 @@ class SessionUsageMixin:
             self._apply_claimed_batch(batch)
         return True
 
+    def _usage_snapshot_for_sessions(self, session_ids: List[str]) -> Dict[str, int | float]:
+        if not self.flush_token_counts():
+            raise TimeoutError("token accounting did not flush before usage snapshot")
+        placeholders = ",".join("?" for _ in session_ids)
+        row = self._read_one(
+            f"""SELECT COALESCE(SUM(api_call_count), 0) AS api_calls,
+                      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                      COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                      COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                      COALESCE(SUM(estimated_cost_usd), 0.0) AS estimated_cost_usd,
+                      COALESCE(SUM(actual_cost_usd), 0.0) AS actual_cost_usd
+                 FROM session_model_usage
+                WHERE session_id IN ({placeholders})""",
+            tuple(session_ids),
+        )
+        values = dict(row) if row is not None else {}
+        return {
+            "api_calls": int(values.get("api_calls") or 0),
+            "input_tokens": int(values.get("input_tokens") or 0),
+            "output_tokens": int(values.get("output_tokens") or 0),
+            "cache_read_tokens": int(values.get("cache_read_tokens") or 0),
+            "cache_write_tokens": int(values.get("cache_write_tokens") or 0),
+            "reasoning_tokens": int(values.get("reasoning_tokens") or 0),
+            "estimated_cost_usd": float(values.get("estimated_cost_usd") or 0.0),
+            "actual_cost_usd": float(values.get("actual_cost_usd") or 0.0),
+        }
+
+    def session_usage_snapshot(self, session_id: str) -> Dict[str, int | float]:
+        """Return a flushed, conserved usage snapshot for one session segment."""
+        return self._usage_snapshot_for_sessions([session_id])
+
+    def session_lineage_usage_snapshot(self, session_id: str) -> Dict[str, int | float]:
+        """Return usage for the root-to-current compression lineage, excluding siblings."""
+        lineage = getattr(self, "_session_lineage_root_to_tip")(session_id)
+        return self._usage_snapshot_for_sessions(lineage or [session_id])
+
     def _token_writer_loop(self) -> None:
         while True:
             with self._token_queue_cond:

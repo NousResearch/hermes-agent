@@ -237,3 +237,28 @@ def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
     with kbc.connect_closing(db_path):
         pass
     assert len(locks) == 1
+
+
+def test_concurrent_initialization_creates_run_receipt_schema(tmp_path, monkeypatch):
+    db_path = _default_board_db(tmp_path, monkeypatch)
+    barrier = threading.Barrier(6)
+    errors: list[BaseException] = []
+
+    def initialize() -> None:
+        try:
+            barrier.wait(timeout=5)
+            with kbc.connect_closing(db_path) as conn:
+                assert conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_run_receipts'"
+                ).fetchone() is not None
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=initialize) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    assert all(not thread.is_alive() for thread in threads)

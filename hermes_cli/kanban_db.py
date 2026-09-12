@@ -773,6 +773,7 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    receipt: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -996,6 +997,49 @@ CREATE TABLE IF NOT EXISTS task_runs (
     error               TEXT
 );
 
+-- One additive execution receipt per attempt. task_runs stays the lifecycle
+-- owner; this table records observable route, context, usage, and runner facts
+-- without making every historical run column nullable.
+CREATE TABLE IF NOT EXISTS task_run_receipts (
+    run_id                      INTEGER PRIMARY KEY REFERENCES task_runs(id) ON DELETE CASCADE,
+    task_id                     TEXT NOT NULL,
+    runner                      TEXT,
+    worker_session_id           TEXT,
+    session_lineage_root        TEXT,
+    profile                     TEXT,
+    requested_provider          TEXT,
+    requested_model             TEXT,
+    requested_reasoning         TEXT,
+    effective_provider          TEXT,
+    effective_model             TEXT,
+    effective_reasoning         TEXT,
+    system_prompt_hash          TEXT,
+    toolset_hash                TEXT,
+    skills_hash                 TEXT,
+    context_schema_version      INTEGER,
+    context_fingerprint         TEXT,
+    context_chars               INTEGER,
+    usage_start                 TEXT,
+    usage_end                   TEXT,
+    api_call_delta              INTEGER,
+    input_token_delta           INTEGER,
+    output_token_delta          INTEGER,
+    cache_read_token_delta      INTEGER,
+    cache_write_token_delta     INTEGER,
+    reasoning_token_delta       INTEGER,
+    estimated_cost_delta        REAL,
+    actual_cost_delta           REAL,
+    worktree_start_fingerprint  TEXT,
+    worktree_end_fingerprint    TEXT,
+    runner_metadata             TEXT,
+    receipt_completeness        TEXT NOT NULL DEFAULT 'started',
+    receipt_source              TEXT NOT NULL DEFAULT 'worker',
+    fresh_or_resumed            TEXT,
+    created_at                  INTEGER NOT NULL,
+    updated_at                  INTEGER NOT NULL,
+    finalized_at                INTEGER
+);
+
 -- Files attached to a task (PDFs, images, source documents). The blob
 -- lives on disk under ``attachments_root(board)/<task_id>/<stored_name>``;
 -- this row carries metadata + the absolute ``stored_path`` so the
@@ -1042,6 +1086,7 @@ CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, c
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
+CREATE INDEX IF NOT EXISTS idx_run_receipts_task     ON task_run_receipts(task_id, run_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
 """
@@ -1879,6 +1924,9 @@ def _end_run(
         """,
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
+    from hermes_cli.kanban_run_receipts import mark_run_receipt_partial
+
+    mark_run_receipt_partial(conn, task_id, run_id)
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
 
@@ -3973,12 +4021,22 @@ def list_runs(
         params.append(state_name)
     q += " ORDER BY started_at ASC, id ASC"
     rows = conn.execute(q, params).fetchall()
-    return [Run.from_row(r) for r in rows]
+    runs = [Run.from_row(r) for r in rows]
+    receipts = get_run_receipts(conn, [run.id for run in runs])
+    for run in runs:
+        receipt = receipts.get(run.id)
+        run.receipt = run_receipt_dict(receipt) if receipt else None
+    return runs
 
 
 def get_run(conn: sqlite3.Connection, run_id: int) -> Optional[Run]:
     row = conn.execute("SELECT * FROM task_runs WHERE id = ?", (int(run_id),)).fetchone()
-    return Run.from_row(row) if row else None
+    if row is None:
+        return None
+    run = Run.from_row(row)
+    receipt = get_run_receipt(conn, run.id)
+    run.receipt = run_receipt_dict(receipt) if receipt else None
+    return run
 
 
 def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
@@ -3987,7 +4045,12 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
         "SELECT * FROM task_runs WHERE task_id = ? "
         "ORDER BY started_at DESC, id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    return Run.from_row(row) if row else None
+    if row is None:
+        return None
+    run = Run.from_row(row)
+    receipt = get_run_receipt(conn, run.id)
+    run.receipt = run_receipt_dict(receipt) if receipt else None
+    return run
 
 
 def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
@@ -4037,6 +4100,18 @@ from hermes_cli.kanban_db_workspace import (  # noqa: E402
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+)
+from hermes_cli.kanban_run_receipts import (  # noqa: E402
+    RunReceipt,
+    aggregate_run_receipts,
+    finalize_run_usage,
+    get_run_receipt,
+    get_run_receipts,
+    mark_run_receipt_partial,
+    record_run_context_receipt,
+    record_run_runner_handle,
+    record_run_session,
+    run_receipt_dict,
 )
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,

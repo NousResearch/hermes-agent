@@ -170,6 +170,253 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_events_run" in indexes
 
 
+def test_run_receipt_schema_is_created_for_fresh_and_legacy_boards(tmp_path):
+    fresh = tmp_path / "fresh.db"
+    legacy = tmp_path / "legacy.db"
+    with kbc.connect(fresh) as conn:
+        fresh_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_run_receipts)")
+        }
+
+    with kbc.connect(legacy) as conn:
+        conn.execute("DROP TABLE task_run_receipts")
+    kbc._INITIALIZED_PATHS.discard(str(legacy.resolve()))
+    with kbc.connect(legacy) as conn:
+        legacy_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_run_receipts)")
+        }
+
+    required = {
+        "run_id", "task_id", "runner", "worker_session_id",
+        "session_lineage_root", "profile", "requested_provider",
+        "requested_model", "requested_reasoning", "effective_provider",
+        "effective_model", "effective_reasoning", "system_prompt_hash",
+        "toolset_hash", "skills_hash", "context_schema_version",
+        "context_fingerprint", "context_chars", "usage_start",
+        "usage_end", "api_call_delta", "input_token_delta",
+        "output_token_delta", "cache_read_token_delta",
+        "cache_write_token_delta", "reasoning_token_delta",
+        "estimated_cost_delta", "actual_cost_delta",
+        "worktree_start_fingerprint", "worktree_end_fingerprint",
+        "runner_metadata", "receipt_completeness", "receipt_source",
+        "fresh_or_resumed", "created_at", "updated_at", "finalized_at",
+    }
+    assert required <= fresh_columns
+    assert required <= legacy_columns
+
+
+def test_run_receipt_session_write_is_fenced_to_active_run(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="receipt", assignee="implementer")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None and claimed.current_run_id is not None
+        run_id = claimed.current_run_id
+
+        assert kb.record_run_session(
+            conn,
+            task_id,
+            run_id,
+            worker_session_id="session-1",
+            session_lineage_root="session-root",
+            profile="implementer",
+            requested_provider="configured-provider",
+            requested_model="configured-model",
+            requested_reasoning="medium",
+            effective_provider="actual-provider",
+            effective_model="actual-model",
+            effective_reasoning="high",
+            fresh_or_resumed="fresh",
+            usage_start={"api_calls": 2, "input_tokens": 100},
+        )
+        receipt = kb.get_run_receipt(conn, run_id)
+        assert receipt is not None
+        assert receipt.worker_session_id == "session-1"
+        assert receipt.effective_provider == "actual-provider"
+        assert receipt.usage_start == {"api_calls": 2, "input_tokens": 100}
+
+        kb.complete_task(conn, task_id, summary="done", expected_run_id=run_id)
+        assert not kb.record_run_session(
+            conn,
+            task_id,
+            run_id,
+            worker_session_id="stale-session",
+        )
+        assert kb.get_run_receipt(conn, run_id).worker_session_id == "session-1"
+
+
+def test_run_receipt_context_and_runner_metadata_are_bounded_and_redacted(kanban_home):
+    digest = "a" * 64
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="observable", assignee="implementer")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None and claimed.current_run_id is not None
+        run_id = claimed.current_run_id
+
+        assert kb.record_run_context_receipt(
+            conn, task_id, run_id,
+            context_schema_version=1, context_fingerprint=digest, context_chars=4096,
+            system_prompt_hash="b" * 64, toolset_hash="c" * 64, skills_hash="d" * 64,
+        )
+        assert kb.record_run_runner_handle(
+            conn, task_id, run_id, runner="herdr",
+            runner_metadata={
+                "workspace_id": "w1", "pane_id": "p1", "agent_id": "a1",
+                "api_token": "must-not-persist", "raw_prompt": "must-not-persist",
+                "extra": "x" * 1000,
+            },
+            worktree_start_fingerprint="e" * 64,
+        )
+
+        receipt = kb.get_run_receipt(conn, run_id)
+        assert receipt is not None
+        assert receipt.context_fingerprint == digest
+        assert receipt.context_chars == 4096
+        assert receipt.runner == "herdr"
+        assert receipt.runner_metadata == {
+            "agent_id": "a1", "pane_id": "p1", "workspace_id": "w1",
+        }
+        stored = conn.execute(
+            "SELECT runner_metadata FROM task_run_receipts WHERE run_id = ?", (run_id,)
+        ).fetchone()[0]
+        assert "must-not-persist" not in stored
+        assert "raw_prompt" not in stored
+
+        kb.complete_task(conn, task_id, summary="done", expected_run_id=run_id)
+        assert not kb.record_run_context_receipt(
+            conn, task_id, run_id,
+            context_schema_version=1, context_fingerprint="f" * 64, context_chars=1,
+        )
+
+
+def test_finalize_run_usage_stores_deltas_and_fences_session_identity(kanban_home):
+    start = {
+        "api_calls": 2, "input_tokens": 100, "output_tokens": 20,
+        "cache_read_tokens": 70, "cache_write_tokens": 5,
+        "reasoning_tokens": 3, "estimated_cost_usd": 0.25,
+        "actual_cost_usd": 0.20,
+    }
+    end = {
+        "api_calls": 5, "input_tokens": 250, "output_tokens": 50,
+        "cache_read_tokens": 170, "cache_write_tokens": 8,
+        "reasoning_tokens": 13, "estimated_cost_usd": 0.55,
+        "actual_cost_usd": 0.44,
+    }
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="usage", assignee="implementer")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None and claimed.current_run_id is not None
+        run_id = claimed.current_run_id
+        assert kb.record_run_session(
+            conn, task_id, run_id, worker_session_id="session-1", usage_start=start,
+        )
+        kb.complete_task(conn, task_id, summary="done", expected_run_id=run_id)
+
+        assert not kb.finalize_run_usage(
+            conn, task_id, run_id, worker_session_id="other-session", usage_end=end,
+        )
+        assert kb.finalize_run_usage(
+            conn, task_id, run_id, worker_session_id="session-1", usage_end=end,
+            worktree_end_fingerprint="f" * 64,
+        )
+        receipt = kb.get_run_receipt(conn, run_id)
+        assert receipt is not None
+        assert receipt.receipt_completeness == "complete"
+        assert receipt.api_call_delta == 3
+        assert receipt.input_token_delta == 150
+        assert receipt.output_token_delta == 30
+        assert receipt.cache_read_token_delta == 100
+        assert receipt.cache_write_token_delta == 3
+        assert receipt.reasoning_token_delta == 10
+        assert receipt.estimated_cost_delta == pytest.approx(0.30)
+        assert receipt.actual_cost_delta == pytest.approx(0.24)
+        assert receipt.worktree_end_fingerprint == "f" * 64
+        assert receipt.finalized_at is not None
+
+        duplicate_end = dict(end, input_tokens=9999)
+        assert not kb.finalize_run_usage(
+            conn, task_id, run_id, worker_session_id="session-1",
+            usage_end=duplicate_end, worktree_end_fingerprint="z" * 64,
+        )
+        unchanged = kb.get_run_receipt(conn, run_id)
+        assert unchanged is not None
+        assert unchanged.input_token_delta == 150
+        assert unchanged.worktree_end_fingerprint == "f" * 64
+        assert unchanged.finalized_at == receipt.finalized_at
+
+
+@pytest.mark.parametrize("outcome", ["spawn_failed", "crashed", "timed_out"])
+def test_ended_run_without_worker_finalization_gets_partial_receipt(kanban_home, outcome):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="crash", assignee="implementer")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None and claimed.current_run_id is not None
+        run_id = claimed.current_run_id
+
+        kbd._record_task_failure(
+            conn, task_id, "worker stopped", outcome=outcome,
+            release_claim=True, end_run=True,
+        )
+
+        receipt = kb.get_run_receipt(conn, run_id)
+        assert receipt is not None
+        assert receipt.task_id == task_id
+        assert receipt.profile == "implementer"
+        assert receipt.receipt_completeness == "partial"
+        assert receipt.receipt_source == "lifecycle"
+        assert receipt.finalized_at is not None
+        aggregate = kb.aggregate_run_receipts(conn, task_id=task_id)[0]
+        assert aggregate["api_calls"] is None
+        assert aggregate["input_tokens"] is None
+
+
+def test_run_serialization_and_aggregation_include_receipt_additively(kanban_home):
+    from hermes_cli.kanban_output import _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _obj_dict
+
+    zero = {
+        "api_calls": 0, "input_tokens": 0, "output_tokens": 0,
+        "cache_read_tokens": 0, "cache_write_tokens": 0,
+        "reasoning_tokens": 0, "estimated_cost_usd": 0, "actual_cost_usd": 0,
+    }
+    end = {
+        "api_calls": 2, "input_tokens": 100, "output_tokens": 10,
+        "cache_read_tokens": 80, "cache_write_tokens": 5,
+        "reasoning_tokens": 4, "estimated_cost_usd": 0.2, "actual_cost_usd": 0.15,
+    }
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="json", assignee="implementer")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None and claimed.current_run_id is not None
+        run_id = claimed.current_run_id
+        assert kb.record_run_session(
+            conn, task_id, run_id, worker_session_id="session-json",
+            effective_provider="provider", effective_model="model",
+            fresh_or_resumed="fresh", usage_start=zero,
+        )
+        kb.record_run_runner_handle(conn, task_id, run_id, runner="hermes")
+        kb.complete_task(conn, task_id, summary="done", expected_run_id=run_id)
+        kb.finalize_run_usage(
+            conn, task_id, run_id, worker_session_id="session-json", usage_end=end,
+        )
+
+        run = kb.list_runs(conn, task_id)[0]
+        assert "receipt" in _RUNS_RUN_FIELDS
+        assert "receipt" in _SHOW_RUN_FIELDS
+        assert _obj_dict(run, _RUNS_RUN_FIELDS)["receipt"]["worker_session_id"] == "session-json"
+
+        aggregates = kb.aggregate_run_receipts(conn, task_id=task_id)
+        assert aggregates == [{
+            "task_id": task_id, "step_key": None, "profile": "implementer",
+            "effective_provider": "provider", "effective_model": "model",
+            "runner": "hermes", "outcome": "completed",
+            "fresh_or_resumed": "fresh", "run_count": 1,
+            "complete_receipt_count": 1, "api_calls": 2,
+            "input_tokens": 100, "output_tokens": 10,
+            "cache_read_tokens": 80, "cache_write_tokens": 5,
+            "reasoning_tokens": 4, "estimated_cost_usd": pytest.approx(0.2),
+            "actual_cost_usd": pytest.approx(0.15),
+        }]
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------

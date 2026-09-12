@@ -709,27 +709,30 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             path,
         )
 
-    with _cross_process_init_lock(path):
-        # Read-only file/sidecar preflight first, so a stray read-only kanban.db
-        # fails actionably instead of "attempt to write a readonly database".
-        # See #12508.
-        from hermes_state import preflight_db_writability
-        preflight_db_writability(path, db_label=f"kanban.db ({path.name})")
-        # Cheap byte-level header check before any sqlite connection, then the
-        # full integrity probe (cached per path via _INITIALIZED_PATHS).
-        _validate_sqlite_header(path)
-        _guard_existing_db_is_healthy(path)
-        resolved = str(path.resolve())
+    # flock semantics do not consistently serialize separate file descriptions
+    # in one process. Hold the re-entrant thread lock across preflight too, or a
+    # sibling first-connect can mistake the first connection's live WAL setup
+    # for an unwritable sidecar.
+    with _INIT_LOCK:
+        with _cross_process_init_lock(path):
+            # Read-only file/sidecar preflight first, so a stray read-only kanban.db
+            # fails actionably instead of "attempt to write a readonly database".
+            # See #12508.
+            from hermes_state import preflight_db_writability
+            preflight_db_writability(path, db_label=f"kanban.db ({path.name})")
+            # Cheap byte-level header check before any sqlite connection, then the
+            # full integrity probe (cached per path via _INITIALIZED_PATHS).
+            _validate_sqlite_header(path)
+            _guard_existing_db_is_healthy(path)
+            resolved = str(path.resolve())
 
-        def _init_if_needed(conn: sqlite3.Connection) -> None:
-            # Idempotent; runs under _INIT_LOCK so same-process dispatcher
-            # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
-            if resolved not in _INITIALIZED_PATHS:
-                conn.executescript(_kb.SCHEMA_SQL)
-                _migrate_add_optional_columns(conn)
-                _INITIALIZED_PATHS.add(resolved)
+            def _init_if_needed(conn: sqlite3.Connection) -> None:
+                if resolved not in _INITIALIZED_PATHS:
+                    conn.executescript(_kb.SCHEMA_SQL)
+                    _migrate_add_optional_columns(conn)
+                    _INITIALIZED_PATHS.add(resolved)
 
-        conn, _ = _open_configured(path, _init_if_needed)
+            conn, _ = _open_configured(path, _init_if_needed)
     return conn
 
 

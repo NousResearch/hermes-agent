@@ -14,6 +14,7 @@ import pytest
 
 import cli
 from agent.turn_author import TURN_AUTHOR_ENV
+from hermes_cli import kanban_worker_receipts
 
 AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
 
@@ -60,3 +61,23 @@ def test_quiet_one_shot_consumes_the_variable_before_the_turn(monkeypatch):
     _run(monkeypatch, json.dumps(AUTHOR), run_conversation)
     assert seen["env"] is None
     assert TURN_AUTHOR_ENV not in os.environ
+
+
+def test_quiet_one_shot_brackets_turn_with_kanban_run_receipt(monkeypatch):
+    events = []
+    state = object()
+    monkeypatch.setattr(
+        kanban_worker_receipts, "begin_worker_receipt",
+        lambda worker_cli: events.append(("begin", worker_cli.session_id)) or state,
+    )
+    monkeypatch.setattr(
+        kanban_worker_receipts, "finalize_worker_receipt",
+        lambda worker_cli, received: events.append(("finalize", received)) or True,
+    )
+
+    def run_conversation(**kwargs):
+        events.append(("run", kwargs["user_message"]))
+        return {"final_response": "ok"}
+
+    _run(monkeypatch, None, run_conversation)
+    assert events == [("begin", "s-1"), ("run", "hello"), ("finalize", state)]

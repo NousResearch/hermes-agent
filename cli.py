@@ -4067,15 +4067,21 @@ def _run_quiet_single_query(cli, effective_query):
     HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it."""
     from agent.interrupt_compat import _accepts_keyword
     from agent.turn_author import take_turn_author_from_env
+    from hermes_cli.kanban_worker_receipts import (
+        begin_worker_receipt as _begin_worker_receipt,
+        finalize_worker_receipt as _finalize_worker_receipt,
+    )
 
     author = take_turn_author_from_env()
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
+    _run_receipt_state = _begin_worker_receipt(cli)
     try:
         result = cli.agent.run_conversation(
             user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
         )
     except KeyboardInterrupt:
         _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+        _finalize_worker_receipt(cli, _run_receipt_state)
         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
         sys.exit(130)
     # The exit line below reports session_id to stderr for automation wrappers;
@@ -4100,6 +4106,7 @@ def _run_quiet_single_query(cli, effective_query):
         except Exception as _goal_exc:
             logger.debug("kanban goal loop failed: %s", _goal_exc)
 
+    _finalize_worker_receipt(cli, _run_receipt_state)
     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
     # Exit code 0/1 for automation wrappers. Kanban workers that failed purely on

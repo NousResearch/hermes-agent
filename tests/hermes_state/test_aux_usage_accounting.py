@@ -39,6 +39,51 @@ def _usage_rows(db, session_id):
     return [dict(r) for r in rows]
 
 
+def test_session_usage_snapshot_conserves_main_and_auxiliary_usage(db):
+    db.create_session("s1", source="cli")
+    db.update_token_counts(
+        "s1", input_tokens=100, output_tokens=10, cache_read_tokens=80,
+        cache_write_tokens=4, reasoning_tokens=3, estimated_cost_usd=0.25,
+        actual_cost_usd=0.20, model="main", billing_provider="provider",
+        api_call_count=1,
+    )
+    db.record_auxiliary_usage(
+        "s1", "review", input_tokens=30, output_tokens=5,
+        cache_read_tokens=20, cache_write_tokens=1, reasoning_tokens=2,
+        estimated_cost_usd=0.05, model="aux", billing_provider="provider",
+        api_call_count=2,
+    )
+
+    assert db.session_usage_snapshot("s1") == {
+        "api_calls": 3,
+        "input_tokens": 130,
+        "output_tokens": 15,
+        "cache_read_tokens": 100,
+        "cache_write_tokens": 5,
+        "reasoning_tokens": 5,
+        "estimated_cost_usd": pytest.approx(0.30),
+        "actual_cost_usd": pytest.approx(0.20),
+    }
+
+
+def test_session_lineage_usage_snapshot_excludes_sibling_segments(db):
+    db.create_session("root", source="test")
+    db.create_session("child", source="compression", parent_session_id="root")
+    db.create_session("sibling", source="compression", parent_session_id="root")
+    for session_id, input_tokens, output_tokens in (
+        ("root", 10, 1), ("child", 20, 2), ("sibling", 40, 4),
+    ):
+        db.update_token_counts(
+            session_id, input_tokens=input_tokens, output_tokens=output_tokens,
+            model="model", billing_provider="provider",
+        )
+
+    snapshot = db.session_lineage_usage_snapshot("child")
+
+    assert snapshot["input_tokens"] == 30
+    assert snapshot["output_tokens"] == 3
+
+
 class TestRecordAuxiliaryUsage:
     def test_records_task_row(self, db):
         db.create_session("s1", source="cli")

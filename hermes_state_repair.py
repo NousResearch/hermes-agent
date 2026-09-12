@@ -555,6 +555,10 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
     for p, is_dir in [(db_path.parent, True), *((p, False) for p in (db_path, *sidecars) if p.is_file())]:
         if (is_dir and not p.is_dir()) or os.access(p, os.R_OK | os.W_OK):
             continue
+        # A live connection may checkpoint and remove a sidecar between the
+        # is_file() snapshot above and os.access(); absence is not read-only.
+        if not is_dir and not p.exists():
+            continue
         x = "x" if is_dir else ""
         in_scope = False
         with contextlib.suppress(OSError, ValueError):
@@ -563,6 +567,8 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
                 os.chmod(p, p.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR | (stat.S_IXUSR if is_dir else 0))
         if in_scope and os.access(p, os.R_OK | os.W_OK):
             logger.info("%s preflight: repaired read-only %s (chmod u+rw%s)", db_label, p, x)
+            continue
+        if not is_dir and not p.exists():
             continue
         wal_note = (" Do NOT delete the -wal file — it contains committed data that "
                     "will be merged into the database once it is writable." if p.name.endswith("-wal") else "")

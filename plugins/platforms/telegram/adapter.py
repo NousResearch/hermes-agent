@@ -5438,8 +5438,17 @@ class TelegramAdapter(BasePlatformAdapter):
         return not self._message_matches_mention_patterns(message)
 
     def _telegram_group_observe_shared_source(self, source):
-        """Return a chat/topic-scoped source for observed Telegram group context."""
-        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+        """Return a chat/topic-scoped source for observed Telegram group context.
+
+        ``dataclasses.replace`` intentionally copies only declared fields; preserve the
+        in-process transport provenance used by multiplexed anonymous auth explicitly.
+        These markers are trusted only because they are transient, never serialized.
+        """
+        observed = dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+        for name in ("_transport_adapter_ref", "_authorization_profile_home", "profile_route_rejected"):
+            if hasattr(source, name):
+                setattr(observed, name, getattr(source, name))
+        return observed
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
         user_id = event.source.user_id or "unknown"

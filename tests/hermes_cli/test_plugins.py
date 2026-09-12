@@ -1070,6 +1070,189 @@ class TestForceReloadSymmetry:
             {"context": "hi"}
         ]
 
+    def test_concurrent_callback_invocations_are_serialized_not_dropped(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_invoking = threading.Event()
+        second_done = threading.Event()
+        seen = []
+        results = {}
+
+        def capture(**kwargs):
+            token = kwargs["token"]
+            seen.append(token)
+            if token == 1:
+                first_started.set()
+                release_first.wait(timeout=1.0)
+            return token
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [capture]
+
+        first = threading.Thread(
+            target=lambda: results.setdefault(1, mgr.invoke_hook("post_tool_call", token=1))
+        )
+
+        def run_second():
+            second_invoking.set()
+            try:
+                results.setdefault(2, mgr.invoke_hook("post_tool_call", token=2))
+            finally:
+                second_done.set()
+
+        second = threading.Thread(target=run_second)
+        first.start()
+        assert first_started.wait(timeout=1.0)
+        second.start()
+        assert second_invoking.wait(timeout=1.0)
+        # Give the old implementation time to skip the second invocation while the first callback
+        # is still running. The serialized implementation keeps it blocked on the callback lock.
+        second_done.wait(timeout=0.1)
+        release_first.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert seen == [1, 2]
+        assert results == {1: [1], 2: [2]}
+
+    def test_three_healthy_callbacks_each_receive_a_full_execution_budget(self, monkeypatch):
+        import time
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.2
+        )
+        start = threading.Barrier(4)
+        seen = []
+        results = {}
+
+        def capture(**kwargs):
+            token = kwargs["token"]
+            seen.append(token)
+            time.sleep(0.12)
+            return token
+
+        def invoke(token):
+            start.wait(timeout=1.0)
+            results[token] = mgr.invoke_hook("post_tool_call", token=token)
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [capture]
+        threads = [threading.Thread(target=invoke, args=(token,)) for token in range(3)]
+        for thread in threads:
+            thread.start()
+        start.wait(timeout=1.0)
+        for thread in threads:
+            thread.join(timeout=2.0)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert sorted(seen) == [0, 1, 2]
+        assert results == {0: [0], 1: [1], 2: [2]}
+
+    def test_timed_out_live_worker_is_never_reaped_into_a_duplicate(self, monkeypatch):
+        import time
+        import hermes_cli.plugins_dispatch as dispatch_mod
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05
+        )
+        monkeypatch.setattr(
+            dispatch_mod, "_HOOK_RUNNING_LATCH_GRACE_SECONDS", 0.0, raising=False
+        )
+        hold = threading.Event()
+        starts = []
+
+        def blocker(**_kwargs):
+            starts.append(1)
+            hold.wait(timeout=2.0)
+            return "late"
+
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 0.05
+        mgr._hooks["post_tool_call"] = [blocker]
+
+        assert mgr.invoke_hook("post_tool_call") == []
+        time.sleep(0.08)
+        assert mgr.invoke_hook("post_tool_call") == []
+        assert len(starts) == 1
+        hold.set()
+
+    def test_force_reload_does_not_duplicate_live_timed_out_worker(self, monkeypatch):
+        """Unload-all must keep the live-worker latch while an abandoned thread is still running."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05
+        )
+        monkeypatch.setattr(
+            PluginManager, "_discover_and_load_inner", lambda self_inner: None
+        )
+
+        hold = threading.Event()
+        worker_done = threading.Event()
+        starts = []
+
+        def blocker(**_kwargs):
+            starts.append(1)
+            hold.wait(timeout=2.0)
+            worker_done.set()
+            return "late"
+
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 0.0
+        mgr._hooks["post_tool_call"] = [blocker]
+        mgr._discovered = True
+
+        assert mgr.invoke_hook("post_tool_call") == []
+        assert len(starts) == 1
+
+        mgr.discover_and_load(force=True)
+        mgr._hooks["post_tool_call"] = [blocker]
+
+        assert mgr.invoke_hook("post_tool_call") == []
+        assert len(starts) == 1
+
+        hold.set()
+        assert worker_done.wait(timeout=1.0)
+        assert len(starts) == 1
+
+    def test_callback_fifo_applies_backpressure_at_capacity(self, monkeypatch):
+        import hermes_cli.plugins_dispatch as dispatch_mod
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+        monkeypatch.setattr(dispatch_mod, "_HOOK_CALLBACK_QUEUE_CAP", 1, raising=False)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_done = threading.Event()
+        second_result = {}
+
+        def blocker(**_kwargs):
+            first_started.set()
+            release_first.wait(timeout=2.0)
+            return "ok"
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [blocker]
+        first = threading.Thread(target=lambda: mgr.invoke_hook("post_tool_call"))
+
+        def run_second():
+            second_result["value"] = mgr.invoke_hook("post_tool_call")
+            second_done.set()
+
+        second = threading.Thread(target=run_second)
+        first.start()
+        assert first_started.wait(timeout=1.0)
+        second.start()
+        assert second_done.wait(timeout=0.2)
+        assert second_result["value"] == []
+        release_first.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
     def test_hook_exception_still_isolated_under_timeout_path(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0

@@ -47,6 +47,14 @@ class _StubChild:
         self._delegate_role = "leaf"
         self.model = "test/model"
         self.provider = "testprov"
+        self.session_id = "stub-session"
+        self.session_prompt_tokens = 0
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_cache_read_tokens = 0
+        self.session_cache_write_tokens = 0
+        self.session_reasoning_tokens = 0
         self.api_mode = "chat_completions"
         self.base_url = "https://example.test/v1"
         self.max_iterations = 30
@@ -210,6 +218,31 @@ class TestRunSingleChildTimeoutDump:
         assert "without making any API call" in result["error"]
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
+
+    def test_timeout_receipt_keeps_child_identity_and_usage_snapshot(self, hermes_home, monkeypatch):
+        child = _StubChild(api_call_count=0, hang_seconds=10.0)
+        child.session_id = "child-timeout-123"
+        child.session_prompt_tokens = 125
+        child.session_input_tokens = 100
+        child.session_output_tokens = 20
+        child.session_completion_tokens = 25
+        child.session_cache_read_tokens = 25
+        child.session_cache_write_tokens = 0
+        child.session_reasoning_tokens = 5
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["provider"] == "testprov"
+        assert result["model"] == "test/model"
+        assert result["session_id"] == "child-timeout-123"
+        assert result["tokens"] == {
+            "input": 125,
+            "uncached_input": 100,
+            "output": 25,
+            "visible_output": 20,
+            "cache_read": 25,
+            "cache_write": 0,
+            "reasoning": 5,
+        }
 
 
     # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────

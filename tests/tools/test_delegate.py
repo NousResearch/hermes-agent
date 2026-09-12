@@ -414,7 +414,7 @@ class TestDelegateTask(unittest.TestCase):
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
                 self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
+                    child_db.db_path.resolve(), parent_db.db_path.resolve()
                 )
             finally:
                 if child_db is not None:
@@ -574,6 +574,90 @@ class TestDelegateObservability(unittest.TestCase):
                 {"argument_keys": ["query"], "targets": {}},
             )
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
+
+    def test_observability_exposes_canonical_usage_and_child_session_identity(self):
+        """Delegation receipts must support exact membership and cache/reasoning audits."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-5.6-sol"
+            mock_child.provider = "openai-codex"
+            mock_child.session_id = "child-session-123"
+            mock_child.session_input_tokens = 3200
+            mock_child.session_output_tokens = 900
+            mock_child.session_cache_read_tokens = 1400
+            mock_child.session_cache_write_tokens = 75
+            mock_child.session_reasoning_tokens = 250
+            # Legacy aggregates remain available for compatibility.
+            mock_child.session_prompt_tokens = 4675
+            mock_child.session_completion_tokens = 1150
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Audit usage", parent_agent=parent))
+            entry = result["results"][0]
+
+        self.assertEqual(entry["session_id"], "child-session-123")
+        self.assertEqual(entry["provider"], "openai-codex")
+        self.assertEqual(
+            entry["tokens"],
+            {
+                "input": 4675,
+                "uncached_input": 3200,
+                "output": 1150,
+                "visible_output": 900,
+                "cache_read": 1400,
+                "cache_write": 75,
+                "reasoning": 250,
+            },
+        )
+
+    def test_fabricated_error_receipt_keeps_identity_and_usage(self):
+        """Outer/batch failures must remain attributable and auditable."""
+        from tools.delegate_tool_child_run import _fabricated_entry
+
+        child = MagicMock()
+        child.model = "gpt-5.6-sol"
+        child.provider = "openai-codex"
+        child.session_id = "child-fabricated-123"
+        child.session_prompt_tokens = 14
+        child.session_input_tokens = 10
+        child.session_completion_tokens = 7
+        child.session_output_tokens = 5
+        child.session_cache_read_tokens = 4
+        child.session_cache_write_tokens = 0
+        child.session_reasoning_tokens = 2
+        # Live AIAgent stores attempts on _api_call_count and exposes them
+        # through get_activity_summary(); api_call_count is not a public attr.
+        del child.api_call_count
+        child._api_call_count = 3
+        child.get_activity_summary.return_value = {"api_call_count": 3}
+
+        entry = _fabricated_entry(3, "error", "outer failure", child=child)
+
+        self.assertEqual(entry["api_calls"], 3)
+        self.assertEqual(entry["session_id"], "child-fabricated-123")
+        self.assertEqual(entry["provider"], "openai-codex")
+        self.assertEqual(entry["model"], "gpt-5.6-sol")
+        self.assertEqual(
+            entry["tokens"],
+            {
+                "input": 14,
+                "uncached_input": 10,
+                "output": 7,
+                "visible_output": 5,
+                "cache_read": 4,
+                "cache_write": 0,
+                "reasoning": 2,
+            },
+        )
 
     def test_tool_trace_handles_list_content_blocks(self):
         """Tool-result content blocks should not crash observability metadata."""

@@ -241,14 +241,37 @@ def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> Li
     return [{"index": best.control.index, "token": "one-time-code", "value": code}]
 
 
+# Open shadow roots belong to the same document/origin. Never traverse frames:
+# their origin would need a separate binding check at the mutation boundary.
+_QUERY_ALL_JS = """const queryAll = (selector) => {
+    const roots = new Set([document]), matches = new Set();
+    // Synthetic shadow DOM can expose a root or control through multiple paths.
+    // Stamp each control once: duplicate indices would overwrite its nonce binding.
+    for (const root of roots) {
+      for (const element of root.querySelectorAll(selector)) matches.add(element);
+      for (const element of root.querySelectorAll('*')) {
+        if (element.shadowRoot) roots.add(element.shadowRoot);
+      }
+    }
+    return Array.from(matches);
+  };"""
+
+
+def build_form_probe_js(selector: str) -> str:
+    """Use the same DOM scope for tab discovery as inspection and injection."""
+    return "(() => {" + _QUERY_ALL_JS + "return queryAll(" + json.dumps(selector) + ").length > 0;})()"
+
+
 def build_inspection_js(nonce: str) -> str:
-    return _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", json.dumps(nonce))
+    return (_LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", json.dumps(nonce))
+            .replace("__QUERY_ALL__", _QUERY_ALL_JS))
 
 
 _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
-  const elements = Array.from(document.querySelectorAll("input, select"));
-  const forms = Array.from(document.forms);
+  __QUERY_ALL__
+  const elements = queryAll("input, select");
+  const forms = queryAll("form");
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
@@ -258,7 +281,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
     const labels = element.labels ? Array.from(element.labels, (l) => l.textContent || "") : [];
     const ariaText = (element.getAttribute("aria-labelledby") || "")
       .split(/\\s+/).filter(Boolean)
-      .map((id) => { const n = document.getElementById(id); return n ? (n.textContent || "") : ""; })
+      .map((id) => { const n = element.getRootNode().getElementById(id); return n ? (n.textContent || "") : ""; })
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{
@@ -297,6 +320,7 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
     return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
+            .replace("__QUERY_ALL__", _QUERY_ALL_JS)
             .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
 
 
@@ -307,10 +331,12 @@ _FILL_JS_TEMPLATE = """(() => {
   }
   const fills = __FILLS__;
   const nonce = __NONCE__;
+  __QUERY_ALL__
+  const stamped = queryAll("[data-hermes-vault-slot]");
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+    const el = stamped.find((n) => n.getAttribute("data-hermes-vault-slot") === nonce + ':' + f.index);
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
@@ -323,11 +349,11 @@ _FILL_JS_TEMPLATE = """(() => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
       // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  stamped.forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
   return JSON.stringify({ filled });
 })()"""

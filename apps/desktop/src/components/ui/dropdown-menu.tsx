@@ -75,6 +75,7 @@ function DropdownMenuSearch({
 function DropdownMenuContent({
   className,
   collisionPadding = 8,
+  onOpenAutoFocus,
   portalContainer,
   sideOffset = 4,
   ...props
@@ -100,6 +101,22 @@ function DropdownMenuContent({
         // (avoidCollisions defaults on); the padding stops it kissing the edge.
         collisionPadding={collisionPadding}
         data-slot="dropdown-menu-content"
+        onOpenAutoFocus={event => {
+          onOpenAutoFocus?.(event)
+
+          if (event.defaultPrevented) {
+            return
+          }
+
+          const search = event.currentTarget.querySelector<HTMLInputElement>(
+            '[data-slot="dropdown-menu-search"] input'
+          )
+
+          if (search) {
+            event.preventDefault()
+            search.focus()
+          }
+        }}
         sideOffset={sideOffset}
         {...props}
       />

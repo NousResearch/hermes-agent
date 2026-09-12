@@ -21,7 +21,7 @@ from utils import base_url_host_matches
 logger = logging.getLogger("hermes_cli.model_switch")
 
 # Aggregators whose full catalogs (70+ models) must stay visible: never capped by max_models.
-_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
+_UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "openrouter"})
 
 
 def _save_discovered_models_to_config(

@@ -33,6 +33,22 @@ export function buildSessionByAnyId(
 }
 
 /**
+ * Every id an unpin of *pinId* must drop from the local pin set.
+ *
+ * The menu hands us the canonical pin id (`sessionPinId` = lineage root), but
+ * the set may hold a DIFFERENT identity of the same conversation — a tip id
+ * captured before pins were lineage-keyed, or the row's live id. `unpinSession`
+ * filters by exact id, so a mismatch silently removes nothing: no state change,
+ * no PATCH, and the row stays pinned forever. Unpin under every identity the
+ * resolved row is reachable under.
+ */
+export function unpinIdentities(pinId: string, sessionByAnyId: Map<string, SessionInfo>): string[] {
+  const session = sessionByAnyId.get(pinId)
+
+  return [...new Set([pinId, session?.id, session?._lineage_root_id].filter((id): id is string => Boolean(id)))]
+}
+
+/**
  * Resolve the Pinned section's rows: the locally stored pin ids first (in the
  * user's hand-picked order), then any row the SERVER flags `pinned` that the
  * local set doesn't know about yet.

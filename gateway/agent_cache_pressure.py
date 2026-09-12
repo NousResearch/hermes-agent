@@ -39,6 +39,11 @@ class AgentCacheBounds:
     memory_high_mb: Optional[int] = None
     max_evictions_per_pass: int = _DEFAULT_MAX_EVICTIONS_PER_PASS
     protect_recent: int = _DEFAULT_PROTECT_RECENT
+    # Fraction of the memory limit the "auto" budget targets. Default keeps the
+    # historical 0.65; operators on memory-constrained hosts can lower it (e.g.
+    # 0.40) so proactive eviction triggers earlier and the shutdown flush keeps
+    # headroom before cgroup memory.high throttles the process.
+    auto_budget_fraction: float = _AUTO_BUDGET_FRACTION
 
 
 def _is_int(value: Any) -> bool:
@@ -94,9 +99,22 @@ def _total_memory_bytes() -> Optional[int]:
         return None
 
 
-def resolve_memory_high_mb(setting: Any) -> Optional[int]:
+def _valid_fraction(value: Any) -> Optional[float]:
+    """A float in (0, 1) — the valid range for a budget fraction — else None.
+    Bools rejected; anything out of range is treated as unset."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    parsed = float(value)
+    return parsed if 0 < parsed < 1 else None
+
+
+def resolve_memory_high_mb(setting: Any, auto_budget_fraction: float = _AUTO_BUDGET_FRACTION) -> Optional[int]:
     """Absolute MB budget: ``"auto"`` derives from the cgroup limit (or total RAM when
-    uncapped); a positive number is literal; anything falsy/off disables the pass."""
+    uncapped); a positive number is literal; anything falsy/off disables the pass.
+
+    ``auto_budget_fraction`` is the operator's share of the discovered limit that
+    the "auto" budget targets (0 < f < 1); out-of-range values fall back to the
+    default rather than being silently trusted."""
     if isinstance(setting, str):
         normalized = setting.strip().lower()
         if normalized != "auto":
@@ -108,7 +126,8 @@ def resolve_memory_high_mb(setting: Any) -> Optional[int]:
     limit = _cgroup_limit_bytes() or _total_memory_bytes()
     if not limit:
         return None
-    budget = int(limit * _AUTO_BUDGET_FRACTION / _BYTES_PER_MB)
+    fraction = _valid_fraction(auto_budget_fraction) or _AUTO_BUDGET_FRACTION
+    budget = int(limit * fraction / _BYTES_PER_MB)
     return budget if budget >= _AUTO_BUDGET_FLOOR_MB else None
 
 
@@ -127,9 +146,12 @@ def resolve_agent_cache_bounds(config: Any) -> AgentCacheBounds:
     return AgentCacheBounds(
         max_size=_positive(section.get("max_size")),
         idle_ttl_secs=_positive(section.get("idle_ttl_secs"), float),
-        memory_high_mb=resolve_memory_high_mb(section.get("memory_high_mb", "auto")),
+        memory_high_mb=resolve_memory_high_mb(
+            section.get("memory_high_mb", "auto"), section.get("auto_budget_fraction")),
         max_evictions_per_pass=_positive(section.get("max_evictions_per_pass")) or _DEFAULT_MAX_EVICTIONS_PER_PASS,
         protect_recent=_DEFAULT_PROTECT_RECENT if protect_parsed is None else protect_parsed,
+        auto_budget_fraction=_valid_fraction(section.get("auto_budget_fraction"))
+        or _AUTO_BUDGET_FRACTION,
     )
 
 

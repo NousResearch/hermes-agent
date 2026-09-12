@@ -4252,7 +4252,19 @@ Write only the summary body. Do not include any preamble or prefix."""
             cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True)
 
         fallback_cut = n - min_tail
-        cut_idx = min(cut_idx, fallback_cut)
+        # Bound the floor by the soft ceiling to ensure the tail remains within the 1.5x allowance.
+        # We calculate the token cost of the floor's messages and if it exceeds soft_ceiling,
+        # we reduce min_tail until it fits or hits the hard minimum (3).
+        if cut_idx > fallback_cut:
+            cut_idx = fallback_cut
+        else:
+            tail_tokens = estimate_messages_tokens_rough(messages[fallback_cut:])
+            if tail_tokens > soft_ceiling:
+                # Reduce min_tail floor until budget is met or hard min hit
+                current_floor = min_tail
+                while current_floor > 3 and estimate_messages_tokens_rough(messages[n - current_floor:]) > soft_ceiling:
+                    current_floor -= 1
+                cut_idx = min(cut_idx, n - current_floor)
         # Small conversations: force a cut after the head so compression still removes something.
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)

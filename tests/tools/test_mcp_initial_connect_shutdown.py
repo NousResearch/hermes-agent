@@ -10,6 +10,8 @@ from tools import mcp_tool_discovery as _mcp_discovery
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
 from tools import mcp_tool_loop as _mcp_loop
 
+from tests.fakes.mcp_oauth_peer import capture_oauth_state, seed_old_oauth_state
+
 
 def _reset_mcp_state(mcp_tool) -> None:
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
@@ -39,7 +41,7 @@ def _cleanup_mcp_state(mcp_tool, extra_servers=()) -> None:
 
 def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_path):
     """Normal discovery must retain the parked task for clean shutdown."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
 
     from tools import mcp_tool
 
@@ -110,7 +112,7 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
 
 def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp_path):
     """A cached parked failure must revive through register_mcp_servers()."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
 
     from tools import mcp_tool
     from tools.registry import ToolRegistry
@@ -211,7 +213,7 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
     user re-authenticated. It is now retained like any other parked server,
     and must still tear down cleanly.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
 
     from tools import mcp_tool
     from tools import mcp_tool_errors as _mcp_errors
@@ -254,9 +256,55 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
         _cleanup_mcp_state(mcp_tool, created)
 
 
+def test_oauth_http_parking_reconnect_and_shutdown_preserve_tokens(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    from tools import mcp_tool
+
+    _reset_mcp_state(mcp_tool)
+    before = seed_old_oauth_state(tmp_path, "oauth-parking")
+    created = []
+    second_attempt = threading.Event()
+
+    class _OAuthFailingServerTask(mcp_tool.MCPServerTask):
+        def __init__(self, name):
+            super().__init__(name)
+            self.attempts = 0
+            created.append(self)
+
+        async def _run_http(self, config):
+            del config
+            self.attempts += 1
+            if self.attempts == 1:
+                raise PermissionError("deterministic OAuth authentication failure")
+            second_attempt.set()
+            raise ConnectionError("deterministic transient reconnect failure")
+
+    monkeypatch.setattr(mcp_tool, "MCPServerTask", _OAuthFailingServerTask)
+    monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 0)
+    monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 3600)
+    monkeypatch.setattr(mcp_tool, "_is_auth_error", lambda exc: isinstance(exc, PermissionError))
+
+    try:
+        assert mcp_tool.register_mcp_servers({"oauth-parking": {"url": "https://mcp.invalid/mcp", "auth": "oauth", "connect_timeout": 5}}) == []
+        server = created[0]
+        assert server._task is not None and not server._task.done()
+        assert capture_oauth_state(tmp_path, "oauth-parking") == before
+
+        assert mcp_tool.reconnect_mcp_server("oauth-parking") is True
+        assert second_attempt.wait(timeout=5), "parked OAuth server did not retry"
+        assert capture_oauth_state(tmp_path, "oauth-parking") == before
+
+        mcp_tool.shutdown_mcp_servers()
+        assert server._task.done()
+        assert capture_oauth_state(tmp_path, "oauth-parking") == before
+    finally:
+        _cleanup_mcp_state(mcp_tool, created)
+
+
 def test_standalone_failed_connect_is_reaped_without_global_owner(monkeypatch, tmp_path):
     """Probe-only _connect_server failures must not publish parked servers."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
 
     from tools import mcp_tool
     from tools import mcp_tool_discovery as _mcp_discovery

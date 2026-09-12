@@ -6442,16 +6442,19 @@ def _define_discord_view_classes() -> None:
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
+            # Do not set custom_id. discord.py treats any custom_id as a persistent
+            # component and routes the click through ViewStore; without add_view()
+            # that path replies "Unknown button" (localized) and never reaches
+            # these callbacks. Timeout-bound views must stay ephemeral so the
+            # in-memory View that sent the message owns the interaction.
             for index, choice in enumerate(self.choices):
                 button = discord.ui.Button(
                     label=self._button_label(index, choice), style=discord.ButtonStyle.primary,
-                    custom_id=f"clarify:{clarify_id}:{index}",
                 )
                 button.callback = self._make_choice_callback(index, choice)
                 self.add_item(button)
             other_btn = discord.ui.Button(
                 label="✏️ Other (type answer)", style=discord.ButtonStyle.secondary,
-                custom_id=f"clarify:{clarify_id}:other",
             )
             other_btn.callback = self._on_other
             self.add_item(other_btn)

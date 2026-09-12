@@ -94,7 +94,8 @@ def _surviving_chrome_cdp(data_dir: str) -> Optional[str]:
     http_cdp = f"http://127.0.0.1:{port}"
     try:
         import requests
-        ws_url = str(requests.get(f"{http_cdp}/json/version", timeout=2).json().get("webSocketDebuggerUrl") or "")
+        with requests.get(f"{http_cdp}/json/version", timeout=2) as resp:
+            ws_url = str(resp.json().get("webSocketDebuggerUrl") or "")
     except Exception:
         return None
     return http_cdp if ws_url.endswith(browser_path) else None

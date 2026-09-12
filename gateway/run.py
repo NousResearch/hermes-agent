@@ -3077,8 +3077,8 @@ def _normalize_empty_agent_response(
     (#31884)
 
     A failed context-overflow turn whose ``final_response`` is only the raw provider envelope
-    (``HTTP 400: {...}``) is rewritten too: returned unchanged, chat sanitizers turn it into a
-    generic provider-failed reply and the user never sees /compact. Curated agent text survives.
+    (``HTTP 400: {...}``) is rewritten too -- left as-is, the chat sanitizer would collapse it into a
+    generic "provider failed" reply and the user would never see /compact. Curated agent text survives.
     """
     is_overflow = is_context_overflow_failure_result(agent_result, history_len)
     if response and not (is_overflow and _looks_like_gateway_provider_error(response)):

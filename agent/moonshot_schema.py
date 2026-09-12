@@ -19,7 +19,9 @@ _SCHEMA_MAP_KEYS = frozenset({"properties", "patternProperties", "$defs", "defin
 # Values are lists of schemas.
 _SCHEMA_LIST_KEYS = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
 # Values are a single nested schema (additionalProperties may also be a bool).
-_SCHEMA_NODE_KEYS = frozenset({"items", "contains", "not", "additionalProperties", "propertyNames"})
+_SCHEMA_NODE_KEYS = frozenset(
+    {"items", "contains", "not", "additionalProperties", "propertyNames", "if", "then", "else"}
+)
 
 _SCALAR_TYPES = frozenset({"string", "integer", "number", "boolean"})
 # bool before int: bool is an int subclass.
@@ -103,7 +105,9 @@ def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     A type list collapses to its first concrete member; otherwise
     ``properties``/``required``/``additionalProperties`` → object,
     ``items``/``prefixItems`` → array, ``enum`` → type of its first value,
-    else ``string`` (safest scalar).
+    else ``string`` (safest scalar). A bare ``if``/``then``/``else`` node
+    constrains whatever instance it is attached to rather than describing
+    its own type, so it is left untyped instead of defaulting to ``string``.
     """
     node_type = node.get("type")
     if isinstance(node_type, list):
@@ -119,6 +123,8 @@ def _fill_missing_type(node: Dict[str, Any]) -> Dict[str, Any]:
     elif isinstance(node.get("enum"), list) and node["enum"]:
         sample = node["enum"][0]
         inferred = next((t for cls, t in _ENUM_SAMPLE_TYPES if isinstance(sample, cls)), "string")
+    elif "if" in node or "then" in node or "else" in node:
+        return node
     else:
         inferred = "string"
     return {**node, "type": inferred}

@@ -353,18 +353,19 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
                 t.join()
         self.assertEqual([r["status"] for r in results], ["success"] * 6)
         self.assertEqual(len(_KERNELS), 1)
+        # BSD pgrep (macOS) has no -c; count PID lines instead.
         live = subprocess.run(
-            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
+            ["pgrep", "-f", "-P", str(os.getpid()), "hermes_kernel_runner"],
             capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertEqual(live, "1")
+        ).stdout.split()
+        self.assertEqual(len(live), 1)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):
     """Interpreter state persists across cells; RPC authority must not."""
 
     def _recorder(self, seen):
-        def _handle(tool_name, tool_args, task_id=None):
+        def _handle(tool_name, tool_args, task_id=None, **kwargs):
             from tools.thread_context import _callback_api
 
             (get_approval, _set_a), *_rest = _callback_api()
@@ -444,6 +445,29 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         authority.retire()
         result = authority.dispatch("web_search", {"query": "q"})
         self.assertIn("No active execute_code cell", result)
+
+    def test_cell_authority_forwards_session_id(self):
+        """Nested kernel-cell tool calls must keep the parent session_id (#51931)."""
+        from tools.code_kernel import CellAuthority
+
+        captured = {}
+
+        def fake_handle(tool_name, tool_args, task_id=None, session_id=None, **kwargs):
+            captured["tool_name"] = tool_name
+            captured["task_id"] = task_id
+            captured["session_id"] = session_id
+            return json.dumps({"status": "ok"})
+
+        authority = CellAuthority("turn-1", session_id="kernel-session")
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+            result = authority.dispatch("read_file", {"path": "/tmp/x"})
+
+        self.assertEqual(json.loads(result), {"status": "ok"})
+        self.assertEqual(captured, {
+            "tool_name": "read_file",
+            "task_id": "turn-1",
+            "session_id": "kernel-session",
+        })
 
     def test_each_cell_installs_a_fresh_authority(self):
         with _kernel_config():

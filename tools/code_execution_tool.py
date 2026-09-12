@@ -527,6 +527,17 @@ def _apply_timeout(result: Dict[str, Any], timeout_msg: str) -> None:
     result["output"] = _with_timeout_notice(result["output"], timeout_msg)
 
 
+def _resolve_rpc_session_id(session_id: Optional[str]) -> str:
+    """Return the explicit session id, falling back to legacy session context."""
+    if session_id is not None:
+        return session_id
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_ID", "")
+    except Exception:
+        return ""
+
+
 def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
                                  timeout: int, exec_start: float) -> str:
     """Post-process a remote-kernel cell result into the tool's JSON reply. Timeout messaging
@@ -556,7 +567,7 @@ def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
                          sandbox_tools: frozenset, *, timeout: int, max_tool_calls: int,
-                         exec_start: float) -> str:
+                         exec_start: float, session_id: str = "") -> str:
     """Per-call script ship: stage hermes_tools.py + script.py in a fresh remote sandbox dir,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
@@ -572,10 +583,12 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
         # See #30882.
+        # Resolve on the parent thread for explicit forwarding (#51931).
+        _rpc_session_id = _resolve_rpc_session_id(session_id)
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
             args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
-                  max_tool_calls, sandbox_tools, stop_event, rpc_token))
+                  max_tool_calls, sandbox_tools, stop_event, rpc_token, _rpc_session_id))
         rpc_thread.start()
         env_prefix = (f"HERMES_RPC_DIR={quoted_rpc_dir} HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
                       "PYTHONDONTWRITEBYTECODE=1")
@@ -614,7 +627,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
 
 
 def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[List[str]],
-                    reset: bool = False) -> str:
+                    reset: bool = False, session_id: Optional[str] = None) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
@@ -623,6 +636,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
+    _rpc_session_id = _resolve_rpc_session_id(session_id)
     try:
         py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
         if "OK" not in py_check.get("output", ""):
@@ -641,6 +655,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
                 sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
                 max_tool_calls=max_tool_calls, reset=bool(reset),
                 idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+                session_id=_rpc_session_id,
             )
         except Exception:
             logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
@@ -651,7 +666,8 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     except Exception as exc:
         return _remote_failure(exc, exec_start, 0)
     return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
-                                timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
+                                timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start,
+                                session_id=_rpc_session_id)
 
 
 # ---- Main entry point ----
@@ -662,6 +678,7 @@ def execute_code(
     task_id: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     reset: bool = False,
+    session_id: Optional[str] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
     with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
@@ -717,7 +734,9 @@ def execute_code(
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
     if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
+        return _execute_remote(
+            code, task_id, enabled_tools, reset=bool(reset), session_id=session_id,
+        )
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
@@ -731,6 +750,7 @@ def execute_code(
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
+        session_id=_resolve_rpc_session_id(session_id),
     )
 
 
@@ -893,7 +913,8 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
     return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)),
+                        session_id=kwargs.get("session_id"))
 
 
 registry.register(

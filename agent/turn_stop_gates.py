@@ -28,6 +28,19 @@ _PRE_DELIVERY_REASON_MAX_CHARS = 2_000
 
 def _build_pre_delivery_repair_directive(*, attempt: int, reason: str) -> str:
     """Build the bounded instruction shared by every pre-delivery repair path."""
+    research_stages = (
+        "Ejecuta la ruta clínica seleccionada y recupera fuentes primarias pertinentes.",
+        "Repite la búsqueda con términos equivalentes y proveedores alternativos.",
+        "Profundiza hasta el texto completo por publisher/OA, Unpaywall o PMC y sus fallbacks.",
+        "Ejecuta descubrimiento ampliado con índices biomédicos adicionales y verifica las citas.",
+    )
+    stage = research_stages[min(max(attempt, 1) - 1, len(research_stages) - 1)]
+    if attempt > _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS:
+        stage += (
+            " No te detengas en una abstención: conserva lo respaldado, elimina únicamente "
+            "la precisión no verificable y termina con una sola línea de divulgación si aún "
+            "queda una limitación general."
+        )
     repair_contract = {
         "gate": "pre_delivery",
         "action": "repair",
@@ -37,9 +50,8 @@ def _build_pre_delivery_repair_directive(*, attempt: int, reason: str) -> str:
         ),
         "reason": (reason or "policy_block")[:_PRE_DELIVERY_REASON_MAX_CHARS],
         "required": (
-            "Retén la respuesta anterior. Recupera la evidencia o certificación "
-            "faltante con las herramientas disponibles, regenera una respuesta "
-            "específica y completa, y vuelve a someterla a pre_delivery."
+            "Retén la respuesta anterior. " + stage + " Regenera una respuesta específica "
+            "y completa, y vuelve a someterla a pre_delivery."
         ),
     }
     return "[PRE_DELIVERY_REPAIR]\n" + json.dumps(

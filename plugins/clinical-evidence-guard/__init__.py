@@ -132,6 +132,15 @@ _DEGRADATION_TAIL_RE = re.compile(
     r"recomiend\w*|sugier\w*|debe\w*|deber[ií]a\w*)\b",
     re.IGNORECASE,
 )
+_RECOMMENDATION_RE = re.compile(
+    r"\b(?:recomiend\w*|sugier\w*|aconsej\w*|indic\w*|prescrib\w*|"
+    r"debe\w*|deber[ií]a\w*|conviene\w*|conducta\w*)\b",
+    re.IGNORECASE,
+)
+_EVIDENCE_DISCLOSURE = (
+    "Divulgación: algunas afirmaciones generales no pudieron verificarse por completo "
+    "con la evidencia recuperada en esta consulta."
+)
 
 _SPECIFIC_RE = re.compile(
     r"\b\d+(?:[.,]\d+)?(?:\s*[-–—]\s*\d+(?:[.,]\d+)?)?\s*"
@@ -416,13 +425,13 @@ def _is_real_evidence_tool(tool_name: str, result: str) -> bool:
     return False
 
 
-def _provider_from_tool(tool_name: str, result: str) -> str:
+def _provider_from_tool(tool_name: str, result: Any) -> str:
     if tool_name in _GBRAIN_CORE_TOOLS and _has_gbrain_core_provenance(result):
         return "gbrain-core"
     parts = str(tool_name or "").split("__")
     if len(parts) >= 3 and parts[0] == "mcp":
         return parts[1]
-    if "openevidence" in (result or "").lower():
+    if "openevidence" in str(result or "").lower():
         return "open-evidence"
     return str(tool_name or "unknown")
 
@@ -517,6 +526,9 @@ def _specific_tokens(text: str) -> set[str]:
 
 
 _CLINICAL_TOKEN_ALIASES = (
+    (("abdominoplast", "abdominoplasty"), "abdominoplasty"),
+    (("drenaj", "drain"), "drain"),
+    (("heterogene", "variation", "variacion"), "variation"),
     (("ritidect", "rhytidect", "facelift"), "facelift"),
     (("posoperat", "postoperat"), "postoperative"),
     (("complicacion", "complication"), "complication"),
@@ -751,26 +763,31 @@ def _on_post_tool_call(
     session_id: str = "",
     turn_id: str = "",
     tool_name: str = "",
-    result: str = "",
+    result: Any = "",
     status: str = "ok",
     **_: Any,
 ) -> None:
+    result_text = (
+        result
+        if isinstance(result, str)
+        else json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
+    )
     with _LOCK:
         _resolved_key, state = _get_or_migrate_state(session_id, turn_id)
         if state is None or not state.clinical:
             return None
-        if not _is_real_evidence_tool(tool_name, result):
+        if not _is_real_evidence_tool(tool_name, result_text):
             return None
-        if _parsed_result_has_error(result, status):
+        if _parsed_result_has_error(result_text, status):
             return None
-        evidence_text = _extract_evidence_text(result)
+        evidence_text = _extract_evidence_text(result_text)
         if not evidence_text:
             return None
         _append_evidence(
             state,
             session_id=session_id,
             tool_name=tool_name,
-            result=result,
+            result=result_text,
             evidence_text=evidence_text,
         )
     return None
@@ -823,7 +840,19 @@ def _claim_is_supported(
 
 def _clinical_body(response: str) -> str:
     """Exclude an optional provenance appendix from clinical-claim matching."""
-    return re.split(r"(?im)^\s*(?:\*\*)?fuentes\s+declaradas(?:\*\*)?\s*$", response or "", maxsplit=1)[0].strip()
+    body = re.split(
+        r"(?im)^\s*(?:\*\*)?fuentes\s+declaradas(?:\*\*)?\s*$",
+        response or "",
+        maxsplit=1,
+    )[0].strip()
+    return body.removesuffix(_EVIDENCE_DISCLOSURE).rstrip()
+
+
+def _with_evidence_disclosure(response: str) -> str:
+    text = (response or "").rstrip()
+    if _EVIDENCE_DISCLOSURE in text:
+        return text
+    return f"{text}\n\n{_EVIDENCE_DISCLOSURE}"
 
 
 _PRIVATE_BLOCK_MARKER = "pre_delivery_blocked"
@@ -900,8 +929,22 @@ def _on_pre_delivery(
         claim for claim in _claim_sentences(body)
         if not _claim_is_supported(state.user_message, claim, state.evidence)
     ]
-    if unsupported_claims:
-        reasons.append("hay afirmaciones sin respaldo suficiente en la evidencia recuperada")
+    hard_unsupported_claims = [
+        claim for claim in unsupported_claims
+        if (
+            _specific_tokens(claim)
+            or _DOI_RE.search(claim)
+            or _PMID_RE.search(claim)
+            or _URL_RE.search(claim)
+            or _AUTHOR_YEAR_RE.search(claim)
+            or _RECOMMENDATION_RE.search(claim)
+        )
+    ]
+    if hard_unsupported_claims:
+        reasons.append(
+            "hay cifras, citas, identificadores o recomendaciones sin respaldo suficiente "
+            "en la evidencia recuperada"
+        )
 
     if reasons:
         return _pre_delivery_block(
@@ -909,6 +952,14 @@ def _on_pre_delivery(
             + ". Conserva lo respaldado, corrige o elimina sólo estas afirmaciones, recupera "
             "la evidencia faltante y vuelve a someter la respuesta completa."
         )
+
+    if unsupported_claims:
+        with _LOCK:
+            _STATES.pop(key, None)
+        return {
+            "action": "replace",
+            "response_text": _with_evidence_disclosure(response_text),
+        }
 
     with _LOCK:
         _STATES.pop(key, None)

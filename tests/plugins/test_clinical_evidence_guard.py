@@ -318,3 +318,95 @@ def test_pre_delivery_repair_preserves_nonclinical_state_and_scope(plugin):
     )
 
     assert plugin._STATES[plugin._session_key(session_id, "turn")].clinical is False
+
+
+def test_pre_delivery_discloses_general_evidence_gap_without_suppressing_answer(plugin):
+    plugin._on_pre_llm_call(
+        session_id="s",
+        turn_id="turn",
+        user_message="¿Qué sabemos sobre el uso de drenajes tras una abdominoplastia?",
+    )
+    plugin._on_post_tool_call(
+        session_id="s",
+        turn_id="turn",
+        tool_name="web_search",
+        result={
+            "url": "https://example.org/review",
+            "content": (
+                "A systematic review discusses postoperative drains after "
+                "abdominoplasty and variation in clinical practice."
+            ),
+        },
+    )
+    candidate = (
+        "La evidencia sobre drenajes después de una abdominoplastia es heterogénea. "
+        "La práctica también depende de la técnica y del contexto clínico."
+    )
+
+    decision = plugin._on_pre_delivery(
+        session_id="s",
+        turn_id="turn",
+        response_text=candidate,
+    )
+
+    assert decision["action"] == "replace"
+    assert decision["response_text"].startswith(candidate)
+    assert decision["response_text"].splitlines()[-1] == plugin._EVIDENCE_DISCLOSURE
+    assert decision["response_text"].count(plugin._EVIDENCE_DISCLOSURE) == 1
+
+
+def test_pre_delivery_keeps_searching_for_unsupported_recommendation(plugin):
+    plugin._on_pre_llm_call(
+        session_id="s",
+        turn_id="turn",
+        user_message="¿Qué conducta recomiendas con los drenajes tras una abdominoplastia?",
+    )
+    plugin._on_post_tool_call(
+        session_id="s",
+        turn_id="turn",
+        tool_name="web_search",
+        result={
+            "url": "https://example.org/review",
+            "content": "A review discusses drains after abdominoplasty.",
+        },
+    )
+
+    decision = plugin._on_pre_delivery(
+        session_id="s",
+        turn_id="turn",
+        response_text="Recomiendo retirar siempre los drenajes de forma temprana.",
+    )
+
+    assert decision["action"] == "block"
+    assert "response_text" not in decision
+
+
+def test_pre_delivery_does_not_duplicate_existing_disclosure(plugin):
+    plugin._on_pre_llm_call(
+        session_id="s",
+        turn_id="turn",
+        user_message="¿Qué sabemos sobre drenajes tras una abdominoplastia?",
+    )
+    plugin._on_post_tool_call(
+        session_id="s",
+        turn_id="turn",
+        tool_name="web_search",
+        result={
+            "url": "https://example.org/review",
+            "content": "A review discusses postoperative drains after abdominoplasty.",
+        },
+    )
+    candidate = (
+        "La literatura sobre drenajes después de una abdominoplastia es heterogénea.\n\n"
+        + plugin._EVIDENCE_DISCLOSURE
+    )
+
+    decision = plugin._on_pre_delivery(
+        session_id="s",
+        turn_id="turn",
+        response_text=candidate,
+    )
+
+    assert decision["action"] in {"allow", "replace"}
+    delivered = decision.get("response_text", candidate)
+    assert delivered.count(plugin._EVIDENCE_DISCLOSURE) == 1

@@ -159,3 +159,20 @@ def test_repair_directive_contains_only_bounded_reason_code(monkeypatch):
 
     assert verdict.continue_turn is True
     assert "PHI_SENTINEL" not in messages[-1]["content"]
+
+
+def test_repair_directive_expands_research_route_by_attempt():
+    directives = [
+        turn_stop_gates._build_pre_delivery_repair_directive(
+            attempt=attempt,
+            reason="policy_block",
+        )
+        for attempt in range(1, 6)
+    ]
+
+    assert "ruta clínica seleccionada" in directives[0]
+    assert "proveedores alternativos" in directives[1]
+    assert "texto completo" in directives[2]
+    assert "descubrimiento ampliado" in directives[3]
+    assert '"mode": "escalated"' in directives[4]
+    assert "No te detengas en una abstención" in directives[4]

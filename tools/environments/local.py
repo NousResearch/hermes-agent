@@ -361,24 +361,48 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
 
 
 # --- Shell discovery ---
+def _is_wsl_bash(path: str) -> bool:
+    """Return True if path points to Windows/WSL launcher bash.exe (System32\\bash.exe)."""
+    if not path or not _IS_WINDOWS:
+        return False
+    norm = os.path.normpath(path).lower()
+    system_root = os.path.normpath(os.environ.get("SystemRoot", r"C:\Windows")).lower()
+    return (
+        norm.startswith(os.path.join(system_root, "system32"))
+        or norm.startswith(os.path.join(system_root, "syswow64"))
+        or norm.startswith(os.path.join(system_root, "windowsapps"))
+    )
+
+
 def _windows_bash_candidates(custom: "str | None") -> list[str]:
     """Ordered bash.exe candidates on Windows: HERMES_GIT_BASH_PATH, our portable Git
     under %LOCALAPPDATA%\\hermes\\git (PortableGit ``bin`` and MinGit ``usr\\bin``),
-    known Git-for-Windows dirs, then PATH last — ``shutil.which`` may return WSL's
-    bash, which fails silently on Windows paths."""
+    known Git-for-Windows dirs, then non-WSL PATH candidates — ``shutil.which`` may return WSL's
+    bash (System32\\bash.exe), which fails silently on Windows paths."""
     getenv = os.environ.get
     lad = getenv("LOCALAPPDATA", "")
+    pf = getenv("ProgramFiles", r"C:\Program Files")
+    pf86 = getenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    sys_drive = getenv("SystemDrive", "C:")
+    user_prof = getenv("USERPROFILE", "")
     roots = [
         lad and os.path.join(lad, "hermes", "git", "bin"),
         lad and os.path.join(lad, "hermes", "git", "usr", "bin"),
-        os.path.join(getenv("ProgramFiles", r"C:\Program Files"), "Git", "bin"),
-        os.path.join(getenv("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin"),
+        os.path.join(pf, "Git", "bin"),
+        os.path.join(pf, "Git", "usr", "bin"),
+        os.path.join(pf86, "Git", "bin"),
+        os.path.join(pf86, "Git", "usr", "bin"),
         lad and os.path.join(lad, "Programs", "Git", "bin"),
+        lad and os.path.join(lad, "Programs", "Git", "usr", "bin"),
+        os.path.join(sys_drive, "Git", "bin"),
+        os.path.join(sys_drive, "Git", "usr", "bin"),
+        user_prof and os.path.join(user_prof, "scoop", "apps", "git", "current", "bin"),
+        user_prof and os.path.join(user_prof, "scoop", "apps", "git", "current", "usr", "bin"),
     ]
     raw = [custom or "", *(os.path.join(r, "bash.exe") for r in roots if r)]
     candidates = list(dict.fromkeys(c for c in raw if c and os.path.isfile(c)))
     found = shutil.which("bash")
-    if found and found not in candidates:
+    if found and found not in candidates and not _is_wsl_bash(found):
         candidates.append(found)
     return candidates
 

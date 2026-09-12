@@ -332,3 +332,24 @@ class TestWrapCommandWindowsNativeCwd:
         script = captured["script"]
         assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
         assert r"C:\Users\Alexander\AppData" not in script
+
+
+class TestIsWslBash:
+    def test_detects_system32_wsl_bash(self, monkeypatch):
+        from tools.environments.local import _is_wsl_bash
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+
+        assert _is_wsl_bash(r"C:\Windows\System32\bash.exe") is True
+        assert _is_wsl_bash(r"c:\windows\system32\bash.EXE") is True
+        assert _is_wsl_bash(r"C:\Program Files\Git\bin\bash.exe") is False
+
+    def test_windows_bash_candidates_excludes_wsl(self, monkeypatch):
+        from tools.environments.local import _windows_bash_candidates
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.setattr(local_mod.shutil, "which", lambda cmd: r"C:\Windows\System32\bash.exe")
+
+        candidates = _windows_bash_candidates(None)
+        assert r"C:\Windows\System32\bash.exe" not in candidates
+

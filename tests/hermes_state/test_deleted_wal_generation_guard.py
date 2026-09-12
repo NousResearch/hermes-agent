@@ -437,23 +437,35 @@ def test_renamed_wal_generation_survives_close_and_clean_process_exit(tmp_path):
 # close() errors, and a normal interpreter exit, whether or not the capture succeeded.
 
 
-def _assert_new_generation_survives_setconfig_failure(tmp_path, *, rename_sidecars, capture_fails):
+def _assert_new_generation_survives_setconfig_failure(tmp_path, *, rename_sidecars, capture_failure):
     with gateway_writer(tmp_path) as gw:
         path = gw.path
         gw.next_event("ready")
-        for command in ("break-setconfig", "break-capture")[: 2 if capture_fails else 1]:
+        commands = ["break-setconfig"]
+        if capture_failure is not None:
+            commands.append({
+                "error": "break-capture",
+                "memory": "break-copy-memory",
+                "interrupt": "break-copy-interrupt",
+            }[capture_failure])
+        for command in commands:
             gw.send(command)
             gw.next_event("broken")
         lose_sidecars(path, rename=rename_sidecars)
         expected = write_second_generation(path, n_rows=400)
 
         gw.send("release")
-        assert gw.next_event("released")["open"] is capture_fails
-        assert integrity_ok_path(path), "release checkpointed the stale WAL over the main file"
-        assert message_count(path) == expected, "release rolled back the newer rows"
+        if capture_failure == "interrupt":
+            # Cancellation must still propagate; protecting the handle must not swallow it.
+            assert gw.wait_exit(timeout=20) != 0
+            assert "KeyboardInterrupt" in gw.stderr_text()
+        else:
+            assert gw.next_event("released")["open"] is (capture_failure is not None)
+            assert integrity_ok_path(path), "release checkpointed the stale WAL over the main file"
+            assert message_count(path) == expected, "release rolled back the newer rows"
 
-        gw.send("quit")
-        assert gw.wait_exit(timeout=20) == 0, gw.stderr_text()
+            gw.send("quit")
+            assert gw.wait_exit(timeout=20) == 0, gw.stderr_text()
         assert integrity_ok_path(path), "normal exit checkpointed the stale WAL over the main file"
         assert message_count(path) == expected, "normal exit rolled back the newer rows"
 
@@ -461,17 +473,19 @@ def _assert_new_generation_survives_setconfig_failure(tmp_path, *, rename_sideca
 @pytest.mark.linux_only
 @pytest.mark.skipif(not _close_time_checkpoint_configurable(),
                     reason="no setconfig: the retirement tests above cover this runtime")
-@pytest.mark.parametrize("capture_fails", [False, True], ids=["captured", "capture-failed"])
-def test_setconfig_failure_retires_unclosed_through_release_and_exit(tmp_path, capture_fails):
-    _assert_new_generation_survives_setconfig_failure(tmp_path, rename_sidecars=False, capture_fails=capture_fails)
+@pytest.mark.parametrize("capture_failure", [None, "error", "memory", "interrupt"],
+                         ids=["captured", "capture-failed", "capture-memory-error", "capture-interrupted"])
+def test_setconfig_failure_retires_unclosed_through_release_and_exit(tmp_path, capture_failure):
+    _assert_new_generation_survives_setconfig_failure(tmp_path, rename_sidecars=False, capture_failure=capture_failure)
 
 
 @pytest.mark.macos_only
 @pytest.mark.skipif(not _close_time_checkpoint_configurable(),
                     reason="no setconfig: the retirement tests above cover this runtime")
-@pytest.mark.parametrize("capture_fails", [False, True], ids=["captured", "capture-failed"])
-def test_setconfig_failure_retires_renamed_generation_unclosed_through_release_and_exit(tmp_path, capture_fails):
-    _assert_new_generation_survives_setconfig_failure(tmp_path, rename_sidecars=True, capture_fails=capture_fails)
+@pytest.mark.parametrize("capture_failure", [None, "error", "memory", "interrupt"],
+                         ids=["captured", "capture-failed", "capture-memory-error", "capture-interrupted"])
+def test_setconfig_failure_retires_renamed_generation_unclosed_through_release_and_exit(tmp_path, capture_failure):
+    _assert_new_generation_survives_setconfig_failure(tmp_path, rename_sidecars=True, capture_failure=capture_failure)
 
 
 @pytest.mark.skipif(

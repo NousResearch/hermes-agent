@@ -1198,14 +1198,17 @@ class SessionDB(
         an interpreter exit before the retry must not be able to checkpoint the stale frames either."""
         self._db_wal_generation_lost = True
         retire_without_close = not self._disable_close_time_checkpoint() and self._retire_connection is not None
+        if retire_without_close:
+            # Capture may also raise an unwrapped exception or be interrupted. Its
+            # exception type must not decide whether interpreter exit can checkpoint.
+            self._pin_connection(self._conn)
         try:
             artifact = self._capture_retired_generation("close")
-        except RetiredGenerationCaptureError as exc:
-            if retire_without_close:
-                self._pin_connection(self._conn)
+        except BaseException as exc:
             logger.error(
                 "Could not capture the retired WAL generation of %s at close: %s. The handle stays open "
                 "and close() retries the capture; those frames are NOT yet preserved.", self.db_path, exc,
+                exc_info=True,
             )
             raise
         logger.warning(

@@ -163,14 +163,25 @@ _GATEWAY_CHILD = textwrap.dedent(
             import sqlite3
             sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE = -1
             emit(event="broken", what=cmd)
-        elif cmd == "break-capture":
+        elif cmd in ("break-capture", "break-copy-memory", "break-copy-interrupt"):
             import hermes_state
+            import hermes_state_dbfile
             from hermes_state_dbfile import RetiredGenerationCaptureError
 
-            def refuse(*args, **kwargs):
-                raise RetiredGenerationCaptureError("no space left on device")
+            error, message = {
+                "break-capture": (RetiredGenerationCaptureError, "no space left on device"),
+                "break-copy-memory": (MemoryError, "capture copy ran out of memory"),
+                "break-copy-interrupt": (KeyboardInterrupt, "capture copy interrupted"),
+            }[cmd]
 
-            hermes_state.capture_retired_wal_generation = refuse
+            def refuse(*args, _error=error, _message=message, **kwargs):
+                raise _error(_message)
+
+            if cmd == "break-capture":
+                hermes_state.capture_retired_wal_generation = refuse
+            else:
+                # Keep the real capture routine and its exception handling in the path.
+                hermes_state_dbfile._copy_range = refuse
             emit(event="broken", what=cmd)
         elif cmd == "release":
             from hermes_state_registry import release_or_close

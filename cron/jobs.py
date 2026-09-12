@@ -2604,7 +2604,7 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

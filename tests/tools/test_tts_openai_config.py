@@ -109,3 +109,55 @@ class TestResolveOpenaiAudioClientConfig:
         config = {"openai": {"api_key": "cfg-key"}}
         with patch.object(tts_tool, "_load_tts_config", return_value=config):
             assert tts_tool_openai._has_openai_audio_backend() is True
+
+
+# ---------------------------------------------------------------------------
+# tts.openai.key_env indirection — the unblock for the silent-drop bug
+# ---------------------------------------------------------------------------
+class TestResolveOpenaiAudioClientConfigKeyEnv:
+    """``tts.openai.key_env: NAME`` was previously dropped silently (P1 cousin): the resolver
+    only consulted ``api_key`` and the two hardcoded env vars, so a user setting a custom-named
+    env var via config got ``check_tts_requirements() == False`` and the model never saw the
+    ``text_to_speech`` tool. The fix threads ``key_env`` through ``resolve_openai_audio_api_key``.
+    """
+
+    def test_key_env_only_resolves_via_dotenv(self, monkeypatch):
+        from tools import tts_tool, tts_tool_openai
+
+        import hermes_cli.config as _cfg
+        monkeypatch.setattr(
+            _cfg, "get_env_value",
+            lambda name, default=None: "dotenv-key" if name == "TTS_OPENAI_API_KEY" else default,
+        )
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("TTS_OPENAI_API_KEY", raising=False)
+        config = {"openai": {"key_env": "TTS_OPENAI_API_KEY",
+                             "base_url": "http://127.0.0.1:9877/v1"}}
+        with patch.object(tts_tool, "_load_tts_config", return_value=config), \
+             patch.object(tts_tool_openai, "read_selection", return_value=None):
+            assert tts_tool_openai._resolve_openai_audio_client_config() == (
+                "dotenv-key", "http://127.0.0.1:9877/v1", False,
+            )
+
+    def test_key_env_empty_value_surfaces_in_error(self, monkeypatch):
+        """When ``key_env`` is set but the named env var is empty, the error message names it
+        so the next agent debugging "why is TTS still missing" doesn't repeat the cycle."""
+        from tools import tts_tool, tts_tool_openai
+
+        import hermes_cli.config as _cfg
+        monkeypatch.setattr(
+            _cfg, "get_env_value",
+            lambda name, default=None: default,
+        )
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        config = {"openai": {"key_env": "TTS_OPENAI_API_KEY"}}
+        with patch.object(tts_tool, "_load_tts_config", return_value=config), \
+             patch.object(tts_tool_openai, "read_selection", return_value=None), \
+             patch.object(tts_tool_openai, "resolve_managed_tool_gateway", return_value=None), \
+             patch.object(tts_tool_openai, "managed_nous_tools_enabled", return_value=False):
+            with pytest.raises(ValueError) as exc:
+                tts_tool_openai._resolve_openai_audio_client_config()
+        assert "TTS_OPENAI_API_KEY" in str(exc.value)
+        assert "key_env" in str(exc.value)

@@ -1759,6 +1759,13 @@ def _load_show_reasoning() -> bool:
     return bool(_display_cfg().get("show_reasoning", True))
 
 
+def _show_reasoning_enabled(sid: str) -> bool:
+    session = _sessions.get(sid)
+    if isinstance(session, dict) and "show_reasoning" in session and session["show_reasoning"] is not None:
+        return bool(session["show_reasoning"])
+    return _load_show_reasoning()
+
+
 def _load_memory_notifications() -> str:
     """``display.memory_notifications`` (``off`` / ``on`` default / ``verbose``; bool normalized) — gates the
     "💾 Self-improvement review" summary (gateway/CLI parity)."""

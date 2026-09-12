@@ -948,20 +948,24 @@ class TestAsyncHookCallbacks:
         assert results == [{"context": "sync"}, {"context": "async:s1"}]
 
     def test_async_hook_resolves_under_a_running_loop(self):
-        """Gateway handlers call invoke_hook from inside asyncio; a bare asyncio.run would raise."""
+        """Gateway handlers call invoke_hook from inside asyncio; a bare asyncio.run would raise.
+        The helper thread must also carry the caller's ContextVars (profile / secret scope)."""
         import asyncio
+        import contextvars
 
+        scope = contextvars.ContextVar("hook_scope", default="default")
         mgr = PluginManager()
 
         async def async_hook(**kwargs):
-            return "from-async"
+            return f"from-async:{scope.get()}"
 
         mgr._hooks.setdefault("post_tool_call", []).append(async_hook)
 
         async def driver():
+            scope.set("profile-b")
             return mgr.invoke_hook("post_tool_call", tool_name="t", args={}, result="r", duration_ms=1)
 
-        assert asyncio.run(driver()) == ["from-async"]
+        assert asyncio.run(driver()) == ["from-async:profile-b"]
 
 
 class TestForceReloadSymmetry:

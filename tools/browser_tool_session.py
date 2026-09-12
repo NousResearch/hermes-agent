@@ -94,6 +94,23 @@ def _format_browser_timeout_error(
     return "\n".join(parts)
 
 
+def _wrap_windows_batch_shim(argv: list) -> list:
+    """On Windows, run .cmd/.bat shims via ``cmd.exe /c`` so pipes close with the CLI (#107232).
+
+    Direct CreateProcess on an npm ``.CMD`` shim lets background node workers inherit
+    stdout/stderr; ``subprocess.run(capture_output=True)`` then hangs past the timeout.
+    Already-wrapped argv (``cmd.exe`` / ``cmd``) and non-batch executables are left as-is.
+    """
+    if os.name != "nt" or not argv:
+        return argv
+    head = str(argv[0])
+    if os.path.basename(head).lower() in ("cmd.exe", "cmd"):
+        return argv
+    if os.path.splitext(head)[1].lower() not in (".cmd", ".bat"):
+        return argv
+    return ["cmd.exe", "/c", *argv]
+
+
 def _agent_browser_argv(browser_cmd: str) -> list:
     """Command prefix to invoke agent-browser (concrete binary, or the npx sentinel expanded).
 
@@ -104,8 +121,10 @@ def _agent_browser_argv(browser_cmd: str) -> list:
     """
     if _install._is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _install._resolve_npx_bin() or "npx"
-        return [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", _bt.AGENT_BROWSER_NPX_SPEC]
-    return [browser_cmd]
+        argv = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", _bt.AGENT_BROWSER_NPX_SPEC]
+    else:
+        argv = [browser_cmd]
+    return _wrap_windows_batch_shim(argv)
 
 
 def _prepare_session_socket_dir(session_name: str) -> str:

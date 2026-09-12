@@ -175,9 +175,16 @@ _INTERNAL_NOTE_RE = re.compile(
 
 
 def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
-    for pattern in (_INTERNAL_CONTEXT_RE, _INTERNAL_NOTE_RE, _FENCE_TAG_RE):
-        text = pattern.sub('', text)
+    """Strip fence tags, injected context blocks, and system notes from provider output.
+
+    Runs in a loop until stable: overlapping tags can splice into valid new tags
+    after a single pass, so ``re.sub`` alone is not idempotent on adversarial input.
+    """
+    prev = None
+    while prev != text:
+        prev = text
+        for pattern in (_INTERNAL_CONTEXT_RE, _INTERNAL_NOTE_RE, _FENCE_TAG_RE):
+            text = pattern.sub('', text)
     return text
 
 

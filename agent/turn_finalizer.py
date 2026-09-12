@@ -440,6 +440,14 @@ def finalize_turn(
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
+    from agent.required_delegation import (
+        attach_required_delegation_outcome, required_delegation_failure, required_delegation_interrupted,
+    )
+
+    interrupted = interrupted or required_delegation_interrupted(agent)
+    required_failure = required_delegation_failure(agent)
+    if required_failure:
+        final_response, failed, _turn_exit_reason = required_failure, True, "required_delegation_incomplete"
 
     final_response, _turn_exit_reason, preserved_verification_fallback = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
@@ -565,6 +573,7 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    attach_required_delegation_outcome(agent, result)
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True; also stamp `error` so the gateway

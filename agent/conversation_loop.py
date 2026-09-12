@@ -1502,6 +1502,14 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    from agent.required_delegation import required_delegation_launch_failure
+    launch_failure = required_delegation_launch_failure(agent)
+    if launch_failure:
+        s.final_response, s.failed, s._turn_exit_reason = launch_failure, True, "required_delegation_incomplete"
+        return finalize_turn(agent, **{
+            name: getattr(s, name)
+            for name in inspect.signature(finalize_turn).parameters if name != "agent"
+        })
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
@@ -1545,6 +1553,8 @@ def _run_conversation_turn(
                 return _ri.result
             if _ri.action == "continue":
                 continue
+            from agent.required_delegation import observe_required_delegation_results
+            observe_required_delegation_results(agent, s.api_messages)
             _v = _run_phase(
                 run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
             )

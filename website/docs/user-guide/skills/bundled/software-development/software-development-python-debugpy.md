@@ -15,7 +15,7 @@ Debug Python: pdb REPL + debugpy remote (DAP).
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/python-debugpy` |
+| Path | `skills/software-development\python-debugpy` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |

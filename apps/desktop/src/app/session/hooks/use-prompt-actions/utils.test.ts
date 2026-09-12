@@ -496,6 +496,29 @@ describe('renderRpcResult', () => {
     })
   })
 
+  describe('reload.mcp', () => {
+    it('renders the confirmation prompt when the gate is on', () => {
+      expect(
+        renderRpcResult(
+          { status: 'confirm_required', message: '⚠️  /reload-mcp invalidates the prompt cache' },
+          'reload-mcp'
+        )
+      ).toBe('⚠️  /reload-mcp invalidates the prompt cache')
+    })
+
+    it('falls back to a generic prompt when confirm_required carries no message', () => {
+      expect(renderRpcResult({ status: 'confirm_required' }, 'reload-mcp')).toBe(
+        '/reload-mcp requires confirmation'
+      )
+    })
+
+    it('reports a successful reload', () => {
+      expect(renderRpcResult({ status: 'reloaded', loaded_rev: 'abc123' }, 'reload-mcp')).toBe(
+        'MCP servers reloaded'
+      )
+    })
+  })
+
   describe('process.stop', () => {
     it('reports the numeric number of stopped processes', () => {
       expect(renderRpcResult({ killed: 2 }, 'stop')).toBe('Stopped 2 background processes.')

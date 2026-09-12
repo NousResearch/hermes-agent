@@ -13,11 +13,25 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+import uuid
+from contextlib import contextmanager, suppress
 from typing import Optional
 
 _MAX_ENTRIES = 1000
 _MAX_TEXT_CHARS = 2000
+_STORE_LOCK = threading.RLock()
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows only
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX only
+    msvcrt = None
 
 
 def _store_path() -> str:
@@ -29,9 +43,35 @@ def _load(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+@contextmanager
+def _locked_store(path: str):
+    """Serialize index read-modify-write cycles across gateway processes."""
+    with _STORE_LOCK:
+        lock_path = f"{path}.lock"
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        if msvcrt and (not os.path.exists(lock_path) or os.path.getsize(lock_path) == 0):
+            with open(lock_path, "w", encoding="utf-8") as fh:
+                fh.write(" ")
+        with open(lock_path, "a+", encoding="utf-8") as fh:
+            if fcntl:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            elif msvcrt:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                with suppress(OSError):
+                    if fcntl:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    elif msvcrt:
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _update(chat_id, message_id, fields: dict) -> None:
@@ -39,18 +79,19 @@ def _update(chat_id, message_id, fields: dict) -> None:
     path = _store_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        data = _load(path)
-        key = f"{chat_id}:{message_id}"
-        entry = data.get(key)
-        entry = entry if isinstance(entry, dict) else {}
-        data[key] = {**entry, **fields, "ts": int(time.time())}
-        if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
-            for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
-                data.pop(k, None)
-        tmp = f"{path}.tmp.{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False)
-        os.replace(tmp, path)  # atomic; tolerates concurrent writers racing
+        with _locked_store(path):
+            data = _load(path)
+            key = f"{chat_id}:{message_id}"
+            entry = data.get(key)
+            entry = entry if isinstance(entry, dict) else {}
+            data[key] = {**entry, **fields, "ts": int(time.time())}
+            if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
+                for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
+                    data.pop(k, None)
+            tmp = f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.replace(tmp, path)
     except Exception:
         return
 

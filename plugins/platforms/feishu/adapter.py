@@ -1564,7 +1564,7 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a Feishu message."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1614,7 +1614,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
 
         content = self.format_message(content)
 
@@ -1654,7 +1654,7 @@ class FeishuAdapter(BasePlatformAdapter):
         """Approval-button card; ``hermes_action`` in each button value lets the click callback
         route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
 
         try:
             approval_id = next(self._approval_counter)
@@ -1714,7 +1714,7 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an interactive update prompt with Yes/No buttons."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         try:
             prompt_id = next(self._update_prompt_counter)
             card = self._build_update_prompt_card(prompt=prompt, default=default, prompt_id=prompt_id)
@@ -1797,9 +1797,10 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local image file to Feishu."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not os.path.exists(image_path):
-            return SendResult(success=False, error=f"Image file not found: {image_path}")
+            return SendResult(
+                success=False, error=f"Image file not found: {image_path}", delivery_attempted=False)
         try:
             import io as _io
             with open(image_path, "rb") as f:
@@ -3515,9 +3516,10 @@ class FeishuAdapter(BasePlatformAdapter):
         caption: Optional[str] = None, file_name: Optional[str] = None, outbound_message_type: str = "file",
     ) -> SendResult:
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not os.path.exists(file_path):
-            return SendResult(success=False, error=f"File not found: {file_path}")
+            return SendResult(
+                success=False, error=f"File not found: {file_path}", delivery_attempted=False)
 
         display_name = file_name or os.path.basename(file_path)
         upload_file_type, resolved_message_type = self._resolve_outbound_file_routing(

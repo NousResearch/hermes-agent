@@ -1407,9 +1407,11 @@ class PhotonAdapter(BasePlatformAdapter):
         """POST a native poll to ``/send-poll`` (degrades to a numbered list elsewhere)."""
         opts = [str(o).strip() for o in (options or []) if str(o).strip()]
         if not title or not title.strip():
-            return SendResult(success=False, error="poll title is required")
+            return SendResult(
+                success=False, error="poll title is required", delivery_attempted=False)
         if len(opts) < 2:
-            return SendResult(success=False, error="poll needs at least two options")
+            return SendResult(
+                success=False, error="poll needs at least two options", delivery_attempted=False)
         body = {"spaceId": space_id, "title": title.strip()[: self.MAX_MESSAGE_LENGTH], "options": opts}
         return await self._post_send("/send-poll", body)
 
@@ -1420,7 +1422,9 @@ class PhotonAdapter(BasePlatformAdapter):
         note (downgrades to a plain audio attachment where unsupported)."""
         safe_path = self.validate_media_delivery_path(str(path))  # send_*_file / cron may pass arbitrary strings
         if not safe_path:
-            return SendResult(success=False, error=f"unsafe or missing attachment path: {path}")
+            return SendResult(
+                success=False, error=f"unsafe or missing attachment path: {path}",
+                delivery_attempted=False)
         body = _attachment_body(
             space_id, safe_path, kind=kind, name=name, mime_type=mime_type or _guess_mime(safe_path), caption=caption)
         return await self._post_send("/send-attachment", body, structured=True)

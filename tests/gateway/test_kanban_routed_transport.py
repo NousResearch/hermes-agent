@@ -4,6 +4,7 @@ from pathlib import Path
 
 from gateway.config import GatewayConfig, Platform
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from gateway.platforms.base import SendResult
 from gateway.profile_routing import parse_profile_routes
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
@@ -18,6 +19,7 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, **kwargs):
         self.sent.append((chat_id, text, kwargs))
+        return SendResult(success=True, message_id=f"sent-{len(self.sent)}")
 
     async def handle_message(self, event):
         self.handled.append(event)
@@ -70,6 +72,14 @@ def unseen(task):
     with kbc.connect() as conn:
         return kbn.unseen_events_for_sub(conn, task_id=task, platform="discord", chat_id="post",
                                          thread_id="post", kinds=["completed"])[1]
+
+
+def outbox_state(task):
+    with kbc.connect() as conn:
+        row = conn.execute(
+            "SELECT state,attempts FROM kanban_delivery_outbox WHERE task_id=?", (task,),
+        ).fetchone()
+        return tuple(row) if row else None
 
 
 def test_exact_routed_profile_delivers_once_on_its_authorized_transport(tmp_path, monkeypatch):
@@ -129,7 +139,8 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
         dict(platform="discord", guild_id="guild", chat_id="parent", profile="other")])
     asyncio.run(deliver(runner, rows))
     assert primary.sent == primary.handled == []
-    assert unseen(good)
+    assert not unseen(good)
+    assert outbox_state(good) == ("retry_wait", 1)
 
     # Equal-specificity rules retain configuration order: an unknown parent
     # cannot skip an earlier rule, but a known conflicting parent rules it out.
@@ -192,4 +203,5 @@ def test_removed_profile_never_wakes_under_the_primary_runtime(tmp_path, monkeyp
     shutil.rmtree(tmp_path / ".hermes" / "profiles" / "yuki")
     asyncio.run(deliver(runner, rows))
     assert secondary.handled == []
-    assert unseen(task)
+    assert not unseen(task)
+    assert outbox_state(task) == ("retry_wait", 1)

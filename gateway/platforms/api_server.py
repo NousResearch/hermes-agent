@@ -4018,7 +4018,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Not used — the HTTP request/response cycle handles delivery directly."""
-        return SendResult(success=False, error="API server uses HTTP request/response, not send()")
+        return SendResult(
+            success=False, error="API server uses HTTP request/response, not send()",
+            delivery_attempted=False)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the API server."""

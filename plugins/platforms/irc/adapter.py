@@ -219,7 +219,7 @@ class IRCAdapter(BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None):
         if not self._writer or self._writer.is_closing():
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         for line in self._split_message(content, chat_id):
             try:
                 await self._send_raw(f"PRIVMSG {chat_id} :{line}")

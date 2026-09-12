@@ -3338,15 +3338,20 @@ class TelegramAdapter(BasePlatformAdapter):
             if live is not None:
                 return await live.send(chat_id, content, reply_to, metadata)
             if self._is_permanent_fatal() or not await self._wait_for_reconnection():
-                return SendResult(success=False, error="Not connected", retryable=not self._is_permanent_fatal())
+                return SendResult(
+                    success=False, error="Not connected", retryable=not self._is_permanent_fatal(),
+                    delivery_attempted=False)
             live = self._replacement_telegram_adapter()
             if not self._bot and live is not None:
                 return await live.send(chat_id, content, reply_to, metadata)
             if not self._bot:
-                return SendResult(success=False, error="Not connected", retryable=True)
+                return SendResult(
+                    success=False, error="Not connected", retryable=True, delivery_attempted=False)
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
+            return SendResult(
+                success=False, error="send_path_degraded", retryable=True,
+                delivery_attempted=False)
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
@@ -3452,7 +3457,7 @@ class TelegramAdapter(BasePlatformAdapter):
         silently nor fail (the consumer would re-send a duplicate): edit with the first chunk, send the rest as
         continuations, and return the final chunk's id as the next edit target."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         # Rich finalize (Bot API 10.1): edit the preview IN PLACE via rich_message — no fresh send + delete.
         # Before the 4,096 pre-flight because the rich cap is 32,768; falls back to legacy on rejection.
         # Rich finalize (Bot API 10.1): when the completed content has constructs the legacy MarkdownV2 edit
@@ -3674,7 +3679,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Stream a partial message via ``sendRichMessageDraft`` (when rich is enabled and supported) else
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
         if not self._bot:
-            return SendResult(success=False, error="not_connected")
+            return SendResult(success=False, error="not_connected", delivery_attempted=False)
         # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
         if self._should_attempt_rich_draft(content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
             return SendResult(success=True, message_id=None)
@@ -3755,7 +3760,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Shared control-prompt shell: not-connected guard, ``build()`` → ``(text, keyboard, on_sent)`` (or a
         SendResult to return as-is), routed send, state hook, redacted failure log."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         try:
             built = build()
             if isinstance(built, SendResult):
@@ -4608,7 +4613,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         _transcoded_voice_path: Optional[str] = None
         try:
             if not os.path.exists(audio_path):
@@ -4653,9 +4658,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send images as Telegram albums (``send_media_group``, 10 per chunk). Animated GIFs can't join a
         media group (need ``send_animation``) so they go via the base per-image path, as does a failed chunk."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if not images:
-            return SendResult(success=False, error="no images to send")
+            return SendResult(success=False, error="no images to send", delivery_attempted=False)
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
@@ -4748,7 +4753,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Shared shell for native local-file sends: existence check, open, send with routing, then
         ``await on_error(exc)`` on any failure. ``build_kwargs(f)`` supplies the media kwargs."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         try:
             if not os.path.exists(path):
                 return SendResult(success=False, error=self._missing_media_path_error(label, path))
@@ -4792,7 +4797,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send a URL image as a Telegram photo: URL send (<5MB) → download+upload (≤10MB) → base text."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
@@ -4824,7 +4829,7 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         try:
             msg = await self._send_media(
                 self._bot.send_animation, chat_id, reply_to, metadata, "animation", animation=animation_url,

@@ -158,6 +158,19 @@ class SmsAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        missing_credentials = []
+        if not self._account_sid:
+            missing_credentials.append("TWILIO_ACCOUNT_SID")
+        if not self._auth_token:
+            missing_credentials.append("TWILIO_AUTH_TOKEN")
+        if not self._from_number:
+            missing_credentials.append("TWILIO_PHONE_NUMBER")
+        if missing_credentials:
+            return SendResult(
+                success=False,
+                error=f"Missing SMS credentials: {', '.join(missing_credentials)}",
+                delivery_attempted=False,
+            )
         last_result = SendResult(success=True)
         url, headers = _messages_endpoint(self._account_sid, self._auth_token)
         session = self._http_session or _new_session(trust_env=gateway_trust_env())

@@ -664,7 +664,8 @@ class LineAdapter(BasePlatformAdapter):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         if not self._client:
-            return SendResult(success=False, error="LINE adapter not connected")
+            return SendResult(
+                success=False, error="LINE adapter not connected", delivery_attempted=False)
         # A PENDING postback button caches the response for the tap — except interim /
         # system sends (progress heartbeats, busy-acks), which must land as visible
         # bubbles. Interim detection is purpose-first: the gateway marks every mid-turn
@@ -791,13 +792,14 @@ class LineAdapter(BasePlatformAdapter):
         max_bytes, size_error, url_error = _OUTBOUND_MEDIA[kind]
         path = Path(file_path)
         if not path.is_file():
-            return None, SendResult(success=False, error=f"{kind} file not found: {file_path}")
+            return None, SendResult(
+                success=False, error=f"{kind} file not found: {file_path}", delivery_attempted=False)
         for failed, error in (
             (path.stat().st_size > max_bytes, size_error),
             (not self._client, "LINE adapter not connected"),
             (self._missing_public_url(), url_error)):
             if failed:
-                return None, SendResult(success=False, error=error)
+                return None, SendResult(success=False, error=error, delivery_attempted=False)
         return path, None
 
     async def _handle_media(self, request) -> Any:
@@ -840,7 +842,8 @@ class LineAdapter(BasePlatformAdapter):
             return err
         url = self._serve_file(path)
         if not url.lower().startswith("https://"):
-            return SendResult(success=False, error=f"LINE image URL must be HTTPS: {url}")
+            return SendResult(
+                success=False, error=f"LINE image URL must be HTTPS: {url}", delivery_attempted=False)
         msgs: List[Dict[str, Any]] = [{"type": "image", "originalContentUrl": url, "previewImageUrl": url}]
         return await self._send_messages(chat_id, msgs + ([_text_message(caption)] if caption else []))
 
@@ -882,7 +885,8 @@ class LineAdapter(BasePlatformAdapter):
         """Send built message objects, batched at 5/call: reply token first, then push. ``text``
         selects the text contract: reply success reports the token as message_id; push failure logs at error."""
         if not self._client:
-            return SendResult(success=False, error="LINE adapter not connected")
+            return SendResult(
+                success=False, error="LINE adapter not connected", delivery_attempted=False)
         if not messages:
             return SendResult(success=True, message_id=None)
         n = LINE_MAX_MESSAGES_PER_CALL

@@ -2828,13 +2828,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not self._client:
             # Dead transport: classify as send_path_degraded so the delivery ledger's reconnect
             # sweep can replay this; a generic "Not connected" error would strand the output.
-            return SendResult(success=False, error="send_path_degraded", retryable=True)
+            return SendResult(
+                success=False, error="send_path_degraded", retryable=True,
+                delivery_attempted=False)
         if not (content or "").strip():
             logger.warning(
                 "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s", self.name,
                 chat_id, "".join(traceback.format_stack(limit=12)[:-1]),
             )
-            result = SendResult(success=False, error="Refusing to send empty message")
+            result = SendResult(
+                success=False, error="Refusing to send empty message", delivery_attempted=False)
             # Backfill replays from this table: record the dropped final reply as failed or it is lost.
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
         try:
@@ -3009,7 +3012,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         tick would re-split, looping forever (the Telegram #48648 lesson).
         """
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         try:
             channel = await self._resolve_channel(chat_id)
             msg = channel.get_partial_message(int(message_id))

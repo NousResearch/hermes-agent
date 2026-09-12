@@ -827,6 +827,45 @@ _NOTIFY_SUB_COLUMNS = (
     ("delivery_metadata", "delivery_metadata TEXT"),
 )
 
+_DELIVERY_OUTBOX_SQL = """
+CREATE TABLE IF NOT EXISTS kanban_delivery_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_key TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL,
+    event_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL DEFAULT '',
+    notifier_profile TEXT,
+    payload_digest TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK (state IN ('pending','sending','retry_wait','delivered','delivery_unknown','dead_letter')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    lease_token TEXT,
+    lease_expires_at INTEGER,
+    last_error TEXT,
+    transport_receipt TEXT,
+    ping_delivered_at INTEGER,
+    ping_receipt TEXT,
+    exception_recorded INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES task_events(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_outbox_due
+    ON kanban_delivery_outbox(state, next_attempt_at, lease_expires_at);
+CREATE INDEX IF NOT EXISTS idx_delivery_outbox_task
+    ON kanban_delivery_outbox(task_id, state);
+"""
+
+_DELIVERY_OUTBOX_COLUMNS = (
+    ("ping_delivered_at", "ping_delivered_at INTEGER"),
+    ("ping_receipt", "ping_receipt TEXT"),
+)
+
 
 def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -913,6 +952,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE task_events SET kind = ? WHERE kind = ?", (new, old))
 
     _rebuild_drifted_tables(conn)
+
+    # Additive sidecar to canonical task/event state, never a competing task DB.
+    # This must follow the legacy task_events rebuild: SQLite retargets existing
+    # child FKs on ALTER TABLE ... RENAME, and the renamed table is then dropped.
+    conn.executescript(_DELIVERY_OUTBOX_SQL)
+    for name, ddl in _DELIVERY_OUTBOX_COLUMNS:
+        _add_column_if_missing(conn, "kanban_delivery_outbox", name, ddl)
 
 
 def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:

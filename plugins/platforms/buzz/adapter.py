@@ -957,7 +957,7 @@ class BuzzAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
-            return SendResult(success=False, error="Empty message")
+            return SendResult(success=False, error="Empty message", delivery_attempted=False)
         # Anchor: metadata.thread_id, then metadata.reply_to_message_id (stream/progress sends), then reply_to.
         meta = metadata or {}
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
@@ -1006,9 +1006,10 @@ class BuzzAdapter(BasePlatformAdapter):
         """Edit a sent message (streamed replies). The CLI reports a NEW event id but the stream consumer
         keeps addressing the original, so return the given id, never the CLI's."""
         if not message_id:
-            return SendResult(success=False, error="Buzz edit needs a message id")
+            return SendResult(
+                success=False, error="Buzz edit needs a message id", delivery_attempted=False)
         if not content:
-            return SendResult(success=False, error="Empty message")
+            return SendResult(success=False, error="Empty message", delivery_attempted=False)
         args = ["messages", "edit", "--event", str(message_id), "--content", "-"]
         code, out, err = await self._run_cli(args, input_text=content)
         if code != 0:
@@ -1056,7 +1057,8 @@ class BuzzAdapter(BasePlatformAdapter):
         local = Path(file_path).expanduser()
         if probe and not local.is_file():
             # Never leak host filesystem paths into chat-visible errors.
-            return SendResult(success=False, error="Media file not found")
+            return SendResult(
+                success=False, error="Media file not found", delivery_attempted=False)
         args = ["messages", "send", "--channel", str(chat_id), "--file", str(local), "--content", "-"]
         args += self._reply_args((metadata or {}).get("thread_id") or reply_to)
         code, out, err = await self._run_message_send(args, caption or "")

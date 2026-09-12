@@ -1628,7 +1628,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[dict] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False) -> SendResult:
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         if smart_denied:
             scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
         else:
@@ -1665,7 +1665,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
         on_model_selected, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         flat_choices = [
             (str(model_id), str(p.get("slug") or ""), str(p.get("name") or p.get("slug") or ""))
             for p in providers or [] for model_id in (p.get("models") or [])][:len(_MATRIX_MODEL_PICKER_REACTIONS)]
@@ -1704,7 +1704,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Reaction-based choice picker (/reasoning, /fast); choice = {value, label, is_current}."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error="Not connected", delivery_attempted=False)
         emoji_choices: dict[str, str] = {}
         lines = [title, ""]
         for emoji, choice in zip(_MATRIX_CHOICE_PICKER_REACTIONS, choices):
@@ -1715,7 +1715,7 @@ class MatrixAdapter(BasePlatformAdapter):
             emoji_choices[emoji] = value
             lines.append(f"{emoji} {label}")
         if not emoji_choices:
-            return SendResult(success=False, error="No choices")
+            return SendResult(success=False, error="No choices", delivery_attempted=False)
         lines += ["", "React to choose."]
         return await self._send_picker(
             chat_id, lines, emoji_choices, session_key, on_choice_selected, metadata,

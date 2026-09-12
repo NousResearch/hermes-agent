@@ -378,8 +378,11 @@ def _prune_old_events(conn: sqlite3.Connection, *, session_id: str, root: str) -
     conn.execute(
         "DELETE FROM verification_events WHERE session_id = ? AND root = ? AND id NOT IN ("
         " SELECT id FROM verification_events WHERE session_id = ? AND root = ?"
-        " ORDER BY id DESC LIMIT ?)",
-        (session_id, root, session_id, root, _MAX_EVENTS_PER_SESSION_ROOT),
+        " ORDER BY id DESC LIMIT ?)"
+        " AND id NOT IN ("
+        " SELECT last_event_id FROM verification_state"
+        " WHERE session_id = ? AND root = ? AND last_event_id IS NOT NULL)",
+        (session_id, root, session_id, root, _MAX_EVENTS_PER_SESSION_ROOT, session_id, root),
     )
     conn.execute(
         "DELETE FROM verification_state"

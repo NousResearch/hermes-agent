@@ -227,6 +227,44 @@ def _validate_loopback_redirect_uri(raw: str) -> str:
     return raw
 
 
+def _validate_custom_scheme_redirect_uri(raw: str, parsed) -> str:
+    """Accept ``<scheme>://oauth`` or ``<scheme>://oauth/callback`` when ``<scheme>`` is in the
+    operator-configured ``dashboard.native_redirect_schemes`` allowlist. This is the mobile-app
+    analogue of the loopback redirect: an iOS/Android client cannot bind a loopback HTTP listener,
+    so RFC 8252 §7.1 names a private-use custom scheme as its alternative. The allowlist is the
+    security boundary here (same reasoning as loopback): the route is public, so accepting an
+    arbitrary scheme would make the callback an open redirect for whatever app registered that
+    scheme on the device. Query/fragment are rejected outright — the code and state only ever
+    belong in the path form the client asked for, never smuggled in extra parameters."""
+    allowed = _prefix_mod.native_redirect_schemes()
+    scheme = parsed.scheme.lower()
+    if not allowed or scheme not in allowed:
+        raise _http(
+            400,
+            "native redirect_uri must be http:// on the loopback interface, or a custom scheme "
+            "listed in dashboard.native_redirect_schemes")
+    if parsed.query or parsed.fragment:
+        raise _http(400, "native redirect_uri must not include a query string or fragment")
+    if parsed.netloc.lower() != "oauth" or parsed.path not in ("", "/callback"):
+        raise _http(
+            400,
+            f"native redirect_uri for scheme {scheme!r} must be '{scheme}://oauth' or "
+            f"'{scheme}://oauth/callback'")
+    return raw
+
+
+def _validate_native_redirect_uri(raw: str) -> str:
+    """Accept the loopback form, or an allowlisted custom-scheme form for native mobile clients
+    that cannot bind a loopback HTTP listener. Dispatches on scheme so the loopback path (and its
+    error strings) is unchanged when ``dashboard.native_redirect_schemes`` is empty."""
+    if not raw:
+        raise _http(400, "redirect_uri required")
+    parsed = urlparse(raw)
+    if parsed.scheme == "http":
+        return _validate_loopback_redirect_uri(raw)
+    return _validate_custom_scheme_redirect_uri(raw, parsed)
+
+
 def _select_native_provider(provider: str):
     """Resolve the provider for a native authorize request. An empty ``provider`` auto-selects
     the ONLY interactive session provider (password providers included — native sign-in brokers
@@ -249,7 +287,7 @@ async def auth_native_authorize(
         raise _http(400, "code_challenge_method must be S256")
     if not code_challenge:
         raise _http(400, "code_challenge required")
-    _validate_loopback_redirect_uri(redirect_uri)
+    _validate_native_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
     if p is None and not provider:
         candidates = list_session_providers()

@@ -128,3 +128,15 @@ def resolve_public_url() -> str:
     if not cfg_clean:
         _warn_if_malformed("dashboard.public_url in config.yaml", cfg_raw)
     return cfg_clean
+
+
+# --- dashboard.native_redirect_schemes --------------------------------------
+
+def native_redirect_schemes() -> list:
+    """Allowlisted custom URL schemes (``dashboard.native_redirect_schemes``) for the native
+    RFC 8252 redirect, lower-cased. Empty by default: loopback-only behaviour is unchanged
+    when the operator has not opted in."""
+    raw = _load_dashboard_section().get("native_redirect_schemes", [])
+    if not isinstance(raw, list):
+        return []
+    return [s.strip().lower() for s in raw if isinstance(s, str) and s.strip()]

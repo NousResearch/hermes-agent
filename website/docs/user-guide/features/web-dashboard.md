@@ -717,6 +717,24 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 
 `GET /api/auth/me` then returns the verified session (`provider: nous`). For an internet-facing host, register with `--redirect-uri https://hermes.example.com/auth/callback` and set `HERMES_DASHBOARD_PUBLIC_URL` so the OAuth callback resolves to your public URL (see [Public URL override](#public-url-override)).
 
+### Native apps with custom URL schemes
+
+The [RFC 8252 native sign-in flow](../../guides/desktop-native-signin.md) redirects back to the client via a **loopback** HTTP listener (`http://127.0.0.1:<port>/…`) by default — the right choice for a desktop app, which can bind one. A native **mobile** client (iOS, Android) has no equivalent: it cannot bind a loopback HTTP listener, so it needs the other redirect form RFC 8252 §7.1 names for native apps, a **private-use custom URL scheme** (e.g. `com.example.myapp://oauth`).
+
+This is opt-in and off by default. Set `dashboard.native_redirect_schemes` in `config.yaml`:
+
+```yaml
+dashboard:
+  native_redirect_schemes:
+    - com.example.myapp
+```
+
+With a scheme allowlisted, `/auth/native/authorize` also accepts a `redirect_uri` of `<scheme>://oauth` or `<scheme>://oauth/callback` for any `<scheme>` in the list — with no query string or fragment. Everything else about the flow (PKCE, one-time code, single-use, short TTLs) is unchanged, and it stays mandatory here too: a custom scheme is not a substitute for PKCE, it's a substitute for the loopback listener.
+
+**Why the allowlist, and why it's the whole security boundary.** `/auth/native/authorize` is a public, pre-auth route — a redirect target that isn't scrutinized there is an open redirect that hands a live authorization code to whatever app registered a scheme on the device. Restricting accepted redirects to schemes the operator explicitly configured closes that off: a scheme not on the list is rejected exactly like any other non-loopback `redirect_uri`. Prefer a reverse-DNS ("private-use") scheme such as `com.example.myapp` — it's namespaced to your app the way a package or bundle ID is, so it's very unlikely to collide with a scheme some other installed app registered — but note that the *allowlist* is what's actually trusted here, not the scheme's shape; listing a plain word like `myapp` works exactly the same way if that's what your app is registered for.
+
+Loopback redirects keep working unchanged whether or not `native_redirect_schemes` is set — this only adds a second accepted form, it doesn't touch the first.
+
 ### Username/password provider (no OAuth IDP)
 
 If you don't want to wire up an OAuth identity provider — a self-hosted "just put a password on my dashboard" deployment — the bundled `plugins/dashboard_auth/basic` plugin registers a `DashboardAuthProvider` named `basic` that authenticates with a **username and password** instead of an OAuth redirect.

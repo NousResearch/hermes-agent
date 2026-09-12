@@ -8,7 +8,8 @@ from functools import partial
 from typing import Callable, Optional
 
 from hermes_cli.cli_output import (
-    print_info as _print_info, print_success as _print_success, print_warning as _print_warning, prompt as _prompt,
+    print_info as _print_info, print_success as _print_success, print_warning as _print_warning,
+    print_error as _print_error, prompt as _prompt,
 )
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, save_env_value
@@ -224,7 +225,17 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict, *, force_fres
     selection_key = {"tts": "provider", "web": "backend", "browser": "cloud_provider"}.get(ts_key)
     if selection_key:
         section = config.get(ts_key, {})
-        return not isinstance(section, dict) or selection_key not in section
+        if isinstance(section, dict) and selection_key in section:
+            return False
+        # An MCP catalog-backed provider row (e.g. You.com MCP) never writes the
+        # section's selection key — its active state is the mcp_servers entry
+        # itself (see _is_provider_active).
+        for provider in _visible_providers(cat, config, force_fresh=force_fresh):
+            if provider.get("mcp_catalog_entry") and _is_provider_active(
+                provider, config, force_fresh=force_fresh,
+            ):
+                return False
+        return True
     if ts_key == "image_gen":  # in-tree FAL backend OR any available plugin image gen provider satisfies
         return not fal_key_is_configured() and not _any_plugin_provider_available("agent.image_gen_registry")
     if ts_key == "video_gen":  # no in-tree fallback — every video backend is a plugin
@@ -445,6 +456,11 @@ _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
 
 def _is_provider_active(provider: dict, config: dict, *, force_fresh: bool = False) -> bool:
     """Check if a provider entry matches the currently active config."""
+    if provider.get("mcp_catalog_entry"):
+        from hermes_cli.tools_config import enabled_mcp_server_names
+
+        return provider["mcp_catalog_entry"] in enabled_mcp_server_names(config)
+
     managed_feature = provider.get("managed_nous_feature")
     # Managed entries fall through to the managed branch, which also checks use_gateway — otherwise a
     # managed FAL pick and a direct-key FAL pick would both report active.
@@ -712,6 +728,64 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
                 config[section_key].pop("use_gateway", None)
 
 
+def _install_mcp_catalog_provider(provider: dict, config: dict) -> bool:
+    """Install an MCP catalog-backed provider row into mcp_servers."""
+    entry_name = provider.get("mcp_catalog_entry")
+    if not entry_name:
+        return False
+
+    try:
+        from hermes_cli.mcp_catalog import CatalogError, get_entry, install_entry
+
+        entry = get_entry(entry_name)
+        if entry is None:
+            _print_error(f"  MCP catalog entry not found: {entry_name}")
+            return False
+        install_entry(entry, enable=True)
+    except CatalogError as exc:
+        _print_error(f"  Failed to install MCP catalog entry: {exc}")
+        return False
+
+    refreshed = load_config()
+    servers = refreshed.get("mcp_servers")
+    if isinstance(servers, dict):
+        config["mcp_servers"] = servers
+    _print_success(f"  MCP server enabled: {entry_name}")
+    return True
+
+
+def _apply_mcp_catalog_provider_selection(provider: dict, config: dict) -> bool:
+    """Non-interactively enable an MCP catalog-backed provider row."""
+    entry_name = provider.get("mcp_catalog_entry")
+    if not entry_name:
+        return False
+
+    try:
+        from hermes_cli.mcp_catalog import CatalogError, _build_server_config, get_entry
+        from hermes_cli.mcp_config import _save_mcp_server
+
+        entry = get_entry(entry_name)
+        if entry is None:
+            raise KeyError(f"MCP catalog entry not found: {entry_name}")
+
+        server_cfg = _build_server_config(entry, None)
+        server_cfg["enabled"] = True
+        if not _save_mcp_server(entry.name, server_cfg):
+            raise CatalogError(
+                f"catalog entry '{entry.name}' rejected: suspicious command/args configuration"
+            )
+    except CatalogError as exc:
+        _print_error(f"  Failed to install MCP catalog entry: {exc}")
+        return False
+
+    servers = config.setdefault("mcp_servers", {})
+    if not isinstance(servers, dict):
+        servers = {}
+        config["mcp_servers"] = servers
+    servers[entry.name] = server_cfg
+    return True
+
+
 def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> None:
     """Non-interactively persist a provider selection for a toolset (config keys only — API keys, post-setup
     hooks, auth gating and model pickers are separate GUI endpoints). ``provider_name`` is resolved among
@@ -726,6 +800,10 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     provider = next((p for p in providers if p.get("name") == provider_name), None)
     if provider is None:
         raise KeyError(f"Unknown provider {provider_name!r} for toolset {ts_key!r}")
+
+    if provider.get("mcp_catalog_entry"):
+        _apply_mcp_catalog_provider_selection(provider, config)
+        return
 
     managed_feature = provider.get("managed_nous_feature")
     _write_provider_config(provider, config, managed_feature=managed_feature)
@@ -886,6 +964,10 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     env_vars = provider.get("env_vars", [])
     managed_feature = provider.get("managed_nous_feature")
+
+    if provider.get("mcp_catalog_entry"):
+        _install_mcp_catalog_provider(provider, config)
+        return
 
     if not _nous_provider_gate(provider, config, managed_feature, force_fresh=force_fresh):
         return

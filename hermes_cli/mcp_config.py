@@ -169,22 +169,23 @@ def _strip_bearer_prefix(token: str) -> str:
     return stripped
 
 
-def _bearer_auth_headers(name: str) -> Dict[str, str]:
+def _bearer_auth_headers(name: str, env_var: Optional[str] = None) -> Dict[str, str]:
     """Build the persisted Authorization header template for a named MCP server.
 
     The secret lives in the profile's ``.env``; CLI and Dashboard share this so they produce
-    byte-equivalent config.
+    byte-equivalent config. ``env_var`` overrides the canonical ``MCP_<NAME>_API_KEY`` name —
+    catalog manifests declare their own vendor key name (e.g. ``YDC_API_KEY``).
     """
-    return {"Authorization": f"Bearer ${{{_env_key_for_server(name)}}}"}
+    return {"Authorization": f"Bearer ${{{env_var or _env_key_for_server(name)}}}"}
 
 
-def _save_bearer_auth_token(name: str, token: str) -> Dict[str, str]:
+def _save_bearer_auth_token(name: str, token: str, env_var: Optional[str] = None) -> Dict[str, str]:
     """Persist a normalized Bearer token to ``.env`` and return the header template for config.yaml."""
     normalized = _strip_bearer_prefix(token)
     if not normalized or normalized.lower() == "bearer":
         raise ValueError("Bearer token is required")
-    save_env_value(_env_key_for_server(name), normalized)
-    return _bearer_auth_headers(name)
+    save_env_value(env_var or _env_key_for_server(name), normalized)
+    return _bearer_auth_headers(name, env_var)
 
 
 def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:

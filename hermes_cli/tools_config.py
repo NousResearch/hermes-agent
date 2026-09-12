@@ -271,6 +271,9 @@ TOOL_CATEGORIES = {
         # Provider rows come from plugins.web.<vendor> via _plugin_web_search_providers(). Only the two
         # non-provider firecrawl setup-flow rows live here: managed via Nous subscription, and self-hosted.
         "providers": [
+            _row("You.com MCP", "★ recommended · free · MCP",
+                 "Remote MCP server: free search, optional API key for contents/research",
+                 mcp_catalog_entry="youdotcom"),
             {"name": "Nous Subscription", "badge": "subscription", "tag": "Managed Firecrawl billed to your subscription",
              "web_backend": "firecrawl", "env_vars": [], **_NOUS, "managed_nous_feature": "web",
              "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"]},

@@ -676,7 +676,9 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
-    11: ["TERMINAL_MODAL_MODE"]}
+    11: ["TERMINAL_MODAL_MODE"],
+    40: ["YDC_API_KEY"],
+}
 
 # Intentionally empty: the LLM provider is required but handled by the setup wizard's provider
 # selection step, so no single env var is universally required.
@@ -2764,6 +2766,7 @@ _SHOW_CONFIG_API_KEYS = (
     ("PARALLEL_API_KEY", "Parallel"),
     ("FIRECRAWL_API_KEY", "Firecrawl"),
     ("TAVILY_API_KEY", "Tavily"),
+    ("YDC_API_KEY", "You.com"),
     ("PERPLEXITY_API_KEY", "Perplexity"),
     ("BROWSERBASE_API_KEY", "Browserbase"),
     ("BROWSER_USE_API_KEY", "Browser Use"),
@@ -3338,6 +3341,7 @@ def _exit_if_key_managed(key: str, action: str) -> None:
             f"Cannot {action} '{key}': it is managed by your administrator ({_managed_source('config.yaml')}) "
             f"and cannot be changed. Contact your administrator to modify it.", file=sys.stderr)
         sys.exit(1)
+
 
 
 def _guard_section_overwrite(key: str, value: Any, user_config: Dict[str, Any], force: bool) -> str:

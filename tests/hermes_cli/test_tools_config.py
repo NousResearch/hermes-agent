@@ -18,6 +18,7 @@ from hermes_cli.tools_config import (
     _configure_provider,
     _reconfigure_provider,
     _get_platform_tools,
+    _is_provider_active,
     _platform_toolset_summary,
     _reconfigure_tool,
     _run_post_setup,
@@ -225,6 +226,469 @@ def test_save_platform_tools_preserves_mcp_server_names():
 
 
 
+def test_save_platform_tools_does_not_preserve_hermes_telegram():
+    """Same bug for Telegram — hermes-telegram must not be preserved."""
+    config = {
+        "platform_toolsets": {
+            "telegram": [
+                "browser", "file", "hermes-telegram", "terminal", "web",
+            ]
+        }
+    }
+
+    new_selection = {"browser", "file", "terminal", "web"}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram", new_selection)
+
+    saved = config["platform_toolsets"]["telegram"]
+    assert "hermes-telegram" not in saved
+    assert "web" in saved
+
+
+def test_save_platform_tools_still_preserves_mcp_with_platform_default_present():
+    """MCP server names must still be preserved even when platform defaults
+    are being stripped out."""
+    config = {
+        "platform_toolsets": {
+            "cli": [
+                "web", "terminal", "hermes-cli", "my-mcp-server", "github-tools",
+            ]
+        }
+    }
+
+    new_selection = {"web", "browser"}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", new_selection)
+
+    saved = config["platform_toolsets"]["cli"]
+
+    # MCP servers preserved
+    assert "my-mcp-server" in saved
+    assert "github-tools" in saved
+
+    # Platform default stripped
+    assert "hermes-cli" not in saved
+
+    # User selections present
+    assert "web" in saved
+    assert "browser" in saved
+
+    # Deselected configurable toolset removed
+    assert "terminal" not in saved
+
+
+def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch):
+    config = {"model": {"provider": "nous"}}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda: NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
+    )
+
+    providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
+
+    # The managed Nous row is listed (not necessarily first — "Local Browser"
+    # sorts first so a fresh-install Enter lands on the free local backend).
+    assert any(p["name"].startswith("Nous Subscription") for p in providers)
+    # "Local Browser" must be the index-0 default so pressing Enter never
+    # walks a user into a paid Nous Portal login.
+    assert providers[0]["name"] == "Local Browser"
+
+
+def test_visible_providers_show_nous_subscription_when_logged_out(monkeypatch):
+    """Nous-managed Tool Gateway rows are always listed, even logged out.
+
+    Selecting one triggers an inline Portal login (entitlement is checked at
+    selection time, not visibility time).
+    """
+    config = {"model": {"provider": "openrouter"}}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda: NousPortalAccountInfo(
+            logged_in=False,
+            source="none",
+            fresh=False,
+            paid_service_access=None,
+        ),
+    )
+
+    providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
+
+    assert any(p["name"].startswith("Nous Subscription") for p in providers)
+
+
+def test_visible_providers_show_nous_subscription_when_paid_access_is_false(monkeypatch):
+    """Logged-in-but-unpaid users still see the managed rows.
+
+    The paid-access gate moved from visibility to selection time — the row is
+    shown; ``ensure_nous_portal_access`` blocks activation if still unpaid.
+    """
+    config = {"model": {"provider": "nous"}}
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda: NousPortalAccountInfo(
+                logged_in=True,
+                source="jwt",
+                fresh=False,
+                paid_service_access=False,
+            ),
+    )
+
+    providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
+
+    assert any(p["name"].startswith("Nous Subscription") for p in providers)
+
+
+def test_visible_providers_force_fresh_shows_nous_subscription_after_upgrade(monkeypatch):
+    calls = []
+
+    def fake_subscription_features(config, *, force_fresh=False):
+        calls.append(("features", force_fresh))
+        return SimpleNamespace(
+            nous_auth_present=True,
+            account_info=NousPortalAccountInfo(
+                logged_in=True,
+                source="account_api" if force_fresh else "jwt",
+                fresh=force_fresh,
+                paid_service_access=True if force_fresh else False,
+            ),
+            features={},
+        )
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_nous_subscription_features",
+        fake_subscription_features,
+    )
+
+    providers = _visible_providers(
+        TOOL_CATEGORIES["browser"],
+        {"model": {"provider": "nous"}},
+        force_fresh=True,
+    )
+
+    # The managed Nous row reappears after the entitlement upgrade. It is no
+    # longer asserted to be first — "Local Browser" sorts first by design.
+    assert any(p["name"].startswith("Nous Subscription") for p in providers)
+    assert ("features", True) in calls
+
+
+def test_visible_web_providers_include_youdotcom_mcp():
+    providers = _visible_providers(TOOL_CATEGORIES["web"], {})
+
+    youdotcom = next(p for p in providers if p["name"] == "You.com MCP")
+    assert youdotcom["mcp_catalog_entry"] == "youdotcom"
+    assert "web_backend" not in youdotcom
+
+
+def test_configure_youdotcom_mcp_installs_catalog_entry(monkeypatch):
+    provider = next(
+        p for p in TOOL_CATEGORIES["web"]["providers"] if p["name"] == "You.com MCP"
+    )
+    entry = SimpleNamespace(name="youdotcom")
+    calls = []
+    config = {}
+
+    monkeypatch.setattr("hermes_cli.mcp_catalog.get_entry", lambda name: entry)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_catalog.install_entry",
+        lambda selected_entry, *, enable=True: calls.append((selected_entry, enable)),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config_providers.load_config",
+        lambda: {
+            "mcp_servers": {
+                "youdotcom": {
+                    "url": "https://api.you.com/mcp?profile=free",
+                    "enabled": True,
+                }
+            }
+        },
+    )
+
+    _configure_provider(provider, config)
+
+    assert calls == [(entry, True)]
+    assert config["mcp_servers"]["youdotcom"]["enabled"] is True
+    assert "web" not in config
+
+
+def test_youdotcom_mcp_active_when_server_enabled():
+    provider = {"name": "You.com MCP", "mcp_catalog_entry": "youdotcom"}
+
+    assert _is_provider_active(
+        provider,
+        {
+            "mcp_servers": {
+                "youdotcom": {
+                    "url": "https://api.you.com/mcp",
+                    "enabled": True,
+                }
+            }
+        },
+    )
+    assert _is_provider_active(
+        provider,
+        {"mcp_servers": {"youdotcom": {"url": "https://api.you.com/mcp"}}},
+    )
+    assert not _is_provider_active(
+        provider,
+        {
+            "mcp_servers": {
+                "youdotcom": {
+                    "url": "https://api.you.com/mcp",
+                    "enabled": False,
+                }
+            }
+        },
+    )
+
+
+def test_web_toolset_configured_when_youdotcom_mcp_enabled():
+    config = {
+        "mcp_servers": {
+            "youdotcom": {
+                "url": "https://api.you.com/mcp?profile=free",
+                "enabled": True,
+            }
+        }
+    }
+
+    assert _toolset_needs_configuration_prompt("web", config) is False
+
+
+def test_local_browser_provider_is_saved_explicitly(monkeypatch):
+    config = {}
+    local_provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["browser"]["providers"]
+        if provider.get("browser_provider") == "local"
+    )
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: None)
+    _configure_provider(local_provider, config)
+
+    assert config["browser"]["cloud_provider"] == "local"
+
+
+def test_fresh_install_browser_default_is_free_local_not_paid_nous(monkeypatch):
+    """On a fresh install the browser picker must default to the free local
+    backend, never the paid Nous Subscription gateway.
+
+    Regression: the Nous row used to sort first, so the menu cursor defaulted
+    to index 0 (Nous) and pressing Enter walked users straight into a Nous
+    Portal login for a paid offering (Javier's bug, June 2026).
+    """
+    # "Browser Use" is the default browser backend when its CLI is runnable
+    # (see _is_provider_active). Mock the CLI probe away so a fresh install
+    # deterministically resolves to the free local row regardless of whether
+    # the developer running the tests has the browser-use CLI installed.
+    import tools.browser_use_cli as _buc
+
+    monkeypatch.setattr(_buc, "_find_cli", lambda *a, **k: None)
+
+    from hermes_cli.tools_config import _detect_active_provider_index
+
+    providers = TOOL_CATEGORIES["browser"]["providers"]
+    assert providers[0]["name"] == "Local Browser"
+    assert providers[0]["browser_provider"] == "local"
+    # Nothing active/configured → cursor defaults to index 0 (the free local row).
+    assert _detect_active_provider_index(providers, {}) == 0
+
+
+def test_fresh_install_tts_default_is_free_edge_not_paid_nous():
+    """TTS picker defaults to the free Edge backend on a fresh install."""
+    from hermes_cli.tools_config import _detect_active_provider_index
+
+    providers = TOOL_CATEGORIES["tts"]["providers"]
+    assert providers[0]["name"] == "Microsoft Edge TTS"
+    assert providers[0]["tts_provider"] == "edge"
+    assert _detect_active_provider_index(providers, {}) == 0
+
+
+def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypatch):
+    config = {"platform_toolsets": {"cli": ["web"]}}
+    seen = {}
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_has_keys",
+        lambda ts_key, config=None, **kwargs: False,
+    )
+
+    def fake_prompt_choice(question, choices, default=0):
+        seen["choices"] = choices
+        return 0
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_tool_category",
+        lambda ts_key, cat, config, **kwargs: configured.append(ts_key),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    _reconfigure_tool(config)
+
+    assert any("Web Search" in choice for choice in seen["choices"])
+    assert configured == ["web"]
+
+
+def test_configure_all_platforms_configures_selected_tool_missing_provider(monkeypatch):
+    """Regression: `hermes tools` → Configure all platforms → Web Search
+    must enter provider/API-key setup even when Web was already enabled on all
+    configured platforms, so the checklist selection itself has no diff.
+    """
+    config = {"platform_toolsets": {"cli": ["web"], "telegram": ["web"]}}
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli", "telegram"],
+    )
+
+    menu_calls = 0
+
+    def choose_by_label(_question, choices, default=0):
+        nonlocal menu_calls
+        menu_calls += 1
+        wanted = "Configure all platforms" if menu_calls == 1 else "Done"
+        for idx, choice in enumerate(choices):
+            if wanted in choice:
+                return idx
+        return default
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", choose_by_label)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"web"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_needs_configuration_prompt",
+        lambda ts_key, config, **kwargs: ts_key == "web",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config, **kwargs: configured.append(ts_key),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    tools_command(first_install=False, config=config)
+
+    assert configured == ["web"]
+    assert config["platform_toolsets"]["cli"] == ["web"]
+    assert config["platform_toolsets"]["telegram"] == ["web"]
+
+
+def test_configure_single_platform_configures_selected_tool_missing_provider(monkeypatch):
+    """Regression (per-platform sibling of the global flow): `hermes tools` →
+    Configure <platform> → Web Search must enter provider/API-key setup even
+    when Web was already enabled on that platform, so the checklist selection
+    itself has no diff.
+    """
+    config = {"platform_toolsets": {"cli": ["web"]}}
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
+
+    menu_calls = 0
+
+    def choose_by_label(_question, choices, default=0):
+        nonlocal menu_calls
+        menu_calls += 1
+        wanted = "CLI" if menu_calls == 1 else "Done"
+        for idx, choice in enumerate(choices):
+            if wanted in choice:
+                return idx
+        return default
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", choose_by_label)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"web"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_needs_configuration_prompt",
+        lambda ts_key, config, **kwargs: ts_key == "web",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config, **kwargs: configured.append(ts_key),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    tools_command(first_install=False, config=config)
+
+    assert configured == ["web"]
+    assert config["platform_toolsets"]["cli"] == ["web"]
+
+
+def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
+    config = {
+        "model": {"provider": "nous"},
+        "platform_toolsets": {"cli": []},
+    }
+    for env_var in (
+        "VOICE_TOOLS_OPENAI_KEY",
+        "OPENAI_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+        "TAVILY_API_KEY",
+        "PARALLEL_API_KEY",
+        "BROWSERBASE_API_KEY",
+        "BROWSERBASE_PROJECT_ID",
+        "BROWSER_USE_API_KEY",
+        "FAL_KEY",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._prompt_toolset_checklist",
+        lambda *args, **kwargs: {"web", "image_gen", "tts", "browser"},
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    # Prevent leaked platform tokens (e.g. DISCORD_BOT_TOKEN from gateway.run
+    # import) from adding extra platforms. The loop in tools_command runs
+    # apply_nous_managed_defaults per platform; a second iteration sees values
+    # set by the first as "explicit" and skips them.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        lambda *args, **kwargs: NousPortalAccountInfo(
+            logged_in=True,
+            source="jwt",
+            fresh=False,
+            paid_service_access=True,
+        ),
+    )
+
+    configured = []
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_toolset",
+        lambda ts_key, config: configured.append(ts_key),
+    )
+
+    tools_command(first_install=True, config=config)
+
+    assert config["web"]["backend"] == "nous"
+    assert config["tts"]["provider"] == "nous"
+    assert config["browser"]["cloud_provider"] == "nous"
+    assert config["image_gen"]["provider"] == "nous"
+    assert configured == []
 
 
 def test_first_install_nous_auto_configures_video_gen(monkeypatch):
@@ -846,6 +1310,96 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
 
 
 
+def test_apply_provider_selection_web_sets_backend():
+    """Selecting a web provider persists the backend without prompting for keys."""
+    from hermes_cli.tools_config import apply_provider_selection
+
+    config = {}
+    apply_provider_selection("web", "Firecrawl Self-Hosted", config)
+
+    assert config["web"]["backend"] == "firecrawl"
+
+
+def test_apply_provider_selection_youdotcom_mcp_writes_server_without_prompt(
+    monkeypatch,
+):
+    """Selecting You.com MCP writes mcp_servers without interactive install."""
+    from hermes_cli import mcp_catalog, tools_config
+
+    saved = {}
+
+    monkeypatch.setattr(mcp_catalog, "get_env_value", lambda name: "")
+    monkeypatch.setattr(
+        mcp_catalog,
+        "install_entry",
+        lambda *a, **k: pytest.fail("interactive install must not run"),
+    )
+    monkeypatch.setattr(
+        mcp_catalog,
+        "_prompt_env_vars",
+        lambda *a, **k: pytest.fail("env prompting must not run"),
+    )
+    monkeypatch.setattr(
+        mcp_catalog,
+        "_apply_tool_selection",
+        lambda *a, **k: pytest.fail("tool checklist must not run"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.mcp_config._save_mcp_server",
+        lambda name, server_config: saved.setdefault(name, dict(server_config)) or True,
+    )
+
+    config = {}
+    tools_config.apply_provider_selection("web", "You.com MCP", config)
+
+    expected = {
+        "url": "https://api.you.com/mcp?profile=free",
+        "enabled": True,
+    }
+    assert saved["youdotcom"] == expected
+    assert config["mcp_servers"]["youdotcom"] == expected
+    assert "web" not in config
+
+
+def test_apply_provider_selection_tts_sets_provider():
+    """Selecting a TTS provider persists tts.provider."""
+    from hermes_cli.tools_config import apply_provider_selection
+
+    config = {}
+    apply_provider_selection("tts", "Microsoft Edge TTS", config)
+
+    assert config["tts"]["provider"] == "edge"
+
+
+def test_apply_provider_selection_unknown_provider_raises_keyerror():
+    from hermes_cli.tools_config import apply_provider_selection
+
+    with pytest.raises(KeyError):
+        apply_provider_selection("web", "No Such Provider", {})
+
+
+def test_apply_provider_selection_unknown_toolset_raises_keyerror():
+    from hermes_cli.tools_config import apply_provider_selection
+
+    with pytest.raises(KeyError):
+        apply_provider_selection("not_a_toolset", "whatever", {})
+
+
+def test_apply_provider_selection_does_not_prompt_or_post_setup(monkeypatch):
+    """The non-interactive selection must not invoke prompts or post-setup hooks."""
+    from hermes_cli import tools_config_providers
+
+    monkeypatch.setattr(
+        tools_config_providers, "_prompt",
+        lambda *a, **k: pytest.fail("env prompting must not run on provider selection"),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config_post_setup._run_post_setup",
+        lambda *a, **k: pytest.fail("post-setup must not run on provider selection"),
+    )
+    config = {}
+    tools_config_providers.apply_provider_selection("tts", "Microsoft Edge TTS", config)
+    assert config["tts"]["provider"] == "edge"
 
 
 # ── Checklist diff scope: non-configurable toolsets (kanban) must not be

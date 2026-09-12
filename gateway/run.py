@@ -1005,6 +1005,29 @@ def _stamp_hygiene_compression_provenance(
         logger.debug(debug_label, exc_info=True)
 
 
+_INTERNAL_ACTIVITY_PROVENANCES = frozenset({
+    "agent.compression",
+    "agent.compression_timeout",
+    "agent.compression_cooldown",
+    "agent.compression_turnhold",
+})
+
+
+def _is_internal_activity_provenance(prov: Any) -> bool:
+    """Return True if the activity provenance marks internal maintenance (e.g. compression).
+
+    Internal maintenance tasks (context compression, rotation, timeouts) must not
+    leak diagnostic descriptions into user-facing heartbeat notifications.
+    """
+    if not prov:
+        return False
+    val = getattr(prov, "value", prov)
+    if not isinstance(val, str):
+        val = str(val)
+    val = val.strip().lower()
+    return val in _INTERNAL_ACTIVITY_PROVENANCES or val.startswith("agent.compression")
+
+
 def _is_fresh_gateway_interruption(
     value: Any, *, now: Optional[float] = None, window_secs: Optional[float] = None) -> bool:
     """True when an interruption marker is fresh enough to auto-continue (unknown timestamps count as fresh)."""

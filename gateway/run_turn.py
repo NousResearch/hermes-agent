@@ -3756,7 +3756,10 @@ class GatewayTurnMixin:
 
         Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
         long_running_notifications=off disables)."""
-        from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
+        from gateway.run import (
+            _float_env, _interim_metadata, _is_internal_activity_provenance,
+            _non_conversational_metadata, _prepare_gateway_status_message,
+        )
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
@@ -3768,11 +3771,29 @@ class GatewayTurnMixin:
         if not _notify_adapter:
             return
         _heartbeat_msg_id: Optional[str] = None
+
+        def _terse_heartbeat_text() -> str:
+            _mins = int((time.time() - _notify_start) // 60)
+            return (
+                disp._generic_status_phrase("status")
+                if _long_running_mode == "generic"
+                else f"⏳ Working — {_mins} min"
+            )
+
         while True:
             await asyncio.sleep(_NOTIFY_INTERVAL)
-            if not self._should_emit_long_running_notification(
-                session_key, agent_holder[0], _executor_task_holder[0]
-            ):
+            _exec_ref = _executor_task_holder[0]
+            _exec_finished = _exec_ref is not None and getattr(_exec_ref, "done", lambda: False)()
+            if agent_holder[0] is None:
+                # Startup window: the agent is bound from the executor thread shortly after
+                # this task is scheduled, and the session slot is not registered yet either,
+                # so the emit gate below would report False on a session this run is
+                # legitimately about to own. Keep waiting while startup is still in flight;
+                # a genuinely gone run (executor finished with no agent) stops as before.
+                if _exec_finished:
+                    break
+                continue
+            if not self._should_emit_long_running_notification(session_key, agent_holder[0], _exec_ref):
                 break
             _elapsed_mins = int((time.time() - _notify_start) // 60)
             # Terse heartbeat by default; the iteration counter is gated on busy_ack_detail.
@@ -3786,7 +3807,16 @@ class GatewayTurnMixin:
                     _parts = []
                     if _want_iteration_detail:
                         _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
-                    _action = _a.get("current_tool") or _a.get("last_activity_desc")
+                    # The active tool wins. Otherwise the last activity description is used ONLY
+                    # when its provenance is user-facing: internal maintenance (context
+                    # compression, timeouts, cooldown) must never leak its diagnostic wording
+                    # into a user-visible heartbeat. The heartbeat then falls back to the terse
+                    # liveness line.
+                    _action = _a.get("current_tool")
+                    if not _action:
+                        _prov = _a.get("last_activity_provenance") or _a.get("provenance")
+                        if not _is_internal_activity_provenance(_prov):
+                            _action = _a.get("last_activity_desc")
                     if _action:
                         _parts.append(str(_action))
                     if _parts:
@@ -3796,6 +3826,20 @@ class GatewayTurnMixin:
                 if _long_running_mode == "generic"
                 else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
             )
+            # Route every heartbeat through the shared status sanitizer/noise filter so a
+            # description that reached this point anyway (unknown provenance carrying
+            # compression wording) is suppressed and secrets are redacted. When filtering
+            # leaves nothing, fall back to the terse liveness line.
+            _prepared_heartbeat = _prepare_gateway_status_message(
+                source.platform, "heartbeat", _heartbeat_text,
+            )
+            if not _prepared_heartbeat:
+                _prepared_heartbeat = _prepare_gateway_status_message(
+                    source.platform, "heartbeat", _terse_heartbeat_text(),
+                )
+            if not _prepared_heartbeat:
+                continue
+            _heartbeat_text = _prepared_heartbeat
             try:
                 _notify_res = None
                 if _heartbeat_msg_id:

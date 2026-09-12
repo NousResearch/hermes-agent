@@ -579,18 +579,16 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     rate-limited entry does (a redeemed banked reset restores the whole account; a still-exhausted
     entry just re-freezes with fresh metadata on its next 429).
     """
-    from agent.credential_pool import _borrowed_single_use_pool_root
+    from agent.credential_pool import _borrowed_single_use_pool_root, _profile_owns_pool_provider
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
-
-    def _clear_in(target: Optional[Path]) -> Optional[int]:
-        """Clear inside *target* (None = active store); None when that store has no codex rows."""
-        cleared = 0
+    cleared = 0
+    try:
+        # Same owner rule as ``persist_pool_entries``: a profile with no Codex rows of its own
+        # borrows the global-root pool, so the cooldown must clear where the rows actually live.
+        target = None if _profile_owns_pool_provider("openai-codex") else _borrowed_single_use_pool_root()
         with _auth_store_lock(target_path=target):
             auth_store = _load_auth_store(target)
-            entries = _pool_entries(auth_store, "openai-codex")
-            if not entries:
-                return None
-            for entry in _codex_pool_dicts(entries):
+            for entry in _codex_pool_dicts(_pool_entries(auth_store, "openai-codex")):
                 if access_token and str(entry.get("access_token") or "") != access_token:
                     continue
                 if _entry_is_rate_limit_exhausted(entry):
@@ -598,19 +596,9 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
                     cleared += 1
             if cleared:
                 _save_auth_store(auth_store, target_path=target)
-        return cleared
-
-    try:
-        cleared = _clear_in(None)
-        if cleared is None:
-            # No rows of its own: this profile borrows the global-root pool (the same fallback
-            # ``read_credential_pool`` reads through), so the cooldown must clear where the rows live.
-            root = _borrowed_single_use_pool_root()
-            cleared = _clear_in(root) if root is not None else 0
-        return cleared or 0
     except Exception:
         logger.debug("Failed to clear Codex pool quota cooldowns", exc_info=True)
-        return 0
+    return cleared
 
 
 def _codex_pool_dicts(entries: Optional[List[Any]]) -> Iterator[Dict[str, Any]]:

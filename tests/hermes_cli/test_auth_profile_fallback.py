@@ -205,6 +205,28 @@ def test_codex_cooldown_clear_writes_to_the_store_that_owns_the_borrowed_pool(pr
     assert root_rows[0].get("last_error_reset_at") is None
 
 
+def test_codex_cooldown_clear_never_touches_root_when_profile_owns_rows(profile_env):
+    """A profile with its own Codex rows is the owner: the root's cooldown state is not ours to
+    clear, even when none of the profile's rows are exhausted (0 cleared, root byte-identical)."""
+    from hermes_cli.auth_codex import clear_codex_pool_quota_cooldowns
+
+    root_file = profile_env["global"] / "auth.json"
+    _write(root_file, _make_auth_store(pool={
+        "openai-codex": [{"id": "glob", "auth_type": "oauth", "priority": 0,
+                          "access_token": "global-codex-access-token", "refresh_token": "r",
+                          "last_status": "exhausted", "last_error_reason": "rate_limit",
+                          "last_error_reset_at": 4_102_444_800}],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{"id": "prof", "auth_type": "oauth", "priority": 0,
+                          "access_token": "profile-codex-access-token", "refresh_token": "r"}],
+    }))
+    before = root_file.read_bytes()
+
+    assert clear_codex_pool_quota_cooldowns() == 0
+    assert root_file.read_bytes() == before
+
+
 # ---------------------------------------------------------------------------
 # Classic mode — no fallback path should ever trigger
 # ---------------------------------------------------------------------------

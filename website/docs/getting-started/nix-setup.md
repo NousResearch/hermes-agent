@@ -7,7 +7,7 @@ description: "Install and deploy Hermes Agent with Nix — from quick `nix run` 
 # Nix & NixOS Setup
 
 :::warning Tier 2 platform
-Nix and NixOS are [Tier 2 platforms](./platform-support.md#tier-2). The flake and NixOS module documented here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
+Nix and NixOS are [Tier 2 platforms](/getting-started/platform-support#tier-2). The flake and NixOS module documented here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
 
 For a supported setup, use one of the standard [installation](/getting-started/installation) paths - either Docker or an FHS environment.
 :::

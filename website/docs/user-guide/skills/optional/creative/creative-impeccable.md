@@ -21,7 +21,7 @@ Frontend design guidance, upstream-maintained (impeccable).
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `design`, `frontend`, `ui`, `ux`, `web-design`, `anti-slop` |
-| Related skills | [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) |
+| Related skills | [`claude-design`](/user-guide/skills/bundled/creative/creative-claude-design), [`popular-web-designs`](/user-guide/skills/bundled/creative/creative-popular-web-designs) |
 
 ## Reference: full SKILL.md
 

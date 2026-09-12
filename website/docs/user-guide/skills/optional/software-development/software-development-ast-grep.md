@@ -21,7 +21,7 @@ AST-aware structural code search and rewrite via ast-grep.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `ast`, `codemod`, `refactoring`, `structural-search`, `code-search`, `rewrite`, `tree-sitter` |
-| Related skills | [`simplify-code`](/docs/user-guide/skills/bundled/software-development/software-development-simplify-code), [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging) |
+| Related skills | [`simplify-code`](/user-guide/skills/bundled/software-development/software-development-simplify-code), [`systematic-debugging`](/user-guide/skills/bundled/software-development/software-development-systematic-debugging) |
 
 ## Reference: full SKILL.md
 

@@ -21,7 +21,7 @@ Use when a fetch fails: 403/429, paywall, WAF, bot wall.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Archives`, `Wayback`, `Paywall`, `WAF`, `Fallback` |
-| Related skills | [`grounded-citations`](/docs/user-guide/skills/bundled/research/research-grounded-citations) |
+| Related skills | [`grounded-citations`](/user-guide/skills/bundled/research/research-grounded-citations) |
 
 ## Reference: full SKILL.md
 

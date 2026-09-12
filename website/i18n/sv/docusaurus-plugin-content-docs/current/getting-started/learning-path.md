@@ -17,7 +17,7 @@ För nya användare är `hermes setup --portal` vanligtvis den enklaste vägen. 
 :::
 
 :::info Svenska guider
-Installationsguiden och denna läsvägledning finns på svenska. Länkar till ännu inte översatta guider visar den engelska texten. Kommandon och konfigurationsnycklar ska skrivas som i exemplen, oavsett gränssnittsspråk.
+Installationsguiden, plattformsstödet, [filöversikten](/user-guide/which-file-does-what) och denna läsvägledning finns på svenska. Länkar till ännu inte översatta guider visar den engelska texten. Kommandon och konfigurationsnycklar ska skrivas som i exemplen, oavsett gränssnittsspråk.
 :::
 
 ## Så använder du sidan {#how-to-use-this-page}

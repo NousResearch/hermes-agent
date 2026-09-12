@@ -22,7 +22,7 @@ AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
 | Dependencies | `audiocraft`, `torch>=2.0.0`, `transformers>=4.30.0` |
 | Platforms | linux, macos |
 | Tags | `Multimodal`, `Audio Generation`, `Text-to-Music`, `Text-to-Audio`, `MusicGen` |
-| Related skills | [`heartmula`](/docs/user-guide/skills/optional/creative/creative-heartmula), [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) |
+| Related skills | [`heartmula`](/user-guide/skills/optional/creative/creative-heartmula), [`songwriting-and-ai-music`](/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) |
 
 ## Reference: full SKILL.md
 

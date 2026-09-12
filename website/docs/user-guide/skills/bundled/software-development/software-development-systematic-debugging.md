@@ -21,7 +21,7 @@ description: "4-phase root cause debugging: understand bugs before fixing"
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `debugging`, `troubleshooting`, `problem-solving`, `root-cause`, `investigation` |
-| Related skills | [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`subagent-driven-development`](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development) |
+| Related skills | [`test-driven-development`](/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`subagent-driven-development`](/user-guide/skills/optional/software-development/software-development-subagent-driven-development) |
 
 ## Reference: full SKILL.md
 

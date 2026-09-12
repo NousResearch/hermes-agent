@@ -21,7 +21,7 @@ Rewrite text to ASD-STE100 Simplified Technical English.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `writing`, `documentation`, `ste`, `asd-ste100`, `technical-writing`, `editing`, `anti-ai-slop` |
-| Related skills | [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer) |
+| Related skills | [`humanizer`](/user-guide/skills/bundled/creative/creative-humanizer) |
 
 ## Reference: full SKILL.md
 

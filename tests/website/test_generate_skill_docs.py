@@ -114,3 +114,29 @@ def test_bundled_catalog_explains_missing_local_skills(gen_module):
     result = gen_module.build_catalog_md_bundled([])
     assert "respects local deletions and user edits" in result
     assert "hermes skills reset <name> --restore" in result
+
+
+@pytest.mark.parametrize("kind", ["bundled", "optional"])
+def test_catalog_and_related_links_share_locale_independent_sidebar_id(gen_module, tmp_path, kind):
+    """Docusaurus adds /docs/<locale>; generators must only provide the document route."""
+    source = tmp_path / kind
+    skill = source / "category" / "nested" / "fixture" / "SKILL.md"
+    meta = gen_module.derive_skill_meta(skill, source, kind)
+    route = "/" + gen_module.sidebar_doc_id(meta)
+    parsed = {"frontmatter": {"name": "Fixture", "description": "Original description"}}
+    catalog = (
+        gen_module.build_catalog_md_bundled([(meta, parsed)])
+        if kind == "bundled"
+        else gen_module.build_catalog_md_optional([(meta, parsed)])
+    )
+    page = gen_module.render_skill_page(
+        meta,
+        {"metadata": {"hermes": {"related_skills": ["linked-fixture"]}}},
+        "Original skill body",
+        {"linked-fixture": meta},
+    )
+    assert f"]({route})" in catalog
+    assert f"]({route})" in page
+    assert "Original skill body" in page
+    for prefix in ("/docs", "/docs/sv", "/docs/zh-Hans"):
+        assert (prefix + route).count("/docs/") == 1

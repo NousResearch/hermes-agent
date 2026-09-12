@@ -21,7 +21,7 @@ Watch product, flight, or listing prices; alert on target.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Prices`, `Availability`, `Shopping`, `Travel`, `Alerts` |
-| Related skills | [`maps`](/docs/user-guide/skills/bundled/productivity/productivity-maps) |
+| Related skills | [`maps`](/user-guide/skills/bundled/productivity/productivity-maps) |
 
 ## Reference: full SKILL.md
 

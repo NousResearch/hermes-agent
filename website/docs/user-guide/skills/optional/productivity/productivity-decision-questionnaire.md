@@ -21,7 +21,7 @@ Turn an unanswerable decision into a questionnaire doc.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `questionnaire`, `decision`, `async`, `stakeholder`, `discovery`, `communication` |
-| Related skills | [`meeting-action-items`](/docs/user-guide/skills/bundled/productivity/productivity-meeting-action-items), [`document-to-action-items`](/docs/user-guide/skills/bundled/productivity/productivity-document-to-action-items) |
+| Related skills | [`meeting-action-items`](/user-guide/skills/bundled/productivity/productivity-meeting-action-items), [`document-to-action-items`](/user-guide/skills/bundled/productivity/productivity-document-to-action-items) |
 
 ## Reference: full SKILL.md
 

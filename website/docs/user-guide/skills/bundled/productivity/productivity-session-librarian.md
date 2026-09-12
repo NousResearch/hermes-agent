@@ -21,7 +21,7 @@ Organize sessions by prompt: find, rename, archive, prune.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Sessions`, `Organization`, `Cleanup`, `Library`, `Productivity` |
-| Related skills | [`weekly-review-planning`](/docs/user-guide/skills/bundled/productivity/productivity-weekly-review-planning) |
+| Related skills | [`weekly-review-planning`](/user-guide/skills/bundled/productivity/productivity-weekly-review-planning) |
 
 ## Reference: full SKILL.md
 

@@ -21,7 +21,7 @@ Validated interactive HTML diagrams, upstream-maintained.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `diagram`, `architecture`, `workflow`, `sequence`, `dataflow`, `state-machine`, `mermaid`, `html`, `svg` |
-| Related skills | [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram), [`excalidraw`](/docs/user-guide/skills/optional/creative/creative-excalidraw), [`concept-diagrams`](/docs/user-guide/skills/optional/creative/creative-concept-diagrams) |
+| Related skills | [`architecture-diagram`](/user-guide/skills/bundled/creative/creative-architecture-diagram), [`excalidraw`](/user-guide/skills/optional/creative/creative-excalidraw), [`concept-diagrams`](/user-guide/skills/optional/creative/creative-concept-diagrams) |
 
 ## Reference: full SKILL.md
 

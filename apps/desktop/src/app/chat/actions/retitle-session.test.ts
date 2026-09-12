@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   notifyError: vi.fn(),
   request: vi.fn(),
   selectedStoredSessionId: { get: vi.fn() },
+  sessions: { get: vi.fn() },
   setSessions: vi.fn()
 }))
 
@@ -34,24 +35,27 @@ vi.mock('@/store/notifications', () => ({
 vi.mock('@/store/session', () => ({
   $activeSessionId: mocks.activeSessionId,
   $selectedStoredSessionId: mocks.selectedStoredSessionId,
-  sessionMatchesStoredId: (session: { id: string }, storedId: string) => session.id === storedId,
+  $sessions: mocks.sessions,
+  sessionMatchesStoredId: (session: { _lineage_root_id?: string; id: string }, storedId: string) =>
+    session.id === storedId || session._lineage_root_id === storedId,
   setSessions: mocks.setSessions
 }))
 
-import { runSessionRetitle } from './retitle-session'
+import { runSessionRetitle, sessionRetitleMatchesSelection } from './retitle-session'
 
 describe('runSessionRetitle', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.activeSessionId.get.mockReturnValue('runtime-1')
     mocks.selectedStoredSessionId.get.mockReturnValue('stored-1')
+    mocks.sessions.get.mockReturnValue([{ id: 'stored-1', title: 'Old title' }])
     mocks.activeGateway.mockReturnValue({ request: mocks.request })
   })
 
   it('calls session.retitle for the active runtime session and applies the returned stored title', async () => {
     mocks.request.mockResolvedValue({ title: 'New title' })
 
-    await expect(runSessionRetitle({ sessionId: 'stored-1', profile: 'default' })).resolves.toBe('New title')
+    await expect(runSessionRetitle({ sessionId: 'stored-1' })).resolves.toBe('New title')
 
     expect(mocks.request).toHaveBeenCalledWith('session.retitle', { session_id: 'runtime-1' })
     expect(mocks.setSessions).toHaveBeenCalledTimes(1)
@@ -70,6 +74,17 @@ describe('runSessionRetitle', () => {
       kind: 'success',
       message: 'Session title regenerated'
     })
+  })
+
+  it('treats a compression tip and its selected lineage root as the same session', async () => {
+    mocks.selectedStoredSessionId.get.mockReturnValue('root-1')
+    mocks.sessions.get.mockReturnValue([{ id: 'tip-2', _lineage_root_id: 'root-1', title: 'Old title' }])
+    mocks.request.mockResolvedValue({ title: 'Compressed conversation' })
+
+    expect(sessionRetitleMatchesSelection('tip-2')).toBe(true)
+    await expect(runSessionRetitle({ sessionId: 'tip-2' })).resolves.toBe('Compressed conversation')
+
+    expect(mocks.request).toHaveBeenCalledWith('session.retitle', { session_id: 'runtime-1' })
   })
 
   it('does nothing if the menu row is no longer the selected session', async () => {

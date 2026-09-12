@@ -209,7 +209,7 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
         if ctx is None:
             raise RuntimeError("inventory context unavailable")
         providers = build_models_payload(
-            ctx, probe_custom_providers=force_refresh,
+            ctx, for_picker=True, probe_custom_providers=force_refresh,
             probe_current_custom_provider=not force_refresh,
         )["providers"]
     except Exception:

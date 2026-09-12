@@ -85,6 +85,14 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
     return out
 
 
+def _dangerous_findings_summary(findings: List[Finding]) -> str:
+    """Describe the critical findings that made a plugin install dangerous."""
+    critical = [finding for finding in findings if finding.severity == "critical"]
+    pattern_ids = sorted({finding.pattern_id for finding in critical})
+    names = f" ({', '.join(pattern_ids)})" if pattern_ids else ""
+    return f"{len(critical)} critical of {len(findings)} findings{names}"
+
+
 def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
     """Structural checks sized for plugin repositories."""
     findings: List[Finding] = []
@@ -162,7 +170,7 @@ def should_allow_plugin_install(
             return True, f"Force-installed despite caution verdict ({n} findings)"
         return None, f"Requires confirmation (caution verdict, {n} findings)"
     return False, (
-        f"Blocked (dangerous verdict, {n} findings). "
+        f"Blocked (dangerous verdict, {_dangerous_findings_summary(result.findings)}). "
         f"--force does not override a dangerous verdict.")
 
 

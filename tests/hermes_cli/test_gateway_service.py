@@ -1355,6 +1355,7 @@ class TestSystemUnitHermesHome:
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice
+        monkeypatch.setattr(gateway_cli, "_append_node_dir_for_service", lambda *args: None)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr(
@@ -1581,13 +1582,13 @@ class TestSystemServiceIdentityRootHandling:
         monkeypatch.delenv("SUDO_USER", raising=False)
         monkeypatch.setenv("USER", "nobody")
         monkeypatch.setenv("LOGNAME", "nobody")
+        monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(
+            pw_uid=65534, pw_gid=65534, pw_dir="/nonexistent",
+        ))
+        monkeypatch.setattr(grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="nogroup"))
 
-        try:
-            username, group, home, _uid = gateway_cli._system_service_identity(run_as_user=None)
-            assert username == "nobody"
-        except ValueError as e:
-            # "nobody" might not exist on all systems
-            assert "Unknown user" in str(e)
+        username, group, home, uid = gateway_cli._system_service_identity(run_as_user=None)
+        assert (username, group, home, uid) == ("nobody", "nogroup", "/nonexistent", 65534)
 
 
 class TestEnsureUserSystemdEnv:
@@ -1778,6 +1779,8 @@ class TestSystemUnitPathRemapping:
     """System units must remap ALL paths from the caller's home to the target user."""
 
     def test_system_unit_has_no_root_paths(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gateway_cli, "_append_node_dir_for_service", lambda *args: None)
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda *args: [])
         root_home = tmp_path / "root"
         root_home.mkdir()
         project = root_home / ".hermes" / "hermes-agent"
@@ -2629,11 +2632,13 @@ class TestRetryLaunchctlBootstrapUntilRegistered:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
-        monkeypatch.setattr(gateway_cli.time, "sleep", lambda *_a, **_k: None)
+        now = [0.0]
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
 
         ok = gateway_cli._retry_launchctl_bootstrap_until_registered(
             self.DOMAIN, self.PLIST, self.LABEL,
-            deadline=gateway_cli.time.monotonic() - 1,  # already expired
+            deadline=1.0,  # Allow a real probe before the fake clock expires.
         )
         assert ok is False
         assert list_calls["n"] >= 1

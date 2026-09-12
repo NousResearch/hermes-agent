@@ -219,6 +219,37 @@ class ClientLifecycleMixin:
         except Exception as exc:
             logger.debug("Shared OpenAI client retire failed (%s) %s error=%s", reason, self._client_log_context(), exc)
 
+    def _shared_openai_client_in_use(self) -> bool:
+        """True while a provider request that may still hold the shared client is running on this agent.
+
+        The shared client's ``in_use`` cannot be a plain flag (many threads share one client), so it is
+        derived from the two request brackets: the turn path sets ``_model_request_active`` around its
+        provider call, and the inline (cron/delegated) path registers ``_active_request_abort`` until the
+        call settles. Either marker means a worker thread still owns the pool's FDs. #107475
+        """
+        try:
+            active = getattr(self, "_model_request_active", None)
+            if active is not None and active.is_set():
+                return True
+        except Exception:
+            pass
+        return callable(getattr(self, "_active_request_abort", None))
+
+    def _close_shared_openai_client(self, client: Any, *, reason: str) -> None:
+        """``close_fn`` for the shared client: hard-close when idle, retire while a request is in flight.
+
+        Same split the per-request teardown applies via ``in_use``: only the thread that owns the FDs may
+        release them. ``close()`` runs on a stranger thread (gateway memory manager, a cron turn overlapping
+        an auxiliary context-compression request), so hard-closing here releases the pool's FDs under the
+        borrowing worker's live SSL BIO (FD recycle → #29507/#70773) and leaves the in-flight request mute
+        on a closed pool (#107475). Retirement ``shutdown()``s the sockets (the win ``close()`` wanted) and
+        defers FD release to GC/the owning worker.
+        """
+        if self._shared_openai_client_in_use():
+            self._retire_shared_openai_client(client, reason=f"{reason}_in_flight")
+        else:
+            self._close_openai_client(client, reason=reason, shared=True)
+
     def _drain_transports_after_abandonment(self, *, reason: str) -> int:
         """FD-safe transport drain for an abandoned (timed-out) worker; returns sockets shut down.
 

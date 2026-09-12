@@ -30,6 +30,18 @@ _cached_policy_path: Optional[str] = None
 _cached_policy_time: float = 0.0
 
 
+def _fresh_cached_policy(resolved_path: str, now: float) -> Optional[Dict[str, Any]]:
+    """Return the cached policy only when it belongs to this config path and is still within TTL."""
+    with _cache_lock:
+        if (
+            _cached_policy is not None
+            and _cached_policy_path == resolved_path
+            and (now - _cached_policy_time) < _CACHE_TTL_SECONDS
+        ):
+            return _cached_policy
+    return None
+
+
 class WebsitePolicyError(Exception):
     """Raised when a website policy file is malformed."""
 
@@ -105,10 +117,8 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     resolved_path = str(config_path or default_path)
     now = time.monotonic()
     if config_path is None:
-        with _cache_lock:
-            fresh = _cached_policy_path == resolved_path and (now - _cached_policy_time) < _CACHE_TTL_SECONDS
-            if _cached_policy is not None and fresh:
-                return _cached_policy
+        if cached := _fresh_cached_policy(resolved_path, now):
+            return cached
     config_path = config_path or default_path
     policy = _load_policy_config(config_path)
     domains = map(_normalize_rule, _require_type(policy, "domains", list, []))
@@ -154,11 +164,12 @@ def check_website_access(url: str, config_path: Optional[Path] = None) -> Option
     Fails open on policy errors (warn + ``None``) so a config typo can't break all web tools — except with
     an explicit ``config_path`` (tests), where errors propagate.
     """
-    # Fast path: cached policy disabled/empty → no YAML read, no host extraction.
+    # Fast path: only a fresh disabled policy for THIS profile may skip loading/host parsing.
     if config_path is None:
-        with _cache_lock:
-            if _cached_policy is not None and not _cached_policy.get("enabled"):
-                return None
+        default_path = get_hermes_home() / "config.yaml"
+        cached = _fresh_cached_policy(str(default_path), time.monotonic())
+        if cached is not None and not cached.get("enabled"):
+            return None
     host = _extract_host_from_urlish(url)
     if not host:
         return None

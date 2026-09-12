@@ -195,6 +195,37 @@ def test_failed_switch_flush_keeps_old_session_turns_for_later_retry(provider):
     assert provider._pending_turns == []
 
 
+def test_concurrent_sync_turn_and_session_switch_do_not_duplicate_pending(provider, monkeypatch):
+    # Worker thread: sync_turn(B) with pending [A] snapshots [A, B] and blocks inside add_memory.
+    # Caller thread: on_session_switch must wait for that write, not re-send A from a stale snapshot.
+    provider._client.fail_add = True
+    provider.sync_turn("A", "a", session_id="session-1")
+    provider._client.fail_add = False
+    entered, release = threading.Event(), threading.Event()
+    real_add = provider._client.add_memory
+
+    def slow_add(content, metadata=None, **kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return real_add(content, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(provider._client, "add_memory", slow_add)
+    worker = threading.Thread(target=provider.sync_turn, args=("B", "b"), kwargs={"session_id": "session-1"})
+    worker.start()
+    assert entered.wait(timeout=2)
+    switcher = threading.Thread(target=provider.on_session_switch, args=("session-2",), kwargs={"reset": True})
+    switcher.start()
+    switcher.join(timeout=0.2)
+    assert switcher.is_alive()  # blocked on the capture lock while the worker's write is in flight
+    release.set()
+    worker.join(timeout=2); switcher.join(timeout=2)
+    assert not worker.is_alive() and not switcher.is_alive()
+    assert len(provider._client.add_calls) == 1
+    assert provider._client.add_calls[0]["content"].count("[role: user]") == 2  # A and B, once each
+    assert provider._pending_turns == []
+    assert provider._session_id == "session-2"
+
+
 def test_failed_switch_flush_is_retried_at_shutdown(provider):
     provider._client.fail_add = True
     provider.sync_turn("old turn", "old reply", session_id="session-1")

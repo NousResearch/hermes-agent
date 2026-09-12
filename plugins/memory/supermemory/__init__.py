@@ -316,6 +316,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._container_tag, self._turn_count, self._write_enabled, self._active = _DEFAULT_CONTAINER_TAG, 0, True, False
         self._prefetch_thread = self._sync_thread = self._write_thread = None  # only _write_thread is ever started
         self._pending_turns: List[Dict[str, str]] = []  # failed writes, each tagged with its session_id; retried on next write/end/switch/shutdown
+        self._capture_lock = threading.Lock()  # sync_turn (worker) vs on_session_switch/shutdown (caller thread) both touch _pending_turns
         self._apply_config(_load_supermemory_config())
         self._base_url, self._allowed_containers = _DEFAULT_BASE_URL, []  # env var is only consulted in initialize()
 
@@ -411,23 +412,29 @@ class SupermemoryMemoryProvider(MemoryProvider):
                                             profile["search_results"], self._max_recall_results)
         return _quietly(_recall, "Supermemory prefetch failed", default="")
 
-    def _write_turns(self, turns: List[Dict[str, str]], mode: str) -> None:
-        """One documents.add per session id in ``turns`` (custom_id = session + 4h bucket, so the API appends deltas).
-        Failed batches stay pending under their own session id, so a switch never re-homes them."""
-        failed: List[Dict[str, str]] = []
-        for sid in dict.fromkeys(t["session_id"] for t in turns):
-            batch = [t for t in turns if t["session_id"] == sid]
-            now = datetime.now(timezone.utc)
-            content = "\n\n".join(_format_turn(t["user"], t["assistant"]) for t in batch)
-            metadata = {"type": "conversation", "session_id": sid, "timestamp": now.isoformat()}  # no sm_capture_mode: Hermes policy
-            try:
-                self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context,
-                                        custom_id=_capture_custom_id(sid, now))
-            except Exception:
-                logger.log(logging.WARNING if mode != "turn" else logging.DEBUG, "Supermemory capture failed (%s, session=%s, %d turns pending)",
-                           mode, sid, len(batch), exc_info=True)
-                failed += batch
-        self._pending_turns = failed
+    def _write_turns(self, mode: str, new_turn: Optional[Dict[str, str]] = None) -> None:
+        """Write pending turns (+ ``new_turn``) as one documents.add per session id; custom_id = session + 4h bucket, so the
+        API appends deltas. Failed batches stay pending under their own session id, so a switch never re-homes them.
+        Retries are at-least-once: a write the API accepted but whose response was lost is re-sent and appended again.
+        The lock serializes the snapshot/write/replace sequence across the worker and caller threads."""
+        with self._capture_lock:
+            turns = self._pending_turns + ([new_turn] if new_turn else [])
+            if not turns:
+                return
+            failed: List[Dict[str, str]] = []
+            for sid in dict.fromkeys(t["session_id"] for t in turns):
+                batch = [t for t in turns if t["session_id"] == sid]
+                now = datetime.now(timezone.utc)
+                content = "\n\n".join(_format_turn(t["user"], t["assistant"]) for t in batch)
+                metadata = {"type": "conversation", "session_id": sid, "timestamp": now.isoformat()}  # no sm_capture_mode: Hermes policy
+                try:
+                    self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context,
+                                            custom_id=_capture_custom_id(sid, now))
+                except Exception:
+                    logger.log(logging.WARNING if mode != "turn" else logging.DEBUG, "Supermemory capture failed (%s, session=%s, %d turns pending)",
+                               mode, sid, len(batch), exc_info=True)
+                    failed += batch
+            self._pending_turns = failed
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         # Host runs this on a worker thread, so the blocking write is fine here.
@@ -436,11 +443,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
         turn = {"user": _clean_text_for_capture(user_content), "assistant": _clean_text_for_capture(assistant_content),
                 "session_id": session_id or self._session_id}
         if turn["user"] or turn["assistant"]:
-            self._write_turns(self._pending_turns + [turn], "turn")
+            self._write_turns("turn", turn)
 
     def _flush_pending(self, mode: str) -> None:
-        if self._can_write() and self._pending_turns:
-            self._write_turns(list(self._pending_turns), mode)
+        if self._can_write():
+            self._write_turns(mode)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # Turns were already written as they completed; only retry what failed.

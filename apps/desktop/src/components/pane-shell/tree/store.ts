@@ -542,15 +542,24 @@ export const hostsSessionDropTarget = (paneIds: readonly string[]): boolean =>
   paneIds.some(isSessionStripPane) || paneIds.some(isMainStripPane)
 
 /**
- * Is this layout TILED — more than one zone carrying a chat tab strip?
+ * Is this layout TILED — more than one zone carrying a MAIN tile?
  *
  * It answers one question for the strip resolver: whether a zone holding a
  * lone main pane is the APP or one window of several (see
  * renderer/strip-visibility.ts — a tiled lone main pane keeps its title bar,
- * so its Close and "+" stay reachable). Read with `.get()`, deliberately: both
- * callers already re-render with the tree (the root renders the zones from it),
- * and subscribing would wire every zone to the whole tree — the sash-drag
- * render storm that comment in tree-group.tsx exists to avoid.
+ * so its Close and "+" stay reachable).
+ *
+ * A MAIN TILE IS ANY MAIN TILE, not just a session: the zone the report came
+ * from held session tiles, but a workspace tiled beside a preview / page /
+ * Browser pane is the same shape of window and must not read as solo. So this
+ * counts through `hostsSessionDropTarget` — the same main-tile predicate the
+ * drop resolvers and the zone overlay use — instead of the session-only
+ * `isSessionStripPane`.
+ *
+ * Read with `.get()`, deliberately: both callers already re-render with the
+ * tree (the root renders the zones from it), and subscribing would wire every
+ * zone to the whole tree — the sash-drag render storm that comment in
+ * tree-group.tsx exists to avoid.
  */
 export function hasTiledSessionZones(): boolean {
   const tree = $layoutTree.get()
@@ -561,7 +570,7 @@ export function hasTiledSessionZones(): boolean {
 
   const zones = (node: typeof tree): number =>
     node.type === 'group'
-      ? node.panes.some(isSessionStripPane)
+      ? hostsSessionDropTarget(node.panes)
         ? 1
         : 0
       : node.children.reduce((count, child) => count + zones(child), 0)

@@ -132,6 +132,30 @@ describe('a lone workspace in a tiled layout', () => {
 
     expect(zone('grp-files')!.querySelector('[role="tablist"]')).toBeNull()
   })
+
+  // "Tiled" is about MAIN tiles, not about sessions specifically: a workspace
+  // parked beside a preview / page / Browser pane is the same shape of window,
+  // and its strip is just as much that zone's only Close handle.
+  it('counts a non-session main tile (a preview pane) as a sibling window', () => {
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        data: { minWidth: '22rem', placement: 'main' },
+        id: 'preview-tile:peek',
+        render: () => <div>Preview</div>,
+        title: 'Peek'
+      })
+    )
+
+    $layoutTree.set(
+      split('row', [group(['workspace'], { id: 'grp-main' }), group(['preview-tile:peek'], { id: 'g-preview' })])
+    )
+
+    render(<TreeGroup node={group(['workspace'], { active: 'workspace', id: 'grp-main' })} parentAxis="row" />)
+
+    expect(zone('grp-main')!.querySelector('[role="tablist"]')).toBeTruthy()
+    expect(zone('grp-main')!.querySelector('button[aria-label="New session tab"]')).toBeTruthy()
+  })
 })
 
 // The behaviour the auto rung was written for, which must survive: ONE chat in

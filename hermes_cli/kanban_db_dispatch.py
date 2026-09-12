@@ -2124,11 +2124,11 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
-    if task.goal_mode:
-        # The kanban goal-loop hook only runs in cli.py's fully-quiet branch.
-        # Without -Q the worker gets one turn, prints text, exits rc=0, and the
-        # dispatcher records a protocol violation.
-        cmd.append("-Q")
+    # Every worker needs cli.py's _run_quiet_single_query branch to map failed
+    # turns to exit 1 or KANBAN_RATE_LIMIT_EXIT_CODE instead of exiting 0 and
+    # being misclassified as a protocol violation. The kanban goal-loop hook
+    # also requires this fully-quiet branch, but -Q is not goal-mode-only.
+    cmd.append("-Q")
     return cmd
 
 

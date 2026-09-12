@@ -274,6 +274,10 @@ def _make_runner(current_source: SessionSource, entries: list[SessionEntry]):
         entry.session_id: entry.display_name for entry in entries
     }.get(sid)
     runner._session_db._db.get_session.return_value = None
+    runner._session_db._db.list_session_title_candidates.side_effect = lambda title: [
+        {"id": entry.session_id} for entry in entries if entry.display_name == title
+    ]
+    runner._clear_conversation_scope = MagicMock()
     return runner
 
 
@@ -318,11 +322,17 @@ async def test_matrix_resume_quoted_title_same_room():
     )
 
     assert "Resumed session" in result
-    runner._session_db._db.resolve_session_by_title.assert_called_once_with("Project B Plan")
+    runner._session_db._db.list_session_title_candidates.assert_called_once_with("Project B Plan")
+
+
+def _configure_matrix_admin(runner) -> None:
+    runner.config.platforms[Platform.MATRIX].extra["group_allow_admin_from"] = [SENDER]
 
 
 @pytest.mark.asyncio
-async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
+@pytest.mark.parametrize("flag", ["--cross-room", "--all"])
+async def test_matrix_resume_cross_room_flag_does_not_bypass_admin_gate(flag):
+
     source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
     source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
     entry_a = _entry(source_a, "session-a", "Project A Plan")
@@ -332,11 +342,60 @@ async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
     runner._session_db._db.resolve_session_by_title.return_value = "session-a"
 
     result = await runner._handle_resume_command(
-        _event("/resume --cross-room Project A Plan", source_b)
+        _event(f"/resume {flag} Project A Plan", source_b)
     )
 
-    assert "Cross-room resume" in result
-    assert PROJECT_B_NAME in result
+    assert "No session found" in result
+    assert PROJECT_A_NAME not in result
+    assert PROJECT_A_ROOM_ID not in result
+    runner.session_store.switch_session.assert_not_called()
+    runner.session_store.load_transcript.assert_not_called()
+    runner._clear_conversation_scope.assert_not_called()
+    runner._evict_cached_agent.assert_not_called()
+    runner._release_running_agent_state.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ["--cross-room", "--all"])
+async def test_matrix_resume_cross_room_allows_configured_admin_and_warns(flag):
+    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
+    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    entry_a = _entry(source_a, "session-a", "Project A Plan")
+    entry_b = _entry(source_b, "session-b", "Project B Plan")
+    runner = _make_runner(source_b, [entry_a, entry_b])
+    _configure_matrix_admin(runner)
+    runner.session_store.switch_session.return_value = entry_a
+    runner._session_db._db.resolve_session_by_title.return_value = "session-a"
+
+    result = await runner._handle_resume_command(
+        _event(f"/resume {flag} Project A Plan", source_b)
+    )
+
+    if flag == "--cross-room":
+        assert "Cross-room resume" in result
+        assert PROJECT_B_NAME in result
+    else:
+        assert "Resumed session" in result
+    runner.session_store.switch_session.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_matrix_resume_cross_room_flag_keeps_nonadmin_same_room_behavior_normal():
+    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    entry_b = _entry(source_b, "session-b-old", "Project B Plan")
+    runner = _make_runner(source_b, [entry_b])
+    runner.session_store.get_or_create_session.return_value = _entry(
+        source_b, "session-b-current", "Current Project B"
+    )
+    runner.session_store.switch_session.return_value = entry_b
+    runner._session_db._db.resolve_session_by_title.return_value = "session-b-old"
+
+    result = await runner._handle_resume_command(
+        _event("/resume --cross-room Project B Plan", source_b)
+    )
+
+    assert "Resumed session" in result
+    assert "Cross-room resume" not in result
     runner.session_store.switch_session.assert_called_once()
 
 

@@ -72,8 +72,8 @@ def test_bare_and_canonical_custom_names_resolve_the_same_pool(tmp_path, monkeyp
     assert all(pool is not None for pool in pools)
     assert {pool.provider for pool in pools} == {"custom:child-custom"}
     assert [{entry.id for entry in pool.entries()} for pool in pools] == [
-        ["child-key"],
-        ["child-key"],
+        {"child-key"},
+        {"child-key"},
     ]
 
 
@@ -95,4 +95,4 @@ def test_named_custom_child_does_not_inherit_another_endpoint_pool(
     assert child_pool is not None
     assert child_pool is not parent_pool
     assert child_pool.provider == "custom:child-custom"
-    assert [entry.id for entry in child_pool.entries()] == ["child-key"]
+    assert {entry.id for entry in child_pool.entries()} == {"child-key"}

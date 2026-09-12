@@ -3346,6 +3346,10 @@ export const en: Translations = {
   },
 
   freeTier: {
+    continueTitle: "Keep going with Hermes.",
+    continueBody: "You’ve used the free tool calls included after setup. Sign in, use a local model, or choose another provider to continue. Your chat and draft stay here.",
+    signInOrCreate: "Sign in / create account",
+    useLocal: "Use local model",
     providerRowTitle: 'Nous · free tier',
     providerRowPitch: 'Sign in with a Nous account to unlock more models and tools.',
     readyTitle: 'Hermes is ready.',

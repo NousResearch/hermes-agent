@@ -3478,6 +3478,10 @@ export const zh = defineLocale({
   // Not yet translated — English fallbacks so the free-tier surfaces stay
   // readable until a zh pass lands.
   freeTier: {
+    continueTitle: "继续使用 Hermes。",
+    continueBody: "你已用完设置后的免费工具调用。登录、使用本地模型或选择其他提供方即可继续。聊天和草稿会保留。",
+    signInOrCreate: "登录 / 创建账户",
+    useLocal: "使用本地模型",
     providerRowTitle: 'Nous · 免费层',
     providerRowPitch: '登录 Nous 账户以解锁更多模型和工具。',
     readyTitle: 'Hermes 已就绪。',

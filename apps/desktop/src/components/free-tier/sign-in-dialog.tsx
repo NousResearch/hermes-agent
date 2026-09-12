@@ -21,6 +21,7 @@ import { CheckCircle2, Loader2 } from '@/lib/icons'
 import { FREE_TIER_MODEL, NOUS_PROVIDER_ID, refreshFreeTierStatus } from '@/store/free-tier'
 import {
   $freeTierSignIn,
+  $freeTierSignInOwner,
   beginFreeTierSignIn,
   claimFreeTierSignIn,
   closeFreeTierSignIn,
@@ -52,6 +53,7 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
   const id = useId()
   const claim = useStore(freeTierSignInClaim())
   const state = useStore($freeTierSignIn)
+  const owner = useStore($freeTierSignInOwner)
   const { requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
   const { t } = useI18n()
@@ -83,13 +85,15 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
   const settle = (model: null | string) => {
     void queryClient.invalidateQueries({ queryKey: ['billing'] })
     void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-    void getGlobalModelOptions({ refresh: true }).catch(() => undefined)
-    void refreshFreeTierStatus(requestGateway)
-    void refreshOnboardingProviders()
+    void getGlobalModelOptions({ refresh: true }, owner?.scope).catch(() => undefined)
+    if (!owner) {
+      void refreshFreeTierStatus(requestGateway)
+      void refreshOnboardingProviders()
+    }
 
     // Only re-home a session still sitting on the free-tier model: a user who
     // already picked something of their own keeps it.
-    if (model && $currentModel.get() === FREE_TIER_MODEL) {
+    if (!owner && model && $currentModel.get() === FREE_TIER_MODEL) {
       void onSelectModel?.({ model, provider: NOUS_PROVIDER_ID })
     }
   }

@@ -17,6 +17,7 @@ import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-rec
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
 import { CONNECTOR_LEAD_ORDER } from '@/components/onboarding-chat/options'
 import { connectorTitle } from '@/lib/connector-tools'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { machineDescription } from '@/store/machine'
 import type { OnboardingAnswers } from '@/store/onboarding-answers'
@@ -269,9 +270,15 @@ export function buildHandoffCompleteNote(task: string): string {
   return `[setup] handoff complete — "${task.trim()}" is now building in its own session on the default profile, and the user is watching it there. The app is showing them a short tour of the profile rail and the sessions list right now, so do not describe either. Say ONE short line and then stop: you're around if they want a hand, and this chat stays where it is. Do not ask a question, do not offer a list, do not schedule anything.`
 }
 
-/** Creates the guide profile. The catch treats an already-existing profile as success, so kickoff can call this on
- *  every run. */
+/** Current backends establish guide provenance, including an existing guide.
+ * Older backends retain their pre-gate profile-creation path. */
 export async function ensureSetupProfile(request: GatewayRequest): Promise<void> {
+  try {
+    await request('profiles.ensure_onboarding', { soul: composeSetupSoul() })
+    return
+  } catch (error) {
+    if (!isMissingRpcMethod(error)) throw error
+  }
   try {
     await request('profiles.create', {
       description: 'Where Hermes met you — walks your first run, then checks in as you find your feet.',

@@ -6,14 +6,16 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions, listOAuthProviders, type ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
+import { applyContinuationProvider, continuationKey, continuationRequester } from '@/store/free-tier-continuation'
 import { FREE_TIER_MODEL } from '@/store/free-tier'
-import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { $freeTierSignIn, openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { notifyError } from '@/store/notifications'
 import { $introReveal, shouldPlayFirstRunIntro } from '@/store/intro-reveal'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
@@ -22,6 +24,7 @@ import {
   clearFreeTierIntro,
   clearPendingProviderOAuth,
   closeManualOnboarding,
+  cancelOnboardingFlow,
   confirmOnboardingModel,
   DEFAULT_MANUAL_ONBOARDING_REASON,
   DEFAULT_ONBOARDING_REASON,
@@ -37,6 +40,7 @@ import {
 import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
+import { useContinuation } from './use-continuation'
 import { DocsLink, FlowPanel, Status } from './flow'
 import { DecodedLabel } from './glyph'
 import {
@@ -127,7 +131,7 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 // other api_key provider is appended with a generic "paste {KEY}" affordance.
 // OAuth / external providers are intentionally excluded here — they go through
 // the OAuth picker / sign-in flow, not a pasted key.
-function useApiKeyCatalog(): ApiKeyOption[] {
+function useApiKeyCatalog(scope?: ProfileScope): ApiKeyOption[] {
   const [rows, setRows] = useState<ModelOptionProvider[]>([])
 
   useEffect(() => {
@@ -137,7 +141,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }))
+      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, scope))
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])
@@ -150,7 +154,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [scope])
 
   return useMemo(() => {
     const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
@@ -206,6 +210,15 @@ export function DesktopOnboardingOverlay({
   useStore($onboardingSurfaces)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
+  const continuation = useContinuation()
+  const signIn = useStore($freeTierSignIn)
+  const [continuationStep, setContinuationStep] = useState<'ready' | 'local' | 'providers'>('ready')
+  const continuationOwner = continuation.target ? continuationKey(continuation.target) : ''
+  useEffect(() => {
+    setContinuationStep('ready')
+    if (continuation.required) cancelOnboardingFlow()
+    return () => { if (continuation.required) cancelOnboardingFlow() }
+  }, [continuationOwner, continuation.required])
   const targetProfile = onboarding.targetProfile ?? profile
 
   // Async flows retain the initiating route even after the overlay closes.
@@ -219,6 +232,22 @@ export function DesktopOnboardingOverlay({
     }),
     [onboarding.targetProfile, targetProfile, requestGateway]
   )
+
+  const continuationCtx = useMemo<OnboardingContext | null>(() => {
+    const target = continuation.target
+    if (!target) return null
+    return {
+      profile: target.owner.profile,
+      apiScope: target.owner,
+      continuation: true,
+      requestGateway: continuationRequester(target),
+      onCompleted: () => {
+        void applyContinuationProvider(target).catch(error => notifyError(error, DEFAULT_ONBOARDING_REASON))
+        onCompletedRef.current?.()
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [continuationOwner])
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
   // behind), THEN finalize so the unmount lands after the fade — mirrors the
@@ -275,10 +304,10 @@ export function DesktopOnboardingOverlay({
   }
 
   useEffect(() => {
-    if (enabled || onboarding.requested) {
+    if (!continuation.required && (enabled || onboarding.requested)) {
       void refreshOnboarding(ctx)
     }
-  }, [ctx, enabled, onboarding.requested])
+  }, [ctx, enabled, onboarding.requested, continuation.required])
 
   // When the Providers settings page asked to connect a specific provider, the
   // store stashed its id. Once the provider list has loaded and we're back at
@@ -322,18 +351,24 @@ export function DesktopOnboardingOverlay({
   // do we know whether to dismiss (true) or surface the picker (false).
   // EXCEPTION: manual mode (user opened the selector from a working app to
   // add/switch a provider) shows the overlay regardless of configured state.
-  if (onboarding.configured === true && !onboarding.manual && !onboarding.freeTierReady) {
+  if (onboarding.configured === true && !onboarding.manual && !onboarding.freeTierReady && !continuation.required) {
     return null
   }
 
   // The user chose "I'll choose a provider later" on first run. Stay out of the
   // way on every subsequent launch — they re-enter via Settings → Providers
   // (manual mode), which sets manual=true and bypasses this gate.
-  if (onboarding.firstRunSkipped && !onboarding.manual && !onboarding.freeTierReady) {
+  if (onboarding.firstRunSkipped && !onboarding.manual && !onboarding.freeTierReady && !continuation.required) {
     return null
   }
 
+  // The existing sign-in dialog occupies the modal rung below onboarding.
+  // Yield its presentation without clearing the backend continuation verdict.
+  if (continuation.required && signIn.status !== 'closed') return null
+
   const { flow } = onboarding
+  const continuing = continuation.required && continuationCtx !== null
+  const activeCtx = continuing ? continuationCtx : ctx
   // Show the launch reason only when it's a meaningful, caller-supplied prompt —
   // suppress the generic defaults (useless noise) and provider-setup errors
   // (those are surfaced by FlowPanel, not as a banner).
@@ -353,8 +388,9 @@ export function DesktopOnboardingOverlay({
   // The free-tier intro owns the overlay while it is up: the app is already
   // configured, so there is no picker to show and no runtime gate to wait on.
   // A manual open (the user asked for the picker) outranks it.
-  const freeTierIntro = onboarding.freeTierReady && !onboarding.manual && flow.status === 'idle'
-  const ready = freeTierIntro || onboarding.manual || (enabled && onboarding.configured === false)
+  const continuationReady = continuing && continuationStep === 'ready' && flow.status === 'idle'
+  const freeTierIntro = continuationReady || (onboarding.freeTierReady && !onboarding.manual && flow.status === 'idle')
+  const ready = continuing || freeTierIntro || onboarding.manual || (enabled && onboarding.configured === false)
   const showPicker = !freeTierIntro && (flow.status === 'idle' || flow.status === 'success')
   // The final "you're in" screen drops the card chrome and floats centered on
   // the surface — same bare, cinematic treatment as the connecting overlay.
@@ -388,7 +424,7 @@ export function DesktopOnboardingOverlay({
         )}
       >
         {showPicker || !ready ? <Header /> : null}
-        {onboarding.manual ? (
+        {onboarding.manual && !continuing ? (
           <Button
             aria-label={t.common.close}
             className="absolute right-3 top-3 z-10 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
@@ -403,11 +439,34 @@ export function DesktopOnboardingOverlay({
           {reason ? <ReasonNotice reason={reason} /> : null}
           {ready ? (
             freeTierIntro ? (
-              <FreeTierReadyPanel leaving={leaving} onDismiss={dismissFreeTierIntro} />
+              <FreeTierReadyPanel
+                leaving={continuing ? false : leaving}
+                onDismiss={dismissFreeTierIntro}
+                continuation={continuationReady ? {
+                  onSignIn: () => openFreeTierSignIn({
+                    scope: continuation.target!.owner,
+                    requestGateway: continuationRequester(continuation.target!),
+                    onCompleted: () => applyContinuationProvider(continuation.target!)
+                  }),
+                  onLocal: () => setContinuationStep('local'),
+                  onProviders: () => { setOnboardingMode('oauth'); setContinuationStep('providers') }
+                } : undefined}
+              />
             ) : showPicker ? (
-              <Picker ctx={ctx} />
+              continuing && continuationStep === 'local' ? (
+                <ApiKeyForm
+                  canGoBack
+                  initialEnvKey="OPENAI_BASE_URL"
+                  onBack={() => setContinuationStep('ready')}
+                  onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, activeCtx, apiKey)}
+                  options={API_KEY_OPTIONS.filter(option => option.id === 'local')}
+                />
+              ) : <Picker ctx={activeCtx}
+                onBack={continuing ? () => setContinuationStep('ready') : undefined}
+                onLocal={continuing ? () => setContinuationStep('local') : undefined} />
             ) : (
-              <FlowPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={finalizeOnboarding} />
+              <FlowPanel ctx={activeCtx} flow={flow} leaving={leaving}
+                onBegin={continuing ? () => confirmOnboardingModel(activeCtx) : finalizeOnboarding} />
             )
           ) : (
             <Preparing boot={boot} />
@@ -425,19 +484,21 @@ export function DesktopOnboardingOverlay({
  * and offers the two ways out of it (a real account, or a provider of their
  * own) without making either the default.
  */
-function FreeTierReadyPanel({
+export function FreeTierReadyPanel({
   leaving,
-  onDismiss
+  onDismiss,
+  continuation
 }: {
   leaving: boolean
   onDismiss: (after?: () => void) => Promise<void>
+  continuation?: { onSignIn: () => void; onLocal: () => void; onProviders: () => void }
 }) {
   const { t } = useI18n()
   const copy = t.freeTier
 
   return (
     <div className="grid place-items-center gap-7 py-6 text-center">
-      <DecodedLabel leaving={leaving} text={copy.readyTitle} />
+      <DecodedLabel leaving={leaving} text={continuation ? copy.continueTitle : copy.readyTitle} />
 
       <div
         className={cn(
@@ -445,6 +506,7 @@ function FreeTierReadyPanel({
           leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
         )}
       >
+        {continuation ? <p className="max-w-md text-sm text-muted-foreground">{copy.continueBody}</p> : <>
         <div className="flex items-center gap-2">
           <span className="font-mono text-[0.625rem] uppercase tracking-[0.2em] text-muted-foreground">
             {t.onboarding.defaultModel}
@@ -455,6 +517,7 @@ function FreeTierReadyPanel({
         </div>
         <p className="font-mono text-base">{FREE_TIER_MODEL}</p>
         <p className="font-mono text-xs text-muted-foreground">{copy.readyCaption}</p>
+        </>}
       </div>
 
       <div
@@ -463,6 +526,11 @@ function FreeTierReadyPanel({
           leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
         )}
       >
+        {continuation ? <>
+          <Button onClick={continuation.onSignIn} type="button">{copy.signInOrCreate}</Button>
+          <Button onClick={continuation.onLocal} type="button" variant="text">{copy.useLocal}</Button>
+          <Button onClick={continuation.onProviders} type="button" variant="text">{copy.otherProviders}</Button>
+        </> : <>
         <Button onClick={() => void onDismiss()} type="button">
           {copy.begin}
         </Button>
@@ -477,6 +545,7 @@ function FreeTierReadyPanel({
         >
           {copy.otherProviders}
         </Button>
+        </>}
       </div>
     </div>
   )
@@ -551,9 +620,26 @@ const persistShowAll = (value: boolean) => {
   return value
 }
 
-export function Picker({ ctx }: { ctx: OnboardingContext }) {
+export function Picker({ ctx, onBack, onLocal }: { ctx: OnboardingContext; onBack?: () => void; onLocal?: () => void }) {
   const { t } = useI18n()
-  const { localEndpoint, manual, mode, providers } = useStore($desktopOnboarding)
+  const { localEndpoint, manual, mode, providers: cachedProviders } = useStore($desktopOnboarding)
+  const [continuationProviders, setContinuationProviders] = useState<OAuthProvider[] | null>(null)
+  const [providerError, setProviderError] = useState<string | null>(null)
+  const [retry, setRetry] = useState(0)
+  const scope = ctx.apiScope ?? ctx.profile
+  useEffect(() => {
+    if (!ctx.continuation) return
+    let cancelled = false
+    setContinuationProviders(null)
+    setProviderError(null)
+    void listOAuthProviders(scope).then(result => {
+      if (!cancelled) setContinuationProviders(result.providers)
+    }).catch(error => {
+      if (!cancelled) setProviderError(error instanceof Error ? error.message : String(error))
+    })
+    return () => { cancelled = true }
+  }, [ctx.continuation, scope, retry])
+  const providers = ctx.continuation ? continuationProviders : cachedProviders
   const [showAll, setShowAll] = useState(readShowAll)
   // Which key-form option to preselect when we flip to 'apikey' mode. The
   // OpenRouter row selects its key; the generic link lands on the first option.
@@ -566,13 +652,21 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
-  const apiKeyOptions = useApiKeyCatalog()
+  const apiKeyOptions = useApiKeyCatalog(scope)
+
+  if (ctx.continuation && providers === null) {
+    return <div className="grid gap-3">
+      <Status>{providerError ?? t.onboarding.lookingUpProviders}</Status>
+      {providerError && <Button variant="text" onClick={() => setRetry(value => value + 1)}>{t.common.retry}</Button>}
+      {onBack && <Button variant="text" onClick={onBack}>{t.common.back}</Button>}
+    </div>
+  }
 
   // localEndpoint forces the key form regardless of `mode` (which a manual
   // provider refresh may flip back to 'oauth'); it preselects the local option
   // and hides the "back to sign in" link since the user came specifically to
   // configure a custom endpoint.
-  if (localEndpoint || mode === 'apikey' || !hasOauth) {
+  if ((!ctx.continuation && localEndpoint) || mode === 'apikey' || !hasOauth) {
     return (
       <div className="grid gap-3">
         <ApiKeyForm
@@ -582,7 +676,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
           options={apiKeyOptions}
         />
-        {manual ? null : (
+        {manual || ctx.continuation ? null : (
           <div className="flex justify-center pt-1">
             <ChooseLaterLink />
           </div>
@@ -602,7 +696,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   // is present to anchor the choice — otherwise show the full list. The
   // Fireworks/OpenRouter key rows always live behind the disclosure, so the
   // toggle is warranted even when there are no other OAuth providers.
-  const collapsible = Boolean(featured)
+  const collapsible = Boolean(featured) && !ctx.continuation
   const showRest = !collapsible || showAll
 
   // "Run models locally" leaves the picker for Settings -> Providers ->
@@ -627,7 +721,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
         {/* The no-account path: everything runs on this machine. Shipped
             behind the --local launch flag. (Fireworks moved into the
             expanded list on main.) */}
-        {$localModelsEnabled.get() ? <LocalModelsProviderRow onClick={openLocalModels} /> : null}
+        {$localModelsEnabled.get() ? <LocalModelsProviderRow onClick={onLocal ?? openLocalModels} /> : null}
         {showRest ? (
           <>
             {/* Fireworks leads the expanded list, matching CANONICAL_PROVIDERS
@@ -656,7 +750,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
         {/* First run only: let the user defer the choice and land in the app.
             In manual mode the overlay already has a close affordance, so the
             "choose later" escape would be redundant — hide it. */}
-        {manual ? <span /> : <ChooseLaterLink />}
+        {onBack ? <Button variant="text" onClick={onBack}>{t.common.back}</Button> : manual || ctx.continuation ? <span /> : <ChooseLaterLink />}
         <Button className="-mr-2 font-medium" onClick={() => openKeyForm()} size="xs" type="button" variant="text">
           {t.onboarding.haveApiKey}
         </Button>

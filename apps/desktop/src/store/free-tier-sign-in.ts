@@ -1,6 +1,8 @@
 import { atom } from 'nanostores'
 
-import { cancelOAuthSession, listOAuthProviders, pollOAuthSession, startOAuthLogin } from '@/hermes'
+import { cancelOAuthSession, listOAuthProviders, pollOAuthSession, type ProfileScope, startOAuthLogin } from '@/hermes'
+
+import type { FreeTierStatus } from '@/types/hermes'
 
 import { type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
 
@@ -33,6 +35,14 @@ export type FreeTierSignInState =
       urlCopied: boolean
       status: 'code'
     }
+
+export interface FreeTierSignInOwner {
+  scope: ProfileScope
+  requestGateway: FreeTierRequester
+  onCompleted?: () => Promise<void>
+}
+
+export const $freeTierSignInOwner = atom<FreeTierSignInOwner | null>(null)
 
 export const $freeTierSignIn = atom<FreeTierSignInState>({ status: 'closed' })
 
@@ -87,8 +97,9 @@ const fail = (kind: FreeTierSignInFailure, message: null | string = null) => {
  *  first-launch intro. It only records the intent; the mounted host owns the
  *  gateway requester and drives the flow. Re-entrant by design: a second click
  *  while a sign-in is already on screen must not restart it. */
-export function openFreeTierSignIn() {
+export function openFreeTierSignIn(owner?: FreeTierSignInOwner) {
   if ($freeTierSignIn.get().status === 'closed') {
+    $freeTierSignInOwner.set(owner ?? null)
     set({ status: 'requested' })
   }
 }
@@ -97,15 +108,17 @@ export function openFreeTierSignIn() {
  *  left polling a window nobody is watching. */
 export function closeFreeTierSignIn() {
   const state = $freeTierSignIn.get()
+  const scope = $freeTierSignInOwner.get()?.scope
 
   attempt += 1
   clearTimers()
 
   if (state.status === 'code') {
-    cancelOAuthSession(state.sessionId).catch(() => undefined)
+    cancelOAuthSession(state.sessionId, scope).catch(() => undefined)
   }
 
   set({ status: 'closed' })
+  $freeTierSignInOwner.set(null)
 }
 
 // The reasons the backend names on a non-approved terminal poll. Anything else
@@ -145,9 +158,14 @@ async function openSignInUrl(url: string) {
 export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   clearTimers()
   const mine = ++attempt
+  const owner = $freeTierSignInOwner.get()
+  requestGateway = owner?.requestGateway ?? requestGateway
+  const scope = owner?.scope
   const stale = () => mine !== attempt
 
-  const status = await refreshFreeTierStatus(requestGateway)
+  const status = owner
+    ? await requestGateway<FreeTierStatus>('free_tier.status').catch(() => null)
+    : await refreshFreeTierStatus(requestGateway)
 
   if (stale()) {
     return
@@ -161,7 +179,7 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   // the start call be the authority.
   if (minting) {
     try {
-      const { providers } = await listOAuthProviders()
+      const { providers } = await listOAuthProviders(scope)
 
       if (stale()) {
         return
@@ -182,12 +200,12 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   set({ minting, status: 'setting_up' })
 
   try {
-    const start = await startOAuthLogin(NOUS_PROVIDER_ID)
+    const start = await startOAuthLogin(NOUS_PROVIDER_ID, scope)
 
     if (stale()) {
       // The user closed the dialog while the start call was out: do not leave the backend
       // polling a session nobody is watching.
-      cancelOAuthSession(start.session_id).catch(() => undefined)
+      cancelOAuthSession(start.session_id, scope).catch(() => undefined)
 
       return
     }
@@ -201,7 +219,7 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
     await openSignInUrl(start.verification_url)
 
     if (stale()) {
-      cancelOAuthSession(start.session_id).catch(() => undefined)
+      cancelOAuthSession(start.session_id, scope).catch(() => undefined)
 
       return
     }
@@ -224,7 +242,7 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
       fail('timed_out', null)
     }, ttlMs)
 
-    pollTimer = window.setInterval(() => void pollOnce(start.session_id, requestGateway, mine), POLL_MS)
+    pollTimer = window.setInterval(() => void pollOnce(start.session_id, requestGateway, mine, owner), POLL_MS)
   } catch (error) {
     if (!stale()) {
       fail('error', error instanceof Error ? error.message : String(error))
@@ -232,11 +250,11 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   }
 }
 
-async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mine: number) {
+async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mine: number, owner: FreeTierSignInOwner | null) {
   const stale = () => mine !== attempt
 
   try {
-    const result = await pollOAuthSession(NOUS_PROVIDER_ID, sessionId)
+    const result = await pollOAuthSession(NOUS_PROVIDER_ID, sessionId, owner?.scope)
 
     if (stale() || result.status === 'pending') {
       return
@@ -257,11 +275,14 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mi
     // changed: reload its env and re-read the free-tier verdict before the
     // completed screen claims the user is signed in.
     await requestGateway('reload.env').catch(() => undefined)
-    await refreshFreeTierStatus(requestGateway)
+    if (!owner) await refreshFreeTierStatus(requestGateway)
 
     if (stale()) {
       return
     }
+
+    await owner?.onCompleted?.()
+    if (stale()) return
 
     set({
       email: result.account_email ?? null,

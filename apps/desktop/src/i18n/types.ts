@@ -2873,6 +2873,10 @@ export interface Translations {
   }
 
   freeTier: {
+    continueTitle: string
+    continueBody: string
+    signInOrCreate: string
+    useLocal: string
     /** Settings › Providers row title while the Nous identity is the free tier. */
     providerRowTitle: string
     /** The featured row's pitch while the identity is the free tier: what signing in adds. */

@@ -6,6 +6,7 @@ import {
   getRecommendedDefaultModel,
   listOAuthProviders,
   pollOAuthSession,
+  type ProfileScope,
   setEnvVar,
   startOAuthLogin,
   submitOAuthCode,
@@ -88,6 +89,8 @@ export interface DesktopOnboardingState {
 export interface OnboardingContext {
   onCompleted?: () => void
   profile?: string
+  apiScope?: ProfileScope
+  continuation?: boolean
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -170,7 +173,7 @@ const INITIAL: DesktopOnboardingState = {
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 
 let flowGeneration = 0
-let flowProfile: string | undefined
+let flowProfile: ProfileScope
 let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
@@ -273,7 +276,7 @@ function notifyGatewayTools(tools: string[] | undefined) {
 // opportunistic polish, not a hard requirement for onboarding.
 async function fetchProviderDefaultModel(
   preferredSlugs: string[],
-  profile?: string
+  profile?: ProfileScope
 ): Promise<null | { providerSlug: string; defaultModel: string }> {
   let options
 
@@ -367,7 +370,7 @@ async function completeWithModelConfirm(
     return
   }
 
-  const defaults = await fetchProviderDefaultModel(preferredSlugs, ctx.profile)
+  const defaults = await fetchProviderDefaultModel(preferredSlugs, ctx.apiScope ?? ctx.profile)
 
   if (generation !== flowGeneration) {
     return
@@ -383,7 +386,7 @@ async function completeWithModelConfirm(
           provider: defaults.providerSlug,
           model: defaults.defaultModel
         },
-        ctx.profile,
+        ctx.apiScope ?? ctx.profile,
         // Headless automated flow: nothing is mounted to click a guard
         // prompt, so fail with the message instead of hanging.
         { skipConfirmPrompt: true }
@@ -411,7 +414,11 @@ async function completeWithModelConfirm(
     return
   }
 
-  if (!runtime.ready && !ignoreRuntimeGate) {
+  const runtimeBlocked = ctx.continuation
+    ? !runtime.ready || runtime.freeTier !== false
+    : !runtime.ready && !ignoreRuntimeGate
+
+  if (runtimeBlocked) {
     onFail(runtime.reason)
 
     return
@@ -673,7 +680,9 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
     return false
   }
 
+  const generation = flowGeneration
   const runtime = await checkRuntime(ctx)
+  if (generation !== flowGeneration) return false
 
   if (runtime.ready) {
     completeDesktopOnboarding()
@@ -781,7 +790,7 @@ async function openSignInUrl(url: string) {
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
   ctx = { ...ctx }
   const generation = flowGeneration
-  flowProfile = ctx.profile
+  flowProfile = ctx.apiScope ?? ctx.profile
   clearPoll()
 
   if (provider.flow === 'external') {
@@ -793,10 +802,10 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   setFlow({ status: 'starting', provider })
 
   try {
-    const start = await startOAuthLogin(provider.id, ctx.profile)
+    const start = await startOAuthLogin(provider.id, ctx.apiScope ?? ctx.profile)
 
     if (generation !== flowGeneration) {
-      void cancelOAuthSession(start.session_id, ctx.profile).catch(() => undefined)
+      void cancelOAuthSession(start.session_id, ctx.apiScope ?? ctx.profile).catch(() => undefined)
 
       return
     }
@@ -805,7 +814,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     await openSignInUrl(browserUrl)
 
     if (generation !== flowGeneration) {
-      void cancelOAuthSession(start.session_id, ctx.profile).catch(() => undefined)
+      void cancelOAuthSession(start.session_id, ctx.apiScope ?? ctx.profile).catch(() => undefined)
 
       return
     }
@@ -838,7 +847,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
 // Poll a session-backed device-code flow until it resolves.
 async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext, generation: number) {
   try {
-    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id, ctx.profile)
+    const { error_message, status } = await pollOAuthSession(provider.id, start.session_id, ctx.apiScope ?? ctx.profile)
 
     if (generation !== flowGeneration) {
       return
@@ -879,7 +888,7 @@ export function setOnboardingCode(code: string) {
 export async function submitOnboardingCode(ctx: OnboardingContext) {
   ctx = { ...ctx }
   const generation = flowGeneration
-  flowProfile = ctx.profile
+  flowProfile = ctx.apiScope ?? ctx.profile
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'awaiting_user' || !flow.code.trim()) {
@@ -890,7 +899,7 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
   setFlow({ status: 'submitting', provider, start })
 
   try {
-    const resp = await submitOAuthCode(provider.id, start.session_id, code.trim(), ctx.profile)
+    const resp = await submitOAuthCode(provider.id, start.session_id, code.trim(), ctx.apiScope ?? ctx.profile)
 
     if (generation !== flowGeneration) {
       return
@@ -976,7 +985,7 @@ export async function copyExternalCommand() {
 
 export async function recheckExternalSignin(ctx: OnboardingContext) {
   ctx = { ...ctx }
-  flowProfile = ctx.profile
+  flowProfile = ctx.apiScope ?? ctx.profile
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'external_pending') {
@@ -1007,7 +1016,7 @@ export async function saveOnboardingApiKey(
 ) {
   ctx = { ...ctx }
   const generation = flowGeneration
-  flowProfile = ctx.profile
+  flowProfile = ctx.apiScope ?? ctx.profile
   const trimmed = value.trim()
 
   if (!trimmed) {
@@ -1028,7 +1037,7 @@ export async function saveOnboardingApiKey(
   // provider probes, self-hosted endpoints). We now save the value as-is and
   // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
-    await setEnvVar(envKey, trimmed, ctx.profile)
+    await setEnvVar(envKey, trimmed, ctx.apiScope ?? ctx.profile)
 
     if (generation !== flowGeneration) {
       return { ok: false }
@@ -1041,10 +1050,11 @@ export async function saveOnboardingApiKey(
     // fetchProviderDefaultModel falls back to the first authenticated
     // provider returned by /api/model/options if none match.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
-    // ignoreRuntimeGate=true: never block onboarding on the runtime check.
-    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
+    // Continuation requires a working route; first-run setup may defer validation.
+    let failure: string | null = null
+    await completeWithModelConfirm(ctx, label, slugCandidates, reason => { failure = reason || DEFAULT_ONBOARDING_REASON }, !ctx.continuation)
 
-    return { ok: true }
+    return failure ? { ok: false, message: failure } : { ok: true }
   } catch (error) {
     notifyError(error, `Could not save ${label}`)
 
@@ -1071,7 +1081,7 @@ export async function saveOnboardingApiKey(
 export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
   ctx = { ...ctx }
   const generation = flowGeneration
-  flowProfile = ctx.profile
+  flowProfile = ctx.apiScope ?? ctx.profile
   const url = baseUrl.trim()
   const key = apiKey.trim()
 
@@ -1085,7 +1095,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   let model = ''
 
   try {
-    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key, ctx.apiScope ?? ctx.profile)
 
     if (generation !== flowGeneration) {
       return { ok: false }
@@ -1112,7 +1122,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   }
 
   try {
-    await setMainModelAssignment({ provider: 'custom', model, base_url: url, api_key: key }, ctx.profile)
+    await setMainModelAssignment({ provider: 'custom', model, base_url: url, api_key: key }, ctx.apiScope ?? ctx.profile)
 
     if (generation !== flowGeneration) {
       return { ok: false }

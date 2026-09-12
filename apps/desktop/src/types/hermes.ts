@@ -147,6 +147,12 @@ export interface FreeTierStatus {
   model: string
   /** True until the one-time introduction has been acknowledged. */
   notice_pending: boolean
+  /** Lifetime completed post-guide tool calls on this identity (newer backends). */
+  tool_calls_used?: number
+  tool_call_cap?: number
+  capped?: boolean
+  /** Backend verdict for the requested inference route, not identity presence. */
+  continuation_required?: boolean
 }
 
 export interface MemoryProviderOAuthStatus {

@@ -1285,7 +1285,7 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
 
 
 
-def _drive_worker_exit(conn, tid, fake_pid, raw_status):
+def _drive_worker_exit(conn, tid, fake_pid, raw_status, *, heartbeat=False):
     """Claim ``tid``, record ``raw_status`` for its dead worker pid, and run
     one reaper pass.
 
@@ -1295,6 +1295,11 @@ def _drive_worker_exit(conn, tid, fake_pid, raw_status):
     the exit into one module object while reaping through another (stale)
     one makes ``_classify_worker_exit`` return ``unknown`` — silently turning
     a clean-exit protocol violation into a plain crash.
+
+    ``heartbeat=True`` records one heartbeat on the open run before the exit
+    is reaped, so a clean exit classifies as a genuine protocol violation
+    (the worker did reach the model) rather than a route failure (zero
+    heartbeats ever recorded).
     """
     import hermes_cli.kanban_db as _kb
     from hermes_cli import kanban_db_dispatch as _kbd
@@ -1302,6 +1307,10 @@ def _drive_worker_exit(conn, tid, fake_pid, raw_status):
     claimed = _kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
     assert claimed is not None, "task was not claimable for the next attempt"
     _kbd._set_worker_pid(conn, tid, fake_pid)
+    if heartbeat:
+        assert _kbd.heartbeat_worker(
+            conn, tid, expected_run_id=claimed.current_run_id,
+        ), "heartbeat_worker must succeed on a freshly-claimed task"
     _kbd._record_worker_exit(fake_pid, raw_status)
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda p: False
@@ -1314,9 +1323,21 @@ def _drive_worker_exit(conn, tid, fake_pid, raw_status):
 def _drive_protocol_violation(conn, tid, fake_pid):
     """One clean-exit protocol violation reaper pass for ``tid``.
 
+    Heartbeats once before the exit so the worker is proven to have reached
+    the model — a genuine paperwork miss, not a route failure.
+
     os.W_EXITCODE(status=0, signal=0) == 0 on POSIX.
     """
-    return _drive_worker_exit(conn, tid, fake_pid, 0)
+    return _drive_worker_exit(conn, tid, fake_pid, 0, heartbeat=True)
+
+
+def _drive_route_failure(conn, tid, fake_pid):
+    """One clean-exit, zero-heartbeat reaper pass for ``tid`` — a route
+    failure: the worker exited cleanly without ever heartbeating.
+
+    os.W_EXITCODE(status=0, signal=0) == 0 on POSIX.
+    """
+    return _drive_worker_exit(conn, tid, fake_pid, 0, heartbeat=False)
 
 
 def _drive_nonzero_crash(conn, tid, fake_pid):
@@ -1414,5 +1435,210 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Route-failure classification — clean exit with zero heartbeats is a route
+# failure (routing/credential failure before the model ever ran), not a
+# protocol violation (worker did the work, forgot the terminal call).
+# ---------------------------------------------------------------------------
+
+
+def test_route_failure_does_not_consume_protocol_violation_streak(kanban_home):
+    """A clean exit with zero heartbeats is a ``route_failure`` event, is
+    released without consuming the protocol-violation streak, and the card
+    stays re-dispatchable (``ready``, not ``blocked``)."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="route", assignee="worker")
+
+        crashed = _drive_route_failure(conn, tid, 992000)
+        assert tid in crashed, "a route failure is still a crashed-phase reclaim"
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", "the card must stay re-dispatchable"
+        assert task.consecutive_failures == 0, (
+            "a below-budget route failure must not tick the unified counter"
+        )
+
+        events = kb.list_events(conn, tid)
+        route_events = [e for e in events if e.kind == "route_failure"]
+        assert len(route_events) == 1
+        payload = route_events[0].payload or {}
+        assert payload.get("pid") == 992000
+        assert payload.get("exit_signal") == "heartbeat_null"
+        assert payload.get("exit_code") == 0
+        assert "elapsed" in payload
+
+        # Protocol-violation streak must read 0: a route failure is neutral,
+        # not a violation.
+        assert kbd._protocol_violation_streak(conn, tid) == 0
+
+        run = kb.list_runs(conn, tid)[-1]
+        assert run.outcome == "crashed", "run_outcome stays crashed, not rate_limited"
+        assert (run.metadata or {}).get("route_failure") is True
+        assert "rate_limited" not in (run.outcome or "")
+    finally:
+        conn.close()
+
+
+def test_two_trailing_route_failures_trip_the_breaker(kanban_home):
+    """Two consecutive route failures hit ``_ROUTE_FAILURE_FAILURE_LIMIT=2``
+    and trip the breaker, with the limit recorded in the payload."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="route-trip", assignee="worker")
+        assert kbd._ROUTE_FAILURE_FAILURE_LIMIT == 2
+
+        _drive_route_failure(conn, tid, 994001)
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", "first route failure alone must not block"
+        assert task.consecutive_failures == 0
+
+        _drive_route_failure(conn, tid, 994002)
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            "second trailing route failure must trip the breaker"
+        )
+        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
+        assert len(gave_up) == 1
+        payload = gave_up[0].payload or {}
+        assert payload.get("route_failures") == 2
+        assert payload.get("route_failure_limit") == 2
+    finally:
+        conn.close()
+
+
+def test_reap_ordering_classifies_real_exit_status_not_unknown(kanban_home):
+    """A child that exits between two reaper passes must be classified from
+    its real exit status, not fall into the ``unknown``/``pid not alive``
+    branch — the ordering fix moves ``reap_worker_zombies()`` to the top of
+    ``_reclaim_dead_workers``.
+
+    Builds a genuine unreaped zombie (spawn + wait for Z state, no manual
+    reap) so this test is RED-capable for the ordering fix itself: recording
+    the exit via ``_record_worker_exit`` directly would start from the
+    POST-reap state and could never go red on a reverted ordering move.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kbc.connect()
+    proc = None
+    try:
+        tid = kb.create_task(conn, title="reap-order", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        claimed = kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        assert claimed is not None
+
+        # Real child, real exit, deliberately NOT reaped by this test — a
+        # genuine unreaped zombie, the actual race the ordering fix targets.
+        proc = subprocess.Popen(["true"])
+        deadline = time.time() + 10
+        state = None
+        while time.time() < deadline:
+            try:
+                with open(f"/proc/{proc.pid}/stat") as fh:
+                    state = fh.read().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                break
+            if state == "Z":
+                break
+            time.sleep(0.05)
+        assert state == "Z", f"child pid {proc.pid} did not become a zombie in time"
+
+        kbd._set_worker_pid(conn, tid, proc.pid)
+        # Pre-condition proving the race is real: classified from this
+        # process's reap registry BEFORE any reap runs -> unknown.
+        assert kbd._classify_worker_exit(proc.pid) == ("unknown", None)
+
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kbd.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid in crashed
+        run = kb.list_runs(conn, tid)[-1]
+        metadata = run.metadata or {}
+        # Classified from its real exit status (a route failure, zero
+        # heartbeats) — NOT the ``unknown``/"pid not alive" registry-miss
+        # branch, which would carry no ``exit_code`` and no route_failure
+        # marker. This is only possible because ``detect_crashed_workers``
+        # reaps the zombie BEFORE classifying it (the ordering fix); with the
+        # fix reverted, the pid is still unreaped at classification time and
+        # this assertion goes red.
+        assert metadata.get("exit_code") == 0
+        assert metadata.get("route_failure") is True
+        assert run.error != f"pid {proc.pid} not alive"
+    finally:
+        if proc is not None:
+            proc.wait()  # final cleanup reap so the test doesn't leak a zombie
+        conn.close()
+
+
+def test_route_failure_respects_crash_grace_window():
+    """A clean exit with zero heartbeats INSIDE the crash-grace window must
+    NOT be classified as a route failure — a freshly spawned worker whose
+    first heartbeat simply hasn't landed yet looks identical (clean exit,
+    ``last_heartbeat_at=None``) to a genuine routing failure until enough
+    time has actually passed. ``_classify_dead_worker`` only takes the
+    route-failure branch once ``elapsed >= _resolve_crash_grace_seconds()``;
+    below that it must fall through to its other clean-exit classification.
+    """
+    fake_pid = 995001
+    kbd._record_worker_exit(fake_pid, 0)  # os.W_EXITCODE(status=0, signal=0) == 0
+    try:
+        host_prefix = kb._claimer_id().split(":", 1)[0]
+        dead = kbd._classify_dead_worker(
+            fake_pid, f"{host_prefix}:mock",
+            last_heartbeat_at=None, elapsed=5.0,
+        )
+        assert dead.event_kind != "route_failure", (
+            f"elapsed=5s is inside the grace window (30s default); "
+            f"a fresh spawn must not be booked as a route failure, got "
+            f"{dead.event_kind!r}"
+        )
+        assert dead.event_kind == "protocol_violation"
+        assert dead.route_failure is False
+    finally:
+        # _record_worker_exit registers module-level reap state for fake_pid;
+        # nothing else in this process reads it once the test ends, but drop
+        # it explicitly rather than leaving a stray entry keyed on a pid that
+        # was never actually spawned.
+        kbd._recent_worker_exits.pop(fake_pid, None)
+
+
+def test_reap_status_recorded_on_both_clean_exit_branches():
+    """Both clean-exit branches of ``_classify_dead_worker`` (route_failure
+    and protocol_violation) must stamp ``reap_status: observed`` in their
+    event payload — the marker the commit message advertises as making the
+    two exit-status races countable. Without it, a route failure or a
+    protocol violation reaped by this process is indistinguishable in the
+    event/run metadata from the registry-miss (``unknown``) branch, which
+    stamps ``reap_status: registry_miss``.
+    """
+    route_pid = 995002
+    pv_pid = 995003
+    kbd._record_worker_exit(route_pid, 0)
+    kbd._record_worker_exit(pv_pid, 0)
+    try:
+        host_prefix = kb._claimer_id().split(":", 1)[0]
+        route_dead = kbd._classify_dead_worker(
+            route_pid, f"{host_prefix}:mock",
+            last_heartbeat_at=None, elapsed=9999.0,
+        )
+        assert route_dead.event_kind == "route_failure"
+        assert route_dead.event_payload.get("reap_status") == "observed"
+
+        pv_dead = kbd._classify_dead_worker(
+            pv_pid, f"{host_prefix}:mock",
+            last_heartbeat_at=1234567, elapsed=9999.0,
+        )
+        assert pv_dead.event_kind == "protocol_violation"
+        assert pv_dead.event_payload.get("reap_status") == "observed"
+    finally:
+        kbd._recent_worker_exits.pop(route_pid, None)
+        kbd._recent_worker_exits.pop(pv_pid, None)
+
 
 

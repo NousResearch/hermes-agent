@@ -1755,7 +1755,8 @@ def _fetch_anthropic_models(
         return None
 
     resolved_base_url = base_url
-    token = (api_key or "").strip() or resolve_anthropic_token()
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key) if api_key else resolve_anthropic_token()
     if not token:
         # A pool credential and its endpoint are one security boundary — never pair the pool key
         # with a caller-provided endpoint.
@@ -2284,6 +2285,8 @@ def probe_api_models(
     """Probe a ``/models`` endpoint with light URL heuristics (``base`` then ``base±/v1``).
     ``anthropic_messages`` mode sends ``x-api-key`` + ``anthropic-version`` instead of a bearer; the
     ``data[].id`` response shape is identical. ``models`` is None when no candidate answered."""
+    from agent.command_token_source import materialize_probe_api_key
+    api_key = materialize_probe_api_key(api_key)
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")

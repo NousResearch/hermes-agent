@@ -483,19 +483,22 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
         return pool_result
-    explicit_key = (explicit_api_key or "").strip()
+    explicit_key_is_callable = callable(explicit_api_key) and not isinstance(explicit_api_key, str)
+    explicit_key = explicit_api_key if explicit_key_is_callable else str(explicit_api_key or "").strip()
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),
         rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
-    api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
+    api_key: Any = explicit_key if explicit_key_is_callable else next(
+        (c for c in candidates if rp.has_usable_secret(c)), ""
+    )
     # ``key_cmd`` credentials are minted per request (short-lived bearers would go stale
     # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
     # explicit --api-key still wins as the one-off recovery escape hatch.
     key_cmd = _clean(custom_provider.get("key_cmd", ""))
-    if key_cmd and not rp.has_usable_secret(explicit_key):
+    if key_cmd and not explicit_key_is_callable and not rp.has_usable_secret(explicit_key):
         from agent.command_token_source import build_command_token_provider
         token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
         if token_provider is not None:

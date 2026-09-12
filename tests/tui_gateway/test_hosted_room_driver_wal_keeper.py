@@ -99,13 +99,19 @@ def test_driver_keeps_wal_sidecars_across_ephemeral_cycles(tmp_path: Path):
     assert runtime._wal_keeper is None, "keeper must close on stop"
 
 
-def test_fresh_database_keeper_applies_journal_policy(tmp_path: Path):
+def test_fresh_database_keeper_applies_journal_policy(tmp_path: Path, monkeypatch):
     """On a fresh (never-written) database the keeper must itself apply the
     journal policy, not open raw: a raw keeper connects while the file is
     still in DELETE mode, the later store connection flips the header to WAL,
     and the stale keeper never joins the WAL shared-memory index — so every
     ephemeral close remains a "last WAL member" close and deletes the
     sidecars even with the keeper held (review reproduction, PR #103665)."""
+    # WAL is the branch under test; a WAL-reset-vulnerable interpreter
+    # legitimately answers "delete" for both connections (covered by the
+    # vulnerable-runtime test below).
+    monkeypatch.setattr(
+        "hermes_state_wal.is_sqlite_wal_reset_vulnerable", lambda **kwargs: False
+    )
     db = tmp_path / "state.db"
     rooms, release = slow_rooms_provider()
     runtime = HostedRoomRuntime(
@@ -163,8 +169,8 @@ def test_configured_delete_mode_leaves_no_wal_sidecars(tmp_path: Path, monkeypat
         runtime.start()
         # The policy now honors journal_mode=delete inside the keeper acquire —
         # the keeper is deliberately DROPPED (a non-WAL keeper guards nothing),
-        # so wait for the error record instead of the keeper reference.
-        _wait_for(lambda: "wal keeper inapplicable" in (runtime._last_error or ""))
+        # so wait for the keeper-state record instead of the keeper reference.
+        _wait_for(lambda: "inapplicable" in (runtime._wal_keeper_state or ""))
         probe = sqlite3.connect(db, timeout=10)
         mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
         probe.close()
@@ -201,9 +207,16 @@ def test_vulnerable_runtime_fresh_db_keeper_and_store_stay_consistent(tmp_path: 
     try:
         runtime.start()
         # Vulnerable runtime: policy leaves the fresh DB in DELETE, so the
-        # keeper is dropped — wait for the inapplicable-mode record instead of
+        # keeper is dropped — wait for the inapplicable-state record instead of
         # a keeper reference, then assert keeper and store agree on the mode.
-        _wait_for(lambda: "wal keeper inapplicable" in (runtime._last_error or ""))
+        _wait_for(lambda: "inapplicable" in (runtime._wal_keeper_state or ""))
+
+        # The drop recurs every cycle here; it must never touch the shared
+        # room-error channel, or a genuine room error (e.g. "authority
+        # changed") would be overwritten within seconds.
+        assert runtime._last_error is None, (
+            f"inapplicable drop leaked into last_error: {runtime._last_error!r}"
+        )
 
         probe = sqlite3.connect(db, timeout=10)
         keeper_mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
@@ -271,7 +284,7 @@ def test_indeterminate_mode_probe_drops_keeper(tmp_path: Path, monkeypatch):
     try:
         runtime.start()
         _wait_for(
-            lambda: "wal keeper inapplicable" in (runtime._last_error or "")
+            lambda: "inapplicable" in (runtime._wal_keeper_state or "")
         )
         assert runtime._wal_keeper is None, (
             "indeterminate-mode keeper must be dropped, not held"
@@ -279,12 +292,15 @@ def test_indeterminate_mode_probe_drops_keeper(tmp_path: Path, monkeypatch):
         # Self-heal: probe becomes decidable; put the file actually into WAL
         # FIRST (while the probe is indeterminate the gate refuses the flip),
         # release the provider so worker cycles complete quickly, then the
-        # next cycles must acquire the keeper.
+        # next cycles must acquire the keeper (whose acquire clears the
+        # state itself).
         _set_wal_mode(db)
         probe_state["indeterminate"] = False
         release.set()
-        runtime._last_error = None
         _wait_for(lambda: runtime._wal_keeper is not None)
+        assert runtime._wal_keeper_state is None, (
+            "a successful acquire must supersede the prior drop state"
+        )
     finally:
         release.set()
         runtime.stop(timeout=2.0)
@@ -298,6 +314,15 @@ def test_keeper_released_when_lease_cleanup_fails(tmp_path: Path, monkeypatch):
     open forever."""
     db = tmp_path / "state.db"
     _set_wal_mode(db)
+    # Let this test thread probe the worker-owned keeper after stop(): with the
+    # default check_same_thread=True, a cross-thread execute raises
+    # ProgrammingError whether the connection is closed or not — undetectable.
+    original_connect = sqlite3.connect
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *a, **k: original_connect(*a, **{**k, "check_same_thread": False}),
+    )
     runtime = HostedRoomRuntime(
         db_path=db,
         rooms=[BINDING],
@@ -316,22 +341,13 @@ def test_keeper_released_when_lease_cleanup_fails(tmp_path: Path, monkeypatch):
     runtime.stop(timeout=2.0)
 
     assert runtime._wal_keeper is None, "keeper reference must clear even when lease cleanup raises"
-    # The connection object itself must be closed. It belongs to the dead
-    # worker thread, so probe it from this fresh thread (only the creating
-    # thread may use it — a still-open keeper would answer the SELECT).
-    probe_result: list[bool] = []
+    # The connection object itself must be closed: a leaked-but-still-open
+    # keeper would answer the SELECT.
+    import pytest
 
-    def _poke():
-        try:
-            keeper.execute("SELECT 1").fetchone()
-            probe_result.append(True)  # still open — leaked
-        except sqlite3.ProgrammingError:
-            probe_result.append(False)  # closed as required
-
-    t = threading.Thread(target=_poke)
-    t.start()
-    t.join(2)
-    assert probe_result == [False], "keeper connection must be closed on stop even when lease cleanup raises"
+    assert keeper is not None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        keeper.execute("SELECT 1")
 
 
 def test_keeper_acquire_retries_after_transient_failure(tmp_path, monkeypatch):
@@ -367,6 +383,13 @@ def test_keeper_acquire_retries_after_transient_failure(tmp_path, monkeypatch):
 def test_failed_acquire_does_not_leak_connection(tmp_path, monkeypatch):
     """When the keeper's content probe fails, the opened connection must be
     closed, not leaked."""
+    # The leak path is the branch under test: on a WAL-reset-vulnerable
+    # interpreter the gate legitimately takes the inapplicable branch first
+    # (covered by test_indeterminate_mode_probe_drops_keeper), so pin the
+    # gate off to reach the acquire's failure handling.
+    monkeypatch.setattr(
+        "hermes_state_wal.is_sqlite_wal_reset_vulnerable", lambda **kwargs: False
+    )
     db = tmp_path / "state.db"
     _set_wal_mode(db)
     runtime = HostedRoomRuntime(

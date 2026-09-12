@@ -29,6 +29,14 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return _plugin_hooks(hook_name, **kwargs)
 
 
+async def invoke_hook_async(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Notify built-in observers before awaiting compatibility plugins."""
+    _observe(hook_name, **kwargs)
+    from hermes_cli import plugins
+
+    return await plugins.invoke_hook_async(hook_name, **kwargs)
+
+
 def has_hook(hook_name: str) -> bool:
     """Return whether a first-party observer or plugin consumes a hook."""
     try:

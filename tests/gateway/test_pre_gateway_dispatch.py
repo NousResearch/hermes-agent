@@ -68,14 +68,14 @@ async def test_internal_events_bypass_hook(monkeypatch):
 
     called = {"count": 0}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         called["count"] += 1
         return [{"action": "skip"}]
 
     async def _capture(event, source, _quick_key, _run_generation):
         return "ok"
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, _adapter = _make_runner(Platform.WHATSAPP)
     runner._handle_message_with_agent = _capture  # noqa: SLF001
@@ -102,13 +102,13 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
 
     seen = {}
 
-    def _fake_hook(name, **kwargs):
+    async def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             seen["session_store"] = kwargs.get("session_store", "MISSING")
             return [{"action": "skip", "reason": "plugin-handled"}]
         return []
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook_async", _fake_hook)
 
     runner, adapter = _make_runner(Platform.WHATSAPP)
     del runner.session_store
@@ -118,3 +118,66 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['skip', 'rewrite', 'allow'])
+async def test_discovered_async_gate_preserves_loop_and_observers(tmp_path, monkeypatch, action):
+    import asyncio
+    from hermes_cli import plugins, observability
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    plugin = tmp_path / 'plugins' / 'async-gate'
+    plugin.mkdir(parents=True)
+    (tmp_path / 'config.yaml').write_text('plugins:\n  enabled: [async-gate]\n')
+    (plugin / 'plugin.yaml').write_text('name: async-gate\nversion: 0.1.0\n')
+    (plugin / '__init__.py').write_text('''import asyncio
+async def gate(event, gateway):
+    assert asyncio.get_running_loop() is gateway.test_loop
+    await asyncio.sleep(0)
+    gateway.test_calls.append('plugin')
+    return {'action': gateway.test_action, 'text': 'rewritten'}
+def register(ctx):
+    ctx.register_hook('pre_gateway_dispatch', gate)
+''')
+    plugins._reset_plugin_managers_for_tests()
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    runner.test_loop = asyncio.get_running_loop()
+    runner.test_calls = []
+    runner.test_action = action
+    monkeypatch.setattr(observability, 'observe_lifecycle', lambda *a, **kw: runner.test_calls.append('observer'))
+    event = _make_event()
+    try:
+        if action == 'skip':
+            _clear_auth_env(monkeypatch)
+            assert await runner._handle_message(event) is None
+            adapter.send.assert_not_awaited()
+            runner.pairing_store.generate_code.assert_not_called()
+        else:
+            result = await runner._hm_pre_gateway_dispatch_hook(event, event.source)
+            assert result.text == ('rewritten' if action == 'rewrite' else event.text)
+        assert runner.test_calls == ['observer', 'plugin']
+    finally:
+        plugins._reset_plugin_managers_for_tests()
+
+@pytest.mark.asyncio
+async def test_async_gate_failure_isolation_and_cancellation():
+    import asyncio
+    from hermes_cli.plugins import PluginManager
+    manager = PluginManager()
+    calls = []
+    def sync(event):
+        calls.append('sync')
+        return event
+    async def broken(event):
+        calls.append('broken')
+        raise ValueError('failed plugin')
+    async def good(event):
+        calls.append('async')
+        return event
+    manager._hooks['pre_gateway_dispatch'] = [sync, broken, good]
+    assert await manager.invoke_hook_async('pre_gateway_dispatch', event='ok', additive=True) == ['ok', 'ok']
+    assert calls == ['sync', 'broken', 'async']
+    async def cancelled(event):
+        raise asyncio.CancelledError()
+    manager._hooks['pre_gateway_dispatch'] = [cancelled, good]
+    with pytest.raises(asyncio.CancelledError):
+        await manager.invoke_hook_async('pre_gateway_dispatch', event='ok')

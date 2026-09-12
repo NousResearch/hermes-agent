@@ -499,6 +499,23 @@ class TestTaskStore:
         # Second sweep does nothing (already terminal).
         assert store.fail_orphans(timeout_seconds=300) == []
 
+    def test_watchdog_preserves_live_waiters_and_reply_window(self, monkeypatch):
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "600")
+        adapter, _base = _make_live_adapter(monkeypatch)
+        now = time.time()
+        for task_id, age in (("t-live", 700), ("t-orphan", 700), ("t-within-reply-window", 400)):
+            adapter.tasks.create(task_id, "c1", "p")
+            adapter.tasks.set_state(task_id, protocol.STATE_WORKING)
+            adapter.tasks._tasks[task_id]["created_at"] = now - age
+
+        adapter._add_pending("t-live", "c1")
+        assert adapter._fail_orphans_once() == ["t-orphan"]
+        assert adapter.tasks.get("t-live")["state"] == protocol.STATE_WORKING
+        assert adapter.tasks.get("t-within-reply-window")["state"] == protocol.STATE_WORKING
+
+        adapter._pop_pending("t-live")
+        assert adapter._fail_orphans_once() == ["t-live"]
+
     def test_list_newest_first_with_filters(self):
         store = protocol.TaskStore()
         store.create("t1", "c1", "p")

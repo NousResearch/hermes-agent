@@ -1306,6 +1306,13 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    from hermes_cli.kanban_prerequisites import (
+        validate_forced_skills, validate_worktree_anchor,
+    )
+
+    validate_worktree_anchor(workspace_kind, workspace_path, project_repo=project_repo)
+    validate_forced_skills(assignee, skills_list)
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -1502,7 +1509,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, skills FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         if not row:
             return False
@@ -1511,6 +1518,9 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+        validate_forced_skills(profile, _json_or(row["skills"], []))
         if row["assignee"] != profile:
             # The failure streak is per task/profile; a new profile starts fresh.
             conn.execute(
@@ -1956,22 +1966,18 @@ def _synthesize_ended_run(
 # --- Dependency resolution (todo -> ready) ---
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked`` event is ``blocked`` — an
-    explicit ``kanban_block`` that must wait for an operator. A breaker trip
-    emits ``gave_up`` (not ``blocked``) and so auto-recovers, as does a task
-    with no such event at all (direct DB edit).
+    """True when the newest explicit/prerequisite block has not been unblocked.
 
-    See #28712.
-    Returns ``False`` when there is no such event at all (e.g. the task was set to ``status='blocked'`` by
-    the circuit breaker or by direct DB manipulation) — preserves the pre-#28712 auto-recover semantics for
-    that path.
+    Worker ``blocked`` events and dispatcher ``prerequisite_blocked`` events
+    both require operator action. A breaker trip emits ``gave_up`` and still
+    auto-recovers, as does a task with no matching event (legacy direct edits).
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? AND kind IN ('blocked', 'prerequisite_blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {"blocked", "prerequisite_blocked"}
 
 
 def _latest_event(
@@ -1992,8 +1998,8 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     row = conn.execute(
         "SELECT payload FROM task_events "
         "WHERE task_id = ? AND kind IN ("
-        "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
-        "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
+        "'blocked', 'prerequisite_blocked', 'block_loop_detected', 'dependency_wait', "
+        "'gave_up', 'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
         "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
@@ -2037,6 +2043,29 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
+                task = get_task(conn, task_id)
+                try:
+                    from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+                    if task is not None:
+                        # Dependency promotion has no reliable board identity: callers may
+                        # hold a connection to any board while the process-level board is
+                        # different. Worktree anchors are checked at creation and again by
+                        # the board-aware dispatcher; only assignee-scoped skills belong
+                        # at this transition.
+                        validate_forced_skills(task.assignee, task.skills)
+                except ValueError as exc:
+                    conn.execute(
+                        "UPDATE tasks SET status = 'blocked' WHERE id = ?",
+                        (task_id,),
+                    )
+                    _append_event(
+                        conn,
+                        task_id,
+                        "prerequisite_blocked",
+                        {"reason": str(exc), "source_status": resume_status},
+                    )
+                    continue
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
                     # recover -> respawn -> exhaust -> block forever). The
@@ -2085,7 +2114,43 @@ def _claim_and_open_run(
     *, event_extra: Optional[dict] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    when the CAS lost. Caller holds the txn.
+
+    Single enforcement point for assignee-scoped prerequisites on EVERY route
+    into ``running`` — direct/control-plane claims, dispatcher claims, and any
+    requeue that restored ``ready``/``review`` (reclaim, stale lock, crash,
+    timeout, spawn failure): a stored forced skill that no longer resolves
+    against the assignee blocks the card (one ``prerequisite_blocked`` event,
+    no run, no retry increment) before the CAS can open a run. Worktree
+    anchors stay with the board-aware dispatcher — like ``recompute_ready``,
+    this boundary has no reliable board identity."""
+    row = conn.execute(
+        "SELECT assignee, skills, max_runtime_seconds, current_step_key "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+    try:
+        validate_forced_skills(
+            _canonical_assignee(row["assignee"]), _json_or(row["skills"], [])
+        )
+    except ValueError as exc:
+        blocked = conn.execute(
+            "UPDATE tasks SET status = 'blocked' "
+            "WHERE id = ? AND status = ? AND claim_lock IS NULL",
+            (task_id, source_status),
+        )
+        if blocked.rowcount == 1:
+            _append_event(
+                conn,
+                task_id,
+                "prerequisite_blocked",
+                {"reason": str(exc), "source_status": source_status},
+            )
+        return None
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2101,10 +2166,6 @@ def _claim_and_open_run(
     )
     if cur.rowcount != 1:
         return None
-    trow = conn.execute(
-        "SELECT assignee, max_runtime_seconds, current_step_key "
-        "FROM tasks WHERE id = ?", (task_id,),
-    ).fetchone()
     run_cur = conn.execute(
         """
         INSERT INTO task_runs (
@@ -2114,8 +2175,8 @@ def _claim_and_open_run(
         ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
         """,
         (
-            task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
-            lock, expires, trow["max_runtime_seconds"] if trow else None, now,
+            task_id, row["assignee"], row["current_step_key"],
+            lock, expires, row["max_runtime_seconds"], now,
         ),
     )
     run_id = run_cur.lastrowid
@@ -2444,6 +2505,12 @@ def reassign_task(
 ) -> bool:
     """Reassign (None unassigns); a running task is refused unless
     ``reclaim_first`` releases its claim — the "this profile's model is broken" path."""
+    row = conn.execute("SELECT skills FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return False
+    from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+    validate_forced_skills(_canonical_assignee(profile), _json_or(row["skills"], []))
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
@@ -3017,7 +3084,7 @@ def request_review(
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
         trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id "
+            "SELECT assignee, status, claim_lock, current_run_id, skills "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if trow is None:
@@ -3045,6 +3112,14 @@ def request_review(
                     "malformed); pass reviewer= explicitly",
                 )
         reviewer = _canonical_assignee(reviewer)
+        from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+        try:
+            validate_forced_skills(
+                reviewer or implementer, _json_or(trow["skills"], [])
+            )
+        except ValueError as exc:
+            return _ret(False, str(exc))
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
         params: tuple[Any, ...] = (
@@ -3118,7 +3193,7 @@ def request_changes(
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
+            "SELECT status, assignee, current_run_id, skills FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if task_row is None:
             return False, "task not found"
@@ -3142,6 +3217,13 @@ def request_changes(
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
 
         new_status = _landing_status_after_parents(conn, task_id)
+        if new_status == "ready":
+            from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+            try:
+                validate_forced_skills(implementer, _json_or(task_row["skills"], []))
+            except ValueError as exc:
+                return False, str(exc)
         # consecutive_failures deliberately PRESERVED: a review transition is
         # not evidence the pathology cleared; only complete_task resets it.
         cur = conn.execute(
@@ -3210,6 +3292,15 @@ def promote_task(
             f"`hermes kanban unlink <parent_id> {task_id}`)"
         )
 
+    task = get_task(conn, task_id)
+    try:
+        from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+        if task is not None:
+            validate_forced_skills(task.assignee, task.skills)
+    except ValueError as exc:
+        return False, str(exc)
+
     if dry_run:
         return True, None
 
@@ -3265,16 +3356,22 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             if _task_status(conn, task_id) == "blocked"
             else "ready"
         )
-        _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
-            note="invariant recovery on unblock",
-        )
         # Re-gate on parent completion before restoring the source phase.
         landing_status = _landing_status_after_parents(conn, task_id)
         new_status = (
             "review"
             if landing_status == "ready" and resume_status == "review"
             else landing_status
+        )
+        if new_status in {"ready", "review"}:
+            from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+            task = get_task(conn, task_id)
+            if task is not None:
+                validate_forced_skills(task.assignee, task.skills)
+        _reclaim_dangling_run(
+            conn, task_id, statuses=("blocked", "scheduled"), now=now,
+            note="invariant recovery on unblock",
         )
         # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
         # resetting them is the amnesia that let cron-unblock <-> re-block loop
@@ -3314,6 +3411,12 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         review_event = _latest_event(conn, task_id, "review_requested")
         handoff = _json_dict(_row_get(review_event, "payload"))
         implementer = _nonblank_str(handoff.get("implementer"))
+        if new_status == "ready":
+            from hermes_cli.kanban_prerequisites import validate_forced_skills
+
+            task = get_task(conn, task_id)
+            if task is not None:
+                validate_forced_skills(implementer or task.assignee, task.skills)
         params: tuple[Any, ...] = (new_status, *((implementer,) if implementer else ()), task_id)
         cur = conn.execute(
             # consecutive_failures deliberately PRESERVED: review reopen is not

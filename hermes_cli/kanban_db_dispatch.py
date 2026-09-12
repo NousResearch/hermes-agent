@@ -1507,6 +1507,31 @@ def _dispatch_lane_task(
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    task = _kb.get_task(conn, task_id)
+    if task is None:
+        return False
+    try:
+        from hermes_cli.kanban_prerequisites import validate_task
+
+        validate_task(task, board=board)
+    except ValueError as exc:
+        reason = str(exc)
+        if not dry_run:
+            with _kb.write_txn(conn):
+                blocked = conn.execute(
+                    "UPDATE tasks SET status = 'blocked' "
+                    "WHERE id = ? AND status = ? AND claim_lock IS NULL",
+                    (task_id, lane),
+                )
+                if blocked.rowcount == 1:
+                    _kb._append_event(
+                        conn,
+                        task_id,
+                        "prerequisite_blocked",
+                        {"reason": reason, "source_status": lane},
+                    )
+        result.auto_blocked.append(task_id)
+        return False
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix

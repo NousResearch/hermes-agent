@@ -28,6 +28,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 # Add parent directory to path
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -184,13 +185,13 @@ def generate_launchd_plist() -> str:
     
     <key>ProgramArguments</key>
     <array>
-        <string>{python_path}</string>
-        <string>{script_path}</string>
+        <string>{escape(python_path)}</string>
+        <string>{escape(script_path)}</string>
         <string>run</string>
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
+    <string>{escape(working_dir)}</string>
     
     <key>RunAtLoad</key>
     <true/>
@@ -202,10 +203,10 @@ def generate_launchd_plist() -> str:
     </dict>
     
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>{escape(str(log_dir / 'gateway.log'))}</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>{escape(str(log_dir / 'gateway.error.log'))}</string>
     
     <key>EnvironmentVariables</key>
     <dict>

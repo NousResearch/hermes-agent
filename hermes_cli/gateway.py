@@ -19,6 +19,8 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
+
 from hermes_cli import setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
@@ -69,6 +71,12 @@ from hermes_cli.setup import (
 from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
+
+
+def _plist_string(value: object) -> str:
+    """Return a launchd plist string element with XML-sensitive chars escaped."""
+    return f"<string>{_xml_escape(str(value))}</string>"
+
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
 _CAPTURE_TEXT = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -3816,7 +3824,7 @@ def generate_launchd_plist() -> str:
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping stderr.
     prog_args_xml = "\n        ".join(
-        f"<string>{part}</string>"
+        _plist_string(part)
         for part in _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
     )
 
@@ -3842,7 +3850,7 @@ def generate_launchd_plist() -> str:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{label}</string>
+    {_plist_string(label)}
 
     <key>ProgramArguments</key>
     <array>
@@ -3850,16 +3858,16 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
+    {_plist_string(working_dir)}
     
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{sane_path}</string>
+        {_plist_string(sane_path)}
         <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
+        {_plist_string(venv_dir)}
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        {_plist_string(hermes_home)}
         <key>HERMES_SUPERVISED_CHILD</key>
         <string>1</string>
     </dict>
@@ -3887,10 +3895,10 @@ def generate_launchd_plist() -> str:
     <integer>25</integer>
 {nofile_block}
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    {_plist_string(log_dir / "gateway.log")}
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    {_plist_string(log_dir / "gateway.error.log")}
 </dict>
 </plist>
 """

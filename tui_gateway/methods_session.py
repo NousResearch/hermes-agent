@@ -1259,6 +1259,9 @@ def _(rid, params: dict) -> dict:
     from agent.pet import constants, store
     from agent.pet.render import PetRenderer
     pet_cfg = _pet_display_cfg()
+    # Terminal rendering can be disabled independently of the Desktop pet.
+    if str(pet_cfg.get("render_mode", "auto") or "auto").lower() == "off":
+        return _ok(rid, {"enabled": False})
     pet = None
     if is_truthy_value(pet_cfg.get("enabled"), default=False):
         pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))

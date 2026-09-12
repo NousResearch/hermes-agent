@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -26,19 +27,145 @@ _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
 def _detect_gpu_vendor() -> str | None:
     """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi resolved by the hardware
     probe's PATH-independent ladder (a stripped service PATH must not demote an NVIDIA box to
-    vulkan/cpu); anything else defers to select_backend's fallback ladder."""
+    vulkan/cpu); AMD/Intel via the OS device lists so select_backend's vulkan ladder is reachable
+    on non-NVIDIA machines; anything else defers to select_backend's fallback ladder. Software-only
+    renderers never count as a GPU. Never raises — a probe miss means CPU, not a broken boot."""
     from hermes_cli.local_runtime.hardware import _nvidia_smi_path
 
     smi = _nvidia_smi_path()
-    if smi is None:
-        return None
-    with suppress(OSError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10)
-        if out.returncode == 0 and out.stdout.strip():
-            return "nvidia " + out.stdout.strip().splitlines()[0]
+    if smi is not None:
+        with suppress(OSError, subprocess.TimeoutExpired):
+            out = subprocess.run(
+                [smi, "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=10)
+            if out.returncode == 0 and out.stdout.strip():
+                return "nvidia " + out.stdout.strip().splitlines()[0]
+    # macOS has no lister below (select_backend is Metal regardless), so this is None there.
+    return _vendor_from_names(_os_gpu_names())
+
+
+def _os_gpu_names() -> list[str]:
+    """OS device-list names for the vendor map above; one seam so tests pin the mapping without
+    caring which host they run on."""
+    if sys.platform == "darwin":
+        return []
+    if os.name == "nt":
+        return _windows_gpu_names()
+    return _linux_gpu_names()
+
+
+# PCI vendor IDs as seen under /sys/class/drm/card*/device/vendor on Linux.
+_DRM_VENDOR_NAMES = {
+    "0x10de": "nvidia",
+    "0x1002": "amd",
+    "0x8086": "intel",
+}
+
+# (needle, vendor): first hit wins. NVIDIA needles come first so a hybrid laptop (NVIDIA dGPU +
+# AMD/Intel iGPU) resolves to CUDA — the discrete card is the faster inference target.
+_GPU_NAME_VENDORS = (
+    ("nvidia", "nvidia"),
+    ("geforce", "nvidia"),
+    ("quadro", "nvidia"),
+    ("tesla", "nvidia"),
+    ("amd", "amd"),
+    ("radeon", "amd"),
+    ("arc", "intel"),
+    ("intel", "intel"),
+    ("iris", "intel"),
+    ("uhd graphics", "intel"),
+    ("xe graphics", "intel"),
+)
+
+# Names that describe a software/virtual display adapter, never a real GPU.
+_SOFTWARE_RENDERERS = (
+    "basic render",
+    "llvmpipe",
+    "softpipe",
+    "swrast",
+    "lavapipe",
+    "remote desktop",
+    "rdpdd",
+    "virtualbox",
+    "vmware",
+    "hyper-v",
+    "qxl",
+    "virtio",
+)
+
+
+def _vendor_from_names(names: "list[str] | tuple[str, ...] | None") -> str | None:
+    """Map OS-reported GPU names to select_backend's vendor vocabulary ("nvidia" | "amd" |
+    "intel"), or None. Pure function of its input — the seam host-independent tests pin."""
+    for raw in names or ():
+        name = (raw or "").strip().lower()
+        if not name or any(s in name for s in _SOFTWARE_RENDERERS):
+            continue
+        for needle, vendor in _GPU_NAME_VENDORS:
+            if needle in name:
+                return vendor
     return None
+
+
+def _windows_gpu_names() -> list[str]:
+    """Display-adapter names via Win32_VideoController. Absolute engine paths first: gateway and
+    service sessions run under a stripped PATH that may not resolve powershell/wmic."""
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    powershells = [
+        str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"),
+        # 32-bit Python on 64-bit Windows: System32 redirects, Sysnative reaches through.
+        str(Path(system_root) / "Sysnative" / "WindowsPowerShell" / "v1.0" / "powershell.exe"),
+        "powershell",
+    ]
+    ps_command = ("Get-CimInstance Win32_VideoController"
+                  " | Select-Object -ExpandProperty Name")
+    for ps in powershells:
+        with suppress(OSError, subprocess.TimeoutExpired):
+            out = subprocess.run(
+                [ps, "-NoProfile", "-Command", ps_command],
+                capture_output=True, text=True, timeout=15)
+            if out.returncode == 0 and out.stdout.strip():
+                return [line for line in
+                        (l.strip() for l in out.stdout.splitlines()) if line]
+    wmic = Path(system_root) / "System32" / "wbem" / "wmic.exe"
+    if wmic.exists():
+        with suppress(OSError, subprocess.TimeoutExpired):
+            out = subprocess.run(
+                [str(wmic), "path", "win32_VideoController", "get", "name", "/format:list"],
+                capture_output=True, text=True, timeout=15)
+            if out.returncode == 0 and out.stdout.strip():
+                return [line.split("=", 1)[1].strip() for line in out.stdout.splitlines()
+                        if line.strip().lower().startswith("name=")]
+    return []
+
+
+def _linux_gpu_names() -> list[str]:
+    """GPU vendors from the DRM sysfs tree (no subprocess, no dependencies); lspci as fallback."""
+    names: list[str] = []
+    with suppress(OSError):
+        vendor_files = sorted(Path("/sys/class/drm").glob("card*/device/vendor"))
+        for vendor_file in vendor_files:
+            with suppress(OSError, ValueError):
+                vendor = _DRM_VENDOR_NAMES.get(vendor_file.read_text().strip().lower())
+                if vendor is not None and vendor not in names:
+                    names.append(vendor)
+    if names:
+        return names
+    with suppress(OSError, subprocess.TimeoutExpired):
+        lspci = subprocess.run(
+            ["lspci", "-mm"], capture_output=True, text=True, timeout=10)
+        if lspci.returncode != 0:
+            return []
+        out: list[str] = []
+        for line in lspci.stdout.splitlines():
+            lowered = line.lower()
+            if ("vga" in lowered or "\"3d controller\"" in lowered
+                    or "\"display controller\"" in lowered):
+                quoted = [part for part in line.split("\"") if part.strip()]
+                if quoted:
+                    out.append(quoted[-1].strip())
+        return out
+    return []
 
 
 def models_dir() -> Path:

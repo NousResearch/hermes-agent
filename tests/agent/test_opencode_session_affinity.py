@@ -60,3 +60,35 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         assert "x-opencode-session" not in (other.get("extra_headers") or {})
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def test_max_iterations_summary_carries_session_header_on_chat():
+    from agent import chat_completion_helpers as cch
+
+    agent = _agent("opencode-go", "glm-5", "https://opencode.ai/zen/go/v1")
+    kwargs = cch._iteration_summary_chat_kwargs(agent, _MSGS)
+    assert kwargs["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
+
+    other = _agent("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1")
+    assert "x-opencode-session" not in (cch._iteration_summary_chat_kwargs(other, _MSGS).get("extra_headers") or {})
+
+
+def test_max_iterations_summary_carries_session_header_on_anthropic(monkeypatch):
+    from agent import chat_completion_helpers as cch
+
+    agent = _agent("opencode-go", "minimax-m2.7", "https://opencode.ai/zen/go/v1", "anthropic_messages")
+    captured = {}
+
+    def _capture(agent_, request_id, request, callback, *, retry_count):
+        captured.update(request)
+        return object()
+
+    monkeypatch.setattr(cch, "_managed_summary_call", _capture)
+    monkeypatch.setattr(cch, "_summary_text", lambda *args, **kwargs: "ok")
+    cch._anthropic_summary_attempt(agent, _MSGS, "req-summary")(0)
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
+
+    other = _agent("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1", "anthropic_messages")
+    captured.clear()
+    cch._anthropic_summary_attempt(other, _MSGS, "req-summary")(0)
+    assert "x-opencode-session" not in (captured.get("extra_headers") or {})

@@ -21,7 +21,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, MessageType
 from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -2801,9 +2801,11 @@ class GatewayTurnMixin:
             _cleanup_adapter = None
 
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
+        _post_delivery_adapter = turn_params.pop("_post_delivery_adapter", None)
         turn_ctx = TurnContext(
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
+            _post_delivery_adapter=_post_delivery_adapter,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
@@ -3421,8 +3423,8 @@ class GatewayTurnMixin:
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
-    ) -> None:
-        """Deliver the first response before a queued follow-up runs, unless streaming already did."""
+    ) -> bool:
+        """Deliver the first response before a queued follow-up and report its outcome."""
         session_key = turn_ctx.session_key
         _sc = turn_ctx.stream_consumer_holder[0]
         if _sc and stream_task:
@@ -3442,6 +3444,7 @@ class GatewayTurnMixin:
                 "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                 session_key or "?",
             )
+            return True
         elif first_response:
             logger.info(
                 "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing."
@@ -3450,7 +3453,7 @@ class GatewayTurnMixin:
                 session_key or "?",
             )
             try:
-                await self._deliver_queued_first_response(
+                return await self._deliver_queued_first_response(
                     first_response, source=turn_ctx.source, adapter=adapter,
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
@@ -3461,13 +3464,8 @@ class GatewayTurnMixin:
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
-        # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
-        _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
-        if callable(_bg_cb):
-            with suppress(Exception):
-                _bg_result = _bg_cb()
-                if inspect.isawaitable(_bg_result):
-                    await _bg_result
+                return False
+        return True
 
     async def _run_agent_queued_followup(
         self, turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
@@ -3505,7 +3503,41 @@ class GatewayTurnMixin:
 
         # Interrupted: discard the response ("Operation interrupted." is noise).
         if not result.get("interrupted"):
-            await self._run_agent_deliver_first_response(turn_ctx, adapter, response, result, stream_task)
+            _first_response_delivered = await self._run_agent_deliver_first_response(
+                turn_ctx, adapter, response, result, stream_task,
+            )
+            if not _first_response_delivered and (pending_event is not None or pending):
+                # Do not consume either the queued event or string-only /steer
+                # when its preceding final could not be delivered.
+                _deferred_event = pending_event or MessageEvent(
+                    text=str(pending), message_type=MessageType.TEXT, source=source,
+                )
+                _pending_slot = getattr(adapter, "_pending_messages", None)
+                if isinstance(_pending_slot, dict):
+                    _existing_pending = _pending_slot.get(session_key)
+                    if _existing_pending is not None:
+                        self._session_state(session_key).conversation.queued_events.insert(
+                            0, _existing_pending,
+                        )
+                    _pending_slot[session_key] = _deferred_event
+                logger.warning(
+                    "Queued follow-up for session %s deferred because the first response was not delivered.",
+                    session_key or "?",
+                )
+                return result or {"final_response": response, "messages": history}
+
+            # Release deferred callbacks only after the first response is known
+            # delivered. Use the original owner; the live adapter can change
+            # during a turn, but its post-delivery callback store cannot.
+            _callback_owner = turn_ctx._post_delivery_adapter or adapter
+            _bg_cb = self._pop_post_delivery_callback(
+                _callback_owner, session_key, turn_ctx.run_generation,
+            )
+            if callable(_bg_cb):
+                with suppress(Exception):
+                    _bg_result = _bg_cb()
+                    if inspect.isawaitable(_bg_result):
+                        await _bg_result
 
         updated_history = result.get("messages", history)
         next_source, next_message, next_session_key = source, pending, session_key
@@ -3577,6 +3609,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
             event_message_id=next_message_id, inbound_message_id=next_inbound_id,
             channel_prompt=next_channel_prompt, message_type=next_message_type,
+            _post_delivery_adapter=turn_ctx._post_delivery_adapter or adapter,
         )
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
@@ -3738,11 +3771,10 @@ class GatewayTurnMixin:
             )
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
-        """Schedule deletion of tracked temporary progress bubbles after the final response lands.
-
-        Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures swallowed."""
-        from gateway.run import safe_schedule_threadsafe
+        """Register awaited temporary-progress cleanup at the delivery boundary."""
         _cleanup_msg_ids, session_key = turn_ctx._cleanup_msg_ids, turn_ctx.session_key
+        if turn_ctx._bubble_cleanup_registered:
+            return
         if not (
             turn_ctx._cleanup_progress
             and _cleanup_adapter is not None
@@ -3752,26 +3784,64 @@ class GatewayTurnMixin:
             and not response.get("failed")
             and hasattr(_cleanup_adapter, "register_post_delivery_callback")
         ):
-            return
-        _ids_snapshot = list(_cleanup_msg_ids)
-        _chat_id_snapshot = turn_ctx.source.chat_id
-        _loop_snapshot = asyncio.get_running_loop()
-
-        def _cleanup_temp_bubbles() -> None:
-            async def _delete_all() -> None:
-                for _mid in _ids_snapshot:
-                    with suppress(Exception):
-                        await _cleanup_adapter.delete_message(_chat_id_snapshot, _mid)
-            with suppress(Exception):
-                safe_schedule_threadsafe(
-                    _delete_all(), _loop_snapshot, logger=logger,
-                    log_message="Temp bubble cleanup scheduling error",
+            if (
+                turn_ctx._cleanup_progress and _cleanup_msg_ids
+                and isinstance(response, dict) and response.get("failed")
+            ):
+                logger.info(
+                    "Temp bubble cleanup skipped for session %s generation %s: reason=failed_run tracked=%d",
+                    session_key, turn_ctx.run_generation, len(_cleanup_msg_ids),
                 )
+            return
+        _chat_id_snapshot = turn_ctx.source.chat_id
+        _adapter_snapshot = _cleanup_adapter
+        _callback_owner = turn_ctx._post_delivery_adapter or _cleanup_adapter
+
+        async def _cleanup_temp_bubbles() -> None:
+            # Snapshot at invocation: a final in-flight status update belongs to
+            # this completed turn. Resolve deletion through the current adapter.
+            _ids_snapshot = list(dict.fromkeys(_cleanup_msg_ids))
+            _deleted_count = 0
+            _failed_details: list[str] = []
+            for _mid in _ids_snapshot:
+                try:
+                    _delete_adapter = self._adapter_for_source(turn_ctx.source) or _adapter_snapshot
+                    _deleted = await _delete_adapter.delete_message(_chat_id_snapshot, _mid)
+                except asyncio.CancelledError:
+                    _completed = _deleted_count + len(_failed_details)
+                    logger.warning(
+                        "Temp bubble cleanup cancelled for session %s generation %s: requested=%d completed=%d remaining=%d",
+                        session_key, turn_ctx.run_generation, len(_ids_snapshot), _completed,
+                        len(_ids_snapshot) - _completed,
+                    )
+                    raise
+                except Exception as _cleanup_error:
+                    _failed_details.append(f"{_mid}:{type(_cleanup_error).__name__}")
+                else:
+                    if _deleted:
+                        _deleted_count += 1
+                    else:
+                        _failed_details.append(f"{_mid}:returned_false")
+            if _failed_details:
+                _shown = _failed_details[:10]
+                _omitted = len(_failed_details) - len(_shown)
+                logger.warning(
+                    "Temp bubble cleanup failures for session %s generation %s: %s%s",
+                    session_key, turn_ctx.run_generation, ", ".join(_shown),
+                    f" (+{_omitted} more)" if _omitted else "",
+                )
+            logger.info(
+                "Temp bubble cleanup complete for session %s generation %s: requested=%d deleted=%d failed=%d",
+                session_key, turn_ctx.run_generation, len(_ids_snapshot), _deleted_count,
+                len(_failed_details),
+            )
 
         try:
-            _cleanup_adapter.register_post_delivery_callback(
+            _callback_owner.register_post_delivery_callback(
                 session_key, _cleanup_temp_bubbles, generation=turn_ctx.run_generation,
             )
+            turn_ctx._post_delivery_adapter = _callback_owner
+            turn_ctx._bubble_cleanup_registered = True
         except Exception as _rpe:
             logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
 
@@ -3874,6 +3944,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        _post_delivery_adapter: Optional[BasePlatformAdapter] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -3898,6 +3969,7 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            _post_delivery_adapter=_post_delivery_adapter,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
@@ -3930,6 +4002,10 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._adapter_for_source(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
+            # This must precede pending inspection: queued-follow-up handling
+            # returns recursively, so late registration cannot establish the
+            # cleanup completion boundary before turn two starts.
+            self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
                 return await self._run_agent_queued_followup(

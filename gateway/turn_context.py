@@ -34,6 +34,10 @@ class TurnContext:
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
     _cleanup_msg_ids: List[str] = field(default_factory=list)
+    # The adapter whose post-delivery lifecycle owns cleanup callbacks. It remains
+    # stable across an in-band queued follow-up even if the live adapter changes.
+    _post_delivery_adapter: Any = None
+    _bubble_cleanup_registered: bool = False
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
     message: Optional[str] = None  # the only rebindable field

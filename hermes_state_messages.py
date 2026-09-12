@@ -15,7 +15,7 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _id_chunks, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -1187,8 +1187,10 @@ class SessionMessagesMixin:
                 replacement = self._split_rewind_target(target_row, expected_target_content, preserve_compaction_handoff)
             ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 1",
                                              (session_id, target_message_id)).fetchall()]
-            if ids:
-                conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
+            # Batched: a rewind target near the head of a long-lived session can soft-delete far
+            # more ids than SQLite's bound-variable ceiling tolerates in one IN (...) list.
+            for chunk in _id_chunks(ids):
+                conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(chunk)})", chunk)
             if replacement is not None:
                 self._insert_message_rows(conn, session_id, [replacement])
                 replacement_message_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -1304,8 +1306,10 @@ class SessionMessagesMixin:
             logger.info("Backed up state.db to %s before clean-markers write", backup_path)
         def _do(conn):
             ids = _find_affected(conn)
-            if ids:
-                conn.execute(f"UPDATE messages SET content = '' WHERE id IN ({_placeholders(ids)})", ids)
+            # Batched: an operator running this cleanup on a long-accumulated store can hit far
+            # more affected rows than SQLite's bound-variable ceiling tolerates in one IN (...) list.
+            for chunk in _id_chunks(ids):
+                conn.execute(f"UPDATE messages SET content = '' WHERE id IN ({_placeholders(chunk)})", chunk)
             return ids
         affected_ids = self._execute_write(_do)
         if affected_ids:

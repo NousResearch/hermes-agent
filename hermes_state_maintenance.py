@@ -169,11 +169,15 @@ class SessionMaintenanceMixin:
                        if sid not in excluded and not self._write_guards_reject(conn, sid)]
             if not victims:
                 return []
-            # Re-apply every predicate under the write lock.
-            conn.execute(
-                f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
-                f" WHERE id IN ({_placeholders(victims)}) AND ended_at IS NULL{scope_sql}",
-                (time.time(), *victims, *scope_params))
+            # Re-apply every predicate under the write lock. Batched: a dead gateway that sat
+            # orphaned across a long outage can leave far more rows than SQLite's bound-variable
+            # ceiling tolerates in one IN (...) list.
+            reaped_at = time.time()
+            for chunk in _id_chunks(victims):
+                conn.execute(
+                    f"UPDATE sessions SET ended_at = ?, end_reason = 'startup_orphan_reap'"
+                    f" WHERE id IN ({_placeholders(chunk)}) AND ended_at IS NULL{scope_sql}",
+                    (reaped_at, *chunk, *scope_params))
             return victims
         return self._execute_write(_do) or []
 

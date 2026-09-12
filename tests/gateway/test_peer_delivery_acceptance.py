@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -280,3 +281,150 @@ def test_busy_receipt_no_retry_loop_and_same_key_exactly_once(
     assert fourth["result"] == q.RESULT_DELIVERED
     assert len(adapter.calls) == 1
     assert _delivery_records(home) == [(q.SETTLED_DIR, f"{delivery_id}.json")]
+
+
+# ── D1: the queue is DRAINED, not merely written ────────────────────────────────
+
+def test_drained_head_runs_even_when_its_own_request_is_gone(adapter, home):
+    """D1: an accepted record must RUN -- including one whose sender has left.
+
+    Live evidence: 53 records sat in ``queued`` with a full body each and no runner,
+    because the in-call curve only ever ran the delivery its own request admitted.
+    Here the OLDER delivery is accepted first and its request then abandons it (a
+    restart or a timed-out sender does exactly that). When a LATER request takes the
+    slot, the queue head must run -- not be handed back as one more receipt.
+    """
+    profile = adapter._bot_send_target_profile(home)
+    older_key = q.validate_idempotency_key("auto:d1:older")
+    our_key = q.validate_idempotency_key("auto:d1:ours")
+
+    with _hold_turn_lock(home):
+        older = _send(adapter, key=older_key, message="older payload")
+        ours = _send(adapter, key=our_key, message="our payload")
+    assert (older["status"], ours["status"]) == (q.STATUS_QUEUED, q.STATUS_QUEUED)
+    assert (older["queue_position"], ours["queue_position"]) == (1, 2)
+    assert adapter.calls == [], "a held slot runs nothing in-call"
+
+    # The slot frees and OUR request admits: it runs the head first, then itself.
+    with _hold_turn_lock(home):
+        last = json.loads(asyncio.run(adapter._bot_send_turn(
+            _request(key=our_key, message="our payload"), _ctx(), home=home,
+            delivery_id=ours["delivery_id"], target_profile=profile,
+            session_id="sess-1", waited=0.0)).body)
+
+    assert [call.get("user_message") for call in adapter.calls] == ["older payload", None], (
+        "the drained head must RUN, and run FIRST")
+    assert last["delivery_id"] == ours["delivery_id"]
+    assert last["status"] == q.STATUS_DELIVERED
+    assert q.read_record(home, older["delivery_id"])["status"] == q.STATUS_DELIVERED, (
+        "the foreign head is delivered, never requeued into a queue nothing drains")
+    assert q.read_record(home, ours["delivery_id"])["status"] == q.STATUS_DELIVERED
+    assert _delivery_records(home) == sorted(
+        (q.SETTLED_DIR, f"{d['delivery_id']}.json") for d in (older, ours))
+    assert q.queue_depth(home, profile) == 0
+
+
+def test_sweep_drains_a_free_slot_and_never_expires_a_held_one(adapter, home):
+    """D1 triggers 3-4 + the TTL rule: no live request needed, no holder fought.
+
+    The live slot was held by a UI/desktop session, not a card worker (a 1800.3s
+    lease wait reproduced against one), so the sweep skips a held slot, leaves the
+    record queued -- and the over-age sweep must NOT expire it merely because its
+    target is mid-turn: the holder is the turn that drains it next.
+    """
+    from gateway.platforms import api_server_bot_delivery as drain
+
+    profile = adapter._bot_send_target_profile(home)
+    with _hold_turn_lock(home):
+        first = _send(adapter, key=q.validate_idempotency_key("auto:d1:s1"), message="one")
+        second = _send(adapter, key=q.validate_idempotency_key("auto:d1:s2"), message="two")
+    assert q.queue_depth(home, profile) == 2
+
+    # (a) an over-age record whose slot is HELD is kept, not expired.
+    future = time.time_ns() + 10 * 24 * 3600 * 1_000_000_000
+    assert q.sweep_delivery_queue(home, now_ns=future,
+                                  slot_held_fn=lambda h, p: True) == 0
+    assert q.read_record(home, first["delivery_id"])["status"] == q.STATUS_QUEUED
+
+    # (b) the drainer itself skips a held slot; it never fights for it.
+    with _hold_turn_lock(home):
+        assert asyncio.run(drain.drain_once(adapter, home)) == 0
+    assert adapter.calls == []
+    assert q.queue_depth(home, profile) == 2
+
+    # (c) the slot frees -> the whole backlog runs, in FIFO order.
+    assert asyncio.run(drain.drain_once(adapter, home)) == 2
+    assert [call["user_message"] for call in adapter.calls] == ["one", "two"]
+    assert q.queue_depth(home, profile) == 0
+    assert [q.read_record(home, r["delivery_id"])["status"]
+            for r in (first, second)] == [q.STATUS_DELIVERED, q.STATUS_DELIVERED]
+
+
+def test_queued_receipt_reports_the_slot_state_observed(adapter, home):
+    """D2: a receipt says WHY it queued, from the slot's real state.
+
+    The old receipt hard-coded "target busy", so a 53-deep backlog on a free slot
+    read as one busy turn. With the slot free the honest cause is the backlog, and
+    ``busy`` follows the same field the envelope prints (D7).
+    """
+    with _hold_turn_lock(home):
+        mine = _send(adapter, key=q.validate_idempotency_key("auto:d2"), message="hi")
+    assert mine["status"] == q.STATUS_QUEUED
+
+    receipt = adapter._bot_send_receipt(
+        mine["delivery_id"], q.read_record(home, mine["delivery_id"]),
+        waited=0.0, home=home)
+    body = json.loads(receipt.body)
+    assert body["status_detail"] == q.STATUS_DETAIL_BACKLOG
+    assert body["busy"] is False
+    stored = q.read_record(home, mine["delivery_id"])
+    assert stored["status_detail"] == q.STATUS_DETAIL_BACKLOG
+    assert q.busy_from_detail(stored) is False
+
+
+# ── D1 sub-item 2: the drain invariant (N keys, free slot -> N turns, once) ────
+
+def test_drain_invariant_n_keys_free_lock_n_turns_exactly_once(adapter, home):
+    """D1 sub-item 2: with a free slot, N admitted keys run N turns exactly once.
+
+    Sub-item 2 of the verification was PARTIAL because "delivered exactly once"
+    could not be exercised while zero turns executed for receipted deliveries.
+    Now that a receipt is a promise of execution, the invariant is testable
+    end-to-end: six distinct keys admitted while the slot is held all run --
+    each exactly once, in FIFO order -- and a same-key replay afterwards starts
+    no second turn.
+    """
+    from gateway.platforms import api_server_bot_delivery as drain
+
+    profile = adapter._bot_send_target_profile(home)
+    count = 6
+    keys = [q.validate_idempotency_key(f"auto:inv:{i}") for i in range(count)]
+    messages = [f"invariant payload {i}" for i in range(count)]
+
+    # The slot is held, so every send is receipted rather than run in-call.
+    with _hold_turn_lock(home):
+        admitted = [_send(adapter, key=k, message=m)
+                    for k, m in zip(keys, messages)]
+    assert [r["result"] for r in admitted] == [q.RESULT_RECEIPT] * count
+    assert len({r["delivery_id"] for r in admitted}) == count
+    assert adapter.calls == [], "a held slot runs nothing in-call"
+    assert q.queue_depth(home, profile) == count
+
+    # The slot frees with no live request: the drainer runs the whole backlog.
+    assert asyncio.run(drain.drain_once(adapter, home)) == count
+    ran = [call.get("user_message") for call in adapter.calls]
+    assert ran == messages, "FIFO, one turn per admitted key"
+    assert len(ran) == len(set(ran)) == count, "each key ran exactly once"
+    assert q.queue_depth(home, profile) == 0
+    for record in admitted:
+        assert q.read_record(home, record["delivery_id"])["status"] == q.STATUS_DELIVERED
+    assert _delivery_records(home) == sorted(
+        (q.SETTLED_DIR, f"{r['delivery_id']}.json") for r in admitted)
+
+    # A same-key replay after settlement must not start a second turn.
+    before = len(adapter.calls)
+    replay = _send(adapter, key=keys[0], message=messages[0])
+    assert replay["delivery_id"] == admitted[0]["delivery_id"]
+    assert replay["replayed"] is True
+    assert len(adapter.calls) == before, "a replay never starts a second turn"
+    assert q.queue_depth(home, profile) == 0

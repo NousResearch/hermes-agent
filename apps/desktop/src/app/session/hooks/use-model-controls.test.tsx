@@ -12,7 +12,8 @@ import {
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  unpinComposerSelection
 } from '@/store/session'
 import * as SessionStates from '@/store/session-states'
 
@@ -575,6 +576,33 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('openrouter/glm-4.7')
     expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('reseeds from the profile default after unpinning a sticky manual pick', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    const queryClient = new QueryClient()
+    queryClient.setQueryData(modelOptionsQueryKey('default'), {
+      providers: [{ models: ['openrouter/glm-4.7', 'openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
+    })
+
+    setCurrentModel('openrouter/glm-4.7')
+    setCurrentProvider('openrouter')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: vi.fn() }))
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openrouter/glm-4.7')
+    expect(getCurrentModelSource()).toBe('manual')
+
+    unpinComposerSelection()
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(getCurrentModelSource()).toBe('default')
   })
 
   it('does not let a stale forced profile refresh overwrite a newer picker choice', async () => {

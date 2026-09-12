@@ -18,7 +18,8 @@ import {
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  unpinComposerSelection
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -179,6 +180,19 @@ export function useModelControls({
     },
     [cacheOwnerConnectionId, cacheProfile, queryClient]
   )
+
+  // Explicit unpin: clear the sticky source pin, then reseed a primary draft
+  // from the profile default. A live session keeps its painted model — the
+  // next session.create / restart is what picks up the unpinned default.
+  const unpinToProfileDefault = useCallback(async () => {
+    unpinComposerSelection()
+
+    if ($activeSessionId.get()) {
+      return
+    }
+
+    await refreshCurrentModel(true)
+  }, [refreshCurrentModel])
 
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
@@ -359,5 +373,5 @@ export function useModelControls({
     ]
   )
 
-  return { applySavedMainModel, refreshCurrentModel, selectModel }
+  return { applySavedMainModel, refreshCurrentModel, selectModel, unpinToProfileDefault }
 }

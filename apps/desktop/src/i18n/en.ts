@@ -3422,6 +3422,7 @@ export const en: Translations = {
       noModels: 'No models found',
       editModels: 'Edit models…',
       refreshModels: 'Refresh models',
+      useProfileDefault: 'Use profile default',
       fast: 'Fast'
     },
     modelOptions: {

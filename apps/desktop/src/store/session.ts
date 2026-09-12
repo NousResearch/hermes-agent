@@ -1371,6 +1371,13 @@ export const markComposerSelectionManual = (): void => {
   setCurrentModelSource('manual')
 }
 
+/** Drop a sticky composer pick so the next reseed uses the profile default.
+ *  Does not rewrite `$currentModel` / `$currentProvider` — callers reseed. */
+export const unpinComposerSelection = (): void => {
+  composerSelectionGeneration += 1
+  setCurrentModelSource('')
+}
+
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)

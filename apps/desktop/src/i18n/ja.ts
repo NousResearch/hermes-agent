@@ -2904,6 +2904,7 @@ export const ja = defineLocale({
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
+      useProfileDefault: 'プロファイルのデフォルトを使用',
       fast: '高速'
     },
     modelOptions: {

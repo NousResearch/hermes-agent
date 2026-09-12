@@ -1194,16 +1194,36 @@ def _apply_display_config(agent, _agent_cfg, platform):
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
 
 
+def _memory_provider_platform(platform) -> str:
+    """Surface-scoping label for memory providers.
+
+    Use the same source resolver as session persistence and prompt-cache scope,
+    so ``HERMES_SESSION_SOURCE`` / gateway ContextVars never split memory from
+    the logical conversation source.
+    """
+    try:
+        from run_agent import _session_source_for_agent
+
+        source = _session_source_for_agent(platform)
+    except Exception:
+        source = platform
+    return str(source or "").strip() or "cli"
+
+
 def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
+    raw_platform = str(platform or "").strip() or "cli"
+    provider_platform = _memory_provider_platform(platform)
     kwargs = {
         "session_id": agent.session_id,
-        "platform": platform or "cli",
+        "platform": provider_platform,
         "hermes_home": str(get_hermes_home()),
         "agent_context": "primary",
     }
-    if kwargs["platform"] == "cli":
+    # Memory scope follows the logical session source; CLI UI callbacks follow
+    # the actual process surface so source-tagged one-shots still show status.
+    if raw_platform == "cli":
         kwargs["warning_callback"] = agent._emit_warning
         kwargs["status_callback"] = agent._emit_status
     # Session title (e.g. honcho derives chat-scoped session keys from it).

@@ -359,6 +359,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
         if token and self._session.supports_capability("accessibility.element_tokens", tool=name):
             args["element_token"] = token
+        elif "element_index" in args:
+            if getattr(self, "_last_snapshot_id", None):
+                args.setdefault("snapshot_id", self._last_snapshot_id)
+            elif getattr(self, "_active_window_id", None) is not None:
+                args.setdefault("window_id", self._active_window_id)
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

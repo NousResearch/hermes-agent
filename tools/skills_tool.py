@@ -615,7 +615,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter. Skill content is a live source that can change between sessions (e.g. an operational history or incident log gets appended to) — when a question touches a skill's topic, call this to read the current file rather than trusting a remembered answer from session_search, which can surface an answer that predates a later skill update.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -546,9 +546,13 @@ SESSION_SEARCH_SCHEMA = {
         "args = browse recent sessions. Results are actual DB messages, no LLM. "
         "Searches conversation history ONLY — when the user gave a direct "
         "source (URL, file, contact, live system), inspect that first; never "
-        "conclude 'not found' from history alone. Use for questions about past "
-        "conversations: 'what did we do about X', 'where did we leave Y'. When "
-        "referring the user to a session, write its `link` value verbatim "
+        "conclude 'not found' from history alone. This includes topics covered "
+        "by an installed skill's reference material (e.g. an operational history "
+        "or incident log): if the topic matches a skill, call skill_view to read "
+        "the current file rather than recalling a prior answer here — that answer "
+        "may predate a later update to the skill content. Use for questions about "
+        "past conversations: 'what did we do about X', 'where did we leave Y'. "
+        "When referring the user to a session, write its `link` value verbatim "
         "inline (it renders as a titled link)."
     ),
     "parameters": {

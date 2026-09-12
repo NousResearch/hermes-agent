@@ -4,6 +4,7 @@ import { test } from 'vitest'
 
 import {
   bundledRuntimeImportCheck,
+  detectDeadLocalDisplay,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
@@ -82,6 +83,51 @@ test('detectRemoteDisplay honors the HERMES_DESKTOP_DISABLE_GPU override both wa
       env: { HERMES_DESKTOP_DISABLE_GPU: 'false', SSH_CONNECTION: '1.2.3.4 5 6.7.8.9 22' },
       platform: 'linux'
     }),
+    null
+  )
+})
+
+test('detectDeadLocalDisplay flags a local DISPLAY with no backing socket', () => {
+  assert.match(
+    String(
+      detectDeadLocalDisplay({
+        env: { DISPLAY: ':11' },
+        platform: 'linux',
+        existsSync: (path) => path === '/tmp/.X11-unix/X0'
+      })
+    ),
+    /X11-unix\/X11/
+  )
+})
+
+test('detectDeadLocalDisplay is null once the socket exists', () => {
+  assert.equal(
+    detectDeadLocalDisplay({
+      env: { DISPLAY: ':0' },
+      platform: 'linux',
+      existsSync: (path) => path === '/tmp/.X11-unix/X0'
+    }),
+    null
+  )
+})
+
+test('detectDeadLocalDisplay leaves forwarded, Wayland, unset, and non-Linux displays alone', () => {
+  // Forwarded ("host:N") displays need a network round trip to verify — left to Electron's own failure.
+  assert.equal(
+    detectDeadLocalDisplay({ env: { DISPLAY: 'localhost:10.0' }, platform: 'linux', existsSync: () => false }),
+    null
+  )
+  assert.equal(
+    detectDeadLocalDisplay({
+      env: { WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':11' },
+      platform: 'linux',
+      existsSync: () => false
+    }),
+    null
+  )
+  assert.equal(detectDeadLocalDisplay({ env: {}, platform: 'linux', existsSync: () => false }), null)
+  assert.equal(
+    detectDeadLocalDisplay({ env: { DISPLAY: ':11' }, platform: 'darwin', existsSync: () => false }),
     null
   )
 })

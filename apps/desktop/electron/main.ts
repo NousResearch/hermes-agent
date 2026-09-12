@@ -80,6 +80,7 @@ import {
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
 import {
+  detectDeadLocalDisplay,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
@@ -503,6 +504,23 @@ let f12Blocked = false
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
 // Dev (`npm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
+
+// A locally-numbered $DISPLAY with no backing X server crashes Electron deep
+// in native Ozone/Aura init ("Missing X server or $DISPLAY") with no way for
+// app code to catch or explain it — the process just exits. Check for that
+// specific, common case (stale $DISPLAY in a long-lived tmux/screen pane)
+// before Electron gets there, so the failure is at least legible.
+const DEAD_DISPLAY_REASON = detectDeadLocalDisplay()
+
+if (DEAD_DISPLAY_REASON) {
+  console.error(
+    `[hermes] ${DEAD_DISPLAY_REASON} — Hermes can't open a window here.\n` +
+      "This usually means $DISPLAY was inherited from a session that's gone (a tmux/screen pane " +
+      'kept an old display number across an Xwayland restart or SSH reconnect). Open a fresh shell ' +
+      'and try again.'
+  )
+  process.exit(1)
+}
 
 // Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
 // compositor flicker — accelerated layers can't be presented cleanly over the

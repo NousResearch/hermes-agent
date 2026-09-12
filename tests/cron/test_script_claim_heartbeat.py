@@ -403,7 +403,7 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     monkeypatch.setattr(scheduler, "finish_execution", lambda *args, **kwargs: None)
     save_output = MagicMock()
     deliver_result = MagicMock()
-    mark_run = MagicMock()
+    mark_run = MagicMock(return_value=False)  # fence rejects: claim lost, owner no longer holds
     monkeypatch.setattr(scheduler, "save_job_output", save_output)
     monkeypatch.setattr(scheduler, "_deliver_result", deliver_result)
     monkeypatch.setattr(scheduler, "mark_job_run", mark_run)
@@ -415,7 +415,13 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
 
     save_output.assert_not_called()
     deliver_result.assert_not_called()
-    mark_run.assert_not_called()
+    # K3 case-1 fix (2026-09-12): a pre-delivery loss now attempts the owner-fenced write with
+    # the distinct pre-delivery reason; the fence rejects it (mock returns False), the stale
+    # result stays undelivered and unrecorded. Any attempted write must carry the pre-delivery
+    # reason, never the shutdown string.
+    for call in mark_run.call_args_list:
+        err_arg = call.args[2] if len(call.args) > 2 else call.kwargs.get("error", "")
+        assert "Interrupted by shutdown" not in str(err_arg)
 
 
 def test_initially_lost_fire_claim_finishes_execution_without_running(monkeypatch):

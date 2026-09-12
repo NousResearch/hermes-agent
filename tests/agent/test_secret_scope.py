@@ -432,3 +432,20 @@ class TestMultiplexContext:
         finally:
             ss.reset_secret_scope(scope_token)
         assert ss.refresh_installed_secret_scope(tmp_path) is False  # nothing installed
+
+
+def test_refresh_drops_a_name_the_rebuild_no_longer_supplies(tmp_path, monkeypatch):
+    """refresh_installed_secret_scope must REPLACE the installed mapping, not merge into it: a
+    rotated/revoked source value would otherwise survive for the rest of the fire (#107695 review)."""
+    from agent import secret_scope
+
+    (tmp_path / ".env").write_text("KEPT=new\n", encoding="utf-8")
+    token = secret_scope.set_secret_scope({"REVOKED_PLUGIN_TOKEN": "old", "KEPT": "stale"})
+    try:
+        assert secret_scope.refresh_installed_secret_scope(tmp_path) is True
+        live = dict(secret_scope.current_secret_scope() or {})
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+    assert live == {"KEPT": "new"}, live
+    assert "REVOKED_PLUGIN_TOKEN" not in live

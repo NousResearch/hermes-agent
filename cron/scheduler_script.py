@@ -356,9 +356,18 @@ def _run_job_script(
         # then overlay the installed scope, then sanitize, so routed values pass the same scrub /
         # passthrough rules as any other. No-op outside multiplex or for the launch profile's own
         # fires; the parent process is never mutated.
-        from agent.secret_scope import current_secret_scope
+        from agent.secret_scope import _is_global_env, current_secret_scope
+        from hermes_cli.env_loader import secret_source_names
         from tools.environments.local import strip_launch_profile_env
         base = strip_launch_profile_env(dict(os.environ))
+        # strip_launch_profile_env only knows dotenv- and terminal-config-owned names. External
+        # secret sources (vault, 1Password, ...) also write their names into the shared os.environ,
+        # tracked in secret_source_names(), and a name the LAUNCH profile's source supplied is not
+        # this profile's to see. Drop them all here; the overlay below puts back exactly the ones
+        # the routed profile's own sources supply (build_profile_secret_scope folds them in).
+        for name in secret_source_names():
+            if not _is_global_env(name):
+                base.pop(name, None)
         scope = current_secret_scope()
         if scope:
             base.update(scope)

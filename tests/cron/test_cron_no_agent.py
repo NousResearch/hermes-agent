@@ -431,3 +431,39 @@ def test_a_routed_profile_script_never_receives_a_launch_profile_only_value(herm
     assert ok, output
     assert output.strip() == "routed|<unset>"
     assert os.environ["LAUNCH_ONLY_VALUE"] == "launch-only"  # the parent process was not mutated
+
+
+def test_a_routed_profile_script_never_receives_a_launch_external_source_value(hermes_env, monkeypatch):
+    """External secret sources (vault, 1Password, ...) write their names into the shared
+    ``os.environ`` too, and ``strip_launch_profile_env`` only knows dotenv- and terminal-owned
+    names. A name the LAUNCH profile's source supplied must still reach the routed child unset
+    (#107695 review); a name the ROUTED profile's own source supplies must come through."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("LAUNCH_VAULT_ONLY", "launch-vault-value")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "LAUNCH_VAULT_ONLY", "vault")
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "ROUTED_VAULT_ONLY", "vault")
+    script = routed / "scripts" / "probe_vault.sh"
+    script.write_text('#!/bin/bash\necho "${LAUNCH_VAULT_ONLY:-<unset>}|${ROUTED_VAULT_ONLY:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope({"ROUTED_VAULT_ONLY": "routed-vault-value"})
+    try:
+        ok, output = _run_job_script("probe_vault.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "<unset>|routed-vault-value"
+    assert os.environ["LAUNCH_VAULT_ONLY"] == "launch-vault-value"  # parent untouched

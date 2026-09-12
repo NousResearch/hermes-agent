@@ -229,5 +229,10 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
     scope = _SECRET_SCOPE.get()
     if not isinstance(scope, dict):
         return False
-    scope.update(build_profile_secret_scope(hermes_home))
+    # REPLACE, don't merge: the rebuild is the profile's current truth, so a name a source has
+    # stopped supplying (rotated, revoked, source removed) must disappear from the fire's scope
+    # rather than survive as the stale value dict.update() would keep.
+    rebuilt = build_profile_secret_scope(hermes_home)
+    scope.clear()
+    scope.update(rebuilt)
     return True

@@ -1291,9 +1291,27 @@ export function useSessionActions({
               busyRef.current = running
               setBusy(running)
               setAwaitingResponse(running && !pendingClarify)
+
+              // View-only: project the pending clarify onto the pre-hydration
+              // transcript for this publish so `needsInput: true` is never
+              // shown ahead of an answerable row (#108718). The cache entry
+              // above stays unprojected — hydration below re-derives the
+              // authoritative transcript from scratch, and folding this
+              // synthetic row into that pipeline would leave a duplicate
+              // once the persisted transcript carries the same call under a
+              // different message id.
+              const earlyClarifyProjection = pendingClarify
+                ? restorePendingClarifyToolCall(activatedMessages, pendingClarifyToolPayload(pendingClarify))
+                : null
+
               syncSessionStateToView(
                 cachedRuntimeId,
-                suppressTranscriptForView(activatedLivenessState, suppressUnprovenWarmTranscript)
+                suppressTranscriptForView(
+                  earlyClarifyProjection
+                    ? { ...activatedLivenessState, messages: earlyClarifyProjection.messages }
+                    : activatedLivenessState,
+                  suppressUnprovenWarmTranscript
+                )
               )
 
               // session.activate is the ordering barrier for reconnect recovery:

@@ -561,6 +561,11 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         toolset_names = [_platform_default_toolset(platform)]
     # YAML may parse bare numeric names (``12306:``) as int; normalise so sorted() never mixes types.
     toolset_names = [str(ts) for ts in toolset_names]
+    # An explicitly EMPTY list is a deny-all selection (distinct from an omitted key, which falls back to the
+    # platform composite). Return before native-toolset recovery and default MCP injection, or non-configurable
+    # toolsets such as ``kanban`` leak back onto a surface the user deliberately disabled.
+    if explicitly_configured and not toolset_names:
+        return set()
 
     configurable_keys = _configurable_keys()
     plugin_ts_keys = _get_plugin_toolset_keys()
@@ -581,8 +586,8 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         enabled_toolsets |= _enabled_plugin_toolsets(config, platform, toolset_names, plugin_ts_keys)
 
     # Context-engine tools are runtime-provided, not in any static composite: keep them for a non-default
-    # engine even after an explicit save. An explicit EMPTY list means none, unless ``context_engine`` is added by hand.
-    if _context_engine_active(config) and not (explicitly_configured and not toolset_names):
+    # engine even after an explicit save (an explicit EMPTY list already returned above).
+    if _context_engine_active(config):
         enabled_toolsets.add("context_engine")
 
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.

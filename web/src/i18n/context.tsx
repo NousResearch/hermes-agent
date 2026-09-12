@@ -17,6 +17,7 @@ import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
 import { ar } from "./ar";
+import { az } from "./az";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
@@ -36,6 +37,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   ru,
   hu,
   ar,
+  az,
 };
 
 // Locales whose script flows right-to-left. Consumed by the provider to set the
@@ -69,6 +71,7 @@ export const LOCALE_META: Record<Locale, { name: string }> = {
   ru: { name: "Русский" },
   hu: { name: "Magyar" },
   ar: { name: "العربية" },
+  az: { name: "Azərbaycan dili" },
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];

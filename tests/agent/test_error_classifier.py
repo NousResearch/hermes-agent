@@ -1500,6 +1500,82 @@ class TestConnectionMessagePatterns:
         assert result.reason == FailoverReason.unknown
 
 
+# ── Test: subprocess transport could not obtain a credential ────────────
+
+class TestTransportCredentialMissing:
+    """A bridge that died before answering, naming a missing credential.
+
+    ``CopilotACPClient`` raises a bare ``RuntimeError("Copilot ACP process
+    exited early: <stderr>")`` when its subprocess dies during startup. When the
+    launcher's stderr says it had no subscription token, the failure is an auth
+    problem — but with no HTTP status to classify by, the message fell through
+    every rule into ``unknown``: retryable, yet with no credential rotation, so
+    the retry loop respawned the bridge against the same empty credential and
+    the turn ended with a taxonomy that told the caller nothing.
+    """
+
+    MESSAGES = [
+        # Wrapper writes this to stderr and exits 1; the client wraps it.
+        "Copilot ACP process exited early: claude-acp-run: no subscription token.\n"
+        "  Fix: ensure Claude Code is logged in, or run:\n"
+        "       claude setup-token > ~/.config/acp-token && chmod 600 ~/.config/acp-token",
+        # Bridge exits 0 without writing stderr — same cause, different shape.
+        "Copilot ACP process exited (rc=0) during 'session/prompt' without writing "
+        "to stderr — usually a revoked or missing subscription token.",
+        "acp-launcher: missing subscription token",
+    ]
+
+    @pytest.mark.parametrize("message", MESSAGES)
+    def test_missing_transport_credential_is_auth_not_unknown(self, message):
+        result = classify_api_error(RuntimeError(message), provider="copilot-acp")
+        assert result.reason == FailoverReason.auth, message
+        assert result.is_auth is True
+
+    @pytest.mark.parametrize("message", MESSAGES)
+    def test_retryable_because_the_next_spawn_re_resolves_the_credential(self, message):
+        # Unlike the 401/403 status paths (retryable=False — the same key will
+        # fail again), each transport spawn re-runs its credential resolution,
+        # so a transient refresh failure genuinely can differ next attempt.
+        result = classify_api_error(RuntimeError(message), provider="copilot-acp")
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+
+    @pytest.mark.parametrize("message", MESSAGES)
+    def test_does_not_fall_back_to_another_model(self, message):
+        # One credential serves every model behind a subscription, so the backup
+        # model meets the identical wall; a downgrade would only hide the cause.
+        result = classify_api_error(RuntimeError(message), provider="copilot-acp")
+        assert result.should_fallback is False
+        assert result.should_compress is False
+
+    def test_outranks_the_generic_auth_wording_in_the_same_message(self):
+        # The launcher hint says "logged in"/"authenticate"; _AUTH_PATTERNS would
+        # match that and return retryable=False + should_fallback=True, i.e. the
+        # exact downgrade this verdict exists to prevent. Order must hold.
+        result = classify_api_error(RuntimeError(
+            "Copilot ACP process exited early: no subscription token. "
+            "Fix: authentication required, please log in."
+        ))
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_a_real_provider_auth_refusal_is_unaffected(self):
+        # Control: the status-code and generic-wording auth paths keep their
+        # historical abort-and-fall-back verdict.
+        for err in (MockAPIError("Unauthorized", status_code=401),
+                    RuntimeError("Invalid API key provided")):
+            result = classify_api_error(err)
+            assert result.reason == FailoverReason.auth
+            assert result.retryable is False
+            assert result.should_fallback is True
+
+    def test_an_unrelated_token_error_does_not_match(self):
+        # Guard against over-matching on the word "token".
+        result = classify_api_error(RuntimeError("max_tokens must be positive"))
+        assert result.reason != FailoverReason.auth
+
+
 # ── Test: throttle vs overflow disambiguation + new overflow shapes ─────
 # Port of anomalyco/opencode#37848 (expand context overflow patterns +
 # rate-limit exclusion guard).

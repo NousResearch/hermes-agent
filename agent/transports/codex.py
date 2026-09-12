@@ -19,8 +19,81 @@ from agent.reasoning_effort import (
 )
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+from agent.text_verbosity import parse_text_verbosity, supports_openai_text_verbosity
 
 logger = logging.getLogger(__name__)
+
+_MISSING = object()
+
+
+def _apply_text_verbosity(
+    kwargs: dict[str, Any], *, configured: Any, route_supported: bool,
+) -> None:
+    """Merge supported verbosity controls and close override bypasses."""
+    extra_body = kwargs.get("extra_body")
+    cleaned_extra_body = dict(extra_body) if isinstance(extra_body, dict) else None
+    extra_text: Any = _MISSING
+    effective_model = kwargs.get("model")
+
+    if cleaned_extra_body is not None:
+        if "model" in cleaned_extra_body:
+            effective_model = cleaned_extra_body["model"]
+        for key in list(cleaned_extra_body):
+            if isinstance(key, str) and key.strip() == "text":
+                value = cleaned_extra_body.pop(key)
+                if extra_text is _MISSING:
+                    extra_text = value
+                elif isinstance(extra_text, dict) and isinstance(value, dict):
+                    extra_text = {**extra_text, **value}
+
+    supported = supports_openai_text_verbosity(
+        effective_model, route_supported=route_supported,
+    )
+    top_text = kwargs.get("text", _MISSING)
+    if supported:
+        supported_text: Any = (
+            {key.strip() if isinstance(key, str) else key: value for key, value in top_text.items()}
+            if isinstance(top_text, dict) else top_text
+        )
+        if extra_text is not _MISSING:
+            if isinstance(supported_text, dict) and isinstance(extra_text, dict):
+                supported_text.update(
+                    {key.strip() if isinstance(key, str) else key: value for key, value in extra_text.items()}
+                )
+            elif supported_text is _MISSING:
+                supported_text = (
+                    {key.strip() if isinstance(key, str) else key: value for key, value in extra_text.items()}
+                    if isinstance(extra_text, dict) else extra_text
+                )
+        verbosity = parse_text_verbosity(configured)
+        if verbosity:
+            if supported_text is _MISSING:
+                supported_text = {"verbosity": verbosity}
+            elif isinstance(supported_text, dict):
+                supported_text.setdefault("verbosity", verbosity)
+        if supported_text is _MISSING:
+            kwargs.pop("text", None)
+        else:
+            kwargs["text"] = supported_text
+    else:
+        filtered_text: dict[Any, Any] = {}
+        for candidate in (top_text, extra_text):
+            if isinstance(candidate, dict):
+                filtered_text.update({
+                    key.strip() if isinstance(key, str) else key: value
+                    for key, value in candidate.items()
+                    if (key.strip() if isinstance(key, str) else key) != "verbosity"
+                })
+        if filtered_text:
+            kwargs["text"] = filtered_text
+        else:
+            kwargs.pop("text", None)
+
+    if cleaned_extra_body is not None:
+        if cleaned_extra_body:
+            kwargs["extra_body"] = cleaned_extra_body
+        else:
+            kwargs.pop("extra_body", None)
 
 # Cron fires use ``cron_<job_id>_<YYYYMMDD_HHMMSS>``; the per-fire timestamp is
 # stripped so repeat fires of one job share a cache scope.
@@ -621,6 +694,12 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.update(params["request_overrides"])
 
         _sanitize_astra_request_kwargs(kwargs, model, params.get("base_url"))
+
+        _apply_text_verbosity(
+            kwargs,
+            configured=params.get("text_verbosity"),
+            route_supported=params.get("text_verbosity_route_supported") is True,
+        )
 
         _bound_prompt_cache_key_field(kwargs)
 

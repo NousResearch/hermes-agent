@@ -33,6 +33,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.text_verbosity import parse_text_verbosity
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -1309,6 +1310,21 @@ def _apply_agent_section(agent, _agent_cfg):
     agent.budget_warning_ratio = normalize_budget_warning_ratio(
         _agent_section.get("budget_warning_ratio")
     )
+    _configured_text_verbosity = _agent_section.get("text_verbosity")
+    agent.text_verbosity = parse_text_verbosity(_configured_text_verbosity)
+    if (
+        _configured_text_verbosity is not None
+        and (
+            not isinstance(_configured_text_verbosity, str)
+            or bool(_configured_text_verbosity.strip())
+        )
+        and agent.text_verbosity is None
+    ):
+        logger.warning(
+            "Invalid agent.text_verbosity in config.yaml: %r; must be low, "
+            "medium, high, or empty. Falling back to provider default.",
+            _configured_text_verbosity,
+        )
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")

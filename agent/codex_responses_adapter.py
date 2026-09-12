@@ -11,9 +11,11 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from urllib.parse import urlsplit
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.text_verbosity import parse_text_verbosity
 
 logger = logging.getLogger(__name__)
 
@@ -531,21 +533,51 @@ class ResponsesRouteFlags(NamedTuple):
     is_github_responses: bool
 
 
-def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
-    """Classify the agent's Responses route from provider + base URL. Host checks are
-    exact-host-or-subdomain, never substring (``evil.com/models.github.ai`` is not GitHub)."""
+class _ResponsesRouteIdentity(NamedTuple):
+    provider: Any
+    hostname: str
+    lower: str
+    path: str
+
+
+def _responses_route_identity(agent: Any) -> _ResponsesRouteIdentity:
     from utils import base_url_hostname
     provider = getattr(agent, "provider", None)
     base_url = str(getattr(agent, "base_url", "") or "")
     hostname = str(getattr(agent, "_base_url_hostname", "") or "").lower() or base_url_hostname(base_url)
     lower = str(getattr(agent, "_base_url_lower", "") or base_url).lower()
+    return _ResponsesRouteIdentity(provider, hostname, lower, urlsplit(base_url).path.rstrip("/"))
+
+
+def _classify_responses_identity(identity: _ResponsesRouteIdentity) -> ResponsesRouteFlags:
     def _host_is(domain: str) -> bool:
-        return hostname == domain or hostname.endswith("." + domain)
+        return identity.hostname == domain or identity.hostname.endswith("." + domain)
     return ResponsesRouteFlags(
-        is_codex_backend=provider == "openai-codex" or (_host_is("chatgpt.com") and "/backend-api/codex" in lower),
-        is_xai_responses=provider in {"xai", "xai-oauth"} or hostname == "api.x.ai",
+        is_codex_backend=identity.provider == "openai-codex" or (
+            _host_is("chatgpt.com") and "/backend-api/codex" in identity.lower
+        ),
+        is_xai_responses=identity.provider in {"xai", "xai-oauth"} or identity.hostname == "api.x.ai",
         is_github_responses=_host_is("models.github.ai") or _host_is("githubcopilot.com"),
     )
+
+
+def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
+    """Classify the agent's Responses route from provider + base URL. Host checks are
+    exact-host-or-subdomain, never substring (``evil.com/models.github.ai`` is not GitHub)."""
+    return _classify_responses_identity(_responses_route_identity(agent))
+
+
+def supports_openai_text_verbosity_route(agent: Any) -> bool:
+    """Whether the exact Responses endpoint accepts OpenAI text verbosity."""
+    identity = _responses_route_identity(agent)
+    route = _classify_responses_identity(identity)
+    return (
+        (
+            identity.hostname == "chatgpt.com"
+            and identity.path == "/backend-api/codex"
+        )
+        or identity.hostname == "api.openai.com"
+    ) and not route.is_xai_responses and not route.is_github_responses
 
 
 def _native_responses_replay_items(
@@ -777,7 +809,7 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
 )
 
 _PREFLIGHT_ALLOWED_KEYS = {
-    "model", "instructions", "input", "tools", "store", "extra_headers", "extra_body",
+    "model", "instructions", "input", "tools", "store", "text", "extra_headers", "extra_body",
     *(key for key, _, _ in _PREFLIGHT_OPTIONAL_FIELDS),
 }
 
@@ -787,6 +819,27 @@ def _optional_dict(api_kwargs: Dict[str, Any], key: str) -> Optional[Dict[str, A
     if value is not None and not isinstance(value, dict):
         raise ValueError(f"Codex Responses request '{key}' must be an object.")
     return value
+
+
+def _preflight_text(api_kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    text = _optional_dict(api_kwargs, "text")
+    if text is None:
+        return None
+    normalized: Dict[str, Any] = {}
+    for key, value in text.items():
+        if not _nonblank(key):
+            raise ValueError("Codex Responses request 'text' keys must be non-empty strings.")
+        key = key.strip()
+        if key != "verbosity":
+            normalized[key] = value
+            continue
+        if value is None:
+            continue
+        verbosity = parse_text_verbosity(value)
+        if verbosity is None:
+            raise ValueError("Codex Responses request 'text.verbosity' must be low, medium, or high.")
+        normalized[key] = verbosity
+    return normalized or None
 
 
 def _preflight_codex_api_kwargs(
@@ -821,6 +874,8 @@ def _preflight_codex_api_kwargs(
         value = api_kwargs.get(key)
         if accept(value):
             normalized[key] = coerce(value) if coerce else value
+    if text := _preflight_text(api_kwargs):
+        normalized["text"] = text
     extra_headers = _optional_dict(api_kwargs, "extra_headers") or {}
     if not all(_nonblank(key) for key in extra_headers):
         raise ValueError("Codex Responses request 'extra_headers' keys must be non-empty strings.")

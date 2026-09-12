@@ -38,6 +38,48 @@ _STRIP_MSG_KEYS = (
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")
 _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
+_TEXT_MISSING = object()
+
+
+def _strip_text_verbosity(api_kwargs: dict[str, Any]) -> None:
+    """Remove Responses-only verbosity while preserving sibling overrides."""
+    text = api_kwargs.pop("text", _TEXT_MISSING)
+    if isinstance(text, dict):
+        filtered = {
+            key: value
+            for key, value in text.items()
+            if not (isinstance(key, str) and key.strip() == "verbosity")
+        }
+        if filtered:
+            api_kwargs["text"] = filtered
+    elif text is not _TEXT_MISSING:
+        api_kwargs["text"] = text
+
+    extra_body = api_kwargs.get("extra_body")
+    if not isinstance(extra_body, dict):
+        return
+    filtered_body = dict(extra_body)
+    for key in list(filtered_body):
+        if not (isinstance(key, str) and key.strip() == "text"):
+            continue
+        value = filtered_body.pop(key)
+        if not isinstance(value, dict):
+            filtered_body[key] = value
+            continue
+        filtered_nested = {
+            nested_key: nested_value
+            for nested_key, nested_value in value.items()
+            if not (
+                isinstance(nested_key, str)
+                and nested_key.strip() == "verbosity"
+            )
+        }
+        if filtered_nested:
+            filtered_body["text"] = filtered_nested
+    if filtered_body:
+        api_kwargs["extra_body"] = filtered_body
+    else:
+        api_kwargs.pop("extra_body", None)
 
 
 def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
@@ -439,6 +481,7 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["extra_body"] = extra_body
         if params.get("request_overrides"):
             api_kwargs.update(params["request_overrides"])
+        _strip_text_verbosity(api_kwargs)
         return _finish_kwargs(
             api_kwargs, sanitized, params,
             supports_prompt_cache_key=bool(params.get("supports_prompt_cache_key")) or _is_openai_api_base_url(base_url),
@@ -489,6 +532,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 extra_body = {k: v for k, v in extra_body.items() if k in ("thinking_config", "thinkingConfig")}
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
+        _strip_text_verbosity(api_kwargs)
         return _finish_kwargs(
             api_kwargs, sanitized, params, supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
         )

@@ -398,7 +398,7 @@ def _cli_config_defaults():
         "compression": {"enabled": True, "threshold": 0.50, "min_tail_user_messages": 1},
         "agent": {
             "max_turns": 500, "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # max_turns shared with subagents
-            "reasoning_effort": "", "service_tier": "",
+            "reasoning_effort": "", "text_verbosity": "", "service_tier": "",
             "personalities": {},  # user overrides merged by name over hermes_cli.personality builtins
         },
         "display": {

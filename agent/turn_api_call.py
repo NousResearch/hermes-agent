@@ -80,6 +80,9 @@ def perform_api_call(
     _use_streaming = _should_stream(agent)
 
     def _perform_api_call(next_api_kwargs):
+        from agent.text_verbosity import finalize_text_verbosity_request
+
+        next_api_kwargs = finalize_text_verbosity_request(agent, next_api_kwargs)
         if agent.api_mode == "codex_responses":
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),

@@ -130,6 +130,7 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["model"] == DEFAULT_CONFIG["model"]
             assert config["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+            assert config["agent"]["text_verbosity"] == ""
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
@@ -138,7 +139,7 @@ class TestLoadConfigDefaults:
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"
-            config_path.write_text("max_turns: 42\n")
+            config_path.write_text("max_turns: 42\n", encoding="utf-8")
 
             config = load_config()
             assert config["agent"]["max_turns"] == 42
@@ -173,7 +174,7 @@ class TestLoadConfigParseFailure:
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             broken = "\tmodel: test/custom\nbroken indent:\n"
-            (tmp_path / "config.yaml").write_text(broken)
+            (tmp_path / "config.yaml").write_text(broken, encoding="utf-8")
 
             load_config()
             err = capsys.readouterr().err
@@ -181,9 +182,9 @@ class TestLoadConfigParseFailure:
             baks = list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
             assert len(baks) == 1, f"expected one backup, got {baks}"
             # Backup preserves the original broken content verbatim
-            assert baks[0].read_text() == broken
+            assert baks[0].read_text(encoding="utf-8") == broken
             # Original config.yaml is left untouched (not reset to clean state)
-            assert (tmp_path / "config.yaml").read_text() == broken
+            assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == broken
             # User is told where the backup landed
             assert str(baks[0]) in err
 
@@ -218,7 +219,9 @@ class TestLoadConfigParseFailure:
 
             # Corrupt the file (mtime must change to bust the cache)
             time.sleep(0.05)
-            cfg.write_text("approvals:\n  deny: [unclosed\n  :::bad {{{\n")
+            cfg.write_text(
+                "approvals:\n  deny: [unclosed\n  :::bad {{{\n", encoding="utf-8"
+            )
 
             after = load_config()
             # Last-known-good retained — NOT defaults
@@ -283,7 +286,7 @@ class TestSaveAndLoadRoundtrip:
             assert reloaded["model"] == "test/custom-model"
             assert reloaded["agent"]["max_turns"] == 42
 
-            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert saved["agent"]["max_turns"] == 42
             assert "max_turns" not in saved
 
@@ -429,7 +432,7 @@ class TestSaveEnvValueSecure:
             return
 
         env_path = tmp_path / ".env"
-        env_path.write_text("EXISTING=value\n")
+        env_path.write_text("EXISTING=value\n", encoding="utf-8")
         os.chmod(env_path, 0o640)
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -485,11 +488,13 @@ class TestSaveEnvValueSecure:
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):
         env_path = tmp_path / ".env"
-        env_path.write_text("KEY_A=value_a\nKEY_B=value_b\nKEY_C=value_c\n")
+        env_path.write_text(
+            "KEY_A=value_a\nKEY_B=value_b\nKEY_C=value_c\n", encoding="utf-8"
+        )
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "KEY_B": "value_b"}):
             result = remove_env_value("KEY_B")
             assert result is True
-            content = env_path.read_text()
+            content = env_path.read_text(encoding="utf-8")
             assert "KEY_B" not in content
             assert "KEY_A=value_a" in content
             assert "KEY_C=value_c" in content
@@ -497,7 +502,7 @@ class TestRemoveEnvValue:
 
     def test_clears_os_environ_even_when_not_in_file(self, tmp_path):
         env_path = tmp_path / ".env"
-        env_path.write_text("OTHER=stuff\n")
+        env_path.write_text("OTHER=stuff\n", encoding="utf-8")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "ORPHAN_KEY": "orphan"}):
             remove_env_value("ORPHAN_KEY")
             assert "ORPHAN_KEY" not in os.environ
@@ -513,14 +518,14 @@ class TestRemoveEnvValue:
             return
 
         env_path = tmp_path / ".env"
-        env_path.write_text("KEEP=value\nDROP=gone\n")
+        env_path.write_text("KEEP=value\nDROP=gone\n", encoding="utf-8")
         os.chmod(env_path, 0o640)
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "DROP": "gone"}):
             removed = remove_env_value("DROP")
 
         assert removed is True
-        assert "DROP" not in env_path.read_text()
+        assert "DROP" not in env_path.read_text(encoding="utf-8")
         env_mode = env_path.stat().st_mode & 0o777
         assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
 
@@ -638,7 +643,7 @@ class TestSanitizeEnvLines:
             fixes = sanitize_env_file()
             assert fixes == 0
 
-            content = env_file.read_text()
+            content = env_file.read_text(encoding="utf-8")
             assert content == (
                 "FAL_KEY=good\n"
                 "OPENROUTER_API_KEY=valFIRECRAWL_API_KEY=val2\n"
@@ -647,7 +652,7 @@ class TestSanitizeEnvLines:
     def test_sanitize_env_file_noop_on_clean_file(self, tmp_path):
         """No changes when file is already clean."""
         env_file = tmp_path / ".env"
-        env_file.write_text("GOOD_KEY=good\nOTHER_KEY=other\n")
+        env_file.write_text("GOOD_KEY=good\nOTHER_KEY=other\n", encoding="utf-8")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             fixes = sanitize_env_file()
             assert fixes == 0
@@ -856,7 +861,9 @@ class TestConfigSupportFloor:
                 ],
             },
         )
-        (tmp_path / ".env").write_text("ANTHROPIC_TOKEN=old-token\n")
+        (tmp_path / ".env").write_text(
+            "ANTHROPIC_TOKEN=old-token\n", encoding="utf-8"
+        )
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             results = migrate_config(interactive=False, quiet=False)
 
@@ -1463,7 +1470,7 @@ class TestWriteApprovalMigration:
     """
 
     def _write(self, tmp_path, body: str):
-        (tmp_path / "config.yaml").write_text(body)
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
 
     def test_approve_maps_to_true(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -1471,7 +1478,7 @@ class TestWriteApprovalMigration:
                         "_config_version: 28\nmemory:\n  write_mode: approve\n"
                         "skills:\n  write_mode: approve\n")
             migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert raw["memory"]["write_approval"] is True
             assert raw["skills"]["write_approval"] is True
             assert "write_mode" not in raw["memory"]
@@ -1485,7 +1492,7 @@ class TestWriteApprovalMigration:
                         "_config_version: 28\nmemory:\n  write_mode: 'on'\n"
                         "skills:\n  write_mode: 'off'\n")
             migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             loaded = load_config()
             # write_approval=False equals the schema default, so it is NOT
             # materialised to disk (lean-config invariant) — the legacy
@@ -1670,7 +1677,7 @@ class TestDelegationCapUnificationMigration:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._write(tmp_path, "_config_version: 32\nmodel:\n  provider: openrouter\n")
             migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
         # Migration must not materialize a delegation section it never had.
         assert "delegation" not in raw
 
@@ -1690,7 +1697,7 @@ class TestBackgroundNotificationsConciseMigration:
                 "  background_process_notifications: all\n",
             )
             migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
         assert raw["display"]["background_process_notifications"] == "concise"
 
     def test_explicit_choices_preserved(self, tmp_path):
@@ -1708,14 +1715,14 @@ class TestBackgroundNotificationsConciseMigration:
                     f"  background_process_notifications: {written}\n",
                 )
                 migrate_config(interactive=False, quiet=True)
-                raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+                raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert raw["display"]["background_process_notifications"] == expected
 
     def test_unset_key_is_not_materialized(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._write(tmp_path, "_config_version: 34\nmodel:\n  provider: openrouter\n")
             migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
         # Unset users inherit the new default at read time; no write needed.
         assert "display" not in raw or "background_process_notifications" not in raw.get("display", {})
 
@@ -1777,7 +1784,7 @@ class TestCodexAppServerAutoConfig:
 
             migrate_config(interactive=False, quiet=True)
 
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
@@ -1822,7 +1829,7 @@ class TestProviderEnabledRuntimeGate:
             },
         }
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.safe_dump(cfg))
+        config_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Bust the in-process config cache so the override picks up.
         from hermes_cli import config as cfg_mod

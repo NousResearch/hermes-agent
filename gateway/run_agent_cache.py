@@ -56,7 +56,13 @@ class GatewayAgentCacheMixin:
                 # Legacy ``checkpoints: true``: a live toggle must still rebuild the cached agent.
                 out[f"{section}.{key}"] = section_val if key == "enabled" else None
             else:
-                out[f"{section}.{key}"] = section_val.get(key) if isinstance(section_val, dict) else None
+                value = section_val.get(key) if isinstance(section_val, dict) else None
+                if section == "agent" and key == "text_verbosity":
+                    from agent.text_verbosity import parse_text_verbosity
+                    from hermes_cli.config import _expand_env_vars
+
+                    value = parse_text_verbosity(_expand_env_vars(value))
+                out[f"{section}.{key}"] = value
         try:
             from tools.registry import registry
             out["tools.registry_generation"] = getattr(registry, "_generation", None)

@@ -12,6 +12,8 @@ Raising it for everyone would weaken a real containment boundary.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tools.environments import docker as docker_env
@@ -50,6 +52,11 @@ def test_non_positive_values_omit_the_flag(configured):
 
     Mirrors what ``docker_shm_size`` does with ""/"0", and avoids asserting that
     -1 behaves identically across Docker Engine, OrbStack and Colima.
+
+    Not the same as "unlimited": omitting the flag applies the daemon's own
+    default — which may itself be a finite binding an admin set (#85086). A
+    user who wants literally unlimited must pass `--pids-limit -1` through
+    ``docker_extra_args``, exactly as before this knob existed.
     """
     assert docker_env._resolve_pids_limit(configured) is None
 
@@ -167,3 +174,36 @@ def test_setting_is_wired_through_every_config_surface():
     assert (
         TERMINAL_CONFIG_ENV_MAP["docker_pids_limit"] == "TERMINAL_DOCKER_PIDS_LIMIT"
     )
+
+
+# ---------------------------------------------------------------------------
+# Single-source default (post-review: Enough1122, point 2)
+# ---------------------------------------------------------------------------
+
+def test_every_hardwired_site_reads_the_same_default():
+    """``"256"`` used to live in four hand-maintained places.
+
+    config_defaults is the pure-data leaf everything can safely import, so each
+    site now reads the constant from there. Importing terminal_tool wholly is
+    avoided here (heavy module) — the point is the identifier's presence and
+    single-source identity, not its evaluation.
+    """
+    import agent.prompt_builder
+    import tools.terminal_tool
+    from hermes_cli import config_defaults
+
+    assert config_defaults.DEFAULT_DOCKER_PIDS_LIMIT == "256"
+    assert docker_env._DEFAULT_PIDS_LIMIT == config_defaults.DEFAULT_DOCKER_PIDS_LIMIT
+
+    for name, src in (
+        ("tools/terminal_tool.py", Path(tools.terminal_tool.__file__)),
+        ("agent/prompt_builder.py", Path(agent.prompt_builder.__file__)),
+    ):
+        text = Path(src).read_text(encoding="utf-8")
+        assert "DEFAULT_DOCKER_PIDS_LIMIT" in text, (
+            f"{name} must consult the shared constant, not a bare string default"
+        )
+        assert "\"256\"" not in [
+            line.strip() for line in text.splitlines()
+            if "docker_pids_limit" in line and "256" in line
+        ], f"{name} still hardcodes the default beside a docker_pids_limit read"

@@ -1132,6 +1132,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
+        from hermes_cli.config_defaults import DEFAULT_DOCKER_PIDS_LIMIT
         from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
     except Exception as e:
         logger.debug("Backend probe unavailable (import failed): %s", e)
@@ -1180,8 +1181,12 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_extra_args": config.get("docker_extra_args", []),
                 "docker_shm_size": config.get("docker_shm_size", "1g"),
-                "docker_pids_limit": config.get("docker_pids_limit", "256"),
-                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_pids_limit": config.get(
+                    "docker_pids_limit", DEFAULT_DOCKER_PIDS_LIMIT
+                ),
+                "docker_persist_across_processes": config.get(
+                    "docker_persist_across_processes", True
+                ),
                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
             }
 

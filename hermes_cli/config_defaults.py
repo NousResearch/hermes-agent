@@ -2,7 +2,18 @@
 
 Pure-data leaf module: DEFAULT_CONFIG and OPTIONAL_ENV_VARS, extracted
 verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
+
+One constant is exported rather than inlined: the Docker pids limit appears in
+four wired sites (this file, tools/terminal_tool.py, tools/environments/docker.py,
+agent/prompt_builder.py), and every one reads it from here, so the default can
+not silently drift apart. Tools modules importing this constant is safe: this
+file stays a pure-data leaf with no imports of its own.
 """
+
+# Per-container PID ceiling (--pids-limit) when the cgroup pids controller is
+# available. A local knob here is the single source for the value; see
+# tools/environments/docker.py for the semantics and the opt-out cases.
+DEFAULT_DOCKER_PIDS_LIMIT = "256"
 
 DEFAULT_CONFIG = {
     "model": "",
@@ -388,8 +399,8 @@ DEFAULT_CONFIG = {
         # Chromium, parallel subagents) reach it sooner than a process count
         # suggests — and once exhausted the container cannot start even a shell.
         # Raise it for profiles that legitimately need the parallelism. Set to
-        # 0 (or "") to omit the flag and use the daemon default.
-        "docker_pids_limit": "256",
+        # 0 (or "-1") to omit the flag and use the daemon default.
+        "docker_pids_limit": DEFAULT_DOCKER_PIDS_LIMIT,
         # Explicit opt-in: run the Docker container as the host user's uid:gid
         # (via `--user`).  When enabled, files written into bind-mounted dirs
         # (docker_volumes, the persistent workspace, or the auto-mounted cwd)

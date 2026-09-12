@@ -1597,14 +1597,16 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
         docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
         docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
-        docker_pids_limit = os.getenv("TERMINAL_DOCKER_PIDS_LIMIT", "256")
+        from hermes_cli.config_defaults import DEFAULT_DOCKER_PIDS_LIMIT
+        docker_pids_limit = os.getenv("TERMINAL_DOCKER_PIDS_LIMIT", DEFAULT_DOCKER_PIDS_LIMIT)
     else:
         docker_forward_env = []
         docker_volumes = []
         docker_env = {}
         docker_extra_args = []
         docker_shm_size = "1g"
-        docker_pids_limit = "256"
+        from hermes_cli.config_defaults import DEFAULT_DOCKER_PIDS_LIMIT as docker_pids_limit_default
+        docker_pids_limit = docker_pids_limit_default
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1734,6 +1736,8 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
     Shared by the terminal tool's own get-or-create path and the lazy
     :func:`ensure_task_env` bring-up (see :func:`_ssh_config_from_config`).
     """
+    from hermes_cli.config_defaults import DEFAULT_DOCKER_PIDS_LIMIT
+
     return {
         "container_cpu": config.get("container_cpu", 1),
         "container_memory": config.get("container_memory", 5120),
@@ -1748,7 +1752,9 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
         "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
         "docker_extra_args": config.get("docker_extra_args", []),
         "docker_shm_size": config.get("docker_shm_size", "1g"),
-        "docker_pids_limit": config.get("docker_pids_limit", "256"),
+        "docker_pids_limit": config.get(
+            "docker_pids_limit", DEFAULT_DOCKER_PIDS_LIMIT
+        ),
         "docker_network": config.get("docker_network", True),
         "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
         "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
@@ -1790,8 +1796,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
-    
+
     elif env_type == "docker":
+        from hermes_cli.config_defaults import DEFAULT_DOCKER_PIDS_LIMIT
         # One-shot orphan reaper: clean up labeled containers left behind by
         # prior Hermes processes that hit SIGKILL / OOM / a closed terminal
         # before the atexit cleanup hook could run.  Gated to once per
@@ -1827,7 +1834,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 else cc.get("docker_persist_across_processes", True)
             ),
             shm_size=cc.get("docker_shm_size", "1g"),
-            pids_limit=cc.get("docker_pids_limit", "256"),
+            pids_limit=cc.get("docker_pids_limit", DEFAULT_DOCKER_PIDS_LIMIT),
         )
         # Marker read by is_persistent_env(): a session-scoped container
         # survives BETWEEN turns (skip per-turn teardown) but is removed at

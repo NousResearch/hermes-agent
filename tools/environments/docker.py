@@ -28,6 +28,10 @@ from tools.environments.local import (
     _is_hermes_internal_secret,
 )
 
+# The knob's default is single-sourced in config_defaults (pure data, safe
+# direction to import) so config.yaml, env plumbing, and the environment agree.
+from hermes_cli.config_defaults import DEFAULT_DOCKER_PIDS_LIMIT
+
 logger = logging.getLogger(__name__)
 
 
@@ -353,15 +357,22 @@ _BASE_SECURITY_ARGS = [
 # Default per-container PID limit. Applied as ``--pids-limit`` only when the
 # cgroup ``pids`` controller is available (see ``_cgroup_limits_available``).
 # Configurable via ``terminal.docker_pids_limit`` in config.yaml; ``0``, ``-1``
-# or an empty value omits the flag entirely and leaves the container on the
-# daemon's default (normally unlimited).
+# or an empty value omits the flag entirely.
+#
+# The learned nuance (#85086 review), kept out of the one-line summary above:
+# omitting the flag leaves the container on the DAEMON's configured default,
+# which is *not* the same as "-1 = explicitly unlimited". Docker Engine treats a
+# literal ``--pids-limit -1`` as unlimited, while omitting follows whatever the
+# daemon (or a container-runtime profile) restricts. If you say -1 here, you are
+# asking to drop *our* ceiling, not necessarily to get unlimited; set an exact
+# number when the daemon's default is itself a finite binding.
 #
 # The default is deliberately left at 256 rather than raised: the ``pids``
 # cgroup counts *threads* as well as processes, so this ceiling is a real
 # containment boundary and lifting it for everyone to satisfy multiprocessing
 # workloads would weaken it everywhere. Profiles that genuinely need more
 # (pytest, DataLoader workers, Chromium, parallel subagents) can now say so.
-_DEFAULT_PIDS_LIMIT = "256"
+_DEFAULT_PIDS_LIMIT = DEFAULT_DOCKER_PIDS_LIMIT
 
 
 def _extra_args_set_pids_limit(extra_args: list) -> bool:

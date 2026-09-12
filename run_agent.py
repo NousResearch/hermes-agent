@@ -802,6 +802,26 @@ class AIAgent(
                     focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,
                     explicit=explicit))
 
+            # Announce the spawn. The review itself is silenced until completion
+            # (thread_scoped_silence + suppress_status_output), so without this
+            # line the user at an idle prompt has NO indication hermes is still
+            # driving the model — on a local inference server that reads as the
+            # GPU inexplicably pinned for minutes after the answer already
+            # arrived. Gated on the same memory_notifications switch as the
+            # completion summary.
+            try:
+                if str(getattr(self, "memory_notifications", "on") or "on").lower() != "off":
+                    _review_kind = (
+                        "memory/skill" if (review_memory and review_skills)
+                        else "memory" if review_memory else "skill"
+                    )
+                    self._safe_print(
+                        f"  💭 Background {_review_kind} review started — the model "
+                        "stays busy for a few minutes; a summary appears when it "
+                        "finishes."
+                    )
+            except Exception:
+                pass
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile.
             threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review").start()
@@ -1229,8 +1249,51 @@ class AIAgent(
             "to change strategy instead of repeating the same call."
         )
 
+    def _note_tool_failure_repetition(
+        self,
+        tool_name: str,
+        function_result: Any,
+        *,
+        failed: bool,
+    ) -> None:
+        """Futile-loop circuit breaker: count identical repeated failures.
+
+        Opt-in via ``_repeated_tool_failure_limit`` (int > 0) — set only on
+        unattended forks (background review) where nobody is watching the
+        transcript. When the SAME tool fails ``limit`` times in a row with the
+        SAME error signature, ``_repeated_tool_failure_tripped`` is set and the
+        turn aborts instead of letting the model burn the remaining iteration
+        budget re-issuing a call that cannot succeed (the curator
+        view→patch→refused loop kept a 27B model pinned at ~100% GPU for 10+
+        minutes this way). A success of the same tool resets its counter —
+        interleaved successes of OTHER tools (e.g. skill_view between refused
+        skill_manage calls) deliberately do not.
+        """
+        limit = getattr(self, "_repeated_tool_failure_limit", 0)
+        if not limit:
+            return
+        try:
+            store = getattr(self, "_repeated_tool_failures", None)
+            if store is None:
+                store = self._repeated_tool_failures = {}
+            if not failed:
+                store.pop(tool_name, None)
+                return
+            text = function_result if isinstance(function_result, str) else str(function_result)
+            sig = text[:300]
+            prev_sig, count = store.get(tool_name, (None, 0))
+            count = count + 1 if sig == prev_sig else 1
+            store[tool_name] = (sig, count)
+            if count >= limit:
+                self._repeated_tool_failure_tripped = (tool_name, count)
+        except Exception:
+            logger.debug("repeated-tool-failure tracking failed", exc_info=True)
+
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,
                                       failed: bool, tool_call_id: str = "") -> str:
+        # Observe the RAW result before any guardrail guidance is appended so
+        # the repetition signature stays stable across iterations.
+        self._note_tool_failure_repetition(tool_name, function_result, failed=failed)
         decision = self._tool_guardrails.after_call(tool_name, function_args, function_result, failed=failed)
         # Identical-call stall guards observe the RAW result (before the per-call loop suffix) and are applied
         # at result construction so tool results stay append-only / cache-safe.

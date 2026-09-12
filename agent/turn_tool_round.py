@@ -159,6 +159,32 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
+    _futile_trip = getattr(agent, "_repeated_tool_failure_tripped", None)
+    if _futile_trip is not None:
+        # Futile-loop circuit breaker (opt-in, unattended forks only — see
+        # AIAgent._note_tool_failure_repetition): the same tool failed N times
+        # in a row with an identical error, so re-prompting the model to retry
+        # it cannot converge. Abort the turn instead of burning the rest of
+        # the iteration budget on full-context inference calls.
+        _futile_tool, _futile_count = _futile_trip
+        agent._repeated_tool_failure_tripped = None
+        _turn_exit_reason = "repeated_tool_failure"
+        final_response = (
+            f"Aborted: tool {_futile_tool} failed {_futile_count} "
+            "consecutive times with an identical error; stopping "
+            "instead of retrying a call that cannot succeed."
+        )
+        logger.warning(
+            "Futile-loop circuit breaker: %s failed %d times with an identical "
+            "error; aborting turn after API call #%d",
+            _futile_tool, _futile_count, api_call_count,
+        )
+        agent._emit_status(
+            f"⚠️ Aborted: {_futile_tool} kept failing with the same error ({_futile_count}×)"
+        )
+        append_message(messages, {"role": "assistant", "content": final_response})
+        return _verdict("break")
+
     if agent._tool_guardrail_halt_decision is not None:
         decision = agent._tool_guardrail_halt_decision
         _turn_exit_reason = "guardrail_halt"

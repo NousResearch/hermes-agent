@@ -252,6 +252,10 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 - More subagent invocations (implementer + 2 reviewers per task)
 - But catches issues early (cheaper than debugging compounded problems later)
 
+**Parallel dispatch requires disjoint write sets:**
+- Two subagents that both write the same file (even "just append tests") in one worktree will clobber each other's edits and race the git index — stop one and serialize.
+- Read-only tasks (reviews pinned to a specific commit) are always safe to parallelize with a writer, as long as their contract says to audit the commit diff rather than the live worktree.
+
 ## Integration with Other Skills
 
 ### With plan

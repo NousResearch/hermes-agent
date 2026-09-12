@@ -879,6 +879,12 @@ def build_cache_parity_fork(
     _routed = bool(_rt.get("routed"))
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations))
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
+    # Futile-loop circuit breaker: the review runs unattended, so a tool that
+    # keeps failing identically (e.g. a guard refusal the model can't satisfy)
+    # would otherwise be retried until the 16-iteration budget is gone — each
+    # retry a full-context inference call keeping the local GPU pinned. Three
+    # identical consecutive failures of the same tool abort the review.
+    review_agent._repeated_tool_failure_limit = 3
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
     review_agent._user_profile_enabled = agent._user_profile_enabled
@@ -1151,6 +1157,15 @@ def _run_review_in_thread(
         _log_review_completion(st.review_usage, _classify_review_result(actions))
         if actions:
             _publish_review_summary(agent, actions)
+        elif str(getattr(agent, "memory_notifications", "on") or "on").lower() != "off":
+            # Close the loop opened by the spawn announcement in
+            # _spawn_background_review_now: an empty review used to end in
+            # total silence, leaving the user no way to tell when the model
+            # (and a local GPU serving it) was actually free again.
+            # Best-effort — a print failure must not fall into the outer
+            # except and be miscounted as a failed review.
+            with suppress(Exception):
+                agent._safe_print("  💭 Background review finished (no changes).")
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:

@@ -75,6 +75,12 @@ _WS_LOG_PAYLOAD_PREVIEW = 240
 _STREAMING_EVENT_TYPES = frozenset({"message.delta", "reasoning.delta", "thinking.delta"})
 _TOKEN_COALESCE_S = 0.033
 
+# Backlog admission: no connection may retain more frames than these limits before being closed.
+# A stalled first send remains admissible (already materialized); the cap prevents an unbounded queue
+# building behind it. A healthy socket drains frames as they are sent; only a stalled peer hits this.
+_BACKLOG_MAX_FRAMES = 128
+_BACKLOG_MAX_BYTES = 256 * 1024
+
 # starlette stays optional at import time; fall back to a generic sentinel.
 try:
     from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect
@@ -102,6 +108,11 @@ class WSTransport:
         self._pending_tokens: list[str] = []
         self._token_flush_handle: asyncio.TimerHandle | None = None
         self._token_flush_armed = False
+        # Backlog accounting: count frames and bytes already serialized but not yet sent. A stalled
+        # first send plus unbounded later writes could retain arbitrary heap memory until the socket
+        # deadline; these counters gate admission so the connection closes early instead.
+        self._pending_frame_count = 0
+        self._pending_bytes = 0
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
 
@@ -118,6 +129,8 @@ class WSTransport:
         params = obj.get("params") if isinstance(obj, dict) else None
         if isinstance(params, dict) and params.get("type") in _STREAMING_EVENT_TYPES:
             with self._token_lock:
+                if not self._try_reserve_backlog(1, len(line)):
+                    return False
                 self._pending_tokens.append(line)
                 if not self._token_flush_armed:
                     self._token_flush_armed = True
@@ -128,6 +141,8 @@ class WSTransport:
         # order even if the coalesce timer fires on the loop at the same moment.
         from agent.async_utils import safe_schedule_threadsafe
         with self._token_lock:
+            if not self._try_reserve_backlog(1, len(line)):
+                return False
             self._pending_tokens.append(line)
             batch, self._pending_tokens = self._pending_tokens, []
             if on_loop:
@@ -150,6 +165,24 @@ class WSTransport:
             self._closed = True
             _log.warning("ws write failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
             return False
+
+    def _try_reserve_backlog(self, frame_count: int, byte_count: int) -> bool:
+        """Reserve backlog space under _token_lock. Returns False and closes the connection if budget exceeded."""
+        # A first large frame is admissible; the cap prevents unbounded accumulation behind it.
+        if self._pending_frame_count > 0:
+            would_be_frames = self._pending_frame_count + frame_count
+            would_be_bytes = self._pending_bytes + byte_count
+            if would_be_frames > _BACKLOG_MAX_FRAMES or would_be_bytes > _BACKLOG_MAX_BYTES:
+                self._closed = True
+                _log.warning(
+                    "ws backlog budget exceeded peer=%s frames=%d/%d bytes=%d/%d — closing",
+                    self._peer, would_be_frames, _BACKLOG_MAX_FRAMES, would_be_bytes, _BACKLOG_MAX_BYTES,
+                )
+                self._loop.create_task(self._close_backlog_exceeded())
+                return False
+        self._pending_frame_count += frame_count
+        self._pending_bytes += byte_count
+        return True
 
     def _arm_token_flush(self) -> None:  # loop thread
         if not self._closed:
@@ -174,45 +207,58 @@ class WSTransport:
         ahead of it in the SAME batch so nothing slips between."""
         if self._closed:
             return False
+        line = json.dumps(obj, ensure_ascii=False)
         with self._token_lock:
+            if not self._try_reserve_backlog(1, len(line)):
+                return False
             batch, self._pending_tokens = self._pending_tokens, []
-            batch.append(json.dumps(obj, ensure_ascii=False))
+            batch.append(line)
         await self._safe_send_many(batch)
         return not self._closed
 
     async def _safe_send_many(self, lines: list[str]) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
-        async with self._send_lock:
-            if self._closed:
-                return
-            for line in lines:
+        try:
+            async with self._send_lock:
                 if self._closed:
                     return
-                payload = _sanitize_ws_text(line)
-                try:
-                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
-                except asyncio.TimeoutError:
-                    # The loop is responsive (the timer fired) but the socket never drained: unlike the
-                    # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
-                    # batches bail, and close the socket so handle_ws's read loop ends and its teardown
-                    # (session detach/reap, client reconnect) runs. See #106369.
-                    self._closed = True
-                    _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
-                                 self._peer, _WS_SEND_DEADLINE_S)
-                    self._loop.create_task(self._close_stalled_socket())
-                    return
-                except UnicodeEncodeError as exc:
-                    # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
-                    _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)
-                    continue
-                except Exception as exc:
-                    # Latch while holding the writer lock so queued batches observe the failure first.
-                    self._closed = True
-                    _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
-                    return
+                for line in lines:
+                    if self._closed:
+                        return
+                    payload = _sanitize_ws_text(line)
+                    try:
+                        await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
+                    except asyncio.TimeoutError:
+                        # The loop is responsive (the timer fired) but the socket never drained: unlike the
+                        # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
+                        # batches bail, and close the socket so handle_ws's read loop ends and its teardown
+                        # (session detach/reap, client reconnect) runs. See #106369.
+                        self._closed = True
+                        _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
+                                     self._peer, _WS_SEND_DEADLINE_S)
+                        self._loop.create_task(self._close_stalled_socket())
+                        return
+                    except UnicodeEncodeError as exc:
+                        # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
+                        _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)
+                        continue
+                    except Exception as exc:
+                        # Latch while holding the writer lock so queued batches observe the failure first.
+                        self._closed = True
+                        _log.warning("ws send failed peer=%s error_type=%s error=%s", self._peer, type(exc).__name__, exc)
+                        return
+        finally:
+            # Release the reservation for this batch regardless of success/failure/cancellation.
+            with self._token_lock:
+                self._pending_frame_count -= len(lines)
+                self._pending_bytes -= sum(len(line) for line in lines)
 
     def close(self) -> None:  # loop thread (handle_ws finally), so the TimerHandle is safe
         self._closed = True
+        with self._token_lock:
+            self._pending_tokens.clear()
+            self._pending_frame_count = 0
+            self._pending_bytes = 0
         if self._token_flush_handle is not None:
             self._token_flush_handle.cancel()
             self._token_flush_handle = None
@@ -224,6 +270,13 @@ class WSTransport:
             await self._ws.close(code=1011)
         except Exception as exc:  # noqa: BLE001 - the peer is already gone; teardown is what matters
             _log.debug("ws close after send deadline failed peer=%s error=%s", self._peer, exc)
+
+    async def _close_backlog_exceeded(self) -> None:
+        """Close the peer socket after backlog budget exceeded."""
+        try:
+            await self._ws.close(code=1011)
+        except Exception as exc:  # noqa: BLE001 - cleanup path
+            _log.debug("ws close after backlog exceeded failed peer=%s error=%s", self._peer, exc)
 
 
 def _ws_peer_label(ws: Any) -> str:

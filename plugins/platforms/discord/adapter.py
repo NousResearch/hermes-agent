@@ -85,6 +85,10 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+# Cron uses the standalone REST sender rather than a live discord.py client. Discord's
+# documented 429 response includes retry_after; honor it before declaring delivery lost.
+_DISCORD_STANDALONE_RATE_LIMIT_MAX_ATTEMPTS = 3
+_DISCORD_STANDALONE_RATE_LIMIT_MAX_SLEEP_SECONDS = 30.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
@@ -6669,6 +6673,32 @@ async def _standalone_response_json_or_error(resp: Any, error_prefix: str):
     return await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES), None
 
 
+def _standalone_retry_after_from_rate_limit_body(body: str) -> Optional[float]:
+    """Return Discord's bounded 429 delay, or ``None`` when the response is malformed."""
+    try:
+        retry_after = float((json.loads(body) or {}).get("retry_after"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if retry_after < 0:
+        return None
+    return min(max(1.0, retry_after), _DISCORD_STANDALONE_RATE_LIMIT_MAX_SLEEP_SECONDS)
+
+
+async def _standalone_post_json_with_rate_limit_retry(session, url: str, headers: dict, payload: dict, req_kw: dict):
+    """POST a standalone text message, retrying only Discord's explicit 429 delay."""
+    for attempt in range(_DISCORD_STANDALONE_RATE_LIMIT_MAX_ATTEMPTS):
+        async with session.post(url, headers=headers, json=payload, **req_kw) as resp:
+            if resp.status != 429:
+                return await _standalone_response_json_or_error(resp, "Discord API error")
+            body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
+        retry_after = _standalone_retry_after_from_rate_limit_body(body)
+        if retry_after is None or attempt + 1 >= _DISCORD_STANDALONE_RATE_LIMIT_MAX_ATTEMPTS:
+            return None, {"error": f"Discord API error (429): {body}"}
+        logger.warning("Discord standalone send rate-limited; retrying after %.1fs (attempt %d/%d)", retry_after, attempt + 1, _DISCORD_STANDALONE_RATE_LIMIT_MAX_ATTEMPTS)
+        await asyncio.sleep(retry_after)
+    raise AssertionError("unreachable")
+
+
 async def _standalone_is_forum(aiohttp, chat_id: str, json_headers: dict, sess_kw: dict, req_kw: dict) -> bool:
     """Forum detection: channel directory → process-local probe cache → memoized ``GET /channels/{id}``."""
     _channel_type = None
@@ -6783,10 +6813,11 @@ async def _standalone_send(
             url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
-                    last_data, err = await _standalone_response_json_or_error(resp, "Discord API error")
-                    if err:
-                        return err
+                last_data, err = await _standalone_post_json_with_rate_limit_retry(
+                    session, url, json_headers, {"content": message}, _req_kw,
+                )
+                if err:
+                    return err
             # One multipart upload per file; a MEDIA:<path> caption rides as the attachment message's
             # content, and caption_pending makes a missing file fall back to a plain message.
             caption_pending = bool(caption)

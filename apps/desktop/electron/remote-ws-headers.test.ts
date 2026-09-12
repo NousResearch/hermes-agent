@@ -147,6 +147,66 @@ describe('registry gateway WebSocket headers', () => {
     expectNoHeadersForNearbyUrls(store, result)
   })
 
+  // The registry path is the reconnect path, so it is where a forwarded proxy
+  // session has to be bound (gateway-ws-cookie.ts). Pin that rememberHeaders
+  // receives the resolved connection alongside the FINAL url, and is awaited.
+  it('hands the resolved connection and final URL to rememberHeaders', async () => {
+    const connection: RegistryGatewayWsConnection = {
+      authMode: 'oauth',
+      baseUrl: 'https://gateway.example',
+      wsUrl: 'wss://gateway.example/api/ws?ticket=stale',
+      headers: accessHeaders,
+      profile: 'research',
+      sharedRemote: true
+    }
+
+    const seen: Array<{ connection?: RegistryGatewayWsConnection; wsUrl: string }> = []
+    let resolveRemember: () => void = () => undefined
+    let signalEntered: () => void = () => undefined
+    const remembered = new Promise<void>(resolve => {
+      resolveRemember = resolve
+    })
+    const entered = new Promise<void>(resolve => {
+      signalEntered = resolve
+    })
+
+    const handler = createRegistryGatewayWsUrlHandler({
+      ensureBackend: vi.fn(async () => connection),
+      mintTicket: vi.fn(async () => 'fresh-ticket'),
+      buildTicketUrl: (baseUrl, ticket) => `${baseUrl.replace(/^https:/, 'wss:')}/api/ws?ticket=${ticket}`,
+      rememberHeaders: async (wsUrl, _headers, resolved) => {
+        seen.push({ connection: resolved, wsUrl })
+        signalEntered()
+        await remembered
+      }
+    })
+
+    const pending = handler({ connectionId: 'cloud-one', profile: 'research' })
+    let settled = false
+    void pending.then(() => {
+      settled = true
+    })
+
+    await entered
+
+    expect(seen).toHaveLength(1)
+
+    // The url must not reach the renderer before its cookie authority is
+    // registered, so the handler stays pending while rememberHeaders does.
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    resolveRemember()
+
+    const result = await pending
+    const expectedUrl = 'wss://gateway.example/api/ws?ticket=fresh-ticket&profile=research'
+
+    expect(result).toBe(expectedUrl)
+    expect(seen[0].wsUrl).toBe(expectedUrl)
+    expect(seen[0].connection?.baseUrl).toBe('https://gateway.example')
+    expect(seen[0].connection?.authMode).toBe('oauth')
+  })
+
   it('sharedRemote false preserves the original URL and exact header behavior', async () => {
     const { handler, store } = createHarness({
       authMode: 'token',

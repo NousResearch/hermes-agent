@@ -13,7 +13,13 @@ interface RegistryGatewayWsUrlDependencies {
   ensureBackend: (connectionId: unknown, profile: unknown) => Promise<RegistryGatewayWsConnection>
   mintTicket: (baseUrl: string, headers?: Record<string, string>) => Promise<string>
   buildTicketUrl: (baseUrl: string, ticket: string) => string
-  rememberHeaders: (wsUrl: string, headers?: Record<string, string>) => void
+  // Receives the resolved connection too, so a cookie-authed gateway can bind
+  // its forwarded proxy session to this exact url (see gateway-ws-cookie.ts).
+  rememberHeaders: (
+    wsUrl: string,
+    headers?: Record<string, string>,
+    connection?: RegistryGatewayWsConnection
+  ) => Promise<void> | void
 }
 
 interface RemoteRequestDetails {
@@ -90,7 +96,7 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
 
     const finalWsUrl = registryGatewayWsUrl(connection, wsUrl)
 
-    dependencies.rememberHeaders(finalWsUrl, connection.headers)
+    await dependencies.rememberHeaders(finalWsUrl, connection.headers, connection)
 
     return finalWsUrl
   }

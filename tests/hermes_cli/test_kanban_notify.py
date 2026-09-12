@@ -897,6 +897,80 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     assert "real.pdf" in documents_uploaded[0]
 
 
+@pytest.mark.asyncio
+async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, monkeypatch):
+    """A review handoff's files are uploaded from the durable staged copy —
+    not the scratch original the reviewer's completion is about to delete."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+    from hermes_cli import kanban_db_workspace as kbw
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="review handoff", assignee="worker1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        ws = kbw.resolve_workspace(kb.get_task(conn, tid))
+        kbw.set_workspace_path(conn, tid, ws)
+        scratch = ws / "report.pdf"
+        scratch.write_bytes(b"%PDF-fake")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        assert kb.request_review(
+            conn, tid, summary="ready for review", artifacts=[str(scratch)],
+            expected_run_id=run_id)
+        handoff = [e for e in kb.list_events(conn, tid) if e.kind == "review_requested"][-1]
+        attachments = kb.list_attachments(conn, tid)
+    finally:
+        conn.close()
+    staged_path = handoff.payload["artifacts"][0]
+    assert staged_path != str(scratch), "handoff must name the staged copy, not the scratch original"
+    assert staged_path == attachments[0].stored_path
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_dispatcher_lock_handle = object()
+
+    fake_adapter = MagicMock()
+    fake_adapter.name = "telegram"
+
+    documents_uploaded: list = []
+
+    async def _send(chat_id, msg, metadata=None):
+        runner._running = False
+
+    async def _send_document(chat_id, file_path, metadata=None, **_kw):
+        documents_uploaded.append(file_path)
+
+    fake_adapter.send = AsyncMock(side_effect=_send)
+    fake_adapter.send_document = AsyncMock(side_effect=_send_document)
+    fake_adapter.send_multiple_images = AsyncMock()
+    from gateway.platforms.base import BasePlatformAdapter
+    fake_adapter.extract_local_files = BasePlatformAdapter.extract_local_files
+
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    assert documents_uploaded == [staged_path]
+    assert str(scratch) not in documents_uploaded
+
+
 # ---------------------------------------------------------------------------
 # Migration backfill: pre-delivery_mode gateway subscriptions keep active wake.
 #

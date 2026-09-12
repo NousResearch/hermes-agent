@@ -2048,6 +2048,7 @@ class _CronRunScope:
             # #53027, #63142.
             async_delivery=False,
             cwd=self.workdir or "",
+            cron_session="",
         )
         for name in _CRON_DELIVERY_VARS:
             _VAR_MAP[name].set("")
@@ -2071,7 +2072,7 @@ class _CronRunScope:
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
 
     def exit(self) -> None:
-        from gateway.session_context import clear_session_vars
+        from gateway.session_context import clear_session_vars, reset_session_vars
         from tools.terminal_tool import clear_session_cwd
 
         clear_session_cwd(self.task_id)
@@ -2082,6 +2083,7 @@ class _CronRunScope:
             exit_non_dispatcher_owned_context(self._non_dispatcher_token)
         for name in _CRON_DELIVERY_VARS:
             self._var_map[name].set("")
+        reset_session_vars()
 
 
 def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:

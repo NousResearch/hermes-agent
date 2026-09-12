@@ -429,7 +429,7 @@ describe('clampForDisplay', () => {
 
     expect(clamped.length).toBeLessThan(oversized.length)
     expect(clamped.startsWith('x'.repeat(MAX_TOOL_RENDER_CHARS))).toBe(true)
-    expect(clamped).toContain('5,000 more characters truncated')
+    expect(clamped).toContain(`${(5_000).toLocaleString()} more characters truncated`)
     expect(clamped).toContain('Copy')
   })
 })

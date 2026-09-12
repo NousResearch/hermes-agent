@@ -62,7 +62,13 @@ def resolve_copilot_token() -> tuple[str, str]:
         if valid:
             return val, env_var
         warning_key = (env_var, val)
-        if warning_key not in _UNSUPPORTED_TOKEN_WARNED:
+        # GH_TOKEN and GITHUB_TOKEN are general GitHub credentials; their
+        # presence does not imply Copilot intent. Keep that expected mismatch
+        # at debug level and reserve user-facing guidance for the explicit
+        # Copilot credential.
+        if env_var != "COPILOT_GITHUB_TOKEN":
+            logger.debug("Token from %s is not supported by Copilot: %s", env_var, msg)
+        elif warning_key not in _UNSUPPORTED_TOKEN_WARNED:
             _UNSUPPORTED_TOKEN_WARNED.add(warning_key)
             logger.warning("Token from %s is not supported: %s", env_var, msg)
         else:

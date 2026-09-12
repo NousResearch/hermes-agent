@@ -71,7 +71,7 @@ class TestResolveToken:
         assert source == ""
         mock_cli.assert_not_called()
 
-    def test_unsupported_token_warns_once_per_process(self, monkeypatch, caplog):
+    def test_generic_github_token_mismatch_does_not_warn(self, monkeypatch, caplog):
         from hermes_cli import copilot_auth
 
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
@@ -85,6 +85,25 @@ class TestResolveToken:
             warnings = [
                 record for record in caplog.records
                 if record.levelname == "WARNING" and "GITHUB_TOKEN" in record.message
+            ]
+            assert warnings == []
+        finally:
+            copilot_auth._UNSUPPORTED_TOKEN_WARNED.clear()
+
+    def test_explicit_unsupported_copilot_token_warns_once(self, monkeypatch, caplog):
+        from hermes_cli import copilot_auth
+
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghp_explicit_classic_pat")
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        copilot_auth._UNSUPPORTED_TOKEN_WARNED.clear()
+
+        try:
+            for _ in range(3):
+                assert copilot_auth.resolve_copilot_token() == ("", "")
+            warnings = [
+                record for record in caplog.records
+                if record.levelname == "WARNING" and "COPILOT_GITHUB_TOKEN" in record.message
             ]
             assert len(warnings) == 1
         finally:

@@ -3,10 +3,12 @@
 import json
 import logging
 import threading
+import tracemalloc
 from pathlib import Path
 from unittest.mock import patch
 
 from tools.registry import (
+    ToolEntry,
     ToolRegistry,
     _MAX_LOGGED_ERROR_CHARS,
     _MAX_TOOL_ERROR_CHARS,
@@ -388,6 +390,41 @@ class TestEmojiMetadata:
 
 
 class TestEntryLookup:
+    def test_lookup_allocation_does_not_scale_with_registry_size(self):
+        """Dispatch lookup must not copy thousands of unrelated MCP entries."""
+        reg = ToolRegistry()
+        reg._tools = {
+            f"mcp__synthetic__tool_{index}": ToolEntry(
+                name=f"mcp__synthetic__tool_{index}",
+                toolset="mcp-synthetic",
+                schema=_make_schema(f"mcp__synthetic__tool_{index}"),
+                handler=_dummy_handler,
+                check_fn=None,
+                requires_env=[],
+                is_async=False,
+                description="synthetic MCP tool",
+                emoji="",
+            )
+            for index in range(10_000)
+        }
+        expected = reg._tools["mcp__synthetic__tool_9999"]
+
+        was_tracing = tracemalloc.is_tracing()
+        if not was_tracing:
+            tracemalloc.start()
+        try:
+            baseline, _peak = tracemalloc.get_traced_memory()
+            tracemalloc.reset_peak()
+            for _ in range(100):
+                assert reg.get_entry(expected.name, scope="/tmp/synthetic-profile") is expected
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            if not was_tracing:
+                tracemalloc.stop()
+
+        assert peak - baseline < 64 * 1024
+        assert tracemalloc.is_tracing() is was_tracing
+
     def test_get_entry_returns_registered_entry(self):
         reg = ToolRegistry()
         reg.register(

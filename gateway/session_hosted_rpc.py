@@ -137,6 +137,14 @@ class HostedRoomAuthorityRPC:
             submission_payload, self, params['prompt'], params.get('attachments'))
         receipt = await self.authority.submit(self.principal, Submission(
             request_id, self.ref, payload, 'queue'))
+        from gateway.hosted_room_input_custody import record_admission_custody
+        try:
+            record_admission_custody(self, request_id, receipt.admission_id)
+        except Exception as exc:
+            # The admission is already accepted. Absent evidence keeps GC
+            # conservative; never turn bookkeeping failure into a retry/mint.
+            import logging
+            logging.getLogger(__name__).warning('Hosted input custody evidence deferred: %s', type(exc).__name__)
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)

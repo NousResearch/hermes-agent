@@ -127,16 +127,24 @@ def capture_native_media(paths):
     return references
 
 
+def validate_media_batch_size(sizes):
+    """Preflight validated manifest sizes before materializing any batch member."""
+    from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
+    try:
+        validate_inbound_media_size(sum(sizes), max_bytes=max(0, get_inbound_media_max_bytes()))
+    except ValueError as exc:
+        raise RuntimeStoreError('invalid_params') from exc
+
+
 def admission_media_references(payload):
     """Native references eligible as deletion candidates after terminal settlement."""
     return list(payload.get('attachments_v1', {}).get('media', ())) + list(
         payload.get('native_text_v1', {}).get('media', ()))
 
 
-def _held_media_digests(db):
+def _held_media_digests(conn):
     # Project only references, not potentially large inline-image/history payloads.
-    with db._read_ctx() as conn:
-        rows = conn.execute('''SELECT status, json_extract(payload_json,
+    rows = conn.execute('''SELECT status, json_extract(payload_json,
             '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media')
             FROM session_admissions WHERE status!='terminal'
             OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL''').fetchall()
@@ -157,7 +165,8 @@ def release_admission_media(db, admission_id):
 
     Native terminal rows retain digest-only receipt evidence. Live native rows
     may still execute, while API images can remain history context even after
-    settlement; those are holders, never additional deletion candidates.
+    settlement; those are holders, never additional deletion candidates. Files
+    working copies and unwitnessed legacy hosted inputs also deny native GC.
     """
     from hermes_state_runtime import get_session_admission
     row = get_session_admission(db, admission_id=admission_id)
@@ -166,20 +175,29 @@ def release_admission_media(db, admission_id):
     mine = admission_media_references(row['payload'])
     if not mine:
         return 0
+    from gateway.hosted_room_input_custody import holds_native_reference, legacy_custody_missing
     root = _media_root()
-    held = _held_media_digests(db)
-    released = 0
-    for reference in mine:
-        path = Path(reference['path'])
-        if reference['sha256'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
-            continue
-        try:
-            path.unlink()
-            released += 1
-            path.parent.rmdir()
-        except OSError:
-            continue
-    return released
+    def collect(conn):
+        # The Files materializer uses this same profile's SQLite writer lock,
+        # so a checked custody copy cannot appear between our check and unlink.
+        if legacy_custody_missing(conn):
+            return 0
+        held = _held_media_digests(conn)
+        released = 0
+        for reference in mine:
+            path = Path(reference['path'])
+            if reference['sha256'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
+                continue
+            if holds_native_reference(db.db_path, reference):
+                continue
+            try:
+                path.unlink()
+                released += 1
+                path.parent.rmdir()
+            except OSError:
+                continue
+        return released
+    return db._execute_write(collect)
 
 
 def restore_native_media(references):

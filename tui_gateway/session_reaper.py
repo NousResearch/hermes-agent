@@ -157,7 +157,7 @@ def _session_is_lru_evictable(sid: str, session: dict) -> bool:
     ready = session.get("agent_ready")
     if ready is not None and not ready.is_set() and not session.get("lazy"):
         return False
-    return _transport_is_dead(session.get("transport"))
+    return _transport_is_dead(session.get("transport")) and not _session_review_keeps_alive(session)
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:

@@ -683,7 +683,8 @@ def _dispatch_authorized_once(
     if ref.name == "memory":
         agent._turns_since_memory = 0
     elif ref.name == "skill_manage":
-        agent._iters_since_skill = 0
+        from agent.review_cadence import reset_skill_review_cadence
+        reset_skill_review_cadence(agent)
 
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
     return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))

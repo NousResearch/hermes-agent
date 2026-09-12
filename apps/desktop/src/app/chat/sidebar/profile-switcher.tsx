@@ -984,7 +984,11 @@ function FleetRestGroup({
         <ProfilePill
           active={false}
           connectionId={group.connectionId}
-          glyph="home"
+          // The at-rest "This device" default reads as a Home/default-profile
+          // shortcut if it shares the home glyph — but picking it can silently
+          // kick off a first-launch local install (#102826). A distinct glyph
+          // signals "switch device", not "go to default profile".
+          glyph={group.kind === 'local' ? 'device-desktop' : 'home'}
           label={p.fleet.onGateway(group.defaultAgent.profile, group.label)}
           muted
           onSelect={() => onSelect(group.defaultAgent)}

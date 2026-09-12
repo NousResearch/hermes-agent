@@ -218,9 +218,10 @@ $GAPI calendar delete EVENT_ID
 ### Drive
 
 ```bash
-# Search existing files
+# Search existing files (trashed files are excluded, like Drive's own search)
 $GAPI drive search "quarterly report" --max 10
 $GAPI drive search "mimeType='application/pdf'" --raw-query --max 5
+$GAPI drive search "quarterly report" --include-trashed
 
 # Get metadata for a single file
 $GAPI drive get FILE_ID

@@ -135,11 +135,11 @@ def test_persist_personality_roundtrip(tmp_path):
     home.mkdir()
     with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
         assert persist_personality("KAWAII ") is True
-        raw = yaml.safe_load((home / "config.yaml").read_text())
+        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
         assert raw["display"]["personality"] == "kawaii"
 
         assert persist_personality("none") is True
-        raw = yaml.safe_load((home / "config.yaml").read_text())
+        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
         assert raw["display"]["personality"] == ""
 
 
@@ -148,10 +148,10 @@ def test_persist_personality_never_touches_system_prompt(tmp_path):
     home.mkdir()
     (home / "config.yaml").write_text(
         yaml.safe_dump({"agent": {"system_prompt": "manual forever"}})
-    )
+    , encoding="utf-8")
     with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
         assert persist_personality("kawaii") is True
-        raw = yaml.safe_load((home / "config.yaml").read_text())
+        raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
         assert raw["agent"]["system_prompt"] == "manual forever"
         assert raw["display"]["personality"] == "kawaii"
 
@@ -160,7 +160,7 @@ def test_persist_personality_never_touches_system_prompt(tmp_path):
 
 
 def _run_migration(home, cfg):
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg, allow_unicode=True))
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
     with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
         from hermes_cli.config import migrate_config, read_raw_config
 

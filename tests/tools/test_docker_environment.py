@@ -56,6 +56,7 @@ def _make_dummy_env(**kwargs):
         persist_across_processes=kwargs.get("persist_across_processes", True),
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
+        snap_compat=kwargs.get("snap_compat", False),
     )
 
 
@@ -185,9 +186,12 @@ def test_init_env_args_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
-    args_str = " ".join(args)
 
-    assert "DATABASE_URL=value_from_dotenv" in args_str
+    assert "-e" in args and "DATABASE_URL" in args
+    # Value must NOT be in argv (world-readable /proc/*/cmdline, #96268) —
+    # it travels via the docker client subprocess env instead.
+    assert not any("value_from_dotenv" in a for a in args)
+    assert env._init_env_values["DATABASE_URL"] == "value_from_dotenv"
 
 
 def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
@@ -198,10 +202,10 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
-    args_str = " ".join(args)
 
-    assert "DATABASE_URL=value_from_shell" in args_str
-    assert "value_from_dotenv" not in args_str
+    assert "DATABASE_URL" in args
+    assert env._init_env_values["DATABASE_URL"] == "value_from_shell"
+    assert not any("value_from_dotenv" in a for a in args)
 
 
 def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
@@ -219,9 +223,9 @@ def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
     args = env._build_init_env_args()
 
     # Assert on the resolved value, not the printed -e flag: the disk value
-    # must win and a blank "MY_SECRET=" flag must never be emitted.
-    assert "MY_SECRET=value_from_dotenv" in args
-    assert "MY_SECRET=" not in args
+    # must win and a blank value must never be forwarded.
+    assert "MY_SECRET" in args
+    assert env._init_env_values["MY_SECRET"] == "value_from_dotenv"
 
 
 def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
@@ -239,8 +243,9 @@ def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
         ss.reset_secret_scope(token)
         ss.set_multiplex_active(False)
 
-    assert "SERVICE_TOKEN=token-for-routed-profile" in args
-    assert "SERVICE_TOKEN=token-for-default" not in args
+    assert "SERVICE_TOKEN" in args
+    assert env._init_env_values["SERVICE_TOKEN"] == "token-for-routed-profile"
+    assert not any("token-for-default" in a for a in args)
 
 
 def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
@@ -258,8 +263,9 @@ def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
         ss.reset_secret_scope(token)
         ss.set_multiplex_active(False)
 
-    assert "SERVICE_TOKEN=token-for-default" not in args
+    assert not any("token-for-default" in a for a in args)
     assert "SERVICE_TOKEN" not in args
+    assert "SERVICE_TOKEN" not in env._init_env_values
 
 
 def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
@@ -273,7 +279,7 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     monkeypatch.setattr(
         docker_env,
         "_popen_bash",
-        lambda cmd, stdin_data=None: calls.append((cmd, stdin_data)) or object(),
+        lambda cmd, stdin_data=None, **kw: calls.append((cmd, stdin_data, kw)) or object(),
     )
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-profile-a"})
@@ -290,9 +296,16 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
         ss.set_multiplex_active(False)
 
     first_cmd = calls[0][0]
-    assert "SERVICE_TOKEN=token-for-profile-a" in first_cmd
+    # Name-only flag in argv; the value rides in the client subprocess env
+    # (issue #96268: keep secrets out of world-readable /proc/*/cmdline).
+    assert "SERVICE_TOKEN" in first_cmd
+    assert not any("token-for-profile-a" in str(a) for a in first_cmd)
+    first_env = calls[0][2].get("env") or {}
+    assert first_env.get("SERVICE_TOKEN") == "token-for-profile-a"
     second_cmd = calls[1][0]
-    assert "SERVICE_TOKEN=token-for-profile-a" not in second_cmd
+    second_env = (calls[1][2].get("env") or {})
+    assert second_env.get("SERVICE_TOKEN") != "token-for-profile-a"
+    assert not any("token-for-profile-a" in str(a) for a in second_cmd)
     assert "unset SERVICE_TOKEN" in second_cmd[-1]
 
 
@@ -312,15 +325,19 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
     monkeypatch.setenv("EXPLICIT_TOKEN", "token-for-default")
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
 
-    def _run_fake_docker_exec(cmd, stdin_data=None):
+    def _run_fake_docker_exec(cmd, stdin_data=None, **kwargs):
         """Execute the generated docker exec command in a real local bash."""
         container_index = cmd.index(env._container_id)
+        # Name-only -e flags (#96268): values come from the client env kwarg.
+        client_env = kwargs.get("env") or os.environ
         child_env = os.environ.copy()
         index = 2
         while index < container_index:
             assert cmd[index] == "-e"
-            key, value = cmd[index + 1].split("=", 1)
-            child_env[key] = value
+            key = cmd[index + 1]
+            assert "=" not in key, f"secret value leaked into argv: {key}"
+            if key in client_env:
+                child_env[key] = client_env[key]
             index += 2
         assert cmd[container_index + 1 : container_index + 3] == ["bash", "-c"]
         return subprocess.Popen(
@@ -362,7 +379,7 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
 
 
 def test_docker_env_appears_in_run_command(monkeypatch):
-    """Explicit docker_env values should be passed via -e at docker run time."""
+    """Explicit docker_env values pass via name-only -e + client env (#96268)."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
 
@@ -370,19 +387,23 @@ def test_docker_env_appears_in_run_command(monkeypatch):
 
     run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
     assert run_calls, "docker run should have been called"
-    run_args = run_calls[0][0]
+    run_args, run_kwargs = run_calls[0]
     run_args_str = " ".join(run_args)
-    assert "SSH_AUTH_SOCK=/run/user/1000/ssh-agent.sock" in run_args_str
-    assert "GNUPGHOME=/root/.gnupg" in run_args_str
+    # Names in argv, values ONLY in the client subprocess env (#96268).
+    assert "SSH_AUTH_SOCK" in run_args and "GNUPGHOME" in run_args
+    assert "/run/user/1000/ssh-agent.sock" not in run_args_str
+    assert "/root/.gnupg" not in run_args_str
+    client_env = run_kwargs.get("env") or {}
+    assert client_env.get("SSH_AUTH_SOCK") == "/run/user/1000/ssh-agent.sock"
+    assert client_env.get("GNUPGHOME") == "/root/.gnupg"
 
 
 def _node_options_from_run(calls):
     run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
     assert run_calls, "docker run should have been called"
-    args = run_calls[0][0]
-    for i, a in enumerate(args):
-        if a == "-e" and i + 1 < len(args) and args[i + 1].startswith("NODE_OPTIONS="):
-            return args[i + 1].split("=", 1)[1]
+    args, kwargs = run_calls[0]
+    if "NODE_OPTIONS" in args and "-e" in args:
+        return (kwargs.get("env") or {}).get("NODE_OPTIONS")
     return None
 
 
@@ -415,10 +436,10 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
 
     args = env._build_init_env_args()
-    args_str = " ".join(args)
 
-    assert "MY_KEY=dynamic_value" in args_str
-    assert "MY_KEY=static_value" not in args_str
+    assert "MY_KEY" in args
+    assert env._init_env_values["MY_KEY"] == "dynamic_value"
+    assert not any("static_value" in a for a in args)
 
 
 def test_normalize_env_dict_filters_invalid_keys():
@@ -463,6 +484,27 @@ def test_security_args_include_setuid_setgid_for_privdrop(monkeypatch):
     }
     assert "SETUID" in added, "SETUID cap missing — image privilege-drop will fail"
     assert "SETGID" in added, "SETGID cap missing — image privilege-drop will fail"
+
+
+def test_snap_compat_drops_only_init_and_no_new_privileges(monkeypatch):
+    """#9730: snap-packaged Docker under AppArmor turns ``--init`` and ``no-new-privileges`` into
+    "exec: operation not permitted" for every process in the container. The opt-out drops exactly
+    those two flags; cap-drop, tmpfs hardening and the privdrop caps are unchanged."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    def run_args(**kw):
+        calls = _mock_subprocess_run(monkeypatch)
+        _make_dummy_env(**kw)
+        return next(c[0] for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run")
+
+    default, compat = run_args(), run_args(snap_compat=True)
+    assert "--init" in default and "no-new-privileges" in default
+    assert "--init" not in compat and "no-new-privileges" not in compat
+
+    def strip(argv):  # everything except the two flags and the random container name
+        return [a for a in argv if a not in ("--init", "--security-opt", "no-new-privileges") and not a.startswith("hermes-")]
+
+    assert strip(default) == strip(compat)
 
 
 # ── run_as_host_user tests ────────────────────────────────────────
@@ -794,12 +836,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
             if sub == "ps":
                 if ps_state is None:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-                # 3-field format: ID, State, EgressLabel.  When egress_label
-                # is "off" the code parses all three fields; <no value> means
-                # the container has no egress label, which is acceptable.
+                # 2-field format: ID, State. The egress posture is enforced
+                # by the label filters on the ps command itself (#99213).
                 return subprocess.CompletedProcess(
                     cmd, 0,
-                    stdout=f"reused-cid\t{ps_state}\t<no value>\n",
+                    stdout=f"reused-cid\t{ps_state}\n",
                     stderr="",
                 )
             if sub == "start":
@@ -885,6 +926,58 @@ def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
         if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
     ]
     assert run_invocations, "egress-enabled containers require a fresh docker run"
+
+
+def test_reuse_probe_format_is_podman_compatible(monkeypatch):
+    """Podman does not implement the Docker-only ``{{.Label "key"}}`` template
+    function — a reuse probe using it fails wholesale (``podman ps`` exits
+    125) and cross-process container reuse is silently disabled on every
+    default-config Podman host (#99213).  The probe must stick to fields both
+    runtimes implement (``{{.ID}}``, ``{{.State}}``) and express the egress
+    posture via label FILTERS instead."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/podman")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="podman version", stderr="")
+            if sub == "ps":
+                if "--format" in cmd:
+                    fmt = cmd[cmd.index("--format") + 1]
+                    if "{{.Label" in fmt:
+                        # Mirror podman's real failure mode
+                        return subprocess.CompletedProcess(
+                            cmd, 125, stdout="",
+                            stderr="Error: can't evaluate field Label in type struct",
+                        )
+                    assert any(
+                        str(part) == "label=hermes-egress=off" for part in cmd
+                    ), "egress=off posture must be expressed as a label filter"
+                    return subprocess.CompletedProcess(
+                        cmd, 0, stdout="podman-cid\trunning\n", stderr="",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="podman-reuse")
+
+    assert env._container_id == "podman-cid", (
+        f"podman backend must reuse the labeled container, got {env._container_id!r}"
+    )
+    run_invocations = [
+        c for c in calls
+        if isinstance(c, list) and len(c) >= 2 and c[1] == "run"
+    ]
+    assert not run_invocations, "docker run should be skipped on podman reuse"
 
 
 def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
@@ -1004,10 +1097,11 @@ def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
 
 
 def test_find_reusable_handles_empty_label_string(monkeypatch):
-    """Docker CLI v29.5.3 returns an empty string (NOT ``<no value>``)
-    for absent labels.  The trailing tab produces ``cid\\trunning\\t\\n``;
-    we must not strip the trailing tab or the three-field parser drops the
-    container.  Regression test for the egilewski review on #48073."""
+    """Robustness against trailing-tab sloppiness in ps output: the
+    ``ID\\tState\\t\\n`` line (Docker CLI v29.5.3 emitted this shape for
+    absent labels when the probe still carried a third column) must not make
+    the parser drop the container — the ID is still parsed and the container
+    still reused. Regression test for the egilewski review on #48073."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
 
@@ -1016,7 +1110,7 @@ def test_find_reusable_handles_empty_label_string(monkeypatch):
             if cmd[1] == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
             if cmd[1] == "ps":
-                # Docker v29.5.3: absent label → empty string, trailing tab
+                # Trailing tab after the State column
                 return subprocess.CompletedProcess(
                     cmd, 0,
                     stdout="safe-cid\trunning\t\n",
@@ -1028,7 +1122,7 @@ def test_find_reusable_handles_empty_label_string(monkeypatch):
 
     env = _make_dummy_env(task_id="empty-label")
     assert env._container_id == "safe-cid", (
-        f"container with empty-string label should be reused, got {env._container_id!r}"
+        f"container with a trailing tab in ps output should be reused, got {env._container_id!r}"
     )
 
 
@@ -1129,6 +1223,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     _install_fake_thread(monkeypatch)
 
     from tools import terminal_tool
+    from tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
     container_id = env._container_id
@@ -1144,7 +1239,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
 
     try:
-        terminal_tool.cleanup_vm("session-close-test")
+        cleanup_vm("session-close-test")
     finally:
         terminal_tool._active_environments.pop("session-close-test", None)
 
@@ -1646,3 +1741,71 @@ def test_extra_args_set_shm_size_helper():
     assert docker_env._extra_args_set_shm_size(None) is False
     # non-string entries must not crash (config.yaml can be malformed)
     assert docker_env._extra_args_set_shm_size([42, None, "--shm-size=1g"]) is True
+
+
+# ── issue #96268: secrets must never appear in docker argv ────────────
+
+
+def test_forwarded_secret_values_never_in_argv(monkeypatch):
+    """Regression #96268: values must not ride in `-e KEY=VALUE` argv.
+
+    /proc/<pid>/cmdline is world-readable on Linux, so any forwarded secret
+    placed in the docker client's argv is visible to every local user via
+    plain `ps`. Names go in argv (`-e KEY`); values go in the client
+    subprocess env (owner-only /proc/<pid>/environ).
+    """
+    secret = "s3cr3t-gitlab-token-value"
+    env = _make_execute_only_env(["GITLAB_TOKEN"])
+    monkeypatch.setenv("GITLAB_TOKEN", secret)
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+
+    # init path
+    init_args = env._build_init_env_args()
+    assert "GITLAB_TOKEN" in init_args
+    assert all(secret not in a for a in init_args)
+    assert env._init_env_values["GITLAB_TOKEN"] == secret
+
+    # runtime path
+    run_args, _unsets, values = env._build_runtime_env_args_with_unsets()
+    assert "GITLAB_TOKEN" in run_args
+    assert all(secret not in a for a in run_args)
+    assert values["GITLAB_TOKEN"] == secret
+
+    # _run_bash must put the value into the spawned client's env kwarg
+    calls = []
+    monkeypatch.setattr(
+        docker_env,
+        "_popen_bash",
+        lambda cmd, stdin_data=None, **kw: calls.append((cmd, kw)) or object(),
+    )
+    env._init_env_args = init_args
+    env._init_env_values = dict(env._init_env_values)
+    env._run_bash("true", login=True)
+    cmd, kw = calls[0]
+    assert all(secret not in str(a) for a in cmd)
+    assert (kw.get("env") or {}).get("GITLAB_TOKEN") == secret
+
+
+def test_docker_run_secret_values_never_in_argv(monkeypatch):
+    """Regression #96268 for the `docker run -d` container-start path."""
+    secret = "run-time-secret-value"
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(env={"MY_TOKEN": secret})
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    args, kwargs = run_calls[0]
+    assert "MY_TOKEN" in args
+    assert all(secret not in str(a) for a in args)
+    assert (kwargs.get("env") or {}).get("MY_TOKEN") == secret
+
+
+def test_docker_env_warnings_never_echo_values(caplog):
+    """Values in docker_env can be secrets; a rejected entry is logged by key and type only (#102308)."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
+        docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
+    assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text

@@ -11,9 +11,10 @@ def test_fires_on_meta_contributor():
     assert isinstance(w, DataTrainingWarning)
     assert w.model == "muse-spark-1.2-contributor"
     assert "train" in w.message.lower()
-    assert "muse-spark-1.2" in w.message  # points to the no-training alternative
-    # Aligns with Meta's own pricing doc language + figures.
-    assert "$0.10" in w.message and "$0.20" in w.message and "$0.002" in w.message
+    assert "-contributor" in w.message.lower() or "contributor" in w.message.lower()  # mentions the tier
+    # Points to Meta's live pricing page instead of hardcoding prices.
+    assert "pricing and rate limits" in w.message.lower()
+    assert "$0.10" not in w.message and "$0.20" not in w.message and "$0.002" not in w.message
     assert "prompts and completions" in w.message.lower()
     assert "dev.meta.ai/docs/pricing-rate-limits" in w.message
 

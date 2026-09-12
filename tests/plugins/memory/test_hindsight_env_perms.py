@@ -65,12 +65,12 @@ def test_rewrite_tightens_existing_world_readable_profile_env():
 def test_secret_file_removed_when_permission_validation_fails(monkeypatch):
     """If the post-write permission check cannot verify 0600, the plaintext
     key file must not be left behind."""
-    import plugins.memory.hindsight as hs
+    import plugins.memory.hindsight.embedded as hs_embedded
 
     def _fail_validation(profile_env):
         raise PermissionError(f"not owner-only: {profile_env}")
 
-    monkeypatch.setattr(hs, "_validate_profile_env_permissions", _fail_validation)
+    monkeypatch.setattr(hs_embedded, "_validate_profile_env_permissions", _fail_validation)
 
     with pytest.raises(PermissionError):
         _materialize_embedded_profile_env(_CONFIG, llm_api_key="sk-doomed")

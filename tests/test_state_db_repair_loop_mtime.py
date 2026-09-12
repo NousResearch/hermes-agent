@@ -29,18 +29,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import hermes_state
-from hermes_state import (
-    _MAX_MALFORMED_BACKUPS,
-    _MAX_PERSISTENT_REPAIR_ATTEMPTS,
-    _REPAIR_BACKUP_MIN_FREE_BYTES,
-    _backup_content_identity,
-    _backup_db_file,
-    _db_fingerprint,
-    _existing_malformed_backups,
-    _persistent_repair_attempts_exhausted,
-    _record_repair_outcome,
-    _repair_backup_headroom_bytes,
-)
+import hermes_state_repair
+from hermes_state_repair import _MAX_MALFORMED_BACKUPS, _MAX_PERSISTENT_REPAIR_ATTEMPTS, _REPAIR_BACKUP_MIN_FREE_BYTES, _backup_content_identity, _backup_db_file, _db_fingerprint, _existing_malformed_backups, _persistent_repair_attempts_exhausted, _record_repair_outcome, _repair_backup_headroom_bytes
 
 
 def _damaged_db(tmp_path: Path, size: int = 200_000) -> Path:
@@ -255,7 +245,7 @@ def test_repair_aborts_when_backup_refused_for_disk(tmp_path):
         "Usage", (), {"total": 0, "used": 0, "free": _REPAIR_BACKUP_MIN_FREE_BYTES // 2}
     )()
     with patch("shutil.disk_usage", return_value=tight):
-        report = hermes_state.repair_state_db_schema(db)
+        report = hermes_state_repair.repair_state_db_schema(db)
     assert not report.get("repaired")
     assert "free" in (report.get("error") or "").lower()
 

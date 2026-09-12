@@ -165,8 +165,10 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
             if not isinstance(entry, dict):
                 return False
             kind = entry.get("kind", default_kind)
+            if kind != "gateway":
+                continue
             profile = entry.get("profile")
-            if kind != "gateway" or not profile or profile == "unknown":
+            if not profile or profile == "unknown":
                 return False
             owed.add((kind, profile))
         if not owed:
@@ -203,7 +205,7 @@ def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
     print("⚠ A previous `hermes update` pulled new code but did not restart running gateways.", file=stream)
     print("  Gateways may still be serving pre-update modules (mixed sys.modules).", file=stream)
     if startup:
-        print("  Run `hermes update` or `hermes gateway restart`.", file=stream)
+        print("  Run `hermes update` to clear this.", file=stream)
 
 
 def _warn_pending_fleet_restart_on_startup() -> None:

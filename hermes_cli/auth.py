@@ -1391,17 +1391,31 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
     return None
 
 
+def _is_ladder_provider(normalized: str) -> bool:
+    """A provider identity ``resolve_provider`` returns as-is: registry entries plus the two
+    identities that live outside the registry (OpenRouter, the custom-endpoint class)."""
+    return normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY
+
+
 def _config_model_provider() -> Tuple[Any, Optional[str]]:
-    """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names a registry provider.
+    """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names something the
+    "auto" ladder can answer with: a registry provider, ``openrouter``, or any spelling that
+    normalises to ``custom`` (``custom:<name>``, ``llamacpp``, ``ollama``, ``vllm`` …).
 
     The normal chat/gateway path resolves config.provider upstream in resolve_requested_provider();
-    this is the safety net for the lone direct caller (main.py resolve_provider("auto"))."""
+    this is rung 2 of ``resolve_provider("auto")`` (main.py, free_tier_bootstrap, status banners)."""
     try:
         from hermes_cli.config import load_config
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
-        return model_cfg, (provider if provider in PROVIDER_REGISTRY else None)
+        # ``custom:<name>`` folds to ``custom`` HERE only: an explicit ``resolve_provider("custom:x")``
+        # request is answered by _resolve_named_custom_runtime before this rung and a miss must
+        # still error with a hint, whereas a config pin only has to prove "a provider is configured".
+        if provider.startswith("custom:"):
+            provider = "custom"
+        provider = _plugin_aliases().get(provider, provider)
+        return model_cfg, (provider if _is_ladder_provider(provider) else None)
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
         return None, None
@@ -1461,7 +1475,7 @@ def resolve_provider(
     normalized = (requested or "auto").strip().lower()
     normalized = _plugin_aliases().get(normalized, normalized)
 
-    if normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY:
+    if _is_ladder_provider(normalized):
         return normalized
     if normalized != "auto":
         hint = _get_config_hint_for_unknown_provider(normalized)

@@ -1792,16 +1792,19 @@ class AsyncBedrockAuxiliaryClient(_AsyncAuxiliaryClientBase):
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     """True if ``base_url`` speaks Anthropic Messages, not OpenAI chat.completions.
 
-    Mirrors ``hermes_cli.runtime_provider._detect_api_mode_for_url`` so aux and main agree: any
-    ``/anthropic`` URL (MiniMax, Zhipu, LiteLLM), ``api.kimi.com/coding`` (chat 404s), ``api.anthropic.com``.
+    Any ``/anthropic`` URL (MiniMax, Zhipu, LiteLLM), ``api.anthropic.com``, and Kimi Coding
+    Plan's bare ``/coding`` path (its /chat/completions 404s — #77256). The ``/coding/v1``
+    subpath is Kimi's OpenAI-compatible mount and must stay on chat.completions, so the kimi
+    match is the exact ``/coding`` path (trailing slash tolerated), never a substring.
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     if not normalized:
         return False
-    if urlparse(normalized).path.rstrip("/").endswith(("/anthropic", "/anthropic/v1")):
+    path = urlparse(normalized).path.rstrip("/")
+    if path.endswith(("/anthropic", "/anthropic/v1")):
         return True
     hostname = base_url_hostname(normalized)
-    return hostname == "api.anthropic.com" or bool(hostname == "api.kimi.com" and "/coding" in normalized)
+    return hostname == "api.anthropic.com" or (hostname == "api.kimi.com" and path == "/coding")
 
 
 def _maybe_wrap_anthropic(

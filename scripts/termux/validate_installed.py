@@ -78,6 +78,17 @@ def tui_smoke(launcher: Path, env: dict[str, str], cwd: Path) -> None:
             os.close(master)
 
 
+def validate_update_refusal(project_root: Path, result: subprocess.CompletedProcess) -> None:
+    from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
+
+    # Commit artifacts have no update channel, even when installed through dpkg.
+    commit_build = is_commit_build(project_root)
+    expected = COMMIT_BUILD_UPDATE_MESSAGE if commit_build else "pkg upgrade hermes-agent"
+    if result.returncode != 2 or expected not in result.stdout + result.stderr:
+        raise RuntimeError(f"wrong updater refusal ({result.returncode}): {result.stdout}\n{result.stderr}")
+    print("COMMIT_BUILD_UPDATE_REFUSAL_OK" if commit_build else "APT_UPDATE_REFUSAL_OK", flush=True)
+
+
 def main() -> None:
     prefix = Path(os.environ["PREFIX"])
     root = prefix / "lib/hermes-agent"
@@ -131,9 +142,7 @@ def main() -> None:
             "assert not issues, issues; print('PM_RUNTIME_TOOLS_OK')",
         ], env, home)
         result = subprocess.run([str(launcher), "update"], env=env, cwd=home, capture_output=True, text=True, timeout=60)
-        if result.returncode == 0 or "pkg upgrade hermes-agent" not in result.stdout + result.stderr:
-            raise RuntimeError(f"wrong updater refusal ({result.returncode}): {result.stdout}\n{result.stderr}")
-        print("APT_UPDATE_REFUSAL_OK", flush=True)
+        validate_update_refusal(root / "app", result)
         tui_smoke(launcher, env, home)
         print("INSTALLED_BUNDLE_VALIDATION_OK", flush=True)
 

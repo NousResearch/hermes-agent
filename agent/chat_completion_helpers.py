@@ -40,6 +40,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.clarify_debug import log_clarify_debug
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
@@ -2846,6 +2847,13 @@ class _StreamingCall(StreamingWaitMonitor):
                 _flush_pending_stream_text()
                 for tc_delta in delta_tool_calls:
                     name = tool_calls.feed(tc_delta)
+                    function = getattr(tc_delta, "function", None)
+                    arguments = getattr(function, "arguments", None) if function else None
+                    if arguments and (
+                        name == "clarify"
+                        or any(entry["function"]["name"] == "clarify" for entry in tool_calls_acc.values())
+                    ):
+                        log_clarify_debug("raw_provider", arguments)
                     if name is not None:
                         self._emit_tool_started(name)
                         # Lets the stub-builder warn if streaming dies before the args
@@ -2889,6 +2897,8 @@ class _StreamingCall(StreamingWaitMonitor):
         for idx in sorted(tool_calls_acc):
             tc = tool_calls_acc[idx]
             arguments = tc["function"]["arguments"]
+            if tc["function"]["name"] == "clarify":
+                log_clarify_debug("after_streaming_accumulate", arguments)
             if arguments and arguments.strip():
                 try:
                     json.loads(arguments)

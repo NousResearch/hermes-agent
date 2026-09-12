@@ -817,7 +817,11 @@ def stream_converse_with_callbacks(
                 if on_text_delta and not has_tool_use:
                     on_text_delta(text)
             elif "toolUse" in delta and current_tool is not None:
-                current_tool["input_json"] += delta["toolUse"].get("input", "")
+                chunk = delta["toolUse"].get("input", "")
+                if current_tool.get("name") == "clarify":
+                    from agent.clarify_debug import log_clarify_debug
+                    log_clarify_debug("bedrock_delta_chunk", chunk)
+                current_tool["input_json"] += chunk
             elif "reasoningContent" in delta:
                 reasoning = delta["reasoningContent"]
                 if isinstance(reasoning, dict) and (reasoning.get("text", "") or _encode_redacted(reasoning.get("redactedContent"))):
@@ -825,6 +829,9 @@ def stream_converse_with_callbacks(
                     parts.absorb_reasoning(reasoning, block, on_reasoning_delta)
         elif "contentBlockStop" in event:
             if current_tool is not None:
+                if current_tool.get("name") == "clarify":
+                    from agent.clarify_debug import log_clarify_debug
+                    log_clarify_debug("bedrock_input_json_complete", current_tool["input_json"])
                 input_dict = _parse_tool_args(current_tool["input_json"])  # "" → {} via the JSON-error path
                 parts.tool_calls.append(_tool_call_ns(current_tool["toolUseId"], current_tool["name"], input_dict))
                 if current_block_index is not None and current_block_index in stream_blocks:

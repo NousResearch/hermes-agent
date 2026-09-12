@@ -882,8 +882,14 @@ The stamp always reflects **current** auto-fire health: it is overwritten by new
 
 ### Local missed-run policy
 
-The local ticker normally runs each overdue recurring job **once**, not once per
-missed slot. To avoid catch-up load after a planned gateway stop, set:
+If the gateway was down (or restarting) when a recurring job's scheduled time
+passed, the job **catches up once** when the scheduler is back: a slot missed
+inside a restart gap fires exactly one time, a slot that already ran before the
+restart is never run again, and a long outage collapses into a single run rather
+than one run per missed slot. Paused jobs never catch up. Each catch-up shows in
+`hermes cron list` as `⚠ late` / `⚠ catch-up after missed fire`.
+
+To avoid that catch-up load after a planned gateway stop, set:
 
 ```yaml
 cron:

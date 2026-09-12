@@ -188,7 +188,15 @@ TOOL_GATEWAY_DOMAIN=your-domain.example.com
 TOOL_GATEWAY_SCHEME=https
 TOOL_GATEWAY_USER_TOKEN=your-token        # normally auto-populated from Portal login
 FIRECRAWL_GATEWAY_URL=https://...         # override one endpoint specifically
+TOOL_GATEWAY_URL=http://127.0.0.1:3009    # pin the shared managed origin exactly
+CONNECTOR_GATEWAY_URL=http://127.0.0.1:3009 # pin the connectors origin exactly
 ```
+
+Every host is named `{label}-gateway.<domain>`, and `TOOL_GATEWAY_DOMAIN` / `TOOL_GATEWAY_SCHEME` reshape **all** of them; a `{LABEL}_GATEWAY_URL` pins one host exactly and skips the derivation:
+
+- `{vendor}-gateway.<domain>` — per-vendor passthroughs (Firecrawl, BFL, ...).
+- `tool-gateway.<domain>` — the shared managed origin: the vendors hosted on the gateway itself plus media uploads.
+- `connector-gateway.<domain>` — the connectors API (`/v1/connectors/*`), its own deployment. See [Tool Search → Connectors](./tool-search.md#connectors-remote-tools).
 
 These knobs exist for custom infrastructure setups (enterprise deployments, dev environments). Regular subscribers never set them.
 

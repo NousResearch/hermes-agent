@@ -305,7 +305,9 @@ def _home_chat_id(config, platform, platform_name):
     home = config.get_home_channel(platform)
     if home:
         return home.chat_id, None
-    wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip() if platform_name == "weixin" else ""
+    # Home channel is a per-profile target like the token beside it: a raw environ read would post a
+    # multiplexed secondary's message into the default profile's Weixin chat.
+    wx_home = (get_secret("WEIXIN_HOME_CHANNEL", "") or "").strip() if platform_name == "weixin" else ""
     if wx_home:
         return wx_home, None
     home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(platform_name, f"{platform_name.upper()}_HOME_CHANNEL")

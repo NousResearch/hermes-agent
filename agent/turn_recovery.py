@@ -10,6 +10,7 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -60,6 +61,17 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
             except Exception:
                 pass
     text = " ".join(parts).lower()
+    # OpenAI Codex Responses reports a tile-patch budget (ceil(w/32)×ceil(h/32))
+    # instead of a pixel ceiling. A square image is the worst case for the budget,
+    # so a per-side cap of isqrt(limit)*32 px keeps isqrt(limit)² ≤ limit — for the
+    # 30000-patch ceiling that is 5536 px. Without this the caller falls back to
+    # 8000 px and a 6000 px image that already exceeds the budget is skipped (#106337).
+    if "patches after processing" in text:
+        match = re.search(r"exceeding the limit of\s*(\d{2,7})", text)
+        if not match:
+            return None
+        max_dimension = math.isqrt(int(match.group(1))) * 32
+        return max_dimension if 512 <= max_dimension <= 8000 else None
     if "image" not in text or "dimension" not in text or "max allowed size" not in text:
         return None
     match = re.search(r"max allowed size(?:\s+for [^:]+)?:\s*(\d{3,5})\s*pixels?", text)
@@ -636,6 +648,19 @@ def _print_nonretryable_auth_guidance(
         _vlines(agent, "      • Check credits: https://openrouter.ai/settings/credits")
 
 
+def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str:
+    """Copy for a Nous free-tier refusal the classifier parsed (``welcome_refusal`` /
+    ``welcome_route`` in ``error_context``); empty for every other error."""
+    ctx = getattr(classified, "error_context", None) or {}
+    refusal, route = ctx.get("welcome_refusal"), ctx.get("welcome_route")
+    if not refusal and not route:
+        return ""
+    from hermes_cli.anon_auth import welcome_refusal_copy, welcome_route_refusal_copy
+    if refusal:
+        return welcome_refusal_copy(refusal, model=str(model or ""), in_chat=in_chat)
+    return welcome_route_refusal_copy(str(route), in_chat=in_chat)
+
+
 # Terminal status label per non-retryable reason (default names the HTTP status).
 _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "Provider safety filter blocked this request",
@@ -671,7 +696,12 @@ def nonretryable_client_error_result(
         f"   🔌 Provider: {provider}  Model: {model}",
         f"   🌐 Endpoint: {base_url}",
     )
-    if classified.is_auth or classified.reason == FailoverReason.billing:
+    _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
+    if _welcome_hint:
+        # A free-tier gate or a wrong-host refusal: the way forward is a sign-in or another
+        # provider, never the key/credits advice below.
+        _vlines(agent, f"   💡 {_welcome_hint}")
+    elif classified.is_auth or classified.reason == FailoverReason.billing:
         _print_nonretryable_auth_guidance(
             agent, classified, status_code=status_code, provider=provider, base_url=base_url, model=model
         )
@@ -726,7 +756,18 @@ def nonretryable_client_error_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
-    return _failed_turn_result(_nonretryable_summary, messages, api_call_count, _nonretryable_summary)
+    _final_response = _nonretryable_summary
+    if _welcome_hint:
+        _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
+    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
+    # Same verdict fields as the max-retries path: without them the UI descriptor
+    # (agent/error_surface.py) reads a rejected OAuth token as a retryable
+    # "Provider error" and offers Retry instead of a re-login.
+    result.update({
+        "failure_reason": classified.reason.value,
+        "failure_retryable": bool(classified.retryable),
+    })
+    return result
 
 
 _STREAM_DROP_MARKERS = (
@@ -775,6 +816,9 @@ def max_retries_exhausted_result(
     else:
         agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
     _vlines(agent, f"   💀 Final error: {_final_summary}")
+    _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
+    if _welcome_hint:
+        _vlines(agent, f"   💡 {_welcome_hint}")
 
     # SSE stream-drop (e.g. "Network connection lost"): usually a proxy/CDN cutting a very
     # large tool call mid-response.
@@ -829,6 +873,8 @@ def max_retries_exhausted_result(
         )
     else:
         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+        if _welcome_hint:
+            _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.

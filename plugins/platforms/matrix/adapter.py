@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import UnscopedSecretError, get_secret
+from gateway.platforms._shared import yaml_env_setter as _yaml_env_setter
 
 try:
     from mautrix.types import (
@@ -499,7 +500,8 @@ def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
     """Resolve a room/user list from config.extra[key], else the env var."""
     raw = config.extra.get(key)
     if raw is None:
-        raw = os.getenv(env_name, "")
+        # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
+        raw = _startup_env_secret(env_name)
     return _csv_set(raw)
 
 
@@ -580,6 +582,58 @@ def _scoped_recovery_key() -> str:
     """
     return _startup_env_secret("MATRIX_RECOVERY_KEY")
 
+
+# --- LaTeX math ($...$, $$...$$) -> Element data-mx-maths markup ---
+# Element (feature_latex_maths) typesets <div|span data-mx-maths="TEX"> at display time.
+# Our sanitizer allowlists tags/attrs, so data-mx-maths cannot pass through HTML
+# sanitization directly. Instead, math is swapped for opaque sentinel tokens before
+# Markdown conversion (protecting TeX from escaping) and expanded back to math
+# markup after sanitization. Tokens are plain printable text with no special
+# HTML/Markdown meaning, so both the Markdown converter and the sanitizer
+# pass them through verbatim.
+_TEX_TOKEN_RE = re.compile(r"HERMESTEX(?:DISPLAY|INLINE)(\d+)HERMESTEXEND")
+_TEX_DISPLAY_TOKEN = "HERMESTEXDISPLAY%dHERMESTEXEND"
+_TEX_INLINE_TOKEN = "HERMESTEXINLINE%dHERMESTEXEND"
+
+
+def _latex_to_tokens(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Replace ``$$...$$``/``$...$`` with sentinel tokens.
+
+    Returns the tokenized text plus an ordered ``(tag, tex)`` store, where tag
+    is ``div`` for display math and ``span`` for inline math. Dollars that do
+    not form a pair (prices, literals) are left untouched.
+    """
+    if not text or "$" not in text:
+        return text, []
+    store: list[tuple[str, str]] = []
+
+    def _sub_display(match: re.Match[str]) -> str:
+        store.append(("div", match.group(1).strip()))
+        return _TEX_DISPLAY_TOKEN % (len(store) - 1)
+
+    def _sub_inline(match: re.Match[str]) -> str:
+        store.append(("span", match.group(1).strip()))
+        return _TEX_INLINE_TOKEN % (len(store) - 1)
+
+    text = re.sub(r"\$\$([^\n$]+?)\$\$", _sub_display, text)
+    text = re.sub(r"(?<![\\$\w])\$([^\n$]+?)\$(?!\w)", _sub_inline, text)
+    return text, store
+
+
+def _tokens_to_mx_maths(html: str, store: list[tuple[str, str]]) -> str:
+    """Expand sentinel tokens into ``data-mx-maths`` markup (TeX HTML-escaped)."""
+
+    def _expand(match: re.Match[str]) -> str:
+        idx = int(match.group(1))
+        if idx >= len(store):
+            # Not one of our tokens (user-typed text that collides with the
+            # sentinel format) — leave it verbatim.
+            return match.group(0)
+        tag, tex = store[idx]
+        escaped = _html_escape(tex, quote=True)
+        return f'<{tag} data-mx-maths="{escaped}">{escaped}</{tag}>'
+
+    return _TEX_TOKEN_RE.sub(_expand, html)
 
 def _sanitize_matrix_html(html: str) -> str:
     sanitizer = _MatrixHtmlSanitizer()
@@ -763,13 +817,17 @@ class MatrixAdapter(BasePlatformAdapter):
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
         # A chunk near the outbound limit almost certainly has a continuation.
         self._split_threshold = max(100, self.max_message_length - 100)
-        self._homeserver: str = (config.extra.get("homeserver", "") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
+        # Homeserver/user_id/device_id go through the same scoped reader as the token/password:
+        # under multiplex os.environ holds the DEFAULT profile's identity, and pairing it with a
+        # secondary's credential sends that credential to the wrong homeserver (or reuses the
+        # default's E2EE device id).
+        self._homeserver: str = (config.extra.get("homeserver", "") or _startup_env_secret("MATRIX_HOMESERVER")).rstrip("/")
         self._access_token: str = config.token or _startup_env_secret("MATRIX_ACCESS_TOKEN")
-        self._user_id: str = config.extra.get("user_id", "") or os.getenv("MATRIX_USER_ID", "")
+        self._user_id: str = config.extra.get("user_id", "") or _startup_env_secret("MATRIX_USER_ID")
         self._password: str = config.extra.get("password", "") or _startup_env_secret("MATRIX_PASSWORD")
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
-        self._device_id: str = config.extra.get("device_id", "") or os.getenv("MATRIX_DEVICE_ID", "")
+        self._device_id: str = config.extra.get("device_id", "") or _startup_env_secret("MATRIX_DEVICE_ID")
         self._device_id_unverified: bool = False
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
@@ -796,12 +854,14 @@ class MatrixAdapter(BasePlatformAdapter):
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: Set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
-        self._auto_thread: bool = _env_truthy("MATRIX_AUTO_THREAD", "true")
+        # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
+        # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
+        self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
         self._dm_auto_thread: bool = _env_truthy("MATRIX_DM_AUTO_THREAD", "false")
-        self._dm_mention_threads: bool = _env_truthy("MATRIX_DM_MENTION_THREADS", "false")
-        raw_session_scope = os.getenv("MATRIX_SESSION_SCOPE", "auto").strip().lower()
+        self._dm_mention_threads: bool = self._extra_truthy(config, "dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "false")
+        raw_session_scope = str(config.extra.get("session_scope") or os.getenv("MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
-        self._process_notices: bool = _env_truthy("MATRIX_PROCESS_NOTICES", "false")
+        self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
         self._reactions_enabled: bool = os.getenv("MATRIX_REACTIONS", "true").lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
@@ -826,10 +886,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
-        self._allowed_user_ids: Set[str] = _csv_set(os.getenv("MATRIX_ALLOWED_USERS", ""))
+        # Authz lists via the scoped reader: under multiplex os.environ is the DEFAULT profile's
+        # allowlist, which must not decide who approves tool calls on a secondary bot.
+        self._allowed_user_ids: Set[str] = _csv_set(_startup_env_secret("MATRIX_ALLOWED_USERS"))
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         self._ignored_user_patterns: list[re.Pattern[str]] = []
-        for pattern in (p.strip() for p in os.getenv("MATRIX_IGNORE_USER_PATTERNS", "").split(",") if p.strip()):
+        for pattern in (p.strip() for p in _startup_env_secret("MATRIX_IGNORE_USER_PATTERNS").split(",") if p.strip()):
             try:
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
@@ -846,6 +908,14 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    @staticmethod
+    def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
+        """``config.extra[key]`` (YAML-bridged, per profile) else the env var, true/1/yes semantics."""
+        configured = config.extra.get(key)
+        if configured is None:
+            return _env_truthy(env_name, default)
+        return configured if isinstance(configured, bool) else str(configured).lower() in ("true", "1", "yes")
 
     @staticmethod
     def _configured_bool(config, key: str) -> Optional[bool]:
@@ -1478,11 +1548,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_multiple_images(
         self, chat_id: str, images: list[tuple[str, str]], metadata: Optional[Dict[str, Any]] = None,
-        human_delay: float = 0.0) -> None:
+        human_delay: float = 0.0) -> SendResult:
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         total = len(images)
+        delivered = False
         for idx, (image_url, alt_text) in enumerate(images, start=1):
             if human_delay > 0 and idx > 1:
                 await asyncio.sleep(human_delay)
@@ -1494,6 +1565,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 result = await self.send_image(chat_id=chat_id, image_url=image_url, caption=caption, metadata=metadata)
             if not result.success:
                 logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
+            delivered = delivered or result.success
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
@@ -2351,7 +2424,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     def _is_authorized_user(self, user_id: str) -> bool:
         """GATEWAY_ALLOW_ALL_USERS, or membership in MATRIX_ALLOWED_USERS."""
-        return _env_truthy("GATEWAY_ALLOW_ALL_USERS") or bool(
+        # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
+        return _startup_env_secret("GATEWAY_ALLOW_ALL_USERS").lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)
 
     async def _validate_matrix_prompt_reactor(
@@ -2752,6 +2826,7 @@ class MatrixAdapter(BasePlatformAdapter):
     def _markdown_to_html(self, text: str) -> str:
         """Markdown → org.matrix.custom.html via ``markdown`` when installed, else the regex fallback."""
         text = _pre_sanitize_matrix_markdown(text)
+        text, tex_store = _latex_to_tokens(text)
         with suppress(ImportError):
             import markdown as _md
             md = _md.Markdown(extensions=["fenced_code", "tables", "nl2br", "sane_lists"])
@@ -2761,8 +2836,8 @@ class MatrixAdapter(BasePlatformAdapter):
             md.reset()
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
-            return _sanitize_matrix_html(html)
-        return _sanitize_matrix_html(self._markdown_to_html_fallback(text))
+            return _tokens_to_mx_maths(_sanitize_matrix_html(html), tex_store)
+        return _tokens_to_mx_maths(_sanitize_matrix_html(self._markdown_to_html_fallback(text)), tex_store)
 
     @staticmethod
     def _sanitize_link_url(url: str) -> str:
@@ -2856,8 +2931,9 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        homeserver = (extra.get("homeserver") or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
-        # In-turn read inside an installed secret scope: honor get_secret, no env fallback.
+        # In-turn reads inside an installed secret scope: honor get_secret, no env fallback — for the
+        # homeserver too, so the scoped token is never sent to the default profile's server.
+        homeserver = (extra.get("homeserver") or get_secret("MATRIX_HOMESERVER", "") or "").rstrip("/")
         token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
         if not homeserver or not token:
             return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
@@ -2868,9 +2944,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         payload = {"msgtype": "m.text", "body": message}
         with suppress(ImportError):
             import markdown as _md
-            html = _md.markdown(message, extensions=["fenced_code", "tables"])
+            tokenized, tex_store = _latex_to_tokens(message)
+            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
             payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
+            payload["formatted_body"] = _tokens_to_mx_maths(
+                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
         # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
         # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
         async with aiohttp.ClientSession() as session:
@@ -2966,25 +3044,28 @@ _YAML_LIST_KEYS = (
 
 
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
-    """apply_yaml_config_fn: config.yaml matrix: keys → MATRIX_* env (env wins). Returns None. Lowercased
-    flags apply whenever the key is present (None still writes "none"); list-valued keys skip None.
+    """apply_yaml_config_fn: config.yaml matrix: keys → MATRIX_* env (env wins) + ``PlatformConfig.extra``.
+    Lowercased flags apply whenever the key is present (None still writes "none"); list-valued keys skip None.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy matrix_cfg block from
-    gateway/config.py::load_gateway_config(). Env vars take precedence over YAML. Returns None — everything
-    flows through env.
+    gateway/config.py::load_gateway_config(). The env write is skipped under a multiplexed secondary
+    profile's scope; the seeded ``extra`` is what its adapter reads (extra-first readers).
     """
+    _set_env = _yaml_env_setter()
+    seeded: dict = {}
     for key, env_name in _YAML_LOWER_KEYS:
-        if key in matrix_cfg and not os.getenv(env_name):
-            os.environ[env_name] = str(matrix_cfg[key]).lower()
+        if key in matrix_cfg:
+            seeded[key] = matrix_cfg[key]
+            _set_env(env_name, str(matrix_cfg[key]).lower())
     for key, env_name in _YAML_LIST_KEYS:
         value = matrix_cfg.get(key)
-        if value is not None and not os.getenv(env_name):
-            if isinstance(value, list):
-                value = ",".join(str(v) for v in value)
-            os.environ[env_name] = str(value)
-    if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
-        os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
-    return None
+        if value is not None:
+            seeded[key] = value
+            _set_env(env_name, value)
+    if "max_message_length" in matrix_cfg:
+        seeded["max_message_length"] = matrix_cfg["max_message_length"]
+        _set_env("MATRIX_MAX_MESSAGE_LENGTH", str(matrix_cfg["max_message_length"]))
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

@@ -43,34 +43,6 @@ class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
     @classmethod
-    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime; all-None when unavailable."""
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-            path = resolve_config_path()
-            try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = None
-            memo_key = (str(path), mtime_ns)
-            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-            hcfg = HonchoClientConfig.from_global_config(config_path=path)
-            aliases = hcfg.user_peer_aliases or {}
-            values = {
-                "honcho.peer_name": hcfg.peer_name,
-                "honcho.ai_peer": hcfg.ai_peer,
-                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
-                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
-                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
-            }
-            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
-            return dict(values)
-        except Exception:
-            return dict.fromkeys(cls._HONCHO_CACHE_BUSTING_KEYS)
-
-    @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
         """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. Missing keys /
         non-dict sections yield None (still enters the signature). Includes the live tool registry
@@ -89,12 +61,32 @@ class GatewayAgentCacheMixin:
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
-        # Honcho identity-mapping keys live in honcho.json, not user_config; only read that file
-        # when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        honcho = isinstance(provider, str) and provider.lower() == "honcho"
-        out.update(cls._extract_honcho_cache_busting_config() if honcho else dict.fromkeys(cls._HONCHO_CACHE_BUSTING_KEYS))
+        for key, value in cls._memory_provider_identity_signature(cfg_get(cfg, "memory", "provider")).items():
+            out[f"memory.{key}"] = value
         return out
+
+    # Kept for the process lifetime: loading a provider imports its plugin module, and this runs on every inbound message.
+    _MEMORY_IDENTITY_PROVIDER_MEMO: dict[str, Any] = {}
+
+    @classmethod
+    def _memory_provider_identity_signature(cls, provider_name: Any) -> dict[str, Any]:
+        """The active memory provider's ``identity_signature()``. ``{}`` when there is no provider,
+        it fails to load, or the hook raises."""
+        if not isinstance(provider_name, str) or not provider_name.strip():
+            return {}
+        name = provider_name.strip()
+        try:
+            instance = cls._MEMORY_IDENTITY_PROVIDER_MEMO.get(name)
+            if instance is None:
+                from plugins.memory import load_memory_provider
+                instance = load_memory_provider(name, register_skills=False)
+                if instance is None:
+                    return {}
+                cls._MEMORY_IDENTITY_PROVIDER_MEMO[name] = instance
+            signature = instance.identity_signature()
+            return dict(signature) if isinstance(signature, dict) else {}
+        except Exception:
+            return {}
 
     @staticmethod
     def _agent_config_signature(
@@ -226,10 +218,16 @@ class GatewayAgentCacheMixin:
             state.conversation.model_override = None
         self._evict_cached_agent(session_key)
 
-    def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
-        """Return True if *agent_model* matches an active /model session override."""
+    def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
+        """True when *agent* running a model other than *config_model* is deliberate: a /model session
+        override names that model, or the Nous gateway moved the session off the ``nous/welcome``
+        alias that *config_model* still carries (``anon_auth.apply_model_switch``)."""
         override = self._session_model_override(session_key)
-        return override is not None and override.get("model") == agent_model
+        if override is not None and override.get("model") == agent.model:
+            return True
+        # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
+        # ordinary drift and still evicts.
+        return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
 
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None
@@ -599,18 +597,45 @@ class GatewayAgentCacheMixin:
             return
         self._spawn_release_thread(
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
+            session_key=session_key,
         )
 
-    def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool) -> None:
+    def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool,
+                              session_key: Optional[str] = None) -> None:
         """Run a release on a daemon thread. ``inline_fallback`` runs it inline (best-effort) when no
-        thread can start (interpreter shutdown); otherwise a spawn failure propagates, as on main."""
+        thread can start (interpreter shutdown); otherwise a spawn failure propagates, as on main.
+        The thread runs inside the owning profile's scope (see ``_run_release_in_profile_scope``)."""
+        import contextvars
+        ctx = contextvars.copy_context()
         try:
-            threading.Thread(target=target, args=args, daemon=True, name=name).start()
+            threading.Thread(target=ctx.run, args=(self._run_release_in_profile_scope, target, args, session_key),
+                             daemon=True, name=name).start()
         except Exception:
             if not inline_fallback:
                 raise
             with suppress(Exception):
-                target(*args)
+                ctx.run(self._run_release_in_profile_scope, target, args, session_key)
+
+    def _run_release_in_profile_scope(self, target, args: tuple, session_key: Optional[str]) -> None:
+        """Call ``target(*args)`` under the profile that owns ``session_key``. Threads start with an
+        EMPTY context, so a bare thread would commit end-of-session memory (provider ``on_session_end``
+        reads credentials/home at call time) under the LAUNCH profile — lost memories or a secondary's
+        transcript extracted into the default profile's provider namespace. In-turn callers already
+        carry the scope (``copy_context`` preserves it); the unscoped housekeeping sweep resolves the
+        owner from the session key (``agent:<profile>:...``) and enters that profile's scope."""
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        if current_secret_scope() is not None or not is_multiplex_active():
+            target(*args)
+            return
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_hermes_home
+        home = None
+        store = getattr(self, "session_store", None)
+        if session_key and store is not None:
+            with suppress(Exception):
+                home = store._profile_home_for_key(session_key)
+        with _profile_runtime_scope(home or get_hermes_home()):
+            target(*args)
 
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
         """Commit the live transcript to memory providers before resource-only eviction."""
@@ -765,7 +790,8 @@ class GatewayAgentCacheMixin:
         while plan:
             key, agent = plan.pop(0)  # FIFO — evict LRU-first order preserved
             try:
-                self._commit_then_release_soft(agent, key)
+                # Pressure sweeps run from the unscoped housekeeping watcher: enter each owner's scope.
+                self._run_release_in_profile_scope(self._commit_then_release_soft, (agent, key), key)
             except Exception as _e:
                 logger.debug("Pressure release failed for %s: %s", key, _e)
             del agent
@@ -805,7 +831,8 @@ class GatewayAgentCacheMixin:
             if agent is not None:
                 # Commit end-of-session memory, then soft-release, both on the daemon thread so the
                 # (possibly network-bound) provider call never blocks the held cache lock.
-                self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}", inline_fallback=False)
+                self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-evict-{key[:24]}",
+                                           inline_fallback=False, session_key=key)
 
     def _sweep_idle_cached_agents(self) -> int:
         """Evict cached agents idle past the idle TTL (lock acquired internally; cleanup on daemon
@@ -831,5 +858,6 @@ class GatewayAgentCacheMixin:
                 _cache.pop(key, None)
         for key, agent in to_evict:
             logger.info("Agent cache idle-TTL evict: session=%s (idle=%.0fs)", key, now - getattr(agent, "_last_activity_ts", now))
-            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-idle-{key[:24]}", inline_fallback=False)
+            self._spawn_release_thread(self._commit_then_release_soft, (agent, key), f"agent-cache-idle-{key[:24]}",
+                                       inline_fallback=False, session_key=key)
         return len(to_evict)

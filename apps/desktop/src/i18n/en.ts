@@ -3,6 +3,36 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  connectors: {
+    title: 'Connect your apps',
+    connect: 'Connect',
+    skip: 'Not now',
+    cancel: 'Stop waiting',
+    retry: 'Try again',
+    grant: 'Reconnect',
+    connected: 'Connected',
+    skipped: 'Skipped',
+    disabled: 'Unavailable',
+    failed: 'Could not connect',
+    needsAuth: 'Access expired',
+    opening: 'Opening sign-in…',
+    waiting: 'Finish connecting in your browser…',
+    timeout: 'Still waiting for authorization.',
+    keepWaiting: 'Keep waiting',
+    refresh: 'Refresh status',
+    statusError: 'Could not check connections. Try refreshing.',
+    connectError: 'Could not start authorization. Try again.',
+    unavailable: 'Connectors are unavailable for this session.',
+    ownerMissing: 'Reopen this conversation to manage its connections.',
+    search: 'Find an app',
+    empty: 'No matching apps',
+    continue: 'Continue in chat',
+    continueBusy: 'Waiting for this turn to finish',
+    continueFailed: 'Could not continue. Try again.',
+    disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
+    execution: 'Connector tools'
+  },
+
   sessionImport: {
     title: 'Continue from another app',
     subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
@@ -440,11 +470,12 @@ export const en: Translations = {
       about: 'About',
       billing: 'Billing',
       notifications: 'Notifications',
-      plugins: 'Plugins'
+      vault: 'Passwords & Logins'
     },
     plugins: {
       title: 'Desktop plugins',
-      blurb: 'Bundled or dropped into the desktop-plugins folder. Disable to unload live.',
+      blurb:
+        'Extend this app, not an agent — installed once for the whole app, whichever profile, gateway, or machine you connect to. Bundled or dropped into the desktop-plugins folder; toggles apply live.',
       count: n => `${n} installed`,
       openFolder: 'Open plugins folder',
       rescan: 'Rescan',
@@ -454,20 +485,9 @@ export const en: Translations = {
       failed: 'failed',
       empty: 'No desktop plugins installed yet.',
       kinds: { bundled: 'bundled', disk: 'on disk', runtime: 'runtime' },
-      agent: {
-        title: 'Agent plugins',
-        blurb:
-          'Plugins you installed into the Hermes backend — tools, skills, MCP servers, hooks, and slash commands. Portable ones are Agent Plugins packages (skills + MCP bundles that work in other agents too). Toggles apply to new sessions.',
-        appliesTo: 'Applies to:',
-        empty: 'No agent plugins installed yet.',
-        loadFailed: 'Could not load agent plugins',
-        portable: 'portable',
-        search: 'Search plugins…',
-        noMatches: 'No plugins match your search.',
-        toggleFailed: (name: string) => `Could not toggle ${name}`,
-        updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
-        sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
-      },
+      agentHalfMissing: 'agent half missing here',
+      agentHalfMissingTip:
+        'This is the desktop half of a bundled plugin, but its agent half is not installed on the currently connected backend/profile. Install it from Capabilities → Plugins.',
       installModal: {
         installFromGit: 'Install from Git',
         reviewRepository: 'Review repository',
@@ -478,9 +498,19 @@ export const en: Translations = {
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
         desktopLabel: 'Desktop UI',
-        agentTargetLocal: profile => `Installs into the ${profile} backend (~/.hermes/plugins/)`,
+        agentTargetLocal: (profile, dir) => `Installs into the ${profile} backend (${dir})`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
+        catalogPinned: (name, sha) =>
+          `Hermes catalog entry "${name}" — the agent component installs at the reviewed pin${sha ? ` ${sha}` : ''}, not the branch tip.`,
+        reviewedHeading: 'Reviewed catalog entry',
+        reviewedIntro:
+          'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
+        restartToApply: 'Restart the gateway for the plugin to take effect.',
+        restartNow: 'Restart gateway',
+        missingEnvAction: 'Set it up',
+        alreadyInstalled: (name: string) => `${name} is already installed.`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",
+        desktopTargetFromPackage: 'Loaded into this app from the package above — same for every profile',
         desktopOnlyNote: 'Desktop-only packages do not install a backend agent plugin.',
         insecureWarning: 'This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs.',
         securityHeading: 'Before you install',
@@ -492,6 +522,11 @@ export const en: Translations = {
         gitCloneLabel: 'Git clone URL',
         enableAgent: 'Enable agent plugin after install',
         forceReinstall: 'Force reinstall (replace if already installed)',
+        pinToCommit: 'Pin to commit (optional)',
+        pinToCommitPlaceholder: 'Full 40-character commit SHA',
+        pinToCommitHint:
+          'Everyone installing this SHA gets the same code; the plugin then refuses updates until re-pinned. Leave empty for the latest commit.',
+        pinToCommitInvalid: 'Must be a full 40-character commit SHA (branches and tags are not accepted).',
         install: 'Install',
         installing: 'Installing…',
         probing: 'Inspecting repository…',
@@ -503,6 +538,81 @@ export const en: Translations = {
         agentFailed: 'Agent plugin install failed',
         desktopFailed: 'Desktop plugin install failed',
         missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
+      }
+    },
+    vault: {
+      title: 'Passwords & Logins',
+      blurb:
+        'Say "log into GitHub" and the agent signs in for you. The first time it meets a sign-in page it asks you for the login right there; after that it just works. Passwords are encrypted on this machine and filled straight into the page — the model never sees them.',
+      count: n => `${n} saved`,
+      loadFailed: 'Could not load vault items',
+      empty: 'Nothing saved yet',
+      emptyDesc:
+        "You don't have to add anything here. Ask the agent to sign into a site and it will ask you for the login once, on the spot. Use Add if you prefer to enter one ahead of time.",
+      add: 'Add',
+      addTitle: 'Add a login, card or address',
+      addDescription: 'Stored encrypted on this machine. The agent never sees the password.',
+      added: 'Saved.',
+      adding: 'Saving…',
+      addConfirm: 'Save',
+      kindField: 'Kind',
+      kinds: { login: 'Login', payment: 'Payment card', address: 'Address' },
+      labelField: 'Label',
+      labelPlaceholder: 'e.g. GitHub work account',
+      labelRequired: 'A label is required.',
+      originField: 'Site origin',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
+      originInvalid: 'Enter a valid URL like https://example.com.',
+      identifierTypeField: 'Identifier type',
+      identifierTypes: { email: 'Email', phone: 'Phone', username: 'Username' },
+      identifierField: 'Identifier',
+      identifierShown: identifier => identifier,
+      passwordField: 'Password',
+      loginFieldsRequired: 'Identifier and password are required.',
+      cardNumberField: 'Card number',
+      cardNameField: 'Name on card',
+      expMonthField: 'Exp. month',
+      expYearField: 'Exp. year',
+      cvcField: 'CVC',
+      postalField: 'Postal code',
+      addressLine1Field: 'Address line 1',
+      addressLine2Field: 'Address line 2',
+      cityField: 'City',
+      stateField: 'State / region',
+      countryField: 'Country',
+      optional: '(optional)',
+      createdOn: date => `Added ${date}`,
+      deleteAction: 'Remove saved item',
+      otpField: 'Authenticator key',
+      otpPlaceholder: 'Base32 secret or otpauth:// link',
+      otpHint: 'The "setup key" the site shows when you enable 2FA. With it saved, Hermes generates the codes itself.',
+      twoFactorBadge: '2FA auto',
+      deleteTitle: 'Delete this item?',
+      deleteDescription: label => `"${label}" will be removed. This cannot be undone.`,
+      deleteConfirm: 'Delete',
+      sources: {
+        title: 'Password managers',
+        blurb:
+          'Installed password managers are picked up automatically. The agent asks you to unlock one the first time it needs a login from it (once per session); only a session token stays in memory, and the agent never sees your master password or any login.',
+        toggleFailed: 'Could not update password manager',
+        notInstalled: name =>
+          `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
+        disabledDesc: 'Detected but turned off for Hermes.',
+        lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
+        unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
+        statusLocked: 'Locked',
+        statusNotDetected: 'Not detected',
+        statusOff: 'Off',
+        statusUnlocked: 'Unlocked',
+        unlock: 'Unlock',
+        unlocking: 'Unlocking…',
+        lock: 'Lock',
+        unlocked: name => `${name} unlocked for this session.`,
+        unlockTitle: name => `Unlock ${name}`,
+        unlockDescription:
+          'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
+        masterPasswordPlaceholder: 'Master password'
       }
     },
     notifications: {
@@ -595,6 +705,10 @@ export const en: Translations = {
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
+      appActionsTitle: 'App Actions',
+      appActionsDesc: 'Where Settings, Layout, and HUD sit in the titlebar. Right leaves room for tabs on the left.',
+      appActionsLeft: 'Left',
+      appActionsRight: 'Right',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',
@@ -631,8 +745,8 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Closing one retires it for good.',
-      tipsReset: (count: number) => `Bring back ${count} closed ${count === 1 ? 'tip' : 'tips'}`,
+        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Each tip appears once.',
+      tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
       toursTitle: 'Guided Tours',
       toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
       composerPopoutTitle: 'Floating Composer',
@@ -1199,9 +1313,12 @@ export const en: Translations = {
         'speed-gated-quality':
           'A higher-quality model fits this machine but would respond too slowly on its memory bandwidth — this is the best model that stays fast.',
         'fastest-resident':
-          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.',
-        'least-painful-spilled': 'No model fits entirely in GPU memory here — this one runs best from system RAM.'
+          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.'
       } as Record<string, string>,
+      noRecommendationTitle: 'No automatic recommendation for this machine',
+      noRecommendationDetail:
+        'Automatic setup requires a curated model that fits entirely in GPU or unified memory. You can still choose a model below or browse more models.',
+      noRecommendationAction: 'Browse models',
       downloaded: 'Downloaded',
       downloadAction: size => `Download · ${size}`,
       downloadProgress: (done, total) => `Downloading ${done} of ${total}`,
@@ -1213,7 +1330,7 @@ export const en: Translations = {
       quickstartDetailReady: model =>
         `One click makes ${model} your default for new chats. Everything runs on this machine.`,
       quickstartAction: 'Set up for me',
-      quickstartConfigure: 'Configure…',
+      quickstartConfigure: 'Let me choose',
       quickstartDoneToast: model => `${model} is set up — new chats run on this machine.`,
       quickstartFailed: 'Local model setup failed',
       quickstartStageEngine: 'Engine',
@@ -1504,6 +1621,51 @@ export const en: Translations = {
     archive: 'Archive',
     skillArchivedTitle: 'Skill archived',
     skillArchivedMessage: 'Restorable via hermes curator restore.',
+    tabPlugins: 'Plugins',
+    plugins: {
+      agentTitle: 'Agent plugins',
+      agentBlurb:
+        'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
+      pageBlurb: 'One row per plugin. A plugin can extend this app, the agent, or both — each half has its own switch.',
+      halfDesktop: 'Desktop',
+      halfDesktopHint: 'this app, same for every profile',
+      halfAgent: 'Agent',
+      halfAgentIn: (profile: string) => `Agent in ${profile}`,
+      defaultProfile: 'Hermes (default)',
+      kindAgent: 'Agent',
+      kindDesktop: 'Desktop',
+      kindBoth: 'Agent + Desktop',
+      installAgentHere: 'Install here',
+      installAgentHereTip: (profile: string) =>
+        `The desktop half is loaded in this app, but the agent half is not installed in ${profile}. Install it there.`,
+      installAgentHereNoOrigin:
+        'The agent half is not installed in this profile, and this package was copied in by hand (no catalog entry or git remote), so it cannot be installed from here. Copy its folder into the profile or reinstall from Git.',
+      desktopHalfPending: 'copying…',
+      desktopHalfPendingTip:
+        'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
+      emptyAll: 'No plugins yet.',
+      empty: 'No agent plugins installed for this profile.',
+      emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
+      loadFailed: 'Could not load agent plugins',
+      toggleFailed: (name: string) => `Could not toggle ${name}`,
+      legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
+      portableBadge: 'portable',
+      catalogTitle: 'Plugin catalog',
+      catalogBrowse: 'Browse',
+      catalogHide: 'Hide the catalog browser',
+      catalogHint:
+        'Hit "+ Add to this Agent" on any plugin — reviewed entries install at their pinned commit into the selected profile. Bundled agent+desktop plugins offer both halves.',
+      alreadyInstalled: (name: string) => `${name} is already installed in this profile.`,
+      catalogProvenance: (sha: string) => `Installed from the Hermes catalog${sha ? ` at pin ${sha}` : ''}.`,
+      pinnedProvenance: (sha: string) =>
+        `Pinned to commit ${sha}. Updates are refused until it is reinstalled with a new pin.`,
+      pinnedBadge: (sha: string) => `pinned @ ${sha}`,
+      tierOfficial: 'official',
+      tierCommunity: 'community',
+      updateToPin: (sha: string) => `Update to ${sha}`,
+      updateFailed: (name: string) => `Could not update ${name}`,
+      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`
+    },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
     hub: {
@@ -1721,7 +1883,7 @@ export const en: Translations = {
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Hermes desktop' },
-      skills: { title: 'Capabilities', detail: 'Skills, tools, and MCP servers' },
+      skills: { title: 'Capabilities', detail: 'Skills, tools, MCP servers, and plugins' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
@@ -1887,6 +2049,40 @@ export const en: Translations = {
     failedRevoke: name => `Failed to revoke ${name}`,
     pairingLockedOut: 'Too many failed approvals — this platform is locked out. Try again later.',
     waitingSince: minutes => (minutes < 1 ? 'just now' : `${minutes}m ago`),
+    restartNeeded: 'Saved. Restart the messaging gateway so the new settings take effect.',
+    restartNow: 'Restart now',
+    restarting: 'Restarting…',
+    restartFailedManual: 'Gateway restart failed — restart it manually and check the gateway logs.',
+    telegramQr: {
+      title: 'Choose how to connect your Telegram bot',
+      subtitle: 'Both options connect a bot you control and save its credentials only to this Hermes installation.',
+      quickSetup: 'Quick setup',
+      recommended: 'Recommended',
+      quickHelp:
+        'Scan a QR code and confirm in Telegram. Hermes creates the bot and detects your Telegram user ID automatically.',
+      createWithQr: 'Create with QR',
+      starting: 'Starting…',
+      replaceWarning:
+        'Telegram credentials are already configured. A new QR setup or bot token will replace the current bot when you save.',
+      scanHint: 'Scan with the Telegram app on your phone, or open the link on this computer.',
+      waiting: 'Waiting for Telegram…',
+      expiresIn: remaining => `Expires in ${remaining}`,
+      expired: 'Expired',
+      openTelegram: 'Open Telegram',
+      ready: 'Bot created',
+      allowedUsers: 'Allowed users',
+      ownerDetected: 'Owner detected',
+      addAtLeastOne: 'Add at least one Telegram user ID.',
+      userIdPlaceholder: 'Telegram user ID',
+      add: 'Add',
+      numericOnly: 'Allowed Telegram user IDs must be numeric.',
+      saveAndRestart: 'Save and restart',
+      applying: 'Saving…',
+      pairingExpired: 'Telegram pairing expired. Start a new QR setup to try again.',
+      stillWaiting: detail => `Still waiting for Telegram. Retrying after: ${detail}`,
+      savedRestarting: 'Telegram saved; gateway restarting…',
+      savedRestartFailed: detail => `Telegram saved; gateway restart failed${detail}`
+    },
     fieldCopy: {
       TELEGRAM_BOT_TOKEN: {
         label: 'Bot token',
@@ -2174,9 +2370,9 @@ export const en: Translations = {
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
     modelImpact: {
-      title: 'Scheduled jobs need review',
+      title: 'Scheduled jobs stay on their original model',
       message: count =>
-        `${count} scheduled ${count === 1 ? 'job' : 'jobs'} will be skipped until you review their model settings.`,
+        `${count} unpinned scheduled ${count === 1 ? 'job keeps' : 'jobs keep'} running on the model ${count === 1 ? 'it was' : 'they were'} created under. Pin ${count === 1 ? 'it' : 'them'} or set cron.model to move ${count === 1 ? 'it' : 'them'}.`,
       detailMore: (names, remaining) => `${names} and ${remaining} more`,
       review: 'Review scheduled jobs',
       saveFailed: 'Hermes did not save that model change.',
@@ -2412,8 +2608,10 @@ export const en: Translations = {
     noSessions: 'No sessions yet',
     noFilterMatches: 'No sessions match these filters',
     projects: {
+      showAllSessions: 'Show all sessions',
       sectionLabel: 'Projects',
       home: 'Home',
+      autoDiscovered: 'Auto-discovered',
       newButton: 'New project',
       createTitle: 'New project',
       createDesc: 'Name a workspace and add one or more folders.',
@@ -2959,6 +3157,10 @@ export const en: Translations = {
     }
   },
 
+  guidedGreeting: {
+    line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
+    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
+  },
   install: {
     stageStates: {
       pending: 'Pending',
@@ -3113,6 +3315,49 @@ export const en: Translations = {
     docs: provider => `${provider} docs`
   },
 
+  freeTier: {
+    providerRowTitle: 'Nous · free tier',
+    providerRowPitch: 'Sign in with a Nous account to unlock more models and tools.',
+    readyTitle: 'Hermes is ready.',
+    readyCaption: 'Free · connectors included',
+    begin: 'Begin',
+    signInInstead: 'Sign in with a Nous account instead',
+    otherProviders: 'Other providers',
+    stripTitle: 'Free Nous inference and connectors are now available.',
+    stripBody: 'Open the model picker to try them, or sign in with a Nous account.',
+    openModelPicker: 'Open model picker',
+    dismiss: 'Dismiss',
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
+    signIn: 'Sign in',
+    signInHeading: 'Sign in with a Nous account to unlock more models and tools.',
+    settingUp: 'Setting up free inference…',
+    codeBody: 'Enter this code in your browser to finish signing in.',
+    copyLink: 'Copy link',
+    doNotShare: 'Do not share this code.',
+    waiting: 'Waiting for sign-in…',
+    finishingHeading: 'Finishing sign-in…',
+    finishingBody: 'Approved in the browser. Collecting your account tokens.',
+    signedInAs: email => `Signed in as ${email}`,
+    signedIn: 'Signed in.',
+    completedBody: 'Your account now carries inference and tools.',
+    defaultModel: 'Default model',
+    change: 'Change',
+    done: 'Done',
+    notNow: 'Not now',
+    tryAgain: 'Try again',
+    startAgain: 'Start again',
+    didNotComplete: 'Sign-in did not complete',
+    rejectedBody: 'Sign-in was rejected in the browser. You are still on the free tier.',
+    supersededBody: 'A newer sign-in code replaced this one.',
+    timedOutHeading: 'Sign-in timed out',
+    timedOutBody: 'The code was not used in time. You are still on the free tier.',
+    retiredBody: 'This free-tier identity was already used or expired; a new one is set up on the next start.',
+    errorBody: 'Sign-in did not complete; run it again.',
+    alreadySignedInHeading: 'Already signed in.',
+    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.'
+  },
+
   modelPicker: {
     title: 'Switch model',
     current: 'current:',
@@ -3237,6 +3482,7 @@ export const en: Translations = {
       toggleTerminal: 'Terminal',
       toggleTokensPerSecond: 'Tokens per second',
       toggleVersion: 'Version & updates',
+      toggleFreeTier: 'Free tier',
       toggleWorkspace: 'Workspace',
       cacheHitRateTitle: 'Prompt cache hit rate this session — cached tokens cost less, so higher is cheaper',
       tokensPerSecondTitle: 'Output tokens per second, averaged over the last 10 model calls',
@@ -3462,7 +3708,7 @@ export const en: Translations = {
     newSessionTab: 'New session tab',
     newTab: 'New tab',
     pluginDisabled: pluginId => `Plugin "${pluginId}" disabled`,
-    pluginDisabledBody: 'Re-enable it in Settings → Plugins to bring the pane back.',
+    pluginDisabledBody: 'Re-enable it in Capabilities → Plugins to bring the pane back.',
     missingPane: paneId => `missing pane: ${paneId}`,
     editTitle: 'Layouts',
     editHint: 'Pick a layout, or drag panes between zones.',
@@ -3550,7 +3796,11 @@ export const en: Translations = {
         streaming: 'Streaming connection error'
       },
       errorRetry: 'Retry',
+      errorStartNewSession: 'Start new session',
       errorSwitchProvider: 'Switch provider',
+      errorSignInAgain: provider => `Sign in to ${provider} again`,
+      errorOauthExpired: provider =>
+        `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
       errorOpenLogsFailed: 'Could not open the logs folder',
       errorOpenDesktopLogs: 'Open Desktop logs',
@@ -3729,7 +3979,33 @@ export const en: Translations = {
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',
-    secretPlaceholder: 'secret value'
+    secretPlaceholder: 'secret value',
+    vaultUnlockSendFailed: 'Could not send master password',
+    vaultUnlockTitle: name => `Unlock ${name}`,
+    vaultUnlockDesc: name =>
+      `The agent wants to sign into a site with a login saved in ${name}. Enter your master password to unlock it for this session — it goes straight to ${name} on this machine and is never stored or shown to the agent.`,
+    vaultUnlockPlaceholder: 'Master password',
+    vaultUnlockKeepLocked: 'Keep locked',
+    vaultUnlockConfirm: 'Unlock',
+    vaultSaveSendFailed: 'Could not save the login',
+    vaultSaveTitle: site => `Save your ${site} login?`,
+    vaultSaveDesc: origin =>
+      `Hermes reached a sign-in page at ${origin} and has no login for it. Enter it once here; it is encrypted on this machine and filled into the page without the model ever seeing the password.`,
+    vaultSaveIdentifierLabel: 'Email or username',
+    vaultSaveIdentifierPlaceholder: 'you@example.com',
+    vaultSavePasswordPlaceholder: 'Password',
+    vaultSaveFootnote: 'Manage saved logins in Settings → Passwords & Logins.',
+    vaultSaveDecline: "Don't save",
+    vaultSaveConfirm: 'Save & sign in',
+    vaultCodeSendFailed: 'Could not send the code',
+    vaultCodeTitle: site => `Verification code for ${site}`,
+    vaultCodeDesc: site =>
+      `${site} is asking for a one-time code (text message, email or authenticator app). Enter it here and Hermes types it into the page; the model never sees it.`,
+    vaultCodeLabel: 'Code',
+    vaultCodeFootnote:
+      'Tip: save the authenticator key with this login in Settings → Passwords & Logins and Hermes enters codes for you.',
+    vaultCodeSkip: 'Skip',
+    vaultCodeConfirm: 'Enter code'
   },
 
   desktop: {
@@ -3766,6 +4042,9 @@ export const en: Translations = {
     resumeStrandedTitle: "Couldn't load this session",
     resumeStrandedBody:
       'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    poolSlotTimeoutBody:
+      'All local profile backend slots are busy. Increase Warm Bot Backends in Settings → Advanced, or retry after an idle backend is evicted.',
+    poolSlotTimeoutOpenSettings: 'Open Advanced Settings',
     resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',

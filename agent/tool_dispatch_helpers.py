@@ -25,10 +25,11 @@ from tools.threat_patterns import scan_for_threats
 logger = logging.getLogger(__name__)
 
 # Interactive / user-facing tools never run concurrently: any of these in a batch is a barrier.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "manage_connections"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
+    "connectors__execute",  # pure remote batches have per-dispatch idempotency keys
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
@@ -86,18 +87,48 @@ _PARALLEL_SAFE_BRIDGE_LOOKUPS = frozenset({"tool_search", "tool_describe"})
 
 
 def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
-    """Resolve a ``tool_call`` bridge invocation to ``(underlying_name, underlying_args)`` so
-    admission is decided on the real tool (as the executors' unwrap does). An unparseable
-    bridge call is returned unchanged: it stays a sequential barrier and fails at dispatch."""
+    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
+
+    The batch planner admits calls to a parallel run by tool NAME, but when
+    tool search is active the model emits the literal name ``tool_call`` for
+    every deferred tool — so a server opted in via
+    ``supports_parallel_tool_calls: true`` silently lost concurrency the
+    moment the bridge activated. Peel the wrapper here so admission is
+    decided on the underlying tool, exactly like the executors' unwrap.
+
+    Returns ``(underlying_name, underlying_args)`` when the wrapper parses
+    cleanly, else ``(tool_name, function_args)`` unchanged — an unparseable
+    bridge call stays a sequential barrier and fails at dispatch as before.
+    """
     try:
-        from tools.tool_search import TOOL_CALL_NAME, resolve_underlying_call
-        if tool_name == TOOL_CALL_NAME:
-            underlying, underlying_args, err = resolve_underlying_call(function_args)
-            if err is None and underlying:
+        from tools.tool_search import (
+            CONNECTOR_BATCH_SENTINEL,
+            TOOL_CALL_NAME,
+            is_connector_name,
+            resolve_underlying_call,
+        )
+        if tool_name != TOOL_CALL_NAME:
+            return tool_name, function_args
+        underlying, underlying_args, err = resolve_underlying_call(function_args)
+        if err is not None or not underlying:
+            return tool_name, function_args
+        if underlying == CONNECTOR_BATCH_SENTINEL:
+            # Only a PURE connector batch is parallel-safe (network-bound,
+            # no local state, own idempotency key). A batch containing any
+            # local entry keeps the sequential barrier: its entries never
+            # went through per-tool admission here, so treating the batch
+            # as parallel-safe would bypass path-overlap serialization for
+            # local writers and the per-server MCP parallel opt-in.
+            entries = underlying_args.get("calls") or []
+            if entries and all(
+                isinstance(e, dict) and is_connector_name(e.get("name"))
+                for e in entries
+            ):
                 return underlying, underlying_args
+            return tool_name, function_args
+        return underlying, underlying_args
     except Exception:
-        pass
-    return tool_name, function_args
+        return tool_name, function_args
 
 
 def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, List[Path], bool] | None:

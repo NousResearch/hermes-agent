@@ -298,6 +298,17 @@ def _peer_run_ctl(args, action: str, peer_name: str, profile: str | None, base: 
     return 0
 
 
+def _turn_body(message: str, *, message_key: str, **extra) -> dict:
+    """Request body for one turn. ``author`` is added only when a dispatcher set HERMES_TURN_AUTHOR."""
+    from agent.turn_author import turn_author_from_env
+
+    body = {message_key: message, **extra}
+    author = turn_author_from_env()
+    if author is not None:
+        body["author"] = author
+    return body
+
+
 def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str, key: str) -> int:
     idempotency_key = (getattr(args, "idempotency_key", None) or f"peer-{uuid.uuid4().hex}").strip()
     if (not idempotency_key or len(idempotency_key) > 255
@@ -313,7 +324,7 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
         session_id = _ensure_bot_chat(base, key)
         result = _request(
             f"{base}/v1/runs", key, method="POST",
-            body={"input": message, "session_id": session_id},
+            body=_turn_body(message, message_key="input", session_id=session_id),
             headers={"Idempotency-Key": idempotency_key})
     except (urllib.error.URLError, TimeoutError, OSError, RuntimeError) as exc:
         return _peer_failure(peer_name, exc)
@@ -336,7 +347,7 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
         session_id = _ensure_bot_chat(base, key)
         result = _request(
             f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
-            method="POST", body={"message": message}, timeout=DM_TIMEOUT_S)
+            method="POST", body=_turn_body(message, message_key="message"), timeout=DM_TIMEOUT_S)
     except RuntimeError as exc:
         print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
         return 1

@@ -35,6 +35,7 @@ from gateway.platforms.api_server import (
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    _request_relay_metadata,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -427,6 +428,36 @@ class TestAgentExecution:
         # arriving after this point can't reap work this turn left running.
         assert mock_agent._gateway_turn_process_task_id == ""
         assert mock_agent._gateway_turn_process_baseline == frozenset()
+
+
+class TestRelayMetadataForwarding:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("endpoint", "payload"),
+        [
+            (
+                "/v1/chat/completions",
+                {"messages": [{"role": "user", "content": "hi"}]},
+            ),
+            ("/v1/responses", {"input": "hi"}),
+        ],
+    )
+    async def test_openai_requests_forward_metadata_to_relay(
+        self, adapter, endpoint, payload
+    ):
+        app = _create_app(adapter)
+        metadata = {"request_id": "req-123", "context": {"tenant": "example"}}
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (
+                {"final_response": "ok", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(endpoint, json={**payload, "metadata": metadata})
+
+        assert response.status == 200
+        assert mock_run.call_args.kwargs["relay_metadata"] == metadata
+        assert mock_run.call_args.kwargs["relay_metadata"] is not metadata
 
 
 class TestDisconnectedAgentReap:
@@ -2359,6 +2390,7 @@ class TestSessionIdHeader:
         ]
         mock_db = MagicMock()
         mock_db.get_messages_as_conversation.return_value = db_history
+        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
         auth_adapter._session_db = mock_db
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2841,6 +2873,30 @@ class TestKeyRejectionSetsNonRetryableFatalError:
     async def test_missing_key_sets_non_retryable_fatal_error(self, monkeypatch):
         adapter = self._make_adapter("", monkeypatch)
         await self._assert_key_rejection_is_fatal(adapter)
+
+
+# ---------------------------------------------------------------------------
+# Relay metadata extraction
+# ---------------------------------------------------------------------------
+
+
+class TestRequestRelayMetadata:
+    def test_copies_all_metadata_fields(self):
+        metadata = {
+            "request_id": "req-123",
+            "attempt": 2,
+            "tags": ["batch", "evaluation"],
+            "context": {"tenant": "example"},
+        }
+
+        extracted = _request_relay_metadata({"metadata": metadata})
+
+        assert extracted == metadata
+        assert extracted is not metadata
+
+    @pytest.mark.parametrize("body", [None, [], {}, {"metadata": "invalid"}])
+    def test_ignores_non_object_metadata(self, body):
+        assert _request_relay_metadata(body) == {}
 
 
 # ---------------------------------------------------------------------------

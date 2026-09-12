@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { BargeMonitorCallbacks } from '@/lib/voice-barge-in'
+import type { SpeechStreamSession } from '@/lib/voice-playback'
 
 import type { MicRecording } from './use-mic-recorder'
 import { useVoiceConversation } from './use-voice-conversation'
@@ -26,11 +27,12 @@ vi.mock('@/lib/voice-barge-in', () => ({
 
 const markVoicePlaybackInterrupted = vi.fn()
 const stopVoicePlayback = vi.fn()
+const startSpeechStream = vi.fn<() => Promise<SpeechStreamSession | null>>(async () => null)
 
 vi.mock('@/lib/voice-playback', () => ({
   markVoicePlaybackInterrupted: () => markVoicePlaybackInterrupted(),
   playSpeechText: vi.fn(async () => true),
-  startSpeechStream: vi.fn(async () => null),
+  startSpeechStream: () => startSpeechStream(),
   stopVoicePlayback: () => stopVoicePlayback()
 }))
 
@@ -75,7 +77,13 @@ interface HookProps {
   busy: boolean
 }
 
-function renderConversation(overrides: { onInterrupt?: () => void; transcript?: string } = {}) {
+function renderConversation(
+  overrides: {
+    onInterrupt?: () => void
+    transcript?: string
+    pendingResponse?: () => { id: string; text: string; pending: boolean } | null
+  } = {}
+) {
   const onInterrupt = overrides.onInterrupt ?? vi.fn()
 
   // Mirrors the real app: submitting a turn makes the agent busy.
@@ -105,7 +113,7 @@ function renderConversation(overrides: { onInterrupt?: () => void; transcript?: 
         onStopWord,
         onSubmit,
         onTranscribeAudio,
-        pendingResponse: () => null
+        pendingResponse: overrides.pendingResponse ?? (() => null)
       }),
     { initialProps: { busy: false } }
   )
@@ -155,6 +163,65 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     await waitFor(() => expect(hook.result.current.status).toBe('thinking'))
     // busy=true + thinking → the full-duplex monitor must be live.
     await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+  })
+
+  it('prepares the speech stream during generation before reply text exists', async () => {
+    const { hook } = renderConversation()
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+
+    await waitFor(() => expect(startSpeechStream).toHaveBeenCalledTimes(1))
+  })
+
+  it('cancels prepared audio when submitting the transcript fails', async () => {
+    const session: SpeechStreamSession = {
+      append: vi.fn(),
+      finish: vi.fn(),
+      cancel: vi.fn(),
+      done: new Promise(() => undefined)
+    }
+    startSpeechStream.mockResolvedValueOnce(session)
+    const { hook, onSubmit } = renderConversation()
+    onSubmit.mockRejectedValueOnce(new Error('offline'))
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['q'], { type: 'audio/webm' }),
+      durationMs: 900,
+      heardSpeech: true
+    })
+    await act(async () => {
+      hook.result.current.stopTurn()
+    })
+    await waitFor(() => expect(session.cancel).toHaveBeenCalled())
+  })
+
+  it('keeps tool narration open and follows a durable id rewrite until the turn completes', async () => {
+    const session: SpeechStreamSession = {
+      append: vi.fn(),
+      finish: vi.fn(),
+      cancel: vi.fn(),
+      done: new Promise(() => undefined)
+    }
+
+    startSpeechStream.mockResolvedValueOnce(session)
+    let response: { id: string; text: string; pending: boolean } | null = null
+    const { hook } = renderConversation({ pendingResponse: () => response })
+    await enterThinking(hook)
+
+    response = { id: 'assistant-stream-1', text: 'まず調べます。', pending: false }
+    hook.rerender({ busy: true })
+    await waitFor(() => expect(session.append).toHaveBeenCalledWith('まず調べます。'))
+    expect(session.finish).not.toHaveBeenCalled()
+
+    response = { id: 'durable-1', text: 'まず調べます。\n\n結果が出ました。', pending: false }
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(session.finish).toHaveBeenCalled())
+    expect(session.append).toHaveBeenLastCalledWith('\n\n結果が出ました。')
   })
 
   it('interrupts the in-flight turn when speech trips mid-generation', async () => {

@@ -23,6 +23,12 @@ import { sanitizeTextForSpeech } from './speech-text'
 // tick, so legitimately long speech is never cut off).
 const PLAYBACK_STALL_MS = 15_000
 
+// A local/relay streaming session that has accepted text but produces no PCM
+// must not leave the UI on "preparing audio" forever. VOICEVOX normally
+// returns the first sentence in well under this window; on timeout the caller
+// retries through the complete-text POST path.
+export const SPEECH_STREAM_FIRST_AUDIO_TIMEOUT_MS = 12_000
+
 let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
 let sequence = 0
@@ -185,6 +191,8 @@ export interface SpeechStreamSession {
   append: (text: string) => void
   /** No more text coming — resolves `done` once the audio drains. */
   finish: () => void
+  /** Stop only this session; safe even if a newer reply already owns playback. */
+  cancel: () => void
   /**
    * 'done'    — audio fully played (or barged via stopVoicePlayback)
    * 'fallback'— no audio ever produced; caller should speak the accumulated
@@ -210,6 +218,8 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
   const queue: string[] = []
   let synthesizing = false
   let playing: HTMLAudioElement | null = null
+  let cancelPlayback: (() => void) | null = null
+  const cancel = () => settle('done')
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
@@ -220,7 +230,15 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
       }
 
       settled = true
-      currentStop = null
+
+      if (currentStop === cancel) {
+        currentStop = null
+      }
+
+      cancelPlayback?.()
+      cancelPlayback = null
+      queue.length = 0
+      buffer = ''
 
       if (playing) {
         playing.pause()
@@ -232,7 +250,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
     }
   })
 
-  currentStop = () => settle(started ? 'done' : 'fallback')
+  currentStop = cancel
 
   const pump = async () => {
     if (synthesizing || settled) {
@@ -271,6 +289,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
         try {
           await new Promise<void>((resolve, reject) => {
+            cancelPlayback = resolve
             const audio = new Audio(url)
             playing = audio
             audio.addEventListener('ended', () => resolve(), { once: true })
@@ -282,6 +301,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
 
           return
         } finally {
+          cancelPlayback = null
           playing = null
           URL.revokeObjectURL(url)
         }
@@ -336,6 +356,7 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
         ingest(true)
       }
     },
+    cancel,
     done
   }
 }
@@ -346,7 +367,8 @@ function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlayb
  * streams PCM back while generation continues, so speech overlaps the text
  * stream (ChatGPT-style) with no per-sentence connection or synthesis gaps.
  */
-function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechStreamSession {
+/** @internal Exported so the no-audio fallback contract can be regression-tested. */
+export function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechStreamSession {
   const ws = new WebSocket(wsUrl)
   ws.binaryType = 'arraybuffer'
 
@@ -357,7 +379,9 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
   let started = false
   let settled = false
   let finished = false
+  let firstAudioTimer: number | null = null
   const pendingSends: string[] = []
+  const cancel = () => settle('done')
 
   let settle: (value: 'done' | 'fallback') => void = () => undefined
 
@@ -368,7 +392,18 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
       }
 
       settled = true
-      currentStop = null
+
+      if (currentStop === cancel) {
+        currentStop = null
+      }
+
+      pendingSends.length = 0
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null
+
+      if (firstAudioTimer !== null) {
+        window.clearTimeout(firstAudioTimer)
+        firstAudioTimer = null
+      }
 
       try {
         ws.close()
@@ -394,9 +429,23 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
   // stopVoicePlayback() → immediate barge-in: kill the socket (the server
   // aborts synthesis on disconnect) and the audio context (cuts sound now).
-  currentStop = () => settle('done')
+  currentStop = cancel
+
+  const armFirstAudioTimeout = () => {
+    if (started || settled || firstAudioTimer !== null) {
+      return
+    }
+
+    firstAudioTimer = window.setTimeout(() => settle('fallback'), SPEECH_STREAM_FIRST_AUDIO_TIMEOUT_MS)
+  }
 
   const finishWhenDrained = () => {
+    if (!started) {
+      settle('fallback')
+
+      return
+    }
+
     const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
     window.setTimeout(() => settle('done'), remainingMs + 100)
   }
@@ -425,6 +474,11 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
     if (!usable) {
       return
+    }
+
+    if (firstAudioTimer !== null) {
+      window.clearTimeout(firstAudioTimer)
+      firstAudioTimer = null
     }
 
     const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, usable / 2)
@@ -500,6 +554,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
     // the only safe granularity when constructs span delta boundaries.
     append: text => {
       if (text && !finished && !settled) {
+        armFirstAudioTimeout()
         send({ text })
       }
     },
@@ -509,6 +564,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
         send({ done: true })
       }
     },
+    cancel,
     done
   }
 }
@@ -522,16 +578,24 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
  * `playSpeechText`).
  */
 export async function startSpeechStream(options: VoicePlaybackOptions): Promise<null | SpeechStreamSession> {
+  // Stop/newer playback may win while config or IPC is pending. A stale setup
+  // must neither resurrect cancelled speech nor stop the newer reply.
+  const setupSequence = sequence
   const direct = await directTtsConfig().catch(() => null)
+
+  if (sequence !== setupSequence) {
+    return null
+  }
 
   if (direct) {
     stopVoicePlayback()
+    const ownSequence = sequence
     setVoicePlaybackState(currentState('preparing', options))
 
     const session = openClientDirectSpeechSession(direct, options)
 
     void session.done.then(outcome => {
-      if (outcome === 'done') {
+      if (outcome === 'done' && sequence === ownSequence) {
         setVoicePlaybackState(currentState('idle'))
       }
     })
@@ -541,17 +605,18 @@ export async function startSpeechStream(options: VoicePlaybackOptions): Promise<
 
   const wsUrl = await resolveSpeakStreamUrl()
 
-  if (!wsUrl) {
+  if (!wsUrl || sequence !== setupSequence) {
     return null
   }
 
   stopVoicePlayback()
+  const ownSequence = sequence
   setVoicePlaybackState(currentState('preparing', options))
 
   const session = openSpeechStream(wsUrl, options)
 
   void session.done.then(outcome => {
-    if (outcome === 'done') {
+    if (outcome === 'done' && sequence === ownSequence) {
       setVoicePlaybackState(currentState('idle'))
     }
   })

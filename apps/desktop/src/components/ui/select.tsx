@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { type ControlVariantProps, controlVariants } from '@/components/ui/control'
 import { usePopoverPortalContainer } from '@/components/ui/dialog-portal-context'
 import { countSelectItems, filterSelectChildren } from '@/components/ui/select-search'
+import { usePickerFilterCapture } from '@/lib/picker-typeahead'
 import { cn } from '@/lib/utils'
 
 const SELECT_NAV_KEYS = new Set(['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'])
@@ -68,6 +69,8 @@ function SelectContent({
       searchRef.current?.focus()
     }
   }, [searchable])
+
+  usePickerFilterCapture(searchable, searchRef, setQuery)
 
   return (
     <SelectPrimitive.Portal container={container}>

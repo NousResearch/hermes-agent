@@ -33,15 +33,12 @@ function DropdownMenuTrigger({ ...props }: React.ComponentProps<typeof DropdownM
  * menu's typeahead from eating keystrokes, and still lets arrow/enter/escape
  * drive the list. Drop it in as the first child of a `DropdownMenuContent`.
  */
-function DropdownMenuSearch({
-  className,
-  onChange,
-  onKeyDown,
-  onValueChange,
-  ...props
-}: Omit<React.ComponentProps<'input'>, 'type'> & {
-  onValueChange?: (value: string) => void
-}) {
+const DropdownMenuSearch = React.forwardRef<
+  HTMLInputElement,
+  Omit<React.ComponentProps<'input'>, 'type'> & {
+    onValueChange?: (value: string) => void
+  }
+>(function DropdownMenuSearch({ className, onChange, onKeyDown, onValueChange, ...props }, ref) {
   return (
     <div className="px-2.5 py-1.5" data-slot="dropdown-menu-search">
       <input
@@ -61,6 +58,7 @@ function DropdownMenuSearch({
 
           onKeyDown?.(event)
         }}
+        ref={ref}
         // Search fields here filter ids, slugs, and model names — dictionary
         // squiggles under them are noise (matching the composer/settings
         // inputs, which already disable spellcheck).
@@ -70,7 +68,7 @@ function DropdownMenuSearch({
       />
     </div>
   )
-}
+})
 
 function DropdownMenuContent({
   className,

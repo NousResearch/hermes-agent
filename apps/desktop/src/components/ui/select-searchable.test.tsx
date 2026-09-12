@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './select'
@@ -28,6 +28,32 @@ describe('SelectContent searchable', () => {
     const input = screen.getByRole('textbox', { name: 'Search…' })
     fireEvent.change(input, { target: { value: 'luna' } })
 
+    expect(screen.getByRole('option', { name: 'openai/gpt-5.6-luna-pro' })).not.toBeNull()
+    expect(screen.queryByRole('option', { name: 'anthropic/claude-sonnet-5' })).toBeNull()
+  })
+
+  it('filters when typing lands on a row instead of the search field', () => {
+    render(
+      <Select defaultOpen value="anthropic/claude-sonnet-5">
+        <SelectTrigger aria-label="model">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent searchable>
+          <SelectItem value="openai/gpt-5.6-luna-pro">openai/gpt-5.6-luna-pro</SelectItem>
+          <SelectItem value="anthropic/claude-sonnet-5">anthropic/claude-sonnet-5</SelectItem>
+        </SelectContent>
+      </Select>
+    )
+
+    const option = screen.getByRole('option', { name: 'anthropic/claude-sonnet-5' })
+    option.focus()
+    act(() => {
+      fireEvent.keyDown(option, { key: 'g' })
+    })
+
+    const input = screen.getByRole('textbox', { name: 'Search…' })
+    expect(input).toHaveProperty('value', 'g')
+    expect(document.activeElement).toBe(input)
     expect(screen.getByRole('option', { name: 'openai/gpt-5.6-luna-pro' })).not.toBeNull()
     expect(screen.queryByRole('option', { name: 'anthropic/claude-sonnet-5' })).toBeNull()
   })

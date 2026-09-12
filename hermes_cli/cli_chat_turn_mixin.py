@@ -38,10 +38,14 @@ class CLIChatTurnMixin:
         from tools.process_registry_notifications import SubagentNotification
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
+        # One-shot callers inspect the structured result after display. Clear a
+        # previous turn before any early return can accidentally reuse it.
+        self._last_run_result = None
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
 
         if not self._ensure_runtime_credentials():
+            self._last_run_result = {"failed": True, "failure_reason": "auth"}
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
@@ -51,9 +55,11 @@ class CLIChatTurnMixin:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
                                 request_overrides=turn_route.get("request_overrides")):
+            self._last_run_result = {"failed": True, "failure_reason": "unknown"}
             return None
         agent = self.agent
         if agent is None:
+            self._last_run_result = {"failed": True, "failure_reason": "unknown"}
             return None
         message = self._chat_route_images(message, images)
 
@@ -86,6 +92,8 @@ class CLIChatTurnMixin:
             agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
             agent_thread.start()
             interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
+            # Preserve the provider outcome before rendering or cleanup can fail.
+            self._last_run_result = turn.result
             self._chat_settle_turn(turn)
             return self._chat_render_turn(turn, agent_thread, interrupt_msg)
         except Exception as e:

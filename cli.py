@@ -991,6 +991,40 @@ def _finalize_single_query(cli) -> None:
         cli._release_active_session()
 
 
+_KANBAN_TRANSIENT_PROVIDER_FAILURES = frozenset(
+    {
+        "billing",
+        "overloaded",
+        "rate_limit",
+        "server_error",
+        "timeout",
+        "upstream_rate_limit",
+    }
+)
+
+
+def _single_query_exit_code(result: Any, *, kanban_worker: bool) -> int:
+    """Map a structured one-shot result to its process exit code.
+
+    Dispatcher-owned workers signal transient provider exhaustion with
+    EX_TEMPFAIL so the dispatcher can retry it without charging the task's
+    circuit-breaker budget. Other failures keep the ordinary error exit.
+    """
+    if not isinstance(result, dict) or not result.get("failed"):
+        return 0
+    if (
+        kanban_worker
+        and result.get("failure_reason") in _KANBAN_TRANSIENT_PROVIDER_FAILURES
+    ):
+        try:
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+
+            return KANBAN_RATE_LIMIT_EXIT_CODE
+        except Exception:
+            pass
+    return 1
+
+
 def _reset_terminal_input_modes_on_exit() -> None:
     """Disable focus reporting + mouse tracking on TUI exit (best-effort).
 
@@ -4102,19 +4136,12 @@ def _run_quiet_single_query(cli, effective_query):
 
     print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
-    # Exit code 0/1 for automation wrappers. Kanban workers that failed purely on
-    # rate-limit/billing exit with the EX_TEMPFAIL sentinel so the dispatcher releases
-    # the task without counting a failure (a quota window must not trip the breaker).
-    _exit_code = 0
-    if isinstance(result, dict) and result.get("failed"):
-        _exit_code = 1
-        if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
-            try:
-                from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
-                _exit_code = _RL_CODE
-            except Exception:
-                _exit_code = 1
-    sys.exit(_exit_code)
+    sys.exit(
+        _single_query_exit_code(
+            result,
+            kanban_worker=bool(os.environ.get("HERMES_KANBAN_TASK")),
+        )
+    )
 
 
 def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
@@ -4432,6 +4459,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
+        exit_code = _single_query_exit_code(
+            getattr(cli, "_last_run_result", None),
+            kanban_worker=bool(os.environ.get("HERMES_KANBAN_TASK")),
+        )
+        if exit_code:
+            sys.exit(exit_code)
     finally:
         _finalize_single_query(cli)
 

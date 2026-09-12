@@ -206,6 +206,19 @@ class TestBuildToolComplete:
         result = build_tool_complete("tc-fail", "execute_code", '{"output": "bad", "returncode": 2}')
         assert result.status == "failed"
 
+    def test_skill_view_dedup_is_completed_not_failed(self):
+        result = build_tool_complete(
+            "tc-skill-dedup",
+            "skill_view",
+            '{"success":false,"status":"deduplicated","dedup":true,'
+            '"content_returned":false,"error":"already loaded"}',
+        )
+
+        assert result.status == "completed"
+        assert result.content is not None
+        assert "Skill already loaded" in result.content[0].content.text
+        assert "Skill view failed" not in result.content[0].content.text
+
 
 
 

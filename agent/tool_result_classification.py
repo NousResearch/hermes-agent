@@ -23,6 +23,31 @@ def tool_may_have_side_effect(tool_name: str) -> bool:
     return tool_name not in NO_EFFECT_TOOL_NAMES
 
 
+def is_skill_view_dedup_result(tool_name: str, result: Any) -> bool:
+    """Return True for skill_view's model-facing repeat-read control result.
+
+    Repeat reads deliberately use ``success: false`` plus an ``error`` message
+    to make the model stop re-reading and act on content already in context.
+    Operational failure classifiers must not count that benign cache hit as a
+    failed execution, however, so recognize the complete typed shape here.
+    """
+    if tool_name != "skill_view":
+        return False
+    if isinstance(result, str):
+        try:
+            result = json.loads(result.strip())
+        except Exception:
+            return False
+    return (
+        isinstance(result, dict)
+        and result.get("success") is False
+        and result.get("status") == "deduplicated"
+        and result.get("dedup") is True
+        and result.get("content_returned") is False
+        and bool(result.get("error"))
+    )
+
+
 def file_mutation_result_landed(tool_name: str, result: Any) -> bool:
     """Return True when a file mutation result proves the write landed."""
     if tool_name not in FILE_MUTATING_TOOL_NAMES or not isinstance(result, str):

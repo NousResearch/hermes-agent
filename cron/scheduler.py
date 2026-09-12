@@ -2377,30 +2377,50 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         _finish_unstarted("Fire claim ownership lost before execution started.")
         return True
 
+    if owns_fire_claim is None:
+        # Fence busy: ownership could not be confirmed. Running on an unverified claim is exactly
+        # what the claim exists to prevent, so fail closed before any side effect.
+        logger.warning(
+            "Job '%s': fire claim could not be confirmed before execution (fire fence busy)",
+            job_id)
+        _finish_unstarted("Fire claim ownership could not be validated before execution started.")
+        return True
+
     def _heartbeat_loop() -> None:
         last_confirmed = time.monotonic()
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
-                if not heartbeat_fire_claim(job_id, expected_owner=owner):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire claim ownership lost; interrupting stale run",
-                        job_id)
-                    return
-                last_confirmed = time.monotonic()
+                renewed = heartbeat_fire_claim(job_id, expected_owner=owner)
             except Exception:
                 logger.debug("Job '%s': fire_claim heartbeat failed", job_id, exc_info=True)
-                if (
-                    time.monotonic() - last_confirmed
-                    >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
-                ):
-                    lost_ownership.set()
-                    logger.warning(
-                        "Job '%s': fire_claim could not be renewed within %.1fs; "
-                        "interrupting uncertain run",
-                        job_id,
-                        _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
-                    return
+                renewed = None
+            if renewed is True:
+                last_confirmed = time.monotonic()
+                continue
+            if renewed is False:
+                # Verified loss: a replacement owner holds the claim, so stop this run now.
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire claim ownership lost; interrupting stale run",
+                    job_id)
+                return
+            # None: the fence was busy, not lost. The run's own save/delivery holds this job's
+            # fence for as long as the side effect takes (a slow delivery outlives the fence wait),
+            # which says nothing about the claim — renew as soon as the fence frees up, and give up
+            # only once the grace window since the last confirmation has run out.
+            if (
+                time.monotonic() - last_confirmed
+                >= _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
+            ):
+                lost_ownership.set()
+                logger.warning(
+                    "Job '%s': fire_claim could not be renewed within %.1fs "
+                    "(fire fence busy); interrupting uncertain run",
+                    job_id,
+                    _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS)
+                return
+            logger.debug(
+                "Job '%s': fire fence busy; fire_claim ownership unverified", job_id)
 
     heartbeat_thread = _start_heartbeat_thread(
         _heartbeat_loop, "cron-fire-claim-heartbeat",
@@ -2499,7 +2519,8 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
     """Bookkeeping after fire-claim ownership loss. A transport-level cancel (dashboard drain) is
     not a real loss — we still own the claim, so record the interruption via the owner-fenced
     terminal write instead of leaving fire_claim/last_status stale; otherwise discard."""
-    if fire_owner is not None and heartbeat_fire_claim(job_id, expected_owner=fire_owner):
+    if fire_owner is not None and heartbeat_fire_claim(
+            job_id, expected_owner=fire_owner) is True:
         mark_job_run(job_id, False, _OWNERSHIP_LOST_INTERRUPTED, expected_fire_owner=fire_owner)
         finish_execution(execution_id, success=False, error=_OWNERSHIP_LOST_INTERRUPTED)
     else:
@@ -2569,6 +2590,20 @@ class _FireClaimLostDuringSideEffect(Exception):
     """Raised inside a side-effect fence when the durable fire claim is no longer ours."""
 
 
+class _FireFenceBusyDuringSideEffect(Exception):
+    """Raised inside a side-effect fence when the fence itself could not be acquired.
+
+    Ownership is *unverified* here, not lost: another holder of this job's fence (typically its
+    in-flight save/delivery) kept us out. The side effect is still skipped — never perform one on
+    an unverified claim — but the run must not be recorded as an ownership loss or interruption."""
+
+
+_FIRE_FENCE_BUSY_FAILURE = (
+    "Fire fence busy: save/delivery skipped without performing side effects "
+    "(fire claim ownership could not be verified)."
+)
+
+
 class _FireOwnership:
     """Fire-claim ownership checks for one run (``owner`` is None when the job carries no claim)."""
 
@@ -2589,11 +2624,17 @@ class _FireOwnership:
         if self.owner is None:
             return False
         try:
-            if heartbeat_fire_claim(self.job["id"], expected_owner=self.owner):
-                return False
+            renewed = heartbeat_fire_claim(self.job["id"], expected_owner=self.owner)
         except Exception:
             logger.debug(
                 "Job '%s': fire_claim ownership validation failed", self.job["id"], exc_info=True)
+            return False
+        if renewed is None:
+            # Fence busy: unverified, not lost. The heartbeat's grace window bounds a stuck fence.
+            logger.debug(
+                "Job '%s': fire fence busy; fire_claim ownership unverified", self.job["id"])
+            return False
+        if renewed:
             return False
         if self.fire_claim_lost is not None:
             self.fire_claim_lost.set()
@@ -2624,6 +2665,8 @@ def _save_compose_deliver(
     fence; a lost claim raises ``_FireClaimLostDuringSideEffect`` for the caller)."""
     job = d.job
     with fence.side_effect_fence() as owns_output:
+        if owns_output is None:
+            raise _FireFenceBusyDuringSideEffect
         if not owns_output:
             raise _FireClaimLostDuringSideEffect
         output_file = save_job_output(job["id"], output)
@@ -2667,6 +2710,8 @@ def _save_compose_deliver(
     )
     try:
         with fence.side_effect_fence() as owns_delivery:
+            if owns_delivery is None:
+                raise _FireFenceBusyDuringSideEffect
             if not owns_delivery:
                 raise _FireClaimLostDuringSideEffect
             d.delivery_attempted = True
@@ -2895,6 +2940,12 @@ def _run_one_job_body(
                 execution_token=execution_token)
         except _FireClaimLostDuringSideEffect:
             d.side_effect_ownership_lost = True
+        except _FireFenceBusyDuringSideEffect:
+            # No side effect ran and ownership was never verified: record the contention itself as
+            # the run's failure cause instead of an ownership loss or a shutdown interruption.
+            d.success = False
+            d.error = _FIRE_FENCE_BUSY_FAILURE
+            logger.warning("Job '%s': %s", job["id"], _FIRE_FENCE_BUSY_FAILURE)
         finally:
             delivery_attempted, delivery_error = d.delivery_attempted, d.delivery_error
             # Every path must tear down deferred agent(s) so they never leak subprocesses/clients.

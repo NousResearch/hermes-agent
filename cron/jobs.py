@@ -344,7 +344,10 @@ def _fire_job_lock(job_id: str):
 
 
 def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
-    """Run ``fn()`` holding the job's fire fence; False (fail closed) when it can't be acquired."""
+    """Run ``fn()`` holding the job's fire fence; False (fail closed) when it can't be acquired.
+
+    ``False`` here means only that the fence was unavailable — it never means a claim was verified
+    lost — so callers that must tell the two apart use ``_fire_job_lock`` directly."""
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
             return False
@@ -353,10 +356,15 @@ def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
 
 @contextlib.contextmanager
 def fire_claim_fence(job_id: str, *, expected_owner: str):
-    """Hold a per-job fence while an owner performs an external side effect."""
+    """Hold a per-job fence while an owner performs an external side effect.
+
+    Yields ``True`` while *expected_owner* still holds the claim, ``False`` when a verified
+    different owner holds it, and ``None`` when the fence could not be acquired at all — another
+    holder of this job's fence kept us out, so ownership is *unverified*, not lost. Callers must
+    fail closed on ``None`` without recording an ownership loss."""
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
-            yield False
+            yield None
             return
         with _jobs_lock():
             job = next((item for item in load_jobs() if item.get("id") == job_id), None)
@@ -2598,13 +2606,23 @@ def claim_job_for_fire(
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
 
 
-def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> Optional[bool]:
     """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim.
+
+    ``None`` means the fire fence could not be acquired, so ownership is *unverified*: the fence is
+    held across external side effects, and a slow save/delivery holds it for as long as the side
+    effect takes, past the fence wait. ``False`` means a verified loss — the claim is gone or a
+    replacement owner holds it — and is the only value callers may fail closed on."""
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    with _fire_job_lock(job_id) as acquired:
+        if not acquired:
+            logger.debug(
+                "Job '%s': fire fence busy; fire_claim ownership unverified", job_id)
+            return None
+        return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

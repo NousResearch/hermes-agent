@@ -169,10 +169,11 @@ def _format_live_tools_output(sid: str, session: dict, arg: str) -> str:
 def _format_live_help_output(sid: str, session: dict, arg: str) -> str:
     try:
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
+        from hermes_cli.commands_i18n import cli_command_description
         lines = ["Available commands:", ""]
         for category, commands in COMMANDS_BY_CATEGORY.items():
             lines.append(f"{category}:")
-            lines.extend(f"  {cmd:<15} {desc}" for cmd, desc in commands.items())
+            lines.extend(f"  {cmd:<15} {cli_command_description(cmd, desc)}" for cmd, desc in commands.items())
         return "\n".join(lines)
     except Exception as exc:
         return f"help unavailable: {exc}"

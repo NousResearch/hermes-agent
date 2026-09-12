@@ -1,4 +1,59 @@
 export const en = {
+  panels: {
+    error: 'error: ',
+    cancel: 'Esc/q cancel',
+    close: 'Esc/q close',
+    back: 'Esc back · q close',
+    openHint: '↑/↓ select · Enter open · 1-9,0 quick · Esc/q cancel',
+    openBackHint: '↑/↓ select · Enter open · 1-9,0 quick · Esc back · q close',
+    loading: 'loading…',
+    updating: 'updating…',
+    path: 'path: ',
+    moreAbove: (count: number) => ` ↑ ${count} more`,
+    moreBelow: (count: number) => ` ↓ ${count} more`
+  },
+  pet: {
+    loading: 'loading pets…',
+    cancel: 'Esc cancel',
+    title: 'Pets',
+    filterHint: 'type to filter',
+    none: 'no pets available',
+    official: ' · official',
+    adopting: 'adopting…',
+    hint: '↑/↓ select · Enter adopt · type to filter · Esc cancel',
+    filter: (query: string) => `filter: ${query}`,
+    count: (count: number) => `${count} pet${count === 1 ? '' : 's'}`,
+    noMatch: (query: string) => `no pets match "${query}"`
+  },
+  plugins: {
+    loading: 'loading plugins…',
+    title: 'Plugins Hub',
+    none: 'no plugins installed',
+    install: 'install: hermes plugins install owner/repo',
+    bundled: ' [bundled]',
+    disabled: 'disabled',
+    notEnabled: 'not enabled',
+    hint: '↑/↓ select · Enter/Space toggle · Tab user/all · 1-9,0 quick · Esc/q close',
+    userCount: (count: number, bundled: number) =>
+      `${count} user plugin(s)${bundled ? ` · +${bundled} bundled (Tab)` : ''}`,
+    allCount: (count: number) => `all ${count} plugins`
+  },
+  skills: {
+    loading: 'loading skills…',
+    none: 'no skills available',
+    title: 'Skills Hub',
+    category: 'select a category',
+    emptyCategory: 'no skills in this category',
+    installing: 'installing…',
+    inspectHint: 'i reinspect · x reinstall · Enter/Esc back · q close',
+    count: (count: number) => `${count} skill(s)`,
+    categoryCount: (category: string, count: number) => `${category} · ${count} skills`
+  },
+  todo: {
+    title: 'Todo',
+    incomplete: (count: number) => ` · incomplete · ${count} still ${count === 1 ? 'pending' : 'pending/in_progress'}`
+  },
+
   usageBars: {
     plan: 'plan',
     topup: 'top-up  ',

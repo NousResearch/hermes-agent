@@ -247,6 +247,7 @@ class CLIInfoMixin:
             ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint, _ensure_skill_commands,
             _termux_example_image_path, get_skill_bundles)
         from hermes_cli.commands import COMMANDS_BY_CATEGORY, HELP_SESSION_SUBGROUPS
+        from hermes_cli.commands_i18n import cli_command_description
 
         arg = (arg or "").strip()
         skill_commands = _ensure_skill_commands()
@@ -285,6 +286,7 @@ class CLIInfoMixin:
             for cmd, desc in rows:
                 if not self._command_available(cmd):
                     continue
+                desc = cli_command_description(cmd, desc)
                 if query and query not in cmd.lower() and query not in desc.lower():
                     continue
                 if not printed_header:

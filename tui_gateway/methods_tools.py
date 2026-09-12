@@ -347,13 +347,15 @@ class _Catalog:
 
 
 def _catalog_registry(cat: _Catalog) -> None:
+    from hermes_cli.commands_i18n import cli_command_description
+
     commands = _tools_mod("hermes_cli.commands")
     for cmd in commands.COMMAND_REGISTRY:
         meta = commands.command_desktop_meta(cmd)
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
         if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
             continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
+        cat.add(f"/{cmd.name}", cli_command_description(cmd.name, commands._build_description(cmd)), cmd.category)
         for a in cmd.aliases:
             cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
     for name, desc, category in _TUI_EXTRA:

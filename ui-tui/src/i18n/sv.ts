@@ -1,6 +1,62 @@
 import type { Translations } from './en.js'
 
 export const sv: Translations = {
+  panels: {
+    error: 'fel: ',
+    cancel: 'Esc/q avbryt',
+    close: 'Esc/q stäng',
+    back: 'Esc tillbaka · q stäng',
+    openHint: '↑/↓ välj · Enter öppna · 1-9,0 snabbval · Esc/q avbryt',
+    openBackHint: '↑/↓ välj · Enter öppna · 1-9,0 snabbval · Esc tillbaka · q stäng',
+    loading: 'läser in …',
+    updating: 'uppdaterar …',
+    path: 'sökväg: ',
+    moreAbove: (count: number) => ` ↑ ${count} till`,
+    moreBelow: (count: number) => ` ↓ ${count} till`
+  },
+  pet: {
+    loading: 'läser in husdjur …',
+    cancel: 'Esc avbryt',
+    title: 'Husdjur',
+    filterHint: 'skriv för att filtrera',
+    none: 'inga tillgängliga husdjur',
+    official: ' · officiellt',
+    adopting: 'adopterar …',
+    hint: '↑/↓ välj · Enter adoptera · skriv för att filtrera · Esc avbryt',
+    filter: (query: string) => `filter: ${query}`,
+    count: (count: number) => `${count} husdjur`,
+    noMatch: (query: string) => `inga husdjur matchar ”${query}”`
+  },
+  plugins: {
+    loading: 'läser in pluginer …',
+    title: 'Pluginhantering',
+    none: 'inga installerade pluginer',
+    install: 'installera: hermes plugins install owner/repo',
+    bundled: ' [inbyggd]',
+    disabled: 'inaktiverad',
+    notEnabled: 'inte aktiverad',
+    hint: '↑/↓ välj · Enter/mellanslag växla · Tab egna/alla · 1-9,0 snabbval · Esc/q stäng',
+    userCount: (count: number, bundled: number) =>
+      `${count} ${count === 1 ? 'egen plugin' : 'egna pluginer'}${bundled ? ` · +${bundled} inbyggda (Tab)` : ''}`,
+    allCount: (count: number) => `${count === 1 ? 'totalt 1 plugin' : `alla ${count} pluginer`}`
+  },
+  skills: {
+    loading: 'läser in färdigheter …',
+    none: 'inga tillgängliga färdigheter',
+    title: 'Färdighetshantering',
+    category: 'välj en kategori',
+    emptyCategory: 'inga färdigheter i den här kategorin',
+    installing: 'installerar …',
+    inspectHint: 'i granska igen · x installera om · Enter/Esc tillbaka · q stäng',
+    count: (count: number) => `${count} ${count === 1 ? 'färdighet' : 'färdigheter'}`,
+    categoryCount: (category: string, count: number) =>
+      `${category} · ${count} ${count === 1 ? 'färdighet' : 'färdigheter'}`
+  },
+  todo: {
+    title: 'Att göra',
+    incomplete: (count: number) => ` · ofärdigt · ${count} återstår`
+  },
+
   usageBars: {
     plan: 'abonn.',
     topup: 'påfyllt ',

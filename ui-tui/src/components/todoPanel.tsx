@@ -1,6 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
+import { useTranslations } from '../i18n/index.js'
 import { countPendingTodos } from '../lib/liveProgress.js'
 import { todoGlyph, todoTone, todoTree } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
@@ -27,6 +28,7 @@ export const TodoPanel = memo(function TodoPanel({
   t: Theme
   todos: TodoItem[]
 }) {
+  const copy = useTranslations()
   // Fallback local state for archived todos in transcript where there's no
   // external controller. Live TodoPanel passes collapsed+onToggle from the
   // turn store so clicks still work there.
@@ -59,15 +61,14 @@ export const TodoPanel = memo(function TodoPanel({
         <Text color={t.color.muted}>
           <Text color={t.color.accent}>{effectiveCollapsed ? '▸ ' : '▾ '}</Text>
           <Text bold color={t.color.text}>
-            Todo
+            {copy.todo.title}
           </Text>{' '}
           <Text color={t.color.statusFg} dim>
             ({done}/{todos.length})
           </Text>
           {incomplete && pending > 0 && (
             <Text color={t.color.muted} dim>
-              {' '}
-              · incomplete · {pending} still {pending === 1 ? 'pending' : 'pending/in_progress'}
+              {copy.todo.incomplete(pending)}
             </Text>
           )}
         </Text>

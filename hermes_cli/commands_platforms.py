@@ -11,6 +11,8 @@ from typing import Any
 from hermes_cli.commands import (
     COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries, _resolve_config_gates)
 
+from hermes_cli.commands_i18n import command_description
+
 # Logger name parity with the origin module (tests capture "hermes_cli.commands").
 logger = logging.getLogger("hermes_cli.commands")
 
@@ -90,7 +92,7 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
     """(command_name, description) pairs for Telegram setMyCommands: sanitized canonical names
     only (no aliases). Built-ins needing arguments are included (their handlers show usage when
     selected bare); plugin commands needing arguments are excluded (may lack a no-arg fallback)."""
-    pairs = [(cmd.name, cmd.description) for cmd in _gateway_available_commands()]
+    pairs = [(cmd.name, command_description(cmd)) for cmd in _gateway_available_commands()]
     if include_plugins:
         pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
@@ -396,8 +398,8 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     standalone slash, deduped and clamped to the 50-command cap; Slack built-ins and
     _SLACK_VIA_HERMES_ONLY are skipped. ``/hermes`` is always first for anything dropped."""
     available = _gateway_available_commands()
-    wanted = [(cmd.name, cmd.description, cmd.args_hint or "") for cmd in available]
-    wanted += [(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+    wanted = [(cmd.name, command_description(cmd), cmd.args_hint or "") for cmd in available]
+    wanted += [(alias, f"Alias for /{cmd.name} — {command_description(cmd)}", cmd.args_hint or "")
                for cmd in available for alias in cmd.aliases]
     wanted += [(name, desc, hint or "") for name, desc, hint in _iter_plugin_command_entries()]
 

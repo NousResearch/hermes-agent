@@ -1007,6 +1007,43 @@ def test_estimate_usage_cost_prefers_provider_reported_cost():
     assert cents.label == "$1.23"
 
 
+def test_estimate_usage_cost_prefers_upstream_inference_cost_over_stub():
+    """cost_details.upstream_inference_cost is the true billed amount on the
+    Nous portal (#108936): it must win over usage.cost, which that route
+    reports as a flat 5e-05 stub regardless of token count."""
+    usage = CanonicalUsage(
+        input_tokens=171, output_tokens=500,
+        raw_usage={"cost": 0.00005, "cost_details": {"upstream_inference_cost": 0.06338552}},
+    )
+    result = estimate_usage_cost("deepseek/deepseek-v4-flash-0731", usage, provider="custom")
+    assert result.status == "actual"
+    assert result.source == "provider_cost_api"
+    assert result.amount_usd == Decimal("0.06338552")
+
+
+def test_estimate_usage_cost_falls_back_to_usage_cost_without_details():
+    """Routes without a usable cost_details block (OpenRouter / LiteLLM) keep
+    the plain usage.cost preference; a malformed nested field must not hijack
+    pricing (#108936)."""
+    usage = CanonicalUsage(
+        input_tokens=19, output_tokens=100,
+        raw_usage={"cost": 0.00002510375, "cost_details": "oops"},
+    )
+    result = estimate_usage_cost("openrouter/z-ai/glm-5.3-flash", usage, provider="custom")
+    assert result.status == "actual"
+    assert result.amount_usd == Decimal("0.00002510375")
+
+    for bad_details in ({"upstream_inference_cost": -1}, {"upstream_inference_cost": float("nan")},
+                        {"upstream_inference_cost": True}):
+        usage = CanonicalUsage(
+            input_tokens=19, output_tokens=100,
+            raw_usage={"cost": 0.00002510375, "cost_details": bad_details},
+        )
+        result = estimate_usage_cost("openrouter/z-ai/glm-5.3-flash", usage, provider="custom")
+        assert result.status == "actual", f"cost_details={bad_details!r}"
+        assert result.amount_usd == Decimal("0.00002510375")
+
+
 def test_estimate_usage_cost_ignores_malformed_reported_cost():
     """Missing / non-numeric / NaN / negative / boolean costs must not hijack
     pricing: the turn falls back to the pricing-table estimate as before."""

@@ -577,20 +577,36 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 
 
+_PROVIDER_REPORTED_COST_KEYS: tuple[tuple[str, ...], ...] = (
+    ("cost_details", "upstream_inference_cost"),
+    ("cost",),
+)
+
+
 def _provider_reported_cost(usage: CanonicalUsage) -> Optional[Decimal]:
-    """A finite, non-negative cost the provider reported inline in raw usage
-    (OpenRouter's ``usage.cost``, passed through unchanged by OpenAI-compatible
-    proxies such as LiteLLM). None when the payload carries no such field."""
+    """A finite, non-negative cost the provider reported inline in raw usage.
+    ``cost_details.upstream_inference_cost`` (Nous portal) wins over
+    ``usage.cost``: on that route ``usage.cost`` is a flat stub unrelated to
+    the billed amount, while the nested field carries the true per-call cost.
+    OpenRouter's ``usage.cost`` (passed through unchanged by OpenAI-compatible
+    proxies such as LiteLLM) remains the fallback. None when the payload
+    carries no usable field."""
     raw = usage.raw_usage if isinstance(usage.raw_usage, dict) else None
     if raw is None:
         return None
-    cost = raw.get("cost")
-    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
-        return None
-    cost = float(cost)
-    if not math.isfinite(cost) or cost < 0:
-        return None
-    return Decimal(str(cost))
+    for path in _PROVIDER_REPORTED_COST_KEYS:
+        value: Any = raw
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+            if value is None:
+                break
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        cost = float(value)
+        if not math.isfinite(cost) or cost < 0:
+            continue
+        return Decimal(str(cost))
+    return None
 
 
 def estimate_usage_cost(

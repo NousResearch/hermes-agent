@@ -741,7 +741,7 @@ DEFAULT_CONFIG = {
         # enabled=false skips auto spawns (/refine still works). max_input_tokens caps the SUM of
         # replayed input tokens over the review loop (iterations capped at 16); the loop stops
         # before crossing it. <= 0 = unlimited.
-        "background_review": {"enabled": True, **_aux(120), "max_input_tokens": 600000},
+        "background_review": {"enabled": True, **_aux(120), "max_input_tokens": 600000, "shutdown_timeout_s": 120},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
         "moa_reference": _aux(900, reasoning_effort=False),

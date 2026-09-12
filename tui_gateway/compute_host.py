@@ -412,6 +412,9 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         route_name = str(frame.get("route_name") or "")
         command = str(frame.get("command") or "")
+        if route_name == "session.close":
+            server._close_session_by_id(sid, end_reason="tui_close")
+            return {"result": {"closed": True}}
         if route_name in {"session.save", "session.compress"}:
             params = {"session_id": sid}
             if route_name == "session.compress":

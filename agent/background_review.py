@@ -29,6 +29,7 @@ class _BackgroundReviewRun:
     def __init__(self) -> None:
         self.cancel_requested = threading.Event()
         self.request_done = threading.Event()
+        self.worker_done = threading.Event()
         self._lock = threading.Lock()
         self._review_agent = None
         self._request_finished = self._cancel_dispatched = False
@@ -78,10 +79,13 @@ def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
         if lock is None:
             lock = agent._background_review_lock = threading.Lock()
         with lock:
+            if getattr(agent, "_background_review_closing", False) is True:
+                return None
             current = getattr(agent, "_background_review_run", None)
             if current is not None and not current.request_done.is_set():
                 return None
             agent._background_review_run = run
+            agent.__dict__.setdefault("_background_review_workers", set()).add(run)
     except (AttributeError, TypeError):
         return None
     return run

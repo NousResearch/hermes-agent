@@ -101,6 +101,16 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
         return True  # Internal observation, not a client event or replay entry.
     kind = params.get("type") if isinstance(params, dict) else None
+    if kind == "review.status":
+        session = _sessions.get(str(params.get("session_id") or ""))
+        payload = params.get("payload")
+        if session is not None and isinstance(payload, dict):
+            with _history_lock(session):
+                revision = payload.get("revision", 0)
+                if isinstance(revision, int) and revision > session.get("_review_revision", -1):
+                    session["_review_revision"] = revision
+                    session["_review_pending"] = payload.get("pending") is True
+                    session["_review_shutdown_timeout_s"] = payload.get("shutdown_timeout_s", 120)
     if kind in {"clarify.request", "clarify.expire"}:
         session = _sessions.get(str(params.get("session_id") or ""))
         payload = params.get("payload")

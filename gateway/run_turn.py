@@ -3376,7 +3376,11 @@ class GatewayTurnMixin:
                         session_key or "?", interrupt_message,
                     )
                 else:
-                    pending = interrupt_message
+                    logger.warning(
+                        "Ignoring interrupt message without a queued event for session %s; "
+                        "refusing provenance-free follow-up",
+                        session_key or "?",
+                    )
             elif pending_event:
                 # Transcribe audio BEFORE it becomes the next user turn (real transcript, not a path).
                 _pending_text = pending_event.text or ""

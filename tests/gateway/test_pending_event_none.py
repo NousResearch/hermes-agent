@@ -1,17 +1,17 @@
 """Tests for pending follow-up extraction in recursive _run_agent calls.
 
-When pending_event is None (Path B: pending comes from interrupt_message),
-accessing pending_event.channel_prompt previously raised AttributeError.
-This verifies the fix: channel_prompt is captured inside the
-`if pending_event is not None:` block and falls back to None otherwise.
+When pending_event is None, accessing pending_event.channel_prompt previously
+raised AttributeError. This verifies channel_prompt falls back to None.
 
-Also verifies that internal control interrupt reasons like "Stop requested"
-do not get recycled into the pending-user-message follow-up path.
+The direct drain tests also verify that neither internal control reasons nor
+unprovenanced user-shaped interrupt messages become follow-up user turns.
 """
 
 from types import SimpleNamespace
 
-from gateway.run import _is_control_interrupt_message
+import pytest
+
+from gateway.run import GatewayRunner
 
 
 def _extract_channel_prompt(pending_event):
@@ -24,15 +24,6 @@ def _extract_channel_prompt(pending_event):
     if pending_event is not None:
         next_channel_prompt = getattr(pending_event, "channel_prompt", None)
     return next_channel_prompt
-
-
-def _extract_pending_text(interrupted, pending_event, interrupt_message):
-    """Reproduce the fixed pending-text selection from gateway/run.py."""
-    if interrupted and pending_event is None and interrupt_message:
-        if _is_control_interrupt_message(interrupt_message):
-            return None
-        return interrupt_message
-    return None
 
 
 class TestPendingEventNoneChannelPrompt:
@@ -49,8 +40,39 @@ class TestPendingEventNoneChannelPrompt:
 class TestControlInterruptMessages:
     """Control interrupt reasons must not become follow-up user input."""
 
-    def test_stop_requested_is_not_treated_as_pending_user_message(self):
-        result = _extract_pending_text(True, None, "Stop requested")
-        assert result is None
+    @pytest.mark.asyncio
+    async def test_stop_requested_is_not_treated_as_pending_user_message(self):
+        runner = object.__new__(GatewayRunner)
+        runner._queued_events = {}
+        adapter = SimpleNamespace(get_pending_message=lambda _session_key: None)
+
+        pending_event, pending = await runner._run_agent_drain_pending(
+            {"interrupted": True, "interrupt_message": "Stop requested"},
+            adapter,
+            SimpleNamespace(thread_id=None),
+            "slack:dm:user",
+        )
+
+        assert pending_event is None
+        assert pending is None
 
 
+@pytest.mark.asyncio
+async def test_stale_interrupt_message_without_queued_event_is_not_followed_up():
+    runner = object.__new__(GatewayRunner)
+    runner._queued_events = {}
+    adapter = SimpleNamespace(get_pending_message=lambda _session_key: None)
+    source = SimpleNamespace(thread_id=None)
+
+    pending_event, pending = await runner._run_agent_drain_pending(
+        {
+            "interrupted": True,
+            "interrupt_message": "the stale opening request",
+        },
+        adapter,
+        source,
+        "slack:dm:user",
+    )
+
+    assert pending_event is None
+    assert pending is None

@@ -195,6 +195,102 @@ def test_cmd_restart_propagates_start_failure(hermes_home, monkeypatch):
     assert rc == 1
 
 
+@pytest.fixture
+def setup_bitwarden_runtime(hermes_home, monkeypatch):
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["secrets"]["bitwarden"] = {
+        "enabled": True,
+        "project_id": "test-project",
+        "access_token_env": "BWS_ACCESS_TOKEN",
+    }
+    save_config(cfg)
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "test-access-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stale-host-key")
+    monkeypatch.setenv("UNMAPPED_SECRET", "unrelated-host-key")
+    monkeypatch.setattr(ip, "find_iron_proxy", lambda **kw: hermes_home / "iron-proxy")
+    monkeypatch.setattr(ip, "iron_proxy_version", lambda binary: "test")
+    monkeypatch.setattr(ip, "ensure_ca_cert", lambda **kw: (hermes_home / "ca.crt", hermes_home / "ca.key"))
+    spawned = []
+
+    def capture_spawn(binary, config, env, log):
+        spawned.append(env)
+        raise RuntimeError("test stopped at the daemon process boundary")
+
+    monkeypatch.setattr(ip, "_spawn_daemon", capture_spawn)
+    return spawned
+
+
+@pytest.mark.parametrize("restart", [True, None])
+@pytest.mark.parametrize("allow_fallback", [False, True])
+def test_setup_restart_refreshes_bitwarden_before_spawning(
+    setup_bitwarden_runtime, monkeypatch, restart, allow_fallback,
+):
+    from agent.secret_sources import bitwarden as bw
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg["proxy"]["allow_env_fallback"] = allow_fallback
+    save_config(cfg)
+    monkeypatch.setattr(ip, "get_status", lambda: ip.ProxyStatus(pid=4242 if restart is None else None))
+    monkeypatch.setattr(proxy_cli.sys.stdin, "isatty", lambda: False)
+
+    fetches = []
+
+    def fetch(**kwargs):
+        fetches.append(kwargs)
+        if allow_fallback and len(fetches) > 1:
+            return {}, []
+        value = "discovery-key" if len(fetches) == 1 else "fresh-vault-key"
+        return {"OPENROUTER_API_KEY": value, "UNMAPPED_SECRET": "unrelated-vault-key"}, []
+
+    monkeypatch.setattr(bw, "fetch_bitwarden_secrets", fetch)
+
+    proxy_cli.cmd_setup(_args(from_bitwarden=True, restart=restart))
+
+    assert len(setup_bitwarden_runtime) == 1
+    env = setup_bitwarden_runtime[0]
+    assert env["OPENROUTER_API_KEY"] == ("stale-host-key" if allow_fallback else "fresh-vault-key")
+    assert "UNMAPPED_SECRET" not in env
+    assert "BWS_ACCESS_TOKEN" not in env
+    assert len(fetches) == 2
+    assert all(call["use_cache"] is False for call in fetches)
+
+
+@pytest.mark.parametrize("failure", ["missing-secret", "missing-token", "disabled-source"])
+@pytest.mark.parametrize("restart", [True, None])
+def test_setup_restart_refuses_broken_bitwarden_source(
+    setup_bitwarden_runtime, monkeypatch, failure, restart,
+):
+    from agent.secret_sources import bitwarden as bw
+    from hermes_cli.config import load_config, save_config
+
+    monkeypatch.setattr(ip, "get_status", lambda: ip.ProxyStatus(pid=4242 if restart is None else None))
+    monkeypatch.setattr(proxy_cli.sys.stdin, "isatty", lambda: False)
+
+    fetches = []
+
+    def fetch(**kwargs):
+        fetches.append(kwargs)
+        if len(fetches) > 1:
+            return {}, []
+        if failure == "missing-token":
+            monkeypatch.delenv("BWS_ACCESS_TOKEN")
+        if failure == "disabled-source":
+            cfg = load_config()
+            cfg["secrets"]["bitwarden"]["enabled"] = False
+            save_config(cfg)
+        return {"OPENROUTER_API_KEY": "discovery-key"}, []
+
+    monkeypatch.setattr(bw, "fetch_bitwarden_secrets", fetch)
+
+    proxy_cli.cmd_setup(_args(from_bitwarden=True, restart=restart))
+
+    assert setup_bitwarden_runtime == []
+    assert load_config()["proxy"]["credential_source"] == "bitwarden"
+
+
 # ---------------------------------------------------------------------------
 # _load_env_file_into_environ — setup discovers keys kept only in ~/.hermes/.env
 # ---------------------------------------------------------------------------

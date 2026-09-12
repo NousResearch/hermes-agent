@@ -242,6 +242,16 @@ _INVALID_MESSAGE_BODY_PATTERNS = (
     "messages: at least one message is required", _NO_USER_QUERY_SIGNAL,
 )
 
+# Proxy-side rejection of the model's own tool-call JSON (Ollama "invalid tool call arguments",
+# OpenRouter-wrapped "function_call arguments"). Checked before the generic 400 validation and
+# overflow heuristics: on a large session the bare message would otherwise read as overflow.
+_MALFORMED_TOOL_ARGS_PATTERNS = (
+    "invalid tool call arguments", "invalid tool_call arguments", "invalid tool_calls arguments",
+    "invalid function call arguments", "invalid function_call arguments",
+    "tool call arguments are invalid", "tool_call arguments are invalid",
+    "function call arguments are invalid", "function_call arguments are invalid",
+)
+
 # Malformed request, identical on every retry. Some gateways (codex.nekos.me)
 # return these as 5xx, so the 5xx path also checks them.
 _REQUEST_VALIDATION_PATTERNS = (
@@ -374,14 +384,19 @@ _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
-_V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, retryable=False)
-_V_SSL_CERT = _v(_R.ssl_cert_verification, retryable=False)
+# A different provider (direct instead of the aggregator; another host's TLS chain) can fix these.
+_V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, **_ABORT_FALLBACK)
+_V_SSL_CERT = _v(_R.ssl_cert_verification, **_ABORT_FALLBACK)
 _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
+# The MODEL emitted unparseable tool-call JSON and the proxy (Ollama, OpenRouter) rejected it: no
+# other provider can fix that output, so falling back only replays the same broken turn 4-5 times
+# (20-60s per occurrence, #12770). Abort this call; the loop's argument repair handles the retry.
+_V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
@@ -594,10 +609,10 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     # Local MoA streaming adapter-shape bugs are not a provider outage; falling
     # back would silently replace the MoA route with a single model (#55933).
     if c.provider_slug == "moa" and any(s in str(c.error) for s in _MOA_ADAPTER_SHAPE_BUGS):
-        return _v(_R.format_error, retryable=False)
+        return _v(_R.format_error, **_ABORT_FALLBACK)
     # Persisted MoA preset name that was renamed/deleted — deterministic config error.
     from agent.errors import MoAPresetNotFoundError
-    return _v(_R.model_not_found, retryable=False) if isinstance(c.error, MoAPresetNotFoundError) else None
+    return _v(_R.model_not_found, **_ABORT_FALLBACK) if isinstance(c.error, MoAPresetNotFoundError) else None
 
 
 def _by_error_code(c: _Ctx) -> Optional[Verdict]:
@@ -773,6 +788,8 @@ def _classify_400(c: _Ctx) -> Verdict:
     # prompt_cache_retention ~20% of the time): transient, retry identical request.
     if _is_server_injected_param_rejection(msg, c.provider_slug):
         return _V_SERVER_ERROR
+    if any(p in msg for p in _MALFORMED_TOOL_ARGS_PATTERNS):
+        return _V_MALFORMED_TOOL_ARGS
     # Before overflow: GPT-5's "Unsupported parameter: 'max_tokens'" contains it.
     if any(p in msg for p in _400_VALIDATION_PATTERNS) or code in _400_VALIDATION_CODES:
         return _V_FORMAT_ERROR

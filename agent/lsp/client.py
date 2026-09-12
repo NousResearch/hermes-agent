@@ -501,12 +501,16 @@ class LSPClient:
         if self._sync_kind == 2:
             change["range"] = {"start": {"line": 0, "character": 0}, "end": _end_position(doc.text)}
         new_version = doc.version + 1
+        # Bump before the send resolves, like the didOpen branch above already does: a
+        # versionless publishDiagnostics that arrives while this await is suspended must
+        # be credited against the version it's actually replying to, not the one it is
+        # about to supersede. If the send itself fails, the version stays bumped anyway —
+        # same silent-failure handling didOpen already has.
+        doc.version, doc.text = new_version, text
         await self._send_notification(
             "textDocument/didChange",
             {"textDocument": {"uri": uri, "version": new_version}, "contentChanges": [change]},
         )
-        # Bumping the version is the whole invalidation story (see _DocState).
-        doc.version, doc.text = new_version, text
         return new_version
 
     async def save_file(self, path: str) -> None:

@@ -1,7 +1,12 @@
 import { useStore } from '@nanostores/react'
 
 import { $restartPreviewServer } from '@/app/contrib/panes'
-import { $previewReloadRequest, $previewTabs } from '@/store/preview'
+import {
+  $previewReloadRequest,
+  $previewTabs,
+  DEFAULT_BROWSER_PAGE_ZOOM_PERCENT,
+  setBrowserTabPageZoom
+} from '@/store/preview'
 
 import { PreviewPane } from './preview-pane'
 
@@ -24,7 +29,8 @@ export function PreviewTilePane({ tabId }: PreviewTilePaneProps) {
   const previewReloadRequest = useStore($previewReloadRequest)
   const previewTabs = useStore($previewTabs)
   const restartPreviewServer = useStore($restartPreviewServer)
-  const target = previewTabs.find(tab => tab.id === tabId)?.target
+  const tab = previewTabs.find(item => item.id === tabId)
+  const target = tab?.target
 
   // The tab closed while this pane was still mounted (the mirror disposes it a
   // tick later).
@@ -35,7 +41,9 @@ export function PreviewTilePane({ tabId }: PreviewTilePaneProps) {
   return (
     <PreviewPane
       embedded
+      onPageZoomChange={percent => setBrowserTabPageZoom(tabId, percent)}
       onRestartServer={target.kind === 'url' ? (restartPreviewServer ?? undefined) : undefined}
+      pageZoomPercent={tab?.pageZoomPercent ?? DEFAULT_BROWSER_PAGE_ZOOM_PERCENT}
       reloadRequest={previewReloadRequest}
       tabId={tabId}
       target={target}

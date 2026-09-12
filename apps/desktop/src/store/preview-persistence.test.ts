@@ -1,8 +1,39 @@
 import { describe, expect, it } from 'vitest'
 
-import { decodePreviewTabs } from './preview'
+import { $previewTabs, commitBrowserTabLocation, decodePreviewTabs, setBrowserTabPageZoom } from './preview'
 
 describe('persisted preview migration', () => {
+  it('persists page zoom per browser tab across navigation and defaults invalid values to actual size', () => {
+    const tabs = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: 'url:browser-one',
+          pageZoomPercent: 125,
+          target: { kind: 'url', label: 'One', source: 'https://one.example', url: 'https://one.example' }
+        },
+        {
+          id: 'url:browser-two',
+          pageZoomPercent: 'huge',
+          target: { kind: 'url', label: 'Two', source: 'https://two.example', url: 'https://two.example' }
+        }
+      ])
+    )
+
+    expect(tabs.map(tab => tab.pageZoomPercent)).toEqual([125, 100])
+
+    $previewTabs.set(tabs)
+    setBrowserTabPageZoom('url:browser-two', 140)
+    setBrowserTabPageZoom('url:browser-two', Number.NaN)
+    commitBrowserTabLocation('url:browser-two', 'https://two.example/next', 'Next')
+
+    const restored = decodePreviewTabs(window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? '[]')
+
+    expect(restored.map(tab => [tab.id, tab.pageZoomPercent, tab.target.url])).toEqual([
+      ['url:browser-one', 125, 'https://one.example'],
+      ['url:browser-two', 140, 'https://two.example/next']
+    ])
+  })
+
   it('upgrades a pre-PDF remote tab from binary to pdf', () => {
     const source = '/remote/.hermes/desktop-attachments/spec.pdf'
 

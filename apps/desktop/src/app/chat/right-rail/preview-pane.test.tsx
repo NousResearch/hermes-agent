@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
+import { $zoomPercent } from '@/store/zoom'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
 import { PreviewPane } from './preview-pane'
@@ -198,6 +199,63 @@ describe('PreviewPane console state', () => {
     // forward, so the load lands a microtask later.
     await waitFor(() => expect(loadURL).toHaveBeenCalledWith('http://localhost:4000/app'))
     expect(webview.getAttribute('src')).toBe('http://localhost:5174')
+  })
+
+  it('applies independent page zoom to the guest and reasserts it after navigation', async () => {
+    const previousDesktop = window.hermesDesktop
+    let hostFactor = 0.8
+    window.hermesDesktop = {
+      ...previousDesktop,
+      zoom: { ...previousDesktop?.zoom, factor: () => hostFactor }
+    } as Window['hermesDesktop']
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          pageZoomPercent={100}
+          target={{ kind: 'url', label: 'Preview', source: 'https://example.com', url: 'https://example.com' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    const setZoomFactor = vi.fn()
+    Object.assign(webview, { setZoomFactor })
+
+    act(() => webview.dispatchEvent(new Event('dom-ready')))
+    expect(setZoomFactor).toHaveBeenLastCalledWith(1.25)
+
+    await act(async () => {
+      rendered.rerender(
+        <PreviewPane
+          pageZoomPercent={120}
+          target={{ kind: 'url', label: 'Preview', source: 'https://example.com', url: 'https://example.com' }}
+        />
+      )
+    })
+    expect(setZoomFactor).toHaveBeenLastCalledWith(1.5)
+
+    act(() => webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: 'https://example.com/next' })))
+    expect(setZoomFactor).toHaveBeenLastCalledWith(1.5)
+
+    setZoomFactor.mockClear()
+    act(() => webview.dispatchEvent(new Event('did-stop-loading')))
+    expect(setZoomFactor).toHaveBeenCalledWith(1.5)
+
+    hostFactor = 0.6
+    act(() => $zoomPercent.set(60))
+    expect(setZoomFactor).toHaveBeenLastCalledWith(2)
+
+    Object.assign(webview, {
+      setZoomFactor: vi.fn(() => {
+        throw new Error('guest destroyed')
+      })
+    })
+    expect(() => webview.dispatchEvent(new Event('dom-ready'))).not.toThrow()
+
+    $zoomPercent.set(90)
+    window.hermesDesktop = previousDesktop
   })
 
   it('continues comment numbering in one conversation and resets it when the conversation changes', async () => {

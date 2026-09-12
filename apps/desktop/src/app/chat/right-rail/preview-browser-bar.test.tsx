@@ -12,10 +12,12 @@ const baseProps = {
   onBack: vi.fn(),
   onForward: vi.fn(),
   onNavigate: vi.fn(),
+  onPageZoomChange: vi.fn(),
   onPopOut: vi.fn(),
   onReload: vi.fn(),
   onToggleConsole: vi.fn(),
   onToggleDevTools: vi.fn(),
+  pageZoomPercent: 100,
   url: 'https://example.com'
 }
 
@@ -90,6 +92,20 @@ describe('PreviewBrowserBar', () => {
     expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
     expect(address(rendered)).toBeTruthy()
+  })
+
+  it('shows independent page zoom at 100% by default with accessible controls', () => {
+    const onPageZoomChange = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onPageZoomChange={onPageZoomChange} />)
+
+    const reset = rendered.getByRole('button', { name: 'Reset page zoom' })
+
+    expect(reset.textContent).toBe('100%')
+    fireEvent.click(rendered.getByRole('button', { name: 'Decrease page zoom' }))
+    fireEvent.click(reset)
+    fireEvent.click(rendered.getByRole('button', { name: 'Increase page zoom' }))
+
+    expect(onPageZoomChange.mock.calls).toEqual([[90], [100], [110]])
   })
 
   it('renders the Annotate control and a blue Commenting status while the mode is on', () => {

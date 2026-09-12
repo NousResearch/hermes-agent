@@ -75,6 +75,7 @@ async function loadWallpaperStore(enabled: boolean, preferences: Partial<typeof 
 }
 
 beforeEach(() => {
+  vi.useFakeTimers()
   vi.resetModules()
   window.localStorage.clear()
 
@@ -123,6 +124,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.clearAllTimers()
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.doUnmock('@/store/boot')
   vi.doUnmock('@/store/profile')

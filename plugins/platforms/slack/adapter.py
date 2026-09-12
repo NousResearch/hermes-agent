@@ -2033,7 +2033,7 @@ class SlackAdapter(BasePlatformAdapter):
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
             # An active native stream that this content finalizes IS the final
             # message: seal it instead of posting a duplicate.
-            stream_result = await self._try_finalize_stream(chat_id, content)
+            stream_result = await self._try_finalize_stream(chat_id, content, metadata=metadata)
             if stream_result is not None:
                 return stream_result
             formatted = self.format_message(content)
@@ -2300,13 +2300,17 @@ class SlackAdapter(BasePlatformAdapter):
             if text == sent:
                 return SendResult(success=True, message_id=stream["ts"])
             if not text.startswith(sent):
-                # Text was rewritten mid-segment: seal the stream, then fail
-                # the frame so the consumer falls back to the edit path.
-                await self._seal_stream(chat_id, stream)
-                self._active_streams.pop(chat_id, None)
-                return SendResult(success=False, error="stream prefix mismatch")
-            delta = text[len(sent) :]
-            await client.chat_appendStream(channel=chat_id, ts=stream["ts"], markdown_text=delta)
+                if await self._seal_stream(chat_id, stream):
+                    self._active_streams.pop(chat_id, None)
+                return SendResult(
+                    success=False, error="stream prefix mismatch"
+                )
+            delta = text[len(sent):]
+            await client.chat_appendStream(
+                channel=chat_id,
+                ts=stream["ts"],
+                markdown_text=delta,
+            )
             stream["sent"] = text
             return SendResult(success=True, message_id=stream["ts"])
         except Exception as e:  # pragma: no cover - network/API errors
@@ -2373,24 +2377,63 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] chat.stopStream failed for %s/%s: %s", chat_id, stream.get("ts"), e)
             return False
 
-    async def _try_finalize_stream(self, chat_id: str, content: str) -> Optional[SendResult]:
-        """Seal the active native stream if ``content`` is its final text: SendResult when the
-        stream IS the final message; None when unrelated (interim commentary), leaving it open."""
+    async def _try_finalize_stream(
+        self,
+        chat_id: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[SendResult]:
+        """Finalize a native stream when this send owns the turn-final content."""
         stream = self._active_streams.get(chat_id)
         if stream is None:
+            return None
+        # Commentary/status sends are allowed to happen while the answer is
+        # streaming. They must never claim the native stream, even when their
+        # text happens to share a prefix with the answer.
+        if metadata and metadata.get("_interim_send"):
             return None
         sent = stream.get("sent", "")
         text = self._strip_stream_cursor(content)
         # Only claim sends that extend what was streamed; an empty ``sent``
         # prefix would match everything.
         if not sent or not text.startswith(sent):
-            return None
-        self._active_streams.pop(chat_id, None)
+            # A turn-final payload can legitimately differ from the streamed
+            # draft after markdown conversion, verifier/footer augmentation,
+            # or a final answer rewrite. Slack retains a native stream's rich
+            # text after chat.stopStream, so chat.update would render that
+            # text alongside the replacement markdown. Remove the incomplete
+            # stream before allowing the normal final-send path to post once.
+            # Plain/interim sends still pass through without touching the
+            # live stream.
+            if not metadata or not metadata.get("final"):
+                return None
+            ts = stream["ts"]
+            if not await self._seal_stream(chat_id, stream):
+                # The stream may still be live; let the normal send path make
+                # a best-effort delivery rather than swallowing the answer.
+                return None
+            self._active_streams.pop(chat_id, None)
+            if await self.delete_message(chat_id, ts):
+                # Returning None lets send() post the authoritative final
+                # message exactly once.
+                return None
+            logger.warning(
+                "[Slack] Could not delete incomplete native stream %s in channel %s; "
+                "suppressing rewritten final to avoid a duplicate message",
+                ts,
+                chat_id,
+            )
+            # A deleted stream is normally followed by a new post. If the
+            # deletion fails, the best available user-visible result is the
+            # sealed prefix rather than two competing answer bodies.
+            await self.stop_typing(chat_id)
+            return SendResult(success=True, message_id=ts)
         ts = stream["ts"]
         ok = await self._seal_stream(chat_id, stream, final_text=text)
         if not ok:
             # Stop failed — post normally; the dangling stream times out on Slack's side.
             return None
+        self._active_streams.pop(chat_id, None)
         # Streams render markdown natively; rich blocks are applied via
         # chat_update on the sealed message (mirrors edit_message finalize).
         blocks = self._maybe_blocks(text)

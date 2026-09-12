@@ -36,6 +36,7 @@ def _make_adapter(extra=None):
     client.chat_startStream = AsyncMock(return_value={"ok": True, "ts": "123.456"})
     client.chat_appendStream = AsyncMock(return_value={"ok": True})
     client.chat_stopStream = AsyncMock(return_value={"ok": True})
+    client.chat_delete = AsyncMock(return_value={"ok": True})
     a._get_client = MagicMock(return_value=client)
     a.stop_typing = AsyncMock()
     a._running = True
@@ -127,6 +128,17 @@ class TestSendDraft:
         assert "D1" not in adapter._active_streams
 
     @pytest.mark.asyncio
+    async def test_prefix_mismatch_keeps_stream_when_sealing_fails(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Hello", metadata=META)
+        client.chat_stopStream = AsyncMock(side_effect=Exception("boom"))
+
+        result = await adapter.send_draft("D1", 7, "Rewritten text", metadata=META)
+
+        assert not result.success
+        assert "D1" in adapter._active_streams
+
+    @pytest.mark.asyncio
     async def test_no_thread_ts_fails_cleanly(self):
         adapter, client = _make_adapter()
         result = await adapter.send_draft("D1", 7, "Hello", metadata={})
@@ -199,6 +211,74 @@ class TestSendFinalization:
         assert "D1" in adapter._active_streams
 
     @pytest.mark.asyncio
+    async def test_rewritten_final_deletes_stream_then_posts_once(self):
+        """A rewritten final replaces an incomplete native stream safely."""
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+
+        result = await adapter.send(
+            "D1",
+            "Final answer with the completed details.",
+            metadata={**META, "final": True},
+        )
+
+        assert result.success
+        assert result.message_id == "999.111"
+        client.chat_stopStream.assert_awaited_once_with(
+            channel="D1",
+            ts="123.456",
+        )
+        client.chat_delete.assert_awaited_once_with(channel="D1", ts="123.456")
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        assert client.chat_postMessage.await_args.kwargs["text"] == (
+            "Final answer with the completed details."
+        )
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_rewritten_final_keeps_prefix_when_stream_delete_fails(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+        client.chat_delete = AsyncMock(
+            return_value={"ok": False, "error": "cant_delete_message"}
+        )
+
+        result = await adapter.send(
+            "D1",
+            "Final answer with the completed details.",
+            metadata={**META, "final": True},
+        )
+
+        assert result.success
+        assert result.message_id == "123.456"
+        client.chat_stopStream.assert_awaited_once_with(
+            channel="D1",
+            ts="123.456",
+        )
+        client.chat_delete.assert_awaited_once_with(channel="D1", ts="123.456")
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_not_awaited()
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_interim_send_cannot_replace_stream_message(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Streaming text here", metadata=META)
+
+        result = await adapter.send(
+            "D1",
+            "Unrelated notice",
+            metadata={**META, "_interim_send": True, "final": True},
+        )
+
+        assert result.success
+        client.chat_stopStream.assert_not_awaited()
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        assert "D1" in adapter._active_streams
+
+    @pytest.mark.asyncio
     async def test_stop_stream_failure_falls_back_to_post(self):
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Hello", metadata=META)
@@ -206,6 +286,41 @@ class TestSendFinalization:
         result = await adapter.send("D1", "Hello world", metadata=META)
         assert result.success
         client.chat_postMessage.assert_awaited()
+        assert "D1" in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_notify_only_send_does_not_finalize_rewritten_stream(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+
+        result = await adapter.send(
+            "D1",
+            "Unrelated notification",
+            metadata={**META, "notify": True},
+        )
+
+        assert result.success
+        client.chat_stopStream.assert_not_awaited()
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        assert "D1" in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_rewritten_final_keeps_stream_when_sealing_fails(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Draft answer", metadata=META)
+        client.chat_stopStream = AsyncMock(side_effect=Exception("boom"))
+
+        result = await adapter.send(
+            "D1",
+            "Final answer with the completed details.",
+            metadata={**META, "final": True},
+        )
+
+        assert result.success
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_awaited_once()
+        assert "D1" in adapter._active_streams
 
     @pytest.mark.asyncio
     async def test_rich_blocks_applied_after_seal(self):

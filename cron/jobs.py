@@ -353,10 +353,16 @@ def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
 
 @contextlib.contextmanager
 def fire_claim_fence(job_id: str, *, expected_owner: str):
-    """Hold a per-job fence while an owner performs an external side effect."""
+    """Hold a per-job fence while an owner performs an external side effect.
+
+    Yields ``True`` while *expected_owner* still holds the claim, ``False`` when a
+    verified different owner holds it, and ``None`` when the fence could not be
+    acquired — ownership is *unverified*, not lost. Callers must fail closed on
+    ``None`` without recording an ownership loss.
+    """
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
-            yield False
+            yield None
             return
         with _jobs_lock():
             job = next((item for item in load_jobs() if item.get("id") == job_id), None)
@@ -2599,12 +2605,20 @@ def claim_job_for_fire(
 
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
-    """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+    """Refresh an active ``fire_claim`` without extending another owner's lease.
+
+    Uses ``_with_job`` (the global jobs-store lock) rather than ``_under_fire_fence``.
+    The per-job fire fence is held across long side effects (delivery, teardown) by
+    the worker thread; the heartbeat runs on a background thread and must not wait
+    on that fence. A fence-wait timeout here was reported as ownership loss on runs
+    that had already finished and delivered.
+
+    ``False`` is only a verified loss (claim gone, or a replacement owner holds it).
+    """
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

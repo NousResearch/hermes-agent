@@ -31,6 +31,9 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Set on the env dict by the CDP resolvers when the resolved browser is EXCLUSIVE to this named session
 # (per-name provider / named BU cloud / Lightpanda). Popped before the subprocess launches — never exported.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
+# Proves that BU_CDP_* came from Hermes' managed real-profile launcher rather
+# than an operator-owned CDP endpoint. Never exported to the subprocess.
+_REAL_PROFILE_SENTINEL = "_HERMES_BU_REAL_PROFILE"
 
 # Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
@@ -458,7 +461,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     return err
 
 
-def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
+def _resolve_real_profile_cdp(
+    env: dict, force_local: bool, headed: Optional[bool] = None
+) -> Optional[str]:
     """Point the harness at the user's real-profile copy-browser (a SNAPSHOT of their default Chromium
     profile, hermes_cli.browser_connect) when consented. Two ways in: the effective backend is already local
     (no provider, CDP override, or legacy BU cloud config) → silent upgrade; or ``force_local`` (consent-gated
@@ -481,9 +486,10 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     if not force_local and (_quiet(_get_cloud_provider, object()) is not None
                             or is_legacy_browser_use_cloud_config(_read_browser_cfg())):
         return None
-    cdp, err = _real_profile_cdp()
+    cdp, err = _real_profile_cdp(headed=headed)
     if cdp and not err:
         _set_cdp_env(env, cdp)
+        env[_REAL_PROFILE_SENTINEL] = "1"
     return err or None
 
 
@@ -504,14 +510,22 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
         logger.debug("browser_exec: CDP supervisor attach failed (non-fatal): %s", exc)
 
 
-def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool) -> Optional[str]:
+def _route_backend(
+    env: dict, session: str, task_id: Optional[str], local: bool, headed: Optional[bool] = None
+) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
     sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
     provider backends additionally keys its own cloud browser."""
-    rp_err = _resolve_real_profile_cdp(env, force_local=local)
+    rp_err = _resolve_real_profile_cdp(env, force_local=local, headed=headed)
     if rp_err:
         return rp_err
+    if headed is not None and not env.get(_REAL_PROFILE_SENTINEL):
+        return (
+            "headed can only control a Hermes-managed local real-profile browser. "
+            "Enable browser.use_real_profile and use a local backend (or pass "
+            "local=true under a cloud backend), then retry."
+        )
     # local=True is only served by the real-profile route; consent off must not pretend.
     if local and not _has_cdp_env(env) and not _real_profile_consented():
         return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
@@ -581,7 +595,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
-                 task_id: Optional[str] = None, local: bool = False):
+                 task_id: Optional[str] = None, local: bool = False,
+                 headed: Optional[bool] = None):
     """Run Python code through the browser-use CLI, and return its output"""
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
@@ -598,12 +613,15 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                           "then run `browser-use --doctor` to verify the setup.")
 
     env = _base_subprocess_env()
+    # Internal routing proof must come from this invocation, never the parent process environment.
+    env.pop(_PRIVATE_BROWSER_SENTINEL, None)
+    env.pop(_REAL_PROFILE_SENTINEL, None)
     if session:
         if not _SESSION_RE.match(session):
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err = _route_backend(env, session, task_id, bool(local))
+    route_err = _route_backend(env, session, task_id, bool(local), headed=headed)
     if route_err:
         return tool_error(route_err)
     _attach_vault_supervisor(env, task_id)
@@ -611,6 +629,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
+    env.pop(_REAL_PROFILE_SENTINEL, None)
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
 
@@ -746,6 +765,10 @@ BROWSER_EXEC_SCHEMA = {
             "session": {"type": "string", "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session."},
             "timeout_s": {"type": "integer", "default": _DEFAULT_TIMEOUT_S,
                           "description": f"Max seconds to wait for the code to finish (default {_DEFAULT_TIMEOUT_S}, max {_MAX_TIMEOUT_S})."},
+            "headed": {"type": "boolean", "description": (
+                "Override browser.headed when launching a new Hermes-managed local real-profile browser. "
+                "Omit to use the configured default. An already-running browser must use the same mode. "
+                "Unsupported for cloud browsers and non-graphical engines.")},
         },
         "required": ["code"],
     },
@@ -765,6 +788,7 @@ registry.register(
         code=args.get("code", ""), session=args.get("session", "") or "",
         timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S), task_id=kw.get("task_id"),
         local=bool(args.get("local", False)),
+        headed=args.get("headed"),
     ),
     check_fn=is_browser_use_cli_mode,
     dynamic_schema_overrides=_dynamic_schema_overrides,

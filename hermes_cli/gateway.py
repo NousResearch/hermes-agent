@@ -3826,8 +3826,11 @@ def _launchd_log_dir(*, notify: bool = False) -> Path:
     installs) prints the relocation so users know where the logs moved.
     """
     home = Path.home()
-    log_dir = get_hermes_home() / "logs"
-    if not _same_volume(log_dir, home):
+    hermes_home = get_hermes_home()
+    log_dir = hermes_home / "logs"
+    # Compare the existing home root, not its possibly-not-yet-created logs
+    # child. A missing child makes stat() fail open and defeats the fallback.
+    if not _same_volume(hermes_home, home):
         fallback = Path.home() / "Library" / "Logs" / get_launchd_label()
         fallback.mkdir(parents=True, exist_ok=True)
         if notify:

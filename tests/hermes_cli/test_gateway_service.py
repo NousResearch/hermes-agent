@@ -434,7 +434,13 @@ class TestGeneratedSystemdUnits:
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_link)
         # Simulate the volume boundary: the symlink target reports a
         # different device than the user home.
-        monkeypatch.setattr(gateway_cli, "_same_volume", lambda a, b: False)
+        compared = []
+
+        def different_volume(a, b):
+            compared.append((a, b))
+            return False
+
+        monkeypatch.setattr(gateway_cli, "_same_volume", different_volume)
 
         plist = gateway_cli.generate_launchd_plist()
 
@@ -442,9 +448,17 @@ class TestGeneratedSystemdUnits:
         assert str(external) in plist
         # …but WorkingDirectory and the log paths never do: they fall back
         # to the user home / ~/Library/Logs/<label>.
-        assert "<key>WorkingDirectory</key>\n    <string>" + str(Path.home()) + "</string>" in plist
+        assert (
+            "<key>WorkingDirectory</key>\n    <string>"
+            + str(Path.home())
+            + "</string>"
+            in plist
+        )
         assert f"{external}/logs" not in plist
         assert "Library/Logs" in plist
+        # The log directory does not exist yet. Probe the existing home root,
+        # otherwise _same_volume() fails open and misses the external disk.
+        assert compared[0][0] == hermes_link
 
     def test_launchd_plist_keeps_same_volume_home_paths(self, tmp_path, monkeypatch):
         """No volume boundary: WorkingDirectory + logs stay under HERMES_HOME."""
@@ -460,7 +474,6 @@ class TestGeneratedSystemdUnits:
 
         assert str(home) in plist
         assert "Library/Logs" not in plist
-
 
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only

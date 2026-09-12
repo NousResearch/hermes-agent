@@ -1,10 +1,11 @@
 """Per-process unlock state for external password managers.
 
-An unlock is a session token minted by the manager's CLI from the master
-password (``op signin --raw`` / ``bw unlock --raw``). The token lives in
-process memory only, keyed by backend, and expires after an idle TTL or an
-explicit lock. The master password itself is consumed by the CLI call and
-dropped; nothing is written to disk or env.
+An unlock is a session token minted by the manager's CLI, or for 1Password
+a marker that the desktop app session is live (``op whoami``). The token
+lives in process memory only, keyed by backend, and expires after an idle
+TTL or an explicit lock. 1Password's master password is never collected;
+Bitwarden's is consumed by the CLI call and dropped. Nothing is written to
+disk or env.
 
 The surface owns the prompt: ``set_unlock_prompt_callback`` is installed by
 the CLI panel / TUI gateway bridge for the current thread, exactly like the

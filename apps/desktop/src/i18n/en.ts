@@ -603,12 +603,12 @@ export const en: Translations = {
       sources: {
         title: 'Password managers',
         blurb:
-          'Installed password managers are picked up automatically. The agent asks you to unlock one the first time it needs a login from it (once per session); only a session token stays in memory, and the agent never sees your master password or any login.',
+          'Installed password managers are picked up automatically. 1Password unlocks through the 1Password app (Touch ID). Bitwarden asks for your master password in Hermes once per session. The agent never sees your master password or any login.',
         toggleFailed: 'Could not update password manager',
         notInstalled: name =>
           `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
         disabledDesc: 'Detected but turned off for Hermes.',
-        lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
+        lockedDesc: 'Detected. Unlock 1Password in the 1Password app, or Bitwarden here, when a login is needed.',
         unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
         statusLocked: 'Locked',
         statusNotDetected: 'Not detected',

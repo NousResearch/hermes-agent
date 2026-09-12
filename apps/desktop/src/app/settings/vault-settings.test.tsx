@@ -141,7 +141,7 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.remove', { id: 'vault_abc123' }))
   })
 
-  it('unlocks a password manager from Settings; the master password leaves only via vault.unlock', async () => {
+  it('unlocks 1Password from Settings without collecting a master password', async () => {
     const sources = [
       {
         name: 'onepassword',
@@ -149,7 +149,8 @@ describe('VaultSettings', () => {
         enabled: true,
         needs_unlock: true,
         unlocked: false,
-        installed: true
+        installed: true,
+        app_unlock: true
       },
       {
         name: 'bitwarden',
@@ -187,18 +188,13 @@ describe('VaultSettings', () => {
     expect(screen.queryByRole('switch', { name: 'Bitwarden' })).toBeNull()
     expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
-    await waitFor(() => expect(screen.getByText('Unlock 1Password')).toBeTruthy())
-
-    fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'correct horse' } })
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Unlock' }).closest('form')!.querySelector('button[type=submit]')!
-    )
 
     await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword', password: 'correct horse' })
+      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword' })
     )
     await waitFor(() => expect(screen.getByText('Unlocked')).toBeTruthy())
     expect(screen.queryByPlaceholderText('Master password')).toBeNull()
+    expect(screen.queryByText('Unlock 1Password')).toBeNull()
     expect(screen.getByRole('button', { name: 'Lock' })).toBeTruthy()
   })
 })

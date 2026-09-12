@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.session_retitle import (
     RECENT_RETITLE_MESSAGES,
     generate_retitle,
@@ -84,14 +86,30 @@ def test_retitle_does_not_call_model_without_real_conversation_context():
     db.set_session_title.assert_not_called()
 
 
-def test_retitle_returns_none_when_session_write_does_not_land():
+def test_retitle_raises_when_title_generation_returns_nothing():
+    db = MagicMock()
+    db.get_conversation_root.return_value = "session-1"
+
+    with patch("agent.session_retitle.generate_retitle", return_value=None):
+        with pytest.raises(RuntimeError, match="title generation returned no title"):
+            retitle_session(
+                db,
+                "session-1",
+                [{"role": "user", "content": "Rename this conversation"}],
+            )
+
+    db.set_session_title.assert_not_called()
+
+
+def test_retitle_raises_when_session_write_does_not_land():
     db = MagicMock()
     db.get_conversation_root.return_value = "session-1"
     db.set_session_title.return_value = False
 
     with patch("agent.session_retitle.generate_retitle", return_value="New title"):
-        assert retitle_session(
-            db,
-            "session-1",
-            [{"role": "user", "content": "Rename this conversation"}],
-        ) is None
+        with pytest.raises(RuntimeError, match="not found while storing title"):
+            retitle_session(
+                db,
+                "session-1",
+                [{"role": "user", "content": "Rename this conversation"}],
+            )

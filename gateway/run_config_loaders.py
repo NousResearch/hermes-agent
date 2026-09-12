@@ -7,12 +7,10 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
 from contextlib import suppress
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from gateway.config import Platform
@@ -58,33 +56,20 @@ class GatewayConfigLoadersMixin:
         """Load ephemeral prefill messages from config or env var.
 
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
-        then legacy agent.prefill_messages_file. Relative paths resolve from ~/.hermes/.
+        then legacy agent.prefill_messages_file. Relative paths resolve from the gateway config home.
+        Resolution and loading are shared with the CLI and the TUI/Desktop backend
+        (``hermes_cli.prefill_messages``) so the surfaces cannot drift.
         """
         from gateway.run import _gateway_config_home, _load_gateway_runtime_config
-        file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
-        if not file_path:
-            cfg = _load_gateway_runtime_config()
-            file_path = str(
-                cfg.get("prefill_messages_file", "") or cfg_get(cfg, "agent", "prefill_messages_file", default="") or ""
-            )
-        if not file_path:
-            return []
-        path = Path(file_path).expanduser()
-        if not path.is_absolute():
-            path = _gateway_config_home() / path
-        if not path.exists():
-            logger.warning("Prefill messages file not found: %s", path)
-            return []
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, list):
-                logger.warning("Prefill messages file must contain a JSON array: %s", path)
-                return []
-            return data
-        except Exception as e:
-            logger.warning("Failed to load prefill messages from %s: %s", path, e)
-            return []
+        from hermes_cli.prefill_messages import (
+            load_prefill_messages,
+            resolve_prefill_messages_file,
+        )
+
+        return load_prefill_messages(
+            resolve_prefill_messages_file(_load_gateway_runtime_config()),
+            base_dir=_gateway_config_home(),
+        )
 
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:

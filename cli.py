@@ -231,35 +231,21 @@ def _assistant_copy_text(content: Any) -> str:
 
 
 def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
-    """Load prefill messages (JSON array) from *file_path*; relative to ~/.hermes/; missing/empty -> []."""
-    if not file_path:
-        return []
-    path = Path(file_path).expanduser()
-    if not path.is_absolute():
-        path = _hermes_home / path
-    if not path.exists():
-        logger.warning("Prefill messages file not found: %s", path)
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            logger.warning("Prefill messages file must contain a JSON array: %s", path)
-            return []
-        return data
-    except Exception as e:
-        logger.warning("Failed to load prefill messages from %s: %s", path, e)
-        return []
+    """Load prefill messages (JSON array) from *file_path*.
+
+    Relative paths resolve against the *active* hermes home (shared loader in
+    ``hermes_cli.prefill_messages``); missing/empty -> [].
+    """
+    from hermes_cli.prefill_messages import load_prefill_messages
+
+    return load_prefill_messages(file_path)
 
 
 def _resolve_prefill_messages_file(config: Dict[str, Any]) -> str:
     """Prefill file path: env, then top-level ``prefill_messages_file``, then legacy ``agent.*``."""
-    agent_cfg = config.get("agent", {})
-    return (
-        os.getenv("HERMES_PREFILL_MESSAGES_FILE", "").strip()
-        or str(config.get("prefill_messages_file", "") or "").strip()
-        or (str(agent_cfg.get("prefill_messages_file", "") or "").strip() if isinstance(agent_cfg, dict) else "")
-    )
+    from hermes_cli.prefill_messages import resolve_prefill_messages_file
+
+    return resolve_prefill_messages_file(config)
 
 
 def _parse_reasoning_config(effort) -> dict | None:

@@ -381,8 +381,7 @@ def _drain_stdout(proc: ProcessHandle, output: _BoundedOutputCollector, stop: "t
                 if piece is not None:
                     output.append(decoder.decode(piece) if isinstance(piece, bytes) else str(piece))
         elif os.name == "nt":
-            while chunk := os.read(fd, 4096):
-                output.append(decoder.decode(chunk))
+            _drain_fd_windows(proc, fd, output, decoder, stop)
         else:
             _drain_fd_select(proc, fd, output, decoder, stop)
     except Exception:
@@ -423,6 +422,54 @@ def _drain_fd_select(proc, fd: int, output: _BoundedOutputCollector, decoder, st
             idle_after_exit += 1
             if idle_after_exit >= 3:
                 return
+
+
+def _drain_fd_windows(proc, fd: int, output: _BoundedOutputCollector, decoder, stop=None) -> None:
+    """Windows drain: poll ``PeekNamedPipe`` because ``select`` cannot poll pipes.
+
+    ``os.read`` on a Windows pipe blocks until data is available or every writer
+    closes the pipe.  A backgrounded grandchild can retain a writer indefinitely,
+    so use the Win32 pipe API to check availability before reading and apply the
+    same post-exit idle bound as the POSIX drain.
+    """
+    import ctypes
+    import msvcrt
+
+    try:
+        raw_handle = msvcrt.get_osfhandle(fd)
+    except OSError:
+        return
+    if raw_handle in (-1, 0):
+        return
+
+    handle = ctypes.c_void_p(raw_handle)
+    kernel32 = ctypes.windll.kernel32
+    available = ctypes.c_ulong(0)
+    idle_after_exit = 0
+    while True:
+        if stop is not None and stop.is_set():
+            return
+        try:
+            ok = kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None)
+        except OSError:
+            return
+        if not ok:
+            return
+        if available.value:
+            try:
+                chunk = os.read(fd, min(int(available.value), 4096))
+            except (ValueError, OSError):
+                return
+            if not chunk:
+                return
+            output.append(decoder.decode(chunk))
+            idle_after_exit = 0
+            continue
+        if proc.poll() is not None:
+            idle_after_exit += 1
+            if idle_after_exit >= 3:
+                return
+        time.sleep(0.1)
 
 
 def _start_drain_thread(

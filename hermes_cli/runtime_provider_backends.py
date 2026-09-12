@@ -146,7 +146,7 @@ def _resolve_openrouter_runtime(
     # OPENROUTER_API_KEY for it (#10622).
     is_openrouter_context = is_openrouter_url or (
         requested_norm == "openrouter" and (
-            (use_config_base_url and cfg_provider == "openrouter")
+            (use_config_base_url and cfg_provider == "openrouter" and base_url == cfg_base_url.strip().rstrip("/"))
             or ((env_openrouter_base_url or base_url == env_openrouter_base_url)
                 and base_url == (env_openrouter_base_url or "").rstrip("/"))
         )

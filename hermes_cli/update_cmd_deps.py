@@ -857,7 +857,22 @@ def _rebuild_desktop_after_update(
         from hermes_constants import display_hermes_home as _dhh
         print(f"  Full build log: {_dhh()}/logs/update.log")
         return False
-    print("  ✓ Desktop app up to date")
+    # The build succeeded. `--build-only` rebuilds into the
+    # release/ tree but does NOT install the rebuilt app to the
+    # system location (e.g. /Applications/Hermes.app). The
+    # in-app updater handles that swap itself, but a CLI
+    # `hermes update` otherwise leaves the installed app stale.
+    if _m()._desktop_bundle_install_supported():
+        installed = _m()._install_rebuilt_desktop_app(desktop_dir)
+        if installed:
+            print(f"  ✓ Desktop app updated at {installed}")
+        else:
+            print("  ✓ Desktop app up to date")
+    else:
+        print(
+            "  ✓ Desktop app rebuilt; automatic installed-package "
+            f"replacement is unsupported on {sys.platform}"
+        )
     return True
 
 

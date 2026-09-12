@@ -1,7 +1,7 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
-import { expandTokens } from '../domain/attachments.js'
+import { draftImagesIn, expandTokens } from '../domain/attachments.js'
 import { completionToApplyOnSubmit, looksLikeSlashCommand, parseSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
@@ -10,8 +10,8 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
-import { submitPrompt } from './submissionCore.js'
+import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
+import { submitPrompt, type SubmitPromptOptions } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -102,7 +102,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       showUserMessage = true,
       displayText?: string,
       expandOverride?: (value: string) => string,
-      submitOpts: { skipDetectDrop?: boolean } = {}
+      submitOpts: SubmitPromptOptions = {}
     ) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
@@ -177,7 +177,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
   )
 
   const sendQueued = useCallback(
-    (text: string) => {
+    (queued: QueueItem | string) => {
+      const item = typeof queued === 'string' ? queueItem(queued) : queued
+      const text = item.text
+      const live = getUiState()
+      const destination = live.sid ? { sessionId: live.sid, profileName: live.info?.profile_name ?? '' } : undefined
+      const sendItem = (value: string) => send(value, true, item.display, v => v, { draftImages: item.draftImages, destination })
+
       if (text.startsWith('!')) {
         return shellExec(text.slice(1).trim())
       }
@@ -185,10 +191,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
       if (hasInterpolation(text)) {
         patchUiState({ busy: true })
 
-        return interpolate(text, send)
+        return interpolate(text, sendItem)
       }
 
-      send(text)
+      sendItem(text)
     },
     [interpolate, send, shellExec]
   )
@@ -213,7 +219,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         if (opts.fallbackToFront) {
           composerActions.prependQueue(item)
         } else {
-          composerActions.enqueue(item.text, item.display)
+          composerActions.enqueue(item.text, item.display, item.draftImages)
         }
       }
 
@@ -222,7 +228,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
         sys(note)
       }
 
-      if (mode === 'queue') {
+      // Steering accepts text only. Keep images with a future deliberate turn.
+      if (mode === 'queue' || (mode === 'steer' && item.draftImages?.length)) {
         return enqueueText()
       }
 
@@ -244,13 +251,15 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // the agent is in model generation, tool execution, or an older runtime.
       // Reuse the normal submit pipeline so the correction gets its user bubble
       // and file-drop interpolation exactly once.
-      send(item.text)
+      send(item.text, true, item.display, v => v, { draftImages: item.draftImages })
     },
     [composerActions, gw, send, sys]
   )
 
   const dispatchSubmission = useCallback(
-    (full: string) => {
+    (full: string | QueueItem) => {
+      if (typeof full !== 'string') {return getUiState().busy ? handleBusyInput(full) : sendQueued(full)}
+
       if (!full.trim()) {
         return
       }
@@ -262,6 +271,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // stable.
       const submissionTokens = [...composerRefs.tokensRef.current]
       const submission = prepareSubmission(full, submissionTokens)
+      const draftImages = draftImagesIn(submissionTokens, full)
       const toHistory = submission.text
 
       if (looksLikeSlashCommand(full)) {
@@ -276,10 +286,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
           parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
 
         if (queued) {
-          composerActions.enqueue(queued.text, queued.display)
+          composerActions.enqueue(expandTokens(draftImages)(queued.text), queued.display, draftImages)
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
-          slashRef.current(slash.command)
+          if (draftImages.length) {slashRef.current(slash.command, draftImages)}
+          else {slashRef.current(slash.command)}
         }
 
         composerActions.clearIn()
@@ -297,7 +308,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       if (!live.sid) {
         composerActions.pushHistory(toHistory)
-        composerActions.enqueue(full)
+        composerActions.enqueue(submission.text, full, draftImages)
         composerActions.clearIn()
 
         return
@@ -314,6 +325,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
           return
         }
 
+        // Queue editing can delete old images or insert new ones. Snapshot the
+        // admitted editor, not the original queue item nor the now-cleared draft.
+        picked.text = expandTokens(submissionTokens)(picked.text)
+        picked.draftImages = draftImages
+
         if (getUiState().busy) {
           // 'interrupt' / 'steer' should reach the live turn instead of
           // silently going back to the queue.  handleBusyInput resolves
@@ -325,24 +341,25 @@ export function useSubmission(opts: UseSubmissionOptions) {
           return handleBusyInput(picked, { fallbackToFront: true })
         }
 
-        return sendQueued(picked.text)
+        return sendQueued(picked)
       }
 
       composerActions.pushHistory(toHistory)
 
       if (getUiState().busy) {
-        return handleBusyInput(queueItem(full))
+        return handleBusyInput(queueItem(submission.text, full, draftImages))
       }
 
       if (shouldInterpolateSubmission(full)) {
+        const destination = { sessionId: live.sid, profileName: live.info?.profile_name ?? '' }
         patchUiState({ busy: true })
 
         return interpolate(full, text =>
-          send(prepareSubmission(text, submissionTokens).text, true, text, value => value)
+          send(prepareSubmission(text, submissionTokens).text, true, text, value => value, { draftImages, destination })
         )
       }
 
-      send(submission.text, true, submission.display, value => value)
+      send(submission.text, true, submission.display, value => value, { draftImages: draftImagesIn(submissionTokens, full) })
     },
     [
       appendMessage,
@@ -435,7 +452,7 @@ export interface UseSubmissionOptions {
   composerState: ComposerState
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
-  slashRef: MutableRefObject<(cmd: string) => boolean>
+  slashRef: MutableRefObject<SlashHandler>
   submitRef: MutableRefObject<(value: string) => void>
   sys: (text: string) => void
 }

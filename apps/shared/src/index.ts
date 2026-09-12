@@ -1,10 +1,11 @@
-export { backendScopeKey, backendScopePrefix, LOCAL_CONNECTION_ID, registryBackendScopeKey } from './backend-scope'
+/// <reference lib="dom" />
+export { backendScopeKey, backendScopePrefix, LOCAL_CONNECTION_ID, registryBackendScopeKey } from './backend-scope.js'
 export {
   BILLING_REFUSAL_POLICY,
   type BillingRecovery,
   type BillingRefusalPolicy,
   refusalPolicy
-} from './billing-policy'
+} from './billing-policy.js'
 export type {
   BillingAutoReload,
   BillingBlock,
@@ -26,7 +27,7 @@ export type {
   SubscriptionUpgradeResponse,
   UsageBarData,
   UsageModelData
-} from './billing-types'
+} from './billing-types.js'
 export {
   driveChargeSettlement,
   SETTLEMENT_MAX_RETRY_AFTER_MS,
@@ -34,18 +35,18 @@ export {
   SETTLEMENT_POLL_INTERVAL_MS,
   type SettlementDeps,
   type SettlementOutcome
-} from './charge-settlement'
+} from './charge-settlement.js'
 export {
   createCronTriggerController,
   type CronTriggerController,
   type CronTriggerRunResult
-} from './cron-trigger-controller'
+} from './cron-trigger-controller.js'
 export {
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   DATA_URL_READ_MAX_MAX_MB,
   DATA_URL_READ_MIN_MAX_MB
-} from './data-url-read-max'
+} from './data-url-read-max.js'
 export {
   type ConnectionState,
   type GatewayClientOptions,
@@ -58,8 +59,15 @@ export {
   JsonRpcGatewayClient,
   JsonRpcGatewayError,
   type WebSocketLike
-} from './json-rpc-gateway'
-export { skillInvocationText } from './skill-scaffold'
+} from './json-rpc-gateway.js'
+export {
+  DRAFT_CONTROL_PREFIX,
+  type DraftIdentity,
+  type DraftState,
+  type DraftAttachRequest,
+  type DraftResult
+} from './draft-attachments.js'
+export { skillInvocationText } from './skill-scaffold.js'
 export {
   type HermesSkin,
   SKIN_BRANDING_TOKENS,
@@ -68,7 +76,7 @@ export {
   type SkinBrandingToken,
   type SkinColors,
   type SkinColorToken
-} from './skin'
+} from './skin.js'
 export {
   backgroundMaterialFor,
   clampIntensity,
@@ -100,7 +108,7 @@ export {
   WINDOWS_BACKGROUND_MATERIALS,
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
-} from './translucency'
+} from './translucency.js'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,
@@ -112,4 +120,4 @@ export {
   resolveGatewayWsUrl,
   type ResolveGatewayWsUrlDeps,
   type WebSocketAuthParam
-} from './websocket-url'
+} from './websocket-url.js'

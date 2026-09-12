@@ -16,7 +16,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
-from hermes_cli.pty_session import RegistryFull
+from hermes_cli.pty_session import RegistryFull, PtySession
+from hermes_cli.pty_draft_control import DRAFT_CONTROL_PREFIX, LIVE_CONTROLLERS, PtyDraftControl
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_chat import (
     _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
@@ -446,7 +447,8 @@ async def pty_ws(ws: WebSocket) -> None:
     resume = raw_resume
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
+    draft = PtyDraftControl(channel)
+    sidecar_url = _build_sidecar_url(channel, controller=draft.credential) if channel else None
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
     active_session_file: Optional[Path] = None
 
@@ -501,12 +503,13 @@ async def pty_ws(ws: WebSocket) -> None:
         except (FileNotFoundError, OSError) as exc:
             await _pty_fail(ws, f"Chat failed to start: {exc}")
             return
-        await _legacy_pump(ws, bridge)
+        session = PtySession("", bridge, buffer_cap=0, read_timeout=0.1, draft=draft)
+        await _legacy_pump(ws, bridge, session=session)
         return
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
-        session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
+        session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn, draft=draft)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
         await _pty_fail(ws, f"Chat unavailable: {exc}")
         return
@@ -597,11 +600,42 @@ async def pub_ws(ws: WebSocket) -> None:
     channel = await _accept_channel_ws(ws)
     if channel is None:
         return
+    credential = ws.query_params.get("controller")
+    control = LIVE_CONTROLLERS.get(credential) if credential else None
     try:
+        if credential is not None:
+            try:
+                generation = int(ws.query_params.get("controller_generation", "0"))
+            except ValueError:
+                generation = 0
+            if control is None or control.channel != channel:
+                await ws.close(code=4401)
+                return
+            if control.session is None:
+                # fork/exec can let Node dial before attach_or_spawn binds its PTY.
+                await ws.close(code=1013)
+                return
+            if not await control.claim(ws, credential=credential, generation=generation):
+                await ws.close(code=4409)
+                return
         while True:
-            await _broadcast_event(ws.app, channel, await ws.receive_text())
+            raw = await ws.receive_text()
+            if raw.startswith(DRAFT_CONTROL_PREFIX.decode()):
+                continue
+            try:
+                frame = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(frame, dict) and str(frame.get("type", "")).startswith("draft."):
+                if control is not None:
+                    await control.receive(ws, frame)
+                continue
+            await _broadcast_event(ws.app, channel, raw)
     except WebSocketDisconnect:
         pass
+    finally:
+        if control is not None:
+            await control.disconnected(ws)
 
 
 @router.websocket("/api/events")

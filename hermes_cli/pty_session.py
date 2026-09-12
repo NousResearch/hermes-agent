@@ -10,6 +10,8 @@ import asyncio
 import time
 from typing import Callable, Dict, Optional, Tuple
 
+from hermes_cli.pty_draft_control import DRAFT_CONTROL_PREFIX, PtyDraftControl
+
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
 TUI_FORCE_REDRAW = b"\x0c"
@@ -43,7 +45,8 @@ async def _close_ws(ws, code: int) -> None:
 
 
 class PtySession:
-    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float,
+                 draft: Optional[PtyDraftControl] = None) -> None:
         self.key = key
         self.bridge = bridge
         self.buffer = RingBuffer(buffer_cap)
@@ -55,6 +58,8 @@ class PtySession:
         self._attach_generation = 0
         self._drain_task: Optional[asyncio.Task] = None
         self._write_lock = asyncio.Lock()
+        self.draft = draft or PtyDraftControl()
+        self.draft.session = self
 
     async def start(self) -> None:
         self._drain_task = asyncio.create_task(self._drain())
@@ -65,7 +70,10 @@ class PtySession:
             chunk = await loop.run_in_executor(None, self.bridge.read, self._read_timeout)
             if chunk is None:                       # EOF — the agent process exited
                 self.alive = False
-                await _close_ws(self._ws, WS_CLOSE_PROCESS_EXITED)
+                try:
+                    await self.draft.close()
+                finally:
+                    await _close_ws(self._ws, WS_CLOSE_PROCESS_EXITED)
                 return
             if not chunk:                            # idle tick
                 await asyncio.sleep(0)
@@ -79,6 +87,9 @@ class PtySession:
 
     async def write(self, ws, data: bytes) -> bool:
         """Serialize input and discard bytes from a superseded socket."""
+        if data.startswith(DRAFT_CONTROL_PREFIX):
+            await self.draft.browser_frame(ws, data)
+            return True
         async with self._write_lock:
             if self._ws is not ws:
                 return True
@@ -107,6 +118,7 @@ class PtySession:
         self._attach_generation += 1
         self.attached = True
         self.last_detached_at = None
+        await self.draft.browser_attached()
         if snap := self.buffer.snapshot():
             await ws.send_bytes(snap)
         if force_redraw:
@@ -122,21 +134,26 @@ class PtySession:
         self._ws = None
         self.attached = False
         self.last_detached_at = time.monotonic()
+        self.draft.browser_detached()
 
     async def close(self) -> None:
         self.alive = False
-        if self._drain_task is not None:
-            self._drain_task.cancel()
-            try:
-                await self._drain_task
-            except (asyncio.CancelledError, Exception):
-                pass
         try:
-            # bridge.close() joins the child — blocking; keep it off the event loop.
-            # See #53227.
-            await asyncio.to_thread(self.bridge.close)
-        except Exception:
-            pass
+            await self.draft.close()
+        finally:
+            # Sidecar failure or cancellation must not leave a PTY behind.
+            if self._drain_task is not None:
+                self._drain_task.cancel()
+                try:
+                    await self._drain_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            try:
+                # bridge.close() joins the child — blocking; keep it off the event loop.
+                # See #53227.
+                await asyncio.to_thread(self.bridge.close)
+            except Exception:
+                pass
 
 
 class RegistryFull(Exception):
@@ -161,7 +178,8 @@ class PtySessionRegistry:
         self._read_timeout = read_timeout
         self._sessions: Dict[str, PtySession] = {}
 
-    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]) -> Tuple[PtySession, bool]:
+    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object],
+                              draft: Optional[PtyDraftControl] = None) -> Tuple[PtySession, bool]:
         await self.reap_idle()
         existing = self._sessions.get(key)
         if existing is not None and existing.alive:
@@ -174,7 +192,7 @@ class PtySessionRegistry:
         # PTY spawn does blocking fork/exec work — keep it off the event loop.
         # See #53227.
         bridge = await asyncio.to_thread(spawn)
-        session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
+        session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout, draft=draft)
         await session.start()
         self._sessions[key] = session
         return session, True

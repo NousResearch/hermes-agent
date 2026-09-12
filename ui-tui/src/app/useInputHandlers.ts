@@ -289,7 +289,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     cActions.setQueueEdit(index)
     cActions.setHistoryIdx(null)
-    cActions.setInput(cRefs.queueRef.current[index]?.display ?? '')
+    const item = cRefs.queueRef.current[index]
+    cActions.setInput(item?.display ?? '')
+    cActions.setComposerTokens(item?.draftImages ?? [])
 
     return true
   }

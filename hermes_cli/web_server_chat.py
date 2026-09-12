@@ -17,7 +17,7 @@ import urllib.request
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pathlib import Path
 from typing import Optional
-from hermes_cli.pty_session import PtySessionRegistry
+from hermes_cli.pty_session import PtySession, PtySessionRegistry
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -58,7 +58,7 @@ async def _close_stalled_pty_input(ws: "WebSocket", *, path: str) -> None:
         pass
 
 
-async def _legacy_pump(ws: "WebSocket", bridge) -> None:
+async def _legacy_pump(ws: "WebSocket", bridge, *, session: Optional[PtySession] = None) -> None:
     """Original 1:1 socket<->PTY pump: stream until disconnect, then close the
     bridge. Used when no ``?attach=`` token is supplied (keep-alive opt-in).
 
@@ -66,6 +66,8 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
     protection (reader EOF → close the WS so the writer's ``ws.receive()`` unparks) and the #53227
     ``to_thread`` offloads for the blocking ``bridge.close()``.
     """
+    session = session or PtySession("", bridge, buffer_cap=0, read_timeout=_PTY_READ_CHUNK_TIMEOUT)
+    await session.attach(ws)
     loop = asyncio.get_running_loop()
 
     async def pump_pty_to_ws() -> None:
@@ -117,7 +119,7 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
             if match and match.end() == len(raw):
                 bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
                 continue
-            if not await bridge.write(raw):
+            if not await session.write(ws, raw):
                 await _close_stalled_pty_input(ws, path="legacy")
                 break
     except WebSocketDisconnect:
@@ -126,7 +128,7 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
         reader_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await reader_task
-        await asyncio.to_thread(bridge.close)
+        await session.close()
 
 
 # Starlette's TestClient reports the peer as "testclient"; treat it as
@@ -423,9 +425,9 @@ def _build_gateway_ws_url() -> Optional[str]:
     return _server_internal_ws_url("/api/ws")
 
 
-def _build_sidecar_url(channel: str) -> Optional[str]:
+def _build_sidecar_url(channel: str, *, controller: Optional[str] = None) -> Optional[str]:
     """ws:// URL the PTY child publishes events to, or None when unbound."""
-    return _server_internal_ws_url("/api/pub", channel=channel)
+    return _server_internal_ws_url("/api/pub", channel=channel, **({"controller": controller} if controller else {}))
 
 
 async def _resolve_chat_argv_async(

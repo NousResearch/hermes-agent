@@ -192,6 +192,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             return _err(f"kanban: unknown action {action!r}", 2)
         try:
             return int(handler(args) or 0)
+        except kb.MissingParentError as exc:
+            return _err(f"kanban: {exc}", 2)
         except (ValueError, RuntimeError, PermissionError) as exc:
             return _err(f"kanban: {exc}")
 

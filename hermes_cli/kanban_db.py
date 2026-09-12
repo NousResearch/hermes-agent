@@ -98,6 +98,24 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
+class MissingParentError(RuntimeError):
+    """Dependency links reference parent task rows that cannot be read."""
+
+    def __init__(self, missing_by_child: dict[str, Iterable[str]]):
+        self.missing_by_child = {
+            child_id: tuple(sorted(set(parent_ids)))
+            for child_id, parent_ids in sorted(missing_by_child.items())
+        }
+        details = "; ".join(
+            f"{child_id} -> {', '.join(parent_ids)}"
+            for child_id, parent_ids in self.missing_by_child.items()
+        )
+        super().__init__(
+            "dependency integrity could not be verified; "
+            f"missing parent task(s): {details}"
+        )
+
+
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """``VALID_REASONING_EFFORTS`` or ``"none"`` (thinking off), case-insensitive;
     empty/None = inherit the profile's own effort (NULL). Anything else raises —
@@ -1622,7 +1640,7 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
     if removed:
         # Re-gate the child now (as complete_task/unblock_task do) instead of
         # leaving it in todo until the next tick.
-        recompute_ready(conn)
+        _recompute_ready_after_commit(conn, f"unlink {parent_id} -> {child_id}")
     return removed
 
 
@@ -2027,15 +2045,11 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            parents_satisfied = _parents_satisfied(conn, task_id)
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if parents_satisfied:
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2066,18 +2080,52 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     return promoted
 
 
+def _recompute_ready_after_commit(conn: sqlite3.Connection, operation: str) -> None:
+    """Recompute without misreporting an already-committed operation as failed."""
+    try:
+        recompute_ready(conn)
+    except MissingParentError as exc:
+        _log.error(
+            "kanban %s committed, but dependency readiness recomputation "
+            "was refused: %s",
+            operation,
+            exc,
+        )
+
+
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
-    return conn.execute(
-        # Check if this task has children that still need the workspace. If any child is not yet
-        # done/archived, defer cleanup so the child can read handoff artifacts from the workspace (#33774).
-        "SELECT 1 FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
-    ).fetchone() is None
+    """Return whether every direct parent exists and is terminal."""
+    rows = conn.execute(
+        "SELECT l.parent_id, p.id AS resolved_parent_id, p.status "
+        "FROM task_links l LEFT JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? ORDER BY l.parent_id",
+        (task_id,),
+    ).fetchall()
+    missing = [row["parent_id"] for row in rows if row["resolved_parent_id"] is None]
+    if missing:
+        raise MissingParentError({task_id: missing})
+    return all(row["status"] in ("done", "archived") for row in rows)
+
+
+def _assert_dispatch_parent_integrity(conn: sqlite3.Connection) -> None:
+    """Refuse dispatch before effects when a schedulable task has a missing parent."""
+    rows = conn.execute(
+        "SELECT c.id AS child_id, l.parent_id "
+        "FROM tasks c "
+        "JOIN task_links l ON l.child_id = c.id "
+        "LEFT JOIN tasks p ON p.id = l.parent_id "
+        "WHERE c.status IN ('todo', 'blocked', 'ready', 'review') "
+        "AND p.id IS NULL "
+        "ORDER BY c.id, l.parent_id"
+    ).fetchall()
+    if not rows:
+        return
+    missing_by_child: dict[str, list[str]] = {}
+    for row in rows:
+        missing_by_child.setdefault(row["child_id"], []).append(row["parent_id"])
+    raise MissingParentError(missing_by_child)
 
 
 def _claim_and_open_run(
@@ -2608,7 +2656,7 @@ def complete_task(
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
-    recompute_ready(conn)  # separate txn so children see ``done``
+    _recompute_ready_after_commit(conn, f"complete {task_id}")
     _cleanup_workspace(conn, task_id)
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
@@ -3483,7 +3531,7 @@ def specify_triage_task(
         )
     # Own IMMEDIATE txn (outside the one above): a parent-free specified task
     # flips to 'ready' now instead of idling until the next tick.
-    recompute_ready(conn)
+    _recompute_ready_after_commit(conn, f"specify {task_id}")
     return True
 
 
@@ -3503,7 +3551,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.
-    recompute_ready(conn)
+    _recompute_ready_after_commit(conn, f"archive {task_id}")
     # Reap the workspace on archive too (never-completed tasks kept it forever).
     _cleanup_workspace(conn, task_id)
     return True
@@ -3534,7 +3582,7 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
         if cur.rowcount != 1:
             return False
         _delete_task_relations(conn, task_id)
-    recompute_ready(conn)
+    _recompute_ready_after_commit(conn, f"delete {task_id}")
     return True
 
 

@@ -260,6 +260,22 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
+            # Defense-in-depth: validate the media path against the safe-roots
+            # allowlist before opening the file. See #34270 / salvage of #34350.
+            try:
+                from gateway.platforms.base import validate_media_delivery_path
+                _safe_path = validate_media_delivery_path(media_path)
+            except Exception:
+                _safe_path = None
+            if not _safe_path:
+                warning = (
+                    f"Skipping unsafe media path outside allowed roots: {media_path}"
+                )
+                logger.warning(warning)
+                warnings.append(warning)
+                continue
+            media_path = _safe_path
+
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
                 logger.warning(warnings[-1])
@@ -435,7 +451,25 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             return {"error": "Signal account not configured"}
         valid_media = media_files or []
         attachment_paths = []
+        try:
+            from gateway.platforms.base import validate_media_delivery_path
+        except Exception:
+            validate_media_delivery_path = None  # type: ignore
         for media_path, _is_voice in valid_media:
+            if validate_media_delivery_path is None:
+                logger.warning(
+                    "Signal: media path validator unavailable, skipping %s",
+                    media_path,
+                )
+                continue
+            safe_path = validate_media_delivery_path(media_path)
+            if not safe_path:
+                logger.warning(
+                    "Signal: skipping unsafe media path outside allowed roots: %s",
+                    media_path,
+                )
+                continue
+            media_path = safe_path
             if os.path.exists(media_path):
                 attachment_paths.append(media_path)
             else:

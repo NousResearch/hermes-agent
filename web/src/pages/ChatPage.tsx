@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+import { ClipboardPaste, Copy, PanelRight, RotateCcw, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router";
@@ -514,6 +514,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (copyResetRef.current) clearTimeout(copyResetRef.current);
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
     termRef.current?.focus();
+  };
+
+  const handlePasteClipboard = async () => {
+    const term = termRef.current;
+    if (!term || !navigator.clipboard?.readText) return;
+    try {
+      // A button click is a direct Safari user gesture, unlike a terminal
+      // key event relayed through an iframe or a WebSocket.
+      const text = await navigator.clipboard.readText();
+      if (text) term.paste(text);
+      term.focus();
+    } catch {
+      setBanner("Clipboard access was denied. Use Safari's Paste action and try again.");
+    }
   };
 
   useEffect(() => {
@@ -1839,7 +1853,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ref={termWrapRef}
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
+            "p-2 pb-12 sm:p-3",
           )}
           style={{
             backgroundColor: terminalBg,
@@ -1905,7 +1919,35 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
           <Button
             ghost
+            onClick={() => void handlePasteClipboard()}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              termRef.current?.focus();
+            }}
+            title="Paste from clipboard"
+            aria-label="Paste clipboard into chat"
+            className={cn(
+              "absolute bottom-2 left-2 z-10 sm:hidden",
+              "normal-case tracking-normal font-normal",
+              "rounded border border-current/30 bg-black/20",
+              "opacity-90 hover:opacity-100 hover:border-current/60",
+              "px-2 py-1 text-xs",
+            )}
+            style={{ color: terminalFg }}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <ClipboardPaste className="h-3.5 w-3.5 shrink-0" />
+              <span className="tracking-wide">paste</span>
+            </span>
+          </Button>
+
+          <Button
+            ghost
             onClick={handleCopyLast}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              termRef.current?.focus();
+            }}
             title="Copy last assistant response as raw markdown"
             aria-label="Copy last assistant response"
             className={cn(

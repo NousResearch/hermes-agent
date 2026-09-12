@@ -443,6 +443,43 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_two_subscribers_each_receive_every_event_and_survive_one_disconnect(self, adapter):
+        """/events is fanout, not a work queue: every subscriber sees the whole ordered stream,
+        and one client's disconnect never tears down the stream another client still reads."""
+
+        from gateway.platforms.api_server_runs import _mark_run_event
+
+        async def frame(resp):
+            return (await asyncio.wait_for(resp.content.readuntil(b"\n\n"), timeout=2.0)).decode()
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+                run_id = (await (await cli.post("/v1/runs", json={"input": "hello"})).json())["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                second = await cli.get(f"/v1/runs/{run_id}/events")
+                assert first.status == second.status == 200
+
+                _mark_run_event(adapter, run_id, "run.steered", accepted=True)
+                assert "run.steered" in await frame(first)
+                assert "run.steered" in await frame(second)
+
+                first.close()
+                # The server only notices the dropped socket on its next write.
+                _mark_run_event(adapter, run_id, "run.steered", accepted=False)
+                assert "run.steered" in await frame(second)
+                await asyncio.sleep(0.05)
+                _mark_run_event(adapter, run_id, "approval.responded", choice="once")
+                assert "approval.responded" in await frame(second)
+
+                assert (await cli.post(f"/v1/runs/{run_id}/stop")).status == 200
+                tail = await asyncio.wait_for(second.content.read(), timeout=5.0)
+                assert b"stream closed" in tail
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

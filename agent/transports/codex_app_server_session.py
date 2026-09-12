@@ -275,10 +275,12 @@ class CodexAppServerSession:
         result.thread_id = self._thread_id
         return True
 
-    def _request_for(self, result: TurnResult, method: str, params: dict, label: str) -> Optional[dict]:
+    def _request_for(
+        self, result: TurnResult, method: str, params: dict, label: str, *, timeout: float = 10.0,
+    ) -> Optional[dict]:
         """Issue ``method``; on failure fill ``result.error`` and return None. A timeout always retires."""
         try:
-            return self._client.request(method, params, timeout=10)
+            return self._client.request(method, params, timeout=timeout)
         except CodexAppServerError as exc:
             self._set_classified_error(result, f"{label} failed", exc.message, exc)
         except TimeoutError as exc:
@@ -344,10 +346,11 @@ class CodexAppServerSession:
                 result.interrupted = True
             else:
                 result.submitted_user_text = _coerce_turn_input_text(user_input)
+                # Accepting a turn can outlast a control RPC while Codex waits on local state.
                 ts = self._request_for(
                     result, "turn/start",
                     {"threadId": self._thread_id, "input": [{"type": "text", "text": result.submitted_user_text}]},
-                    "turn/start",
+                    "turn/start", timeout=min(turn_timeout, 60.0),
                 )
                 if ts is not None:
                     self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout)

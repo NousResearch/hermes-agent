@@ -155,6 +155,8 @@ def check_whatsapp_cloud_requirements() -> bool:
 class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """Outbound: Graph ``/<api_version>/<phone_id>/messages``; inbound: aiohttp webhook
     server. The mixin comes first so its ``format_message`` overrides the base one."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     splits_long_messages = True  # send() chunks via truncate_message()
 
@@ -270,14 +272,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_verify)
         app.router.add_post(self._webhook_path, self._handle_webhook)
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        await web.TCPSite(self._runner, self._webhook_host, self._webhook_port).start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, self._webhook_path)
         self._mark_connected()
-        logger.info(
-            "[whatsapp_cloud] Listening on %s:%d%s (Graph %s, phone_id=%s)",
-            self._webhook_host, self._webhook_port, self._webhook_path, self._api_version, self._phone_number_id,
-        )
+        if self._runner is not None:
+            logger.info(
+                "[whatsapp_cloud] Listening on %s:%d%s (Graph %s, phone_id=%s)",
+                self._webhook_host, self._webhook_port, self._webhook_path, self._api_version, self._phone_number_id,
+            )
         if not self._verify_token:
             logger.warning("[whatsapp_cloud] WHATSAPP_CLOUD_VERIFY_TOKEN is not set — the GET subscription handshake will fail until it is.")
         if not self._app_secret:
@@ -550,14 +553,22 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         filename: Optional[str] = None, reply_to: Optional[str] = None,
         mime_type: Optional[str] = None,
     ) -> SendResult:
-        """HTTPS URL → ``link`` send (one fewer round trip); local path → upload + ``id`` send."""
+        """HTTPS URL → ``link`` send (one fewer round trip); local path → upload + ``id`` send.
+        Local sends are indexed in ``rich_sent_store`` so a later quote of the attachment can be
+        resolved (Meta's inbound ``context`` carries only the quoted id)."""
         ref: Dict[str, Optional[str]] = {"media_link": source}
         if not source.startswith(_HTTP_PREFIXES):
             media_id, err = await self._upload_media(source, media_kind, mime_type)
             if err:
                 return SendResult(success=False, error=err)
             ref = {"media_id": media_id}
-        return await self._send_media(chat_id, media_kind, caption=caption, filename=filename, reply_to=reply_to, **ref)
+        result = await self._send_media(chat_id, media_kind, caption=caption, filename=filename, reply_to=reply_to, **ref)
+        if result.success and result.message_id and "media_id" in ref:
+            mime = mime_type or mimetypes.guess_type(source)[0] or _DEFAULT_MIME.get(media_kind, "application/octet-stream")
+            rich_sent_store.record_media(chat_id, result.message_id, [(source, mime)])
+            if caption:
+                rich_sent_store.record(chat_id, result.message_id, caption)
+        return result
 
     # ``**kwargs`` absorbs base-class args (e.g. ``metadata``) the Cloud API has no use for.
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
@@ -986,8 +997,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             media_urls, media_types, body = await self._collect_inbound_media(msg_type_str, raw_message, body)
             if msg_type_str == "document" and media_urls:
                 body = self._inject_document_text(media_urls, body)
-        # Meta's ``context`` gives only the quoted message's id (+ author), never its text;
-        # resolve from rich_sent_store so run.py can build "[Replying to: ...]".
+        # Meta's ``context`` gives only the quoted message's id (+ author), never its text or
+        # bytes; resolve both from rich_sent_store so run.py can build "[Replying to: ...]" and
+        # the quoted attachment reaches the vision/audio pipeline like a direct one.
         context = raw_message.get("context") or {}
         reply_to_id = str(context.get("id") or "").strip() or None
         reply_to_text = rich_sent_store.lookup(chat_id, reply_to_id) if reply_to_id else None
@@ -1001,6 +1013,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid)
             if body:
                 rich_sent_store.record(chat_id, wamid, body)
+            if msg_type_str in _INBOUND_MEDIA_KINDS and media_urls:
+                rich_sent_store.record_media(chat_id, wamid, list(zip(media_urls, media_types)))
+        if reply_to_id:
+            for path, mime in rich_sent_store.lookup_media(chat_id, reply_to_id):
+                if path not in media_urls:
+                    media_urls.append(path)
+                    media_types.append(mime)
         return MessageEvent(
             text=body, message_type=_MESSAGE_TYPE_BY_KIND.get(msg_type_str, MessageType.TEXT),
             source=self.build_source(

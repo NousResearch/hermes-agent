@@ -15,31 +15,33 @@ from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
 
-_mcp_stderr_log_fh: Optional[Any] = None
+_mcp_stderr_log_fh: Dict[str, Any] = {}  # profile home key -> handle
 _mcp_stderr_log_lock = threading.Lock()
 
 
 def _get_mcp_stderr_log() -> Any:
-    """Shared append-mode handle for MCP subprocess stderr, opened once per process. Must expose a
-    real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
-    global _mcp_stderr_log_fh
+    """Shared append-mode handle for MCP subprocess stderr, opened once per process PER PROFILE HOME (a
+    multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
+    expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
+    from hermes_constants import get_hermes_home, hermes_home_key
+    home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
-        if _mcp_stderr_log_fh is None:
+        fh = _mcp_stderr_log_fh.get(home_key)
+        if fh is None:
             try:
-                from hermes_constants import get_hermes_home
                 log_dir = get_hermes_home() / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
                 fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
                 fh.fileno()  # confirm a real fd before committing
-                _mcp_stderr_log_fh = fh
             except Exception as exc:  # pragma: no cover — best-effort fallback
                 logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
                 try:
-                    _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
+                    fh = open(os.devnull, "w", encoding="utf-8")
                 except Exception:
-                    _mcp_stderr_log_fh = sys.stderr
-        return _mcp_stderr_log_fh
+                    fh = sys.stderr
+            _mcp_stderr_log_fh[home_key] = fh
+        return fh
 
 
 def _write_stderr_log_header(server_name: str) -> None:

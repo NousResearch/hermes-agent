@@ -728,6 +728,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     reloadFromMessage,
     restoreToMessage,
     steerPrompt,
+    injectHiddenPrompt,
     submitText,
     transcribeVoiceAudio
   } = usePromptActions({
@@ -1136,6 +1137,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
+    onSteerHidden: injectHiddenPrompt,
     onSubmit: submitText,
     onThreadMessagesChange: handleThreadMessagesChange,
     onToggleSelectedPin: toggleSelectedPin,

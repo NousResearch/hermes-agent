@@ -95,6 +95,40 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 # see `_log_redaction_status()` in gateway/run.py and cli.py.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
+# Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile
+# served under a HERMES_HOME override resolves its own ``security.redact_secrets`` (its ``.env``
+# value first, like the standalone bridge in hermes_cli/main.py), cached per home so the hot path
+# stays a dict lookup. Still not a live ``os.environ`` read, so a shell ``export`` cannot flip it.
+_REDACT_ENABLED_BY_HOME: dict = {}
+_REDACT_ENABLED_LOCK = threading.Lock()
+
+
+def _redact_enabled() -> bool:
+    """Effective redaction switch for the active profile (launch snapshot when no override)."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _REDACT_ENABLED
+    home_key = hermes_home_key()
+    cached = _REDACT_ENABLED_BY_HOME.get(home_key)
+    if cached is not None:
+        return cached
+    enabled = True
+    try:
+        from agent.secret_scope import current_secret_scope
+        scope = current_secret_scope()
+        raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
+        if raw is None:
+            from hermes_cli.config import load_config_readonly
+            cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
+            raw = None if cfg_val is None else str(cfg_val)
+        if raw is not None:
+            enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        enabled = True  # unreadable policy: keep the secure default
+    with _REDACT_ENABLED_LOCK:
+        _REDACT_ENABLED_BY_HOME[home_key] = enabled
+    return enabled
+
 # Known API key prefixes -- match the prefix + contiguous token chars.
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
@@ -645,7 +679,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         return text
     # Vault secrets are a hard model-egress boundary: scrubbed regardless of the redact_secrets preference.
     text = redact_registered_vault_values(text)
-    if not (force or _REDACT_ENABLED):
+    if not (force or _redact_enabled()):
         return text
     code_file = code_file or file_read
 

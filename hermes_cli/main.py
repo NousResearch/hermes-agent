@@ -318,7 +318,6 @@ from typing import Optional
 
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.sync import build_sync_parser
-from hermes_cli.subcommands.wisdom import build_wisdom_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -454,18 +453,15 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     sudo invocations the best signal is SUDO_USER: root is only doing the
     privileged install/start action; the profile store belongs to the user.
     """
-    if name == "default" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+    if name == "default":
         return None
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if not sudo_user or sudo_user == "root":
-        return None
-    try:
-        import pwd
+    from hermes_constants import sudo_invoker_default_home
 
-        candidate = Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes" / "profiles" / name
-        return str(candidate) if candidate.is_dir() else None
-    except Exception:
+    sudo_home = sudo_invoker_default_home()
+    if sudo_home is None:
         return None
+    candidate = sudo_home / "profiles" / name
+    return str(candidate) if candidate.is_dir() else None
 
 
 def _under_gateway_supervisor(argv: list) -> bool:
@@ -2643,7 +2639,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update", "wisdom",
+        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
@@ -3242,7 +3238,6 @@ def _build_cli_parser():
     build_pause_parser(subparsers)
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
     build_sync_parser(subparsers, cmd_sync=cmd_sync)
-    build_wisdom_parser(subparsers)
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
     from hermes_cli.subcommands.peer import build_peer_parser

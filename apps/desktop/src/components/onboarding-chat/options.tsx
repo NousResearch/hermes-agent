@@ -3,30 +3,50 @@ import { Tip } from '@/components/ui/tooltip'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 
-// Preferences for the first build’s optional connector offer. The live catalog,
-// not this display list, decides which apps are available to connect. Marks
-// resolve through the shared ConnectorLogo ladder: curated brand glyph first,
-// the product's own favicon where simple-icons has no mark (Slack's left over
-// trademark), monogram last.
-export const CONNECTORS: Array<{ homepage?: string; id: string; name: string }> = [
-  { id: 'gmail', name: 'Gmail' },
-  { id: 'google-calendar', name: 'Calendar' },
-  { id: 'google-drive', name: 'Drive' },
-  { homepage: 'https://slack.com', id: 'slack', name: 'Slack' },
-  { id: 'github', name: 'GitHub' },
-  { id: 'notion', name: 'Notion' },
-  { id: 'linear', name: 'Linear' },
-  { id: 'figma', name: 'Figma' },
-  { id: 'discord', name: 'Discord' },
-  { id: 'telegram', name: 'Telegram' },
-  { id: 'spotify', name: 'Spotify' },
-  { id: 'stripe', name: 'Stripe' }
+// The live-catalog slugs the first-run picker shows, in this order. The catalog
+// decides what can be connected; this list picks the everyday apps out of it
+// (decision D89). A slug the catalog no longer carries is not shown, and a slug
+// the catalog gains is not shown until it is added here.
+export const CONNECTOR_LEAD_ORDER = [
+  'gmail',
+  'googlecalendar',
+  'googledrive',
+  'googledocs',
+  'googlesheets',
+  'outlook',
+  'slack',
+  'notion',
+  'linear',
+  'jira',
+  'figma',
+  'todoist'
 ]
 
-// Big accent swatches, Dia-style. Each seeds `retintTheme` through the accent
-// override, so a click repaints the surface live. Nous blue is the default =
-// no override. Mono seeds the current mode's pole — black in light, white in
-// dark — for a full monochrome look.
+// Connectors are the apps Hermes reads and acts on for the user. Chat channels
+// (Discord, Telegram, WhatsApp) are how a user talks to Hermes; those live on
+// the Messaging page, and offering them here as if they were data sources
+// taught users the wrong thing about what "connect" does. The catalog
+// carries them for the agent's sake; the first-run picker leaves them out.
+export const CONNECTOR_PICKER_HIDDEN = new Set(['discord', 'discordbot', 'microsoft_teams'])
+
+// A row the gateway marks `enabled: false` is a toolkit the deployment has
+// turned off; the agent cannot connect it, so the picker does not offer it.
+export function orderConnectorPicks<T extends { connector: string; enabled?: boolean }>(rows: T[]): T[] {
+  const rank = new Map(CONNECTOR_LEAD_ORDER.map((slug, index) => [slug, index]))
+
+  return rows
+    .filter(row => rank.has(row.connector) && row.enabled !== false && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
+    .sort((a, b) => {
+      const ra = rank.get(a.connector) ?? Number.POSITIVE_INFINITY
+      const rb = rank.get(b.connector) ?? Number.POSITIVE_INFINITY
+
+      return ra - rb || a.connector.localeCompare(b.connector)
+    })
+}
+
+// Each swatch sets the accent override, which `retintTheme` uses to repaint
+// the active skin as soon as the swatch is clicked. Nous blue is the default
+// and sets no override. Mono is black in light mode and white in dark mode.
 export const NOUS_ACCENT = '#0053fd'
 
 export const accentsFor = (dark: boolean): Array<{ hex: string; name: string }> => [
@@ -57,7 +77,7 @@ export function AccentSwatch({
         aria-label={name}
         aria-pressed={active}
         className={cn(
-          // The hairline keeps the mono swatch visible on its own pole.
+          // The border keeps the mono swatch visible when its colour matches the background.
           'size-9 rounded-full border border-foreground/15 transition-transform duration-150',
           !active && 'hover:scale-105'
         )}
@@ -72,13 +92,11 @@ export function AccentSwatch({
   )
 }
 
-// Mini layout trees mirror the basic (BASIC_TREE) and terminal-deck
-// (TERMINAL_TREE) presets registered in app/contrib/controller.tsx, drawn in
-// the layout editor's thumbnail language, upscaled.
+// These mini trees copy the basic (BASIC_TREE) and terminal-deck
+// (TERMINAL_TREE) presets in app/contrib/layout-presets.ts, drawn like the
+// layout editor's thumbnails at a larger size.
 export type MiniNode = 1 | { dir: 'column' | 'row'; children: MiniNode[]; weights: number[] }
 
-/** The power-user layout. Picking it is the most explicit thing a user does
- *  in the whole first run to say how they work. */
 export const ELITE_LAYOUT_ID = 'terminal-deck'
 
 export const LAYOUTS: Array<{ id: string; name: string; tree: MiniNode }> = [
@@ -111,14 +129,9 @@ export function MiniTree({ node }: { node: MiniNode }) {
 }
 
 /**
- * The window buttons on the preview, drawn the way this machine draws them.
- *
- * The card is a picture of the user's own window, so it follows the split
- * `main.ts` already makes when it builds one: macOS gets the traffic lights on
- * the left (`trafficLightPosition`), everywhere else the native controls ride
- * on the right as monochrome glyphs (`titleBarOverlay`). Three coloured dots on
- * a Windows machine is a picture of somebody else's computer — a small tell, in
- * the one moment the app is claiming to show you yours.
+ * The window buttons on the preview, drawn the way this machine draws them, so the card matches the user's own window.
+ * `main.ts` makes the same split: macOS puts the traffic lights on the left (`trafficLightPosition`), every other
+ * platform puts monochrome native controls on the right (`titleBarOverlay`).
  */
 function MiniWindowButtons() {
   if (IS_MAC) {
@@ -131,8 +144,8 @@ function MiniWindowButtons() {
     )
   }
 
-  // Minimize, maximize, close — at 6px the glyphs themselves are mush, so each
-  // is the shape it would be: a bar, a box, and a cross that reads as one.
+  // Minimize, maximize, close. At 6 px the real glyphs are illegible, so each
+  // one is a plain shape: a bar, a box, and a cross.
   return (
     <span aria-hidden className="flex items-center justify-end gap-1.5 text-foreground/40">
       <span className="h-px w-1.5 bg-current" />

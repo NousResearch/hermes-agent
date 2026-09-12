@@ -1477,6 +1477,23 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         print("  can refuse to start another copy until this process stops.")
 
 
+def _print_served_ingress_urls(profile: str | None = None) -> None:
+    """Callback URLs of inbound-port platforms the live multiplexer serves for secondary profiles
+    (the value to paste into the Twilio / LINE / Teams / BlueBubbles console)."""
+    try:
+        from hermes_cli.gateway_multiplex_served import format_ingress_url_lines, served_profile_ingress_urls
+        urls = served_profile_ingress_urls(profile)
+    except Exception:
+        return
+    if not urls:
+        return
+    print()
+    print("Inbound callback URLs on the shared listener:")
+    for name, per_platform in sorted(urls.items()):
+        for line in format_ingress_url_lines(per_platform, indent=f"  {name}/" if not profile else "  "):
+            print(line)
+
+
 def _print_other_profiles_gateway_status() -> None:
     """Print other profiles' running gateways at the bottom of ``hermes gateway status``."""
     try:
@@ -6295,12 +6312,14 @@ def _cmd_status(args):
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
+    from hermes_cli.profiles import get_active_profile_name
 
     _windows_service_installed = is_windows() and _gw_windows().is_installed()
     if not snapshot.running and named_profile_served_by_running_multiplexer():
         # Satellite profile: the default multiplexer is the live inbound process for it.
         print("✓ Gateway is running via the default-profile multiplexer")
         print("  Manage it from the default profile: hermes gateway status")
+        _print_served_ingress_urls(get_active_profile_name())
     elif (kind := _installed_service_kind_for(lambda: _windows_service_installed)) is not None:
         if kind == "systemd":
             systemd_status(deep, system=system, full=full)
@@ -6309,12 +6328,14 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
+        _print_served_ingress_urls()
     else:
         pids = list(snapshot.gateway_pids)
         if pids:
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
+            _print_served_ingress_urls()
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
         else:

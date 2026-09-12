@@ -259,6 +259,8 @@ def _messaging_platform_payload(
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
         "home_channel": home_channel, "env_vars": env_vars,
+        # Multiplex secondary served on the default's shared listener: the vendor callback URL.
+        "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,
     }
     if platform_id == "whatsapp":
         whatsapp_mode = env_value("WHATSAPP_MODE").strip()
@@ -794,19 +796,17 @@ async def get_messaging_platforms(profile: Optional[str] = None):
 
 
 def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Optional[str]) -> Optional[str]:
-    """Reason enabling ``platform_id`` on the target profile would break a
-    multiplexed gateway, or ``None`` when allowed.
+    """Reason enabling ``platform_id`` on the target profile is pointless under a multiplexed
+    gateway, or ``None`` when allowed.
 
-    Mirrors ``_start_one_profile_adapters`` (gateway/run.py): with
-    ``gateway.multiplex_profiles`` on, the default profile owns the single shared
-    HTTP listener (``/p/<profile>/``), so a SECONDARY profile must never enable a
-    port-binding platform or the shared gateway dies with ``MultiplexConfigError``
-    for ALL profiles. Only *enabling* is blocked; disabling/clearing stays allowed
-    so users can repair an invalid profile.
+    With ``gateway.multiplex_profiles`` on, the default profile's listener already mirrors
+    ``api_server`` and ``webhook`` at ``/p/<profile>/`` for every profile, so a SECONDARY must not
+    enable a second one. Every other inbound-port platform (Twilio, LINE, Teams, ...) IS allowed on a
+    secondary: the gateway serves it on the shared listener at ``/p/<profile>/<path>``.
     """
-    from gateway.config import PORT_BINDING_PLATFORM_VALUES, load_gateway_config
+    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, load_gateway_config
 
-    if platform_id not in PORT_BINDING_PLATFORM_VALUES:
+    if platform_id not in SHARED_LISTENER_MIRROR_PLATFORMS:
         return None
 
     requested = (requested_profile or "").strip()
@@ -829,10 +829,9 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
             return None
 
     return (
-        f"Cannot enable '{platform_id}' on profile '{target}': it binds its own listener port, "
-        "and gateway.multiplex_profiles is on, so the default profile owns the single shared HTTP "
-        "listener for every profile. Configure this channel on the default profile instead "
-        "(disabling or clearing it here is still allowed)."
+        f"Cannot enable '{platform_id}' on profile '{target}': gateway.multiplex_profiles is on and the "
+        f"default profile's listener already serves it for every profile at /p/{target}/. Configure it "
+        "on the default profile instead (disabling or clearing it here is still allowed)."
     )
 
 

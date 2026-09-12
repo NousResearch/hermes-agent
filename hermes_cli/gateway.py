@@ -1955,10 +1955,8 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
 
 
 def _native_service_homes() -> set[Path]:
-    """Homes whose service name is the bare ``hermes-gateway``: this process's native default and, under
-    sudo, the invoking user's. Under sudo the process default is ``/root/.hermes`` but
-    ``_sync_hermes_home_from_systemd_unit()`` rewrites HERMES_HOME mid-command to the unit's home — the
-    invoking user's ``~/.hermes`` — which would otherwise hash and target a unit that does not exist."""
+    """This process's native default home plus, when root under sudo, the invoking user's (see
+    ``_profile_suffix`` for why sudo matters)."""
     from hermes_constants import _get_platform_default_hermes_home, sudo_invoker_default_home
 
     homes = {_get_platform_default_hermes_home().resolve()}
@@ -1969,13 +1967,9 @@ def _native_service_homes() -> set[Path]:
 
 
 def _bare_unit_pinned_home() -> Path | None:
-    """Resolved ``HERMES_HOME`` pinned by an installed ``hermes-gateway.service``, or None.
-
-    Under ``sudo`` the process-derived naming basis moves MID-COMMAND: sudo strips HERMES_HOME and
-    sets HOME=/root, then ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's own HERMES_HOME
-    into ``os.environ``, so a process-derived basis names one unit before the adoption and another
-    after it. The installed unit is the only basis that holds still, and it holds for every elevated
-    identity — ``sudo -i`` and cron included, where SUDO_USER is absent.
+    """Resolved ``HERMES_HOME`` pinned by an installed ``hermes-gateway.service``, or None. The unit is the
+    one naming basis that holds still across the sudo mid-command switch (see ``_profile_suffix``) and it
+    covers every elevated identity — ``sudo -i`` and cron included, where SUDO_USER is absent.
 
     Linux- and root-gated: a systemd unit is not an identity authority for launchd labels, Windows
     scheduled tasks, or s6 slots, which share ``_profile_suffix()``, and only an elevated process ever
@@ -2001,10 +1995,13 @@ def _profile_suffix() -> str:
     ``<root>/profiles/<name>``, else a short hash of the path.
 
     Bare-name owners: this process's platform-native default (``~/.hermes``), under sudo the invoking
-    user's native default, and the home pinned by an installed ``hermes-gateway.service``. The unit-pinned
-    check must precede the profile branch: ``sudo hermes gateway install --system`` resolves the BARE name
-    from root's default, then pins the invoking user's remapped home, so the bare unit legitimately carries
-    a ``<root>/profiles/<name>`` home and must keep answering with the bare name it was installed under.
+    user's native default, and the home pinned by an installed ``hermes-gateway.service``. Under sudo the
+    naming basis moves MID-COMMAND — sudo strips HERMES_HOME and sets HOME=/root, then
+    ``_sync_hermes_home_from_systemd_unit()`` adopts the unit's own HERMES_HOME into ``os.environ`` — so a
+    basis derived from the process alone names one unit before the adoption and another after it. The
+    unit-pinned check must precede the profile branch: ``sudo hermes gateway install --system`` resolves
+    the BARE name from root's default, then pins the invoking user's remapped home, so the bare unit
+    legitimately carries a ``<root>/profiles/<name>`` home.
 
     The bare name is deliberately NOT tied to ``get_default_hermes_root()``: that helper treats any
     HERMES_HOME outside ``~/.hermes`` (Docker ``/opt/data``, a temp dir) as "the root itself", which let a

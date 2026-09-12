@@ -2716,7 +2716,7 @@ class TestUnitAnchoredServiceIdentity:
         (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
             f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8"
         )
-        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
         monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
         monkeypatch.setenv("HERMES_HOME", str(bob_home))
         name = gateway_cli.get_service_name()
@@ -2734,7 +2734,7 @@ class TestUnitAnchoredServiceIdentity:
         (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
             f'[Service]\nEnvironment="HERMES_HOME={profile_home}"\n', encoding="utf-8"
         )
-        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "alice")
         monkeypatch.setattr(os, "geteuid", lambda: 1000)
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
@@ -2754,7 +2754,7 @@ class TestUnitAnchoredServiceIdentity:
         unit_dir.mkdir()
         unit_path = unit_dir / f"{gateway_cli._SERVICE_BASE}.service"
         unit_path.write_text(f'[Service]\nEnvironment="HERMES_HOME={profile_home}"\n', encoding="utf-8")
-        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
         monkeypatch.setattr(os, "geteuid", lambda: 0)
         monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
@@ -2776,7 +2776,7 @@ class TestUnitAnchoredServiceIdentity:
         (unit_dir / f"{gateway_cli._SERVICE_BASE}.service").write_text(
             f'[Service]\nEnvironment="HERMES_HOME={alice_home}"\n', encoding="utf-8"
         )
-        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir, raising=False)
+        monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
         monkeypatch.setattr(os, "geteuid", lambda: 0)
         monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
         monkeypatch.delenv("HERMES_HOME", raising=False)

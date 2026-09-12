@@ -62,7 +62,7 @@ def sudo_invoker_default_home() -> Path | None:
     sudo_user = os.environ.get("SUDO_USER", "").strip()
     if not sudo_user or sudo_user == "root":
         return None
-    import pwd  # windows-footgun: ok — unreachable without os.geteuid
+    import pwd
 
     try:
         return Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes"

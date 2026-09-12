@@ -186,29 +186,45 @@ def strip_nonspoken_blocks(text: str) -> str:
     return text
 
 
-def flatten_newlines_for_payload(text: str) -> str:
+def flatten_newlines_for_payload(text: str, keep_double_newlines: bool = False) -> str:
     """Collapse newlines into sentence breaks for single-line TTS payloads: some OpenAI-compatible
     backends (e.g. Kokoro) truncate at the first newline; smoothing already ends each line with
     punctuation, so this is safe.
 
-    See #9004.
+    When *keep_double_newlines* is True, preserve paragraph breaks by replacing ``\\n{2,}`` with
+    the zero-width-space sentinel ``\\u200B¶\\u200B`` instead of collapsing them (local TTS
+    generators split on that marker and insert audio silence). See #103103.
     """
     if not text:
         return ""
-    for pattern, repl in ((r"\n{2,}", ". "), (r"(?<=[.!?;:,])\n", " "), (r"\n", ". "), (r"\.\s*\.", "."),
-                          (r"[ \t]{2,}", " ")):
-        text = re.sub(pattern, repl, text)
+    # If asked to preserve paragraphs, turn blank-line groups into the marker first
+    PARAGRAPH_MARKER = "\u200B¶\u200B"
+    if keep_double_newlines:
+        text = re.sub(r"\n{2,}", f" {PARAGRAPH_MARKER} ", text)
+        # then flatten remaining single newlines (the later r"\n" pass)
+        for pattern, repl in ((r"(?<=[.!?;:,])\n", " "), (r"\n", ". "), (r"\.\s*\.", "."), (r"[ \t]{2,}", " ")):
+            text = re.sub(pattern, repl, text)
+    else:
+        # legacy: collapse ALL newlines
+        for pattern, repl in ((r"\n{2,}", ". "), (r"(?<=[.!?;:,])\n", " "), (r"\n", ". "),
+                              (r"\.\s*\.", "."), (r"[ \t]{2,}", " ")):
+            text = re.sub(pattern, repl, text)
     return text.strip()
 
 
-def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
+def prepare_spoken_text(text: str, max_chars: int | None = 4000, keep_paragraph_breaks: bool = False) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
     Pipeline: non-spoken blocks > Markdown > symbols/units > line formatting into sentence
-    pauses > single line (for newline-sensitive providers), then ``max_chars``."""
+    pauses > single line (for newline-sensitive providers), then ``max_chars``.
+
+    When *keep_paragraph_breaks* is True, preserves paragraph boundaries with a zero-width-space
+    sentinel for local TTS generators to later split and insert audio pauses (see #103103)."""
     spoken = text
     for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
-                 smooth_whitespace_for_tts, flatten_newlines_for_payload):
+                 smooth_whitespace_for_tts):
         spoken = step(spoken)
+    # defer flatten_newlines_for_payload so we can pass the new arg
+    spoken = flatten_newlines_for_payload(spoken, keep_double_newlines=keep_paragraph_breaks)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()
     return spoken

@@ -10,6 +10,16 @@
   initial-value: 0deg;
 }
 
+/* The app-wide reset removes both native outlines and Tailwind ring shadows.
+   Paint the card focus treatment directly so it remains visible in every
+   theme and distinct from selected/active border states. */
+.kanban-task-card:focus-visible {
+  z-index: 1;
+  box-shadow:
+    0 0 0 2px var(--ui-bg-elevated),
+    0 0 0 4px var(--dt-composer-ring);
+}
+
 .kanban-arc {
   pointer-events: none;
   position: absolute;

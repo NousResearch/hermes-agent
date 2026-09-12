@@ -90,7 +90,7 @@ fixes, reviews, second opinions) to Antigravity rather than just smoke-testing.
 ### One-shot (preferred for scripted prompts and second opinions)
 
 ```
-terminal(command="agy -p 'Review this diff for bugs and security issues' --model 'Gemini 3.1 Pro (High)'", workdir="/path/to/repo", timeout=300)
+terminal(command="agy --model 'Gemini 3.1 Pro (High)' -p 'Review this diff for bugs and security issues'", workdir="/path/to/repo", timeout=300)
 ```
 
 `-p` is non-interactive: it runs the prompt and exits. Pick the engine with
@@ -103,7 +103,7 @@ roots with repeatable `--add-dir`.
 Background it and get notified on completion, the same as the `codex` skill:
 
 ```
-terminal(command="agy -p 'Implement the change described in TASK.md and run the tests' --dangerously-skip-permissions", workdir="/path/to/repo", background=true, notify_on_complete=true)
+terminal(command="agy --dangerously-skip-permissions -p 'Implement the change described in TASK.md and run the tests'", workdir="/path/to/repo", background=true, notify_on_complete=true)
 # then: process(action="poll"/"log"/"wait", session_id=<id>)
 ```
 
@@ -121,11 +121,13 @@ Create one git worktree per task and launch an independent `agy -p` in each
 uses for batch issue fixing. Bound concurrency to what the machine and your
 review capacity can absorb.
 
-### Output + bounding caveat (differs from Claude Code)
+### Output + bounding caveats
 
-- `agy -p` returns **plain text** — there is **no `--output-format json`** and
-  no result envelope with `session_id` / cost / turn count. Parse stdout
-  directly; don't expect a JSON object.
+- `agy -p` supports structured output: `--output-format json` prints one JSON
+  envelope on stdout (`conversation_id`, `status`, `response`, `num_turns`,
+  `duration_seconds`, `usage`), and `--json-schema <file>` adds a validated
+  `structured_output` object. The default (`text`) is plain stdout — parse it
+  directly only when you didn't request JSON.
 - There is **no `--max-turns`**. A print run is bounded by **`--print-timeout`**
   (default `5m`). Raise it for long tasks: `--print-timeout 20m`. Pair with the
   `terminal` `timeout=` so the outer call doesn't cut the run short.
@@ -167,6 +169,8 @@ another agent's plan or diff.
 - `--continue` / `-c`
 - `--conversation`
 - `--dangerously-skip-permissions`
+- `--json-schema`
+- `--output-format`
 - `--print` / `-p`
 - `--print-timeout`
 - `--prompt`
@@ -235,8 +239,11 @@ another agent's plan or diff.
   session-state problems, not browser-only problems.
 - Workspace identity can depend on launch directory and the `.antigravitycli`
   project marker.
-- `agy -p` prints plain text only — no `--output-format json`, no result
-  envelope. Don't try to parse a JSON object out of it (unlike `claude-code`).
+- `agy -p` takes the prompt as its value and must come last in the argv: a
+  positional prompt is ignored, and stdin is never read.
+- Without `--add-dir <repo>`, print runs that write files land them under
+  `~/.gemini/antigravity-cli/scratch/`, not the launch directory —
+  `workdir=` on the `terminal` tool is not enough.
 - Bound print runs with `--print-timeout` (default `5m`), not `--max-turns`
   (which does not exist on `agy`).
 

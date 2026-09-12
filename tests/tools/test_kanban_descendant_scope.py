@@ -98,7 +98,13 @@ def test_worker_cli_cannot_use_foreign_task_to_drop_run_scope(tmp_path, monkeypa
     assert kb.get_task(conn, foreign).status == "running"
     attachment = tmp_path / "note.txt"
     attachment.write_text("fixture")
-    assert kb.block_task(conn, foreign, reason="fixture awaiting orchestrator")
+    # Fixture setup, not the subject under test: the caller here is a worker
+    # session scoped to ``own``, so it cannot prove ownership of ``foreign``'s
+    # live run and the run-ownership guard refuses an implicit close (see
+    # _reject_live_run_ownership). ``force=True`` is the deliberate override —
+    # the same contract the PR already applies to complete_task/block_task
+    # callers. The CLI/tool scoping asserted below is unaffected.
+    assert kb.block_task(conn, foreign, reason="fixture awaiting orchestrator", force=True)
     for arguments in (["attach", foreign, str(attachment)], ["unblock", foreign]):
         proc = subprocess.run([sys.executable, "-m", "hermes_cli.main", "kanban", *arguments],
                               cwd=ROOT, env=dict(os.environ), stdin=subprocess.DEVNULL,

@@ -599,7 +599,7 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
 # events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
-_live_transports: set[Transport] = set()
+_live_transports = FanoutTransport(coalesce_events=True)
 _live_transports_lock = threading.Lock()
 
 
@@ -607,28 +607,24 @@ def register_live_transport(transport: Transport | None) -> None:
     """Track a connected client transport for global broadcasts. Idempotent."""
     if transport is not None:
         with _live_transports_lock:
-            _live_transports.add(transport)
+            _live_transports.attach(transport)
 
 
 def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
-    with _live_transports_lock:
-        _live_transports.discard(transport)
+    if transport is not None:
+        with _live_transports_lock:
+            _live_transports.detach(transport)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
     emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""
     with _live_transports_lock:
-        targets = list(_live_transports)
-    if not targets:
+        has_targets = bool(_live_transports)
+    if not has_targets:
         return _emit(event, "", payload)
-    frame = _event_frame(event, "", payload)
-    for transport in targets:
-        try:
-            transport.write(frame)
-        except Exception:  # one wedged peer must not stall the rest; disconnect teardown unregisters it
-            logger.debug("global-event broadcast write failed type=%s", event, exc_info=True)
+    _live_transports.write(_event_frame(event, "", payload))
 
 
 def _approval_request_payload(data: dict | None) -> dict:

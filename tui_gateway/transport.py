@@ -138,9 +138,10 @@ class FanoutTransport:
     _MAX_PENDING_FRAMES = 256
     _MAX_PENDING_BYTES = 4 * 1024 * 1024
 
-    def __init__(self, *transports: Transport) -> None:
+    def __init__(self, *transports: Transport, coalesce_events: bool = False) -> None:
         self._lock = threading.Lock()
         self._peers: list[_FanoutPeer] = []
+        self._coalesce_events = coalesce_events
         for transport in transports:
             self.attach(transport)
 
@@ -177,9 +178,18 @@ class FanoutTransport:
                     return True
         return False
 
-    def contains(self, transport: Transport) -> bool:
+    def contains(self, transport: object) -> bool:
         with self._lock:
             return any(peer.attached and peer.transport is transport for peer in self._peers)
+
+    def __contains__(self, transport: object) -> bool:
+        return self.contains(transport)
+
+    def __bool__(self) -> bool:
+        return self.has_transports()
+
+    def clear(self) -> None:
+        self.close()
 
     def transports(self) -> list[Transport]:
         with self._lock:
@@ -231,6 +241,18 @@ class FanoutTransport:
             for peer in list(self._peers):
                 if not peer.attached:
                     continue
+                if self._coalesce_events:
+                    params = frame.get("params") if isinstance(frame, dict) else None
+                    event_type = params.get("type") if isinstance(params, dict) else None
+                    # Only full-state invalidations may replace pending events.
+                    # In particular, distinct session.reclaimed payloads must survive.
+                    if event_type in {"sessions.changed", "skin.changed"}:
+                        for index, (pending_frame, pending_size) in enumerate(peer.pending):
+                            pending_params = pending_frame.get("params") if isinstance(pending_frame, dict) else None
+                            if isinstance(pending_params, dict) and pending_params.get("type") == event_type:
+                                del peer.pending[index]
+                                peer.pending_bytes -= pending_size
+                                break
                 if (len(peer.pending) >= self._MAX_PENDING_FRAMES
                         or peer.pending_bytes + size > self._MAX_PENDING_BYTES):
                     logger.warning("fanout subscriber backlog full; detaching peer")

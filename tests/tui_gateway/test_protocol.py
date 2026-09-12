@@ -1491,6 +1491,35 @@ class _RecordingTransport:
         pass
 
 
+def test_global_broadcast_does_not_wait_for_a_blocked_peer(server):
+    entered = threading.Event()
+    release = threading.Event()
+    returned = threading.Event()
+
+    class _BlockingTransport(_RecordingTransport):
+        def write(self, obj: dict) -> bool:
+            entered.set()
+            release.wait()
+            return super().write(obj)
+
+    peer = _BlockingTransport()
+    server.register_live_transport(peer)
+
+    def broadcast():
+        server._broadcast_global_event("sessions.changed")
+        returned.set()
+
+    caller = threading.Thread(target=broadcast)
+    caller.start()
+    try:
+        assert entered.wait(2)
+        assert returned.wait(2), "the change watcher must not wait for socket progress"
+    finally:
+        release.set()
+        caller.join(timeout=2)
+        server.unregister_live_transport(peer)
+
+
 def test_unregister_live_transport_stops_delivery(capture):
     """A disconnected peer (unregistered in the ws finally block) receives nothing
     — and a stale write is never attempted against its closed socket."""

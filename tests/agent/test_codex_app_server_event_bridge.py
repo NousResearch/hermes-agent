@@ -34,6 +34,8 @@ def _make_stub_agent() -> SimpleNamespace:
     """Minimal stand-in for AIAgent that records every callback fire."""
     return SimpleNamespace(
         tool_progress_callback=MagicMock(name="tool_progress_callback"),
+        status_callback=MagicMock(name="status_callback"),
+        _emit_status=MagicMock(name="_emit_status"),
         _fire_stream_delta=MagicMock(name="_fire_stream_delta"),
         _fire_reasoning_delta=MagicMock(name="_fire_reasoning_delta"),
         _emit_interim_assistant_message=MagicMock(
@@ -245,6 +247,22 @@ class TestToolProgressDispatch:
         assert calls[0].args[1] == "web_search"
         assert calls[0].args[2] == "hermes agent docs"
         assert calls[0].args[3] == {"query": "hermes agent docs"}
+
+
+class TestCompactionStatusDispatch:
+    def test_native_compaction_item_fires_live_start_and_terminal_status(self):
+        from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
+
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        item = {"type": "contextCompaction", "id": "compact-1"}
+
+        bridge(_item_started(item))
+        agent._emit_status.assert_called_once_with(COMPACTION_STATUS)
+        agent.status_callback.assert_not_called()
+
+        bridge(_item_completed(item))
+        agent.status_callback.assert_called_once_with("compacted", COMPACTION_DONE_STATUS)
 
 
 

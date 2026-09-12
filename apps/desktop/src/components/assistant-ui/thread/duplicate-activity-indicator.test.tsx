@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetElapsedTimerRegistryForTests } from '@/components/chat/activity-timer'
 import { setSessionCompacting } from '@/store/compaction'
+import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId, $turnStartedAt } from '@/store/session'
 
 import { stubThreadEnvironment, stubThreadViewportSize, userMessage } from '../test-utils'
@@ -89,6 +90,7 @@ describe('TurnActivityIndicator tail gating (#68634)', () => {
   afterEach(() => {
     cleanup()
     setSessionCompacting(sessionId, false)
+    clearAllPrompts(sessionId)
     $activeSessionId.set(null)
     $turnStartedAt.set(null)
     __resetElapsedTimerRegistryForTests()
@@ -211,5 +213,45 @@ describe('TurnActivityIndicator tail gating (#68634)', () => {
 
     expect(document.querySelectorAll('[data-slot="aui_response-loading"]').length).toBe(1)
     expect(document.querySelectorAll('[data-slot="aui_turn-activity"]').length).toBe(0)
+  })
+
+  it('shows automatic compaction even while the tail still has an in-flight tool row', () => {
+    const toolTail = {
+      ...runningAssistantMessage('assistant-1', ''),
+      content: [{ type: 'tool-call', toolCallId: 'terminal-1', toolName: 'terminal', args: {}, argsText: '{}' }]
+    } as ThreadMessage
+
+    const { container } = render(<Harness messages={[userMessage('user-1', 'Keep going'), toolTail]} />)
+
+    expect(screen.getByRole('status', { name: 'Summarizing thread' })).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).not.toBeNull()
+  })
+
+  it('shows automatic compaction while stale awaiting-input chrome is still present', () => {
+    setApprovalRequest({
+      command: 'npm test',
+      description: 'run tests',
+      requestId: 'approval-1',
+      sessionId
+    })
+
+    const { container } = render(
+      <Harness messages={[userMessage('user-1', 'Keep going'), runningAssistantMessage('assistant-1', 'Working')]} />
+    )
+
+    expect(screen.getByRole('status', { name: 'Summarizing thread' })).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).not.toBeNull()
+  })
+
+  it('shows compaction status in an idle thread during manual compression', () => {
+    const settled = {
+      ...runningAssistantMessage('assistant-1', 'Saved'),
+      status: { type: 'complete', reason: 'stop' }
+    } as ThreadMessage
+
+    const { container } = render(<Harness messages={[userMessage('user-1', 'Keep this context'), settled]} />)
+
+    expect(screen.getByRole('status', { name: 'Summarizing thread' })).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_manual-compaction"]')).not.toBeNull()
   })
 })

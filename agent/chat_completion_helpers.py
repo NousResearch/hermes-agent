@@ -1672,6 +1672,15 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     landed on the chat_completions default (never called for an explicit api_mode)."""
     if fb_provider == "openai-codex":
         return "codex_responses"
+    if fb_provider in {"opencode-go", "opencode-zen", "opencode-free"} or (
+        base_url_hostname(fb_base_url) == "opencode.ai"
+    ):
+        # OpenCode Zen/Go route models behind different surfaces
+        # (muse-spark is Responses-only; see #102148). Consult the
+        # authoritative table — fb_model is already normalized by the caller.
+        from hermes_cli.models import opencode_model_api_mode
+
+        return opencode_model_api_mode(fb_provider, fb_model)
     if fb_provider in {"nous", "nous-portal", "nousresearch"}:
         # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
         from hermes_cli.providers import nous_api_mode

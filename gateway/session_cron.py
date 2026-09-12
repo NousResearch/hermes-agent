@@ -144,11 +144,12 @@ async def operation(authority, name, params, actor=None):
     if row is None or row['target_session_id'] != ref.session_id or row['principal_id'] != actor.subject:
         raise RuntimeStoreError('permission_denied')
     if name == 'cancel':
-        event = getattr(authority, '_cron_cancellations', {}).get(row['admission_id'])
-        if event is not None:
-            event.set()
-        elif row['status'] == 'queued':
+        if row['status'] == 'queued':
             await authority.cancel_queued(actor, ref, row['admission_id'])
+        elif row['status'] == 'started':
+            # The claim commits before execute() registers its event; latching the
+            # cancellation on the admission here means that window cannot lose it.
+            _cancellations(authority).setdefault(row['admission_id'], threading.Event()).set()
         return {'ok': True}
     result = None
     if row['status'] == 'terminal':
@@ -158,6 +159,13 @@ async def operation(authority, name, params, actor=None):
         if result is None:
             result = [False, '', '', row.get('outcome') or 'unknown_execution']
     return {'status': row['status'], 'result': result}
+
+
+def _cancellations(authority):
+    cancellations = getattr(authority, '_cron_cancellations', None)
+    if cancellations is None:
+        cancellations = authority._cron_cancellations = {}
+    return cancellations
 
 
 async def rpc(connection, name, params):
@@ -172,10 +180,8 @@ async def execute(authority, ref, row, policy):
             or row['request_id'] != data['request_id']
             or row['principal_id'] != authority.sessions[ref.session_id].source.user_id):
         raise RuntimeStoreError('admission_conflict')
-    cancellations = getattr(authority, '_cron_cancellations', None)
-    if cancellations is None:
-        cancellations = authority._cron_cancellations = {}
-    cancel = cancellations[row['admission_id']] = threading.Event()
+    cancellations = _cancellations(authority)
+    cancel = cancellations.setdefault(row['admission_id'], threading.Event())
     token = _execution.set((authority, ref.session_id, data['cron_job']['id'], row['admission_id']))
     try:
         with _profile_runtime_scope(Path(authority.db.db_path).resolve().parent):

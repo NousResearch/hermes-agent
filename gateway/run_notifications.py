@@ -487,10 +487,50 @@ class GatewayNotificationsMixin:
         if paths.any_pending() and not paths.exit_code.exists():
             paths.exit_code.write_text("124", encoding="utf-8")
             await self._send_update_notification()
+        elif (
+            paths.any_pending()
+            and paths.exit_code.exists()
+            and self._update_exit_code(paths) == 0
+            and not self._gateway_update_finalized(paths)
+        ):
+            logger.warning(
+                "Update watcher (completion-only) timed out with unfinished finalize; "
+                "leaving markers for a later retry instead of reporting success",
+            )
 
     @staticmethod
     def _update_exit_code(paths: "_UpdatePaths") -> int:
         return int(paths.exit_code.read_text(encoding="utf-8").strip() or "1")
+
+    @staticmethod
+    def _gateway_update_finalized(paths: "_UpdatePaths") -> bool:
+        """True when a zero exit code is backed by finalized evidence.
+
+        ``.update_exit_code`` is written *before* the fleet restart
+        (``hermes_cli.update_cmd._cmd_update_impl``): a zero there only proves
+        the pull/maintenance half. The finalize half — fleet restart + verify +
+        receipt + marker clear — lands later; treating the pre-restart write as
+        success reports ``✅`` for runs SIGKILLed by their own restart
+        (``KillMode=mixed`` kills the remaining cgroup after the main process
+        exits, and the updater lives in that cgroup, #107427). Require
+        ``fleet_restart_pending`` gone and ``logs/update_receipts/latest.json``
+        newer than the exit code. Never raises: unknown → False (wait/defer),
+        the safe direction.
+        """
+        try:
+            exit_mtime = paths.exit_code.stat().st_mtime
+        except OSError:
+            return False
+        try:
+            hermes_home = paths.exit_code.parent
+            latest = hermes_home / "logs" / "update_receipts" / "latest.json"
+            if not latest.is_file():
+                return False
+            if latest.stat().st_mtime < exit_mtime:
+                return False
+            return not (hermes_home / "fleet_restart_pending").is_file()
+        except OSError:
+            return False
 
     @staticmethod
     def _read_update_output_since(path: Path, offset: int) -> tuple[str, int]:
@@ -582,13 +622,22 @@ class GatewayNotificationsMixin:
                 await _flush_buffer()
                 with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
                     exit_code = self._update_exit_code(paths)
-                    await target.send(
-                        "✅ Hermes update finished." if exit_code == 0
-                        else "❌ Hermes update failed (exit code {}).".format(exit_code)
+                    if exit_code != 0:
+                        await target.send(
+                            "❌ Hermes update failed (exit code {}).".format(exit_code)
+                        )
+                        logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
+                        self._clear_update_markers(paths, session_key)
+                        return
+                    if self._gateway_update_finalized(paths):
+                        await target.send("✅ Hermes update finished.")
+                        logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
+                        self._clear_update_markers(paths, session_key)
+                        return
+                    logger.info(
+                        "Update exit code %s seen but finalize evidence missing (receipt/marker), keep watching",
+                        exit_code,
                     )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
-                self._clear_update_markers(paths, session_key)
-                return
             _read_new_output()
             if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
                 await _flush_buffer()
@@ -612,6 +661,17 @@ class GatewayNotificationsMixin:
             await _flush_buffer()
             with suppress(Exception):
                 await target.send("❌ Hermes update timed out after 30 minutes.")
+            self._clear_update_markers(paths, session_key)
+        elif self._update_exit_code(paths) == 0 and not self._gateway_update_finalized(paths):
+            logger.warning(
+                "Update watcher timed out with unfinished finalize (receipt/marker) after %.0fs", timeout,
+            )
+            await _flush_buffer()
+            with suppress(Exception):
+                await target.send(
+                    "❌ Hermes update did not finalize — a fleet restart is still pending."
+                    " Run `hermes update` to retry, or `hermes gateway restart` after clearing the marker."
+                )
             self._clear_update_markers(paths, session_key)
 
     async def _send_update_notification(self) -> bool:
@@ -649,6 +709,10 @@ class GatewayNotificationsMixin:
             if not paths.exit_code.exists():
                 return _defer("Update notification deferred: update still running")
             exit_code = self._update_exit_code(paths)
+            if exit_code == 0 and not self._gateway_update_finalized(paths):
+                return _defer(
+                    "Update notification deferred: finalize evidence missing (receipt/marker) — wait for updater",
+                )
             output = paths.output.read_bytes().decode("utf-8", errors="replace") if paths.output.exists() else ""
             platform = Platform(platform_str)
             adapter = self._authorization_adapter(platform, self._marker_profile(pending))

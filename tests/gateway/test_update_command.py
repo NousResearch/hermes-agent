@@ -9,6 +9,26 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
+def _finalized(hermes_home):
+    """Create finalized evidence so the post-fix watcher counts the run as successful."""
+    import json as _j, os, time
+    exit_code = hermes_home / ".update_exit_code"
+    if not exit_code.exists():
+        exit_code.write_text("0")
+    (hermes_home / "logs" / "update_receipts").mkdir(parents=True, exist_ok=True)
+    latest = hermes_home / "logs" / "update_receipts" / "latest.json"
+    latest.write_text(_j.dumps({"finished_at": "now"}))
+    try:
+        if latest.stat().st_mtime <= exit_code.stat().st_mtime:
+            t = exit_code.stat().st_mtime + 1
+            os.utime(latest, (t, t))
+    except OSError:
+        pass
+    try:
+        (hermes_home / "fleet_restart_pending").unlink()
+    except OSError:
+        pass
+
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
@@ -302,6 +322,7 @@ class TestSendUpdateNotification:
         }))
         (hermes_home / ".update_output.txt").write_text("done")
         (hermes_home / ".update_exit_code").write_text("0")
+        _finalized(hermes_home)
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
@@ -332,6 +353,7 @@ class TestSendUpdateNotification:
             "→ Found 3 new commit(s)\n✓ Code updated!\n✓ Update complete!"
         )
         (hermes_home / ".update_exit_code").write_text("0")
+        _finalized(hermes_home)
 
         # Mock the adapter
         mock_adapter = AsyncMock()
@@ -362,6 +384,7 @@ class TestSendUpdateNotification:
         }))
         output_path.write_text("✓ Done")
         exit_code_path.write_text("0")
+        _finalized(hermes_home)
 
         # Adapter send raises
         mock_adapter = AsyncMock()
@@ -397,6 +420,7 @@ class TestSendUpdateNotification:
         pending_path.write_text(json.dumps(pending))
         output_path.write_text("Done")
         exit_code_path.write_text("0")
+        _finalized(hermes_home)
 
         # Only telegram adapter available, but pending says discord
         mock_adapter = AsyncMock()
@@ -435,6 +459,7 @@ class TestSendUpdateNotification:
         pending_path.write_text(json.dumps(pending))
         output_path.write_text("✓ Update complete!")
         exit_code_path.write_text("0")
+        _finalized(hermes_home)
 
         # First pass: target platform (discord) is still offline → defer.
         with patch("gateway.run._hermes_home", hermes_home):
@@ -474,6 +499,7 @@ class TestSendUpdateNotification:
         pending_path.write_text(json.dumps(pending))
         output_path.write_bytes(b"ok before\ninvalid byte: \x96\ncontinued after\n")
         exit_code_path.write_text("0")
+        _finalized(hermes_home)
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.DISCORD: mock_adapter}
@@ -532,6 +558,7 @@ class TestWatchUpdateProgress:
             b"ok before\n\xe2\x9c invalid-continuation: \x96\ncontinued after\n"
         )
         (hermes_home / ".update_exit_code").write_text("0")
+        _finalized(hermes_home)
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}

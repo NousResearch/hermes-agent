@@ -492,9 +492,8 @@ def _bounds_hints(elements: List[UIElement], image_width: int, image_height: int
         return None, None
     scale = round(max(max_x / image_width, max_y / image_height), 2)
     note = (f"element bounds are in native desktop coordinates (extend to ~{max_x}x{max_y}), "
-            f"NOT screenshot pixels ({image_width}x{image_height}). element= clicks bypass this scaling entirely; "
-            f"coordinate= clicks expect the native space — derive click points from element bounds, "
-            f"or scale screenshot positions up by ~{scale:.2f}x")
+            f"NOT screenshot pixels ({image_width}x{image_height}). Click by element= index; "
+            f"coordinate= clicks expect screenshot pixels.")
     return scale, note
 
 _bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]  # noqa: E731
@@ -522,8 +521,8 @@ def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
     """Human-readable capture summary; line ORDER is contract. Lists only what `elements` surfaces, otherwise the
     summary names indices the model can't find."""
     notes = (
-        v.bounds_note and v.bounds_note + (f"; estimated scale ~{v.bounds_scale}x (screenshot position x "
-                                           f"{v.bounds_scale} ≈ native coordinate)" if v.bounds_scale else ""),
+        v.bounds_note and v.bounds_note + (f"; coordinate spaces differ (~{v.bounds_scale}x bounds-to-screenshot "
+                                           f"ratio) — prefer element= index over raw coordinates" if v.bounds_scale else ""),
         v.screenshot_path and f"shareable screenshot saved to {v.screenshot_path}",
         v.cap.note,
         v.elements_file and (f"full element tree with untruncated labels saved to {v.elements_file} — "

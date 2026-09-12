@@ -2243,19 +2243,19 @@ class TestElementTokenAttachment:
                 "session": {"type": "string"},
             }},
         })
-        backend._snapshot_tokens = {5: "s0001:5", 6: "s0001:6"}
+        backend._snapshot_tokens = {5: "sa1b2c3d4:5", 6: "sa1b2c3d4:6"}
         backend.click(element=5, button="left")
         name, args = backend._session.call_tool.call_args.args
         assert name == "click"
         assert args["element_index"] == 5
-        assert args["element_token"] == "s0001:5"
-        assert args["snapshot_id"] == "s0001"
+        assert args["element_token"] == "sa1b2c3d4:5"
+        assert args["snapshot_id"] == "sa1b2c3d4"
 
     def test_old_driver_gets_neither_token_nor_snapshot(self):
         # Fails closed: empty capability map AND empty schemas (pre-token driver
         # with additionalProperties=false) must see neither new arg.
         backend = self._backend_with_capabilities({})
-        backend._snapshot_tokens = {5: "s0001:5"}
+        backend._snapshot_tokens = {5: "sa1b2c3d4:5"}
         backend.click(element=5, button="left")
         name, args = backend._session.call_tool.call_args.args
         assert name == "click"

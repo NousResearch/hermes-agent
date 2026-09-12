@@ -320,9 +320,19 @@ def direct_alias_runtime_request(alias: DirectAlias) -> tuple[str, Optional[str]
     its vendor key and a foreign one resolves none. An alias with no base_url keeps its label —
     there is no foreign host, and the label is the only routing information.
 
-    See #28660.
+    Named custom identities (``custom:<name>``, e.g. ``custom:orcarouter``) are kept even when
+    the alias carries a base_url: collapsing them to bare ``custom`` drops the provider entry's
+    base_url/key_env and the CLI then resolves to OpenRouter with a missing/wrong auth header.
+    Only foreign *vendor* labels are forced to bare custom (#28660).
     """
-    return ("custom" if alias.base_url else (alias.provider or "custom")), direct_alias_api_key(alias) or None
+    key = direct_alias_api_key(alias) or None
+    provider = (alias.provider or "custom").strip() or "custom"
+    if not alias.base_url:
+        return provider, key
+    # URL-bearing: preserve named/bare custom routing identity; collapse foreign vendor labels.
+    if provider == "custom" or provider.startswith("custom:"):
+        return provider, key
+    return "custom", key
 
 
 # Hosts where plaintext HTTP is not a downgrade — no network hop to intercept.

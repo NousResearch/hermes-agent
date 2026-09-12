@@ -2682,9 +2682,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._model_is_default = not model and not _config_model
 
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
-        # See #28660.
+        # See #28660. The startup base URL must also become explicit: resolve_runtime_provider()
+        # only consults _explicit_base_url, so a DirectAlias that landed on bare "custom"
+        # would otherwise fall through to OpenRouter with a missing/wrong auth header.
         self._explicit_api_key = api_key or _startup_api_key_override or None
-        self._explicit_base_url = base_url
+        self._explicit_base_url = base_url or (_startup_base_url_override or None)
 
         # Resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (

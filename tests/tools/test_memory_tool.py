@@ -270,6 +270,26 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestMemoryStoreCharLimitOnLoad:
+    @pytest.mark.parametrize("filename, target", [("MEMORY.md", "memory"), ("USER.md", "user")])
+    def test_over_limit_file_loads_but_warns(self, tmp_path, monkeypatch, caplog, filename, target):
+        """An externally written over-budget file is kept (no silent data loss) and named in a
+        warning; an in-budget file loads quietly (#10877)."""
+        import logging
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / filename).write_text("x" * 600, encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+            store.load_from_disk()
+        assert filename in caplog.text and "exceeds" in caplog.text
+        assert len(store._entries_for(target)) == 1
+        caplog.clear()
+        (tmp_path / filename).write_text("short", encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            MemoryStore(memory_char_limit=500, user_char_limit=300).load_from_disk()
+        assert "exceeds" not in caplog.text
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         assert store.format_for_system_prompt("memory") is None  # empty store

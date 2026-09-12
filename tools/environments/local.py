@@ -668,6 +668,12 @@ def _kill_process_group_posix(proc) -> None:
                 proc.wait(timeout=0.2)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Darwin rejects killpg() when the group contains only a zombie
+        # leader. That is equivalent to an already-finished process, but a
+        # live leader still represents a real failure to terminate.
+        if proc.poll() is None:
+            raise
     _sweep_escaped_descendants(descendants, pgid)
 
 

@@ -31,11 +31,12 @@ class TestSpecialFileKind:
         os.mkfifo(fifo)
         assert "FIFO" in (_special_file_kind(fifo) or "")
 
-    def test_socket(self, tmp_path):
+    def test_socket(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
         sock_path = tmp_path / "s.sock"
         s = socket.socket(socket.AF_UNIX)
         try:
-            s.bind(str(sock_path))
+            s.bind("s.sock")
             assert "socket" in (_special_file_kind(sock_path) or "")
         finally:
             s.close()

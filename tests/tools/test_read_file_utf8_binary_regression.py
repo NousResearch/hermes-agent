@@ -20,10 +20,12 @@ must classify:
 
 import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
 from tools.environments.local import LocalEnvironment
+import tools.environments.local as local_environment
 from tools.file_operations import ShellFileOperations
 
 pytestmark = pytest.mark.skipif(
@@ -127,3 +129,29 @@ class TestSiblingSites:
         r = ops.search("漢字", path=str(tmp_path), target="content")
         assert r.error is None
         assert r.matches
+
+
+class TestDarwinZombieProcessGroup:
+    def test_permission_error_is_suppressed_after_process_exit(self, monkeypatch):
+        proc = SimpleNamespace(pid=123, poll=lambda: 0)
+        monkeypatch.setattr(local_environment.os, "getpgid", lambda _pid: 123)
+        monkeypatch.setattr(
+            local_environment.os,
+            "killpg",
+            lambda *_args: (_ for _ in ()).throw(PermissionError()),
+        )
+        monkeypatch.setattr(local_environment, "_sweep_escaped_descendants", lambda *_: None)
+
+        local_environment._kill_process_group_posix(proc)
+
+    def test_permission_error_is_raised_while_process_is_live(self, monkeypatch):
+        proc = SimpleNamespace(pid=123, poll=lambda: None)
+        monkeypatch.setattr(local_environment.os, "getpgid", lambda _pid: 123)
+        monkeypatch.setattr(
+            local_environment.os,
+            "killpg",
+            lambda *_args: (_ for _ in ()).throw(PermissionError()),
+        )
+
+        with pytest.raises(PermissionError):
+            local_environment._kill_process_group_posix(proc)

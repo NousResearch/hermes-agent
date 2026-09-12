@@ -276,6 +276,7 @@ class TestProvidersDictApiModeAnthropicMessages:
     def test_resolve_provider_client_returns_anthropic_client(self, tmp_path, monkeypatch):
         """Named custom provider with api_mode=anthropic_messages must
         route through AnthropicAuxiliaryClient."""
+        pytest.importorskip("anthropic")
         monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
         _write_config(tmp_path, {
             "providers": {

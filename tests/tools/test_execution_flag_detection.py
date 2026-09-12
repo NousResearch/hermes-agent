@@ -1,6 +1,7 @@
 """Execution-bearing option detection across interpreters and read-only tools."""
 
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -50,6 +51,15 @@ def test_real_binaries_execute_leading_dash_program_payload(
     if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
         pytest.skip(f"{tool} or script is not installed")
 
+    if platform.system() == "Darwin" and tool == "man" and args[0] == "--pager":
+        pytest.skip("BSD man does not support --pager")
+
+    effective_tool = tool
+    if platform.system() == "Darwin" and tool == "sort":
+        effective_tool = shutil.which("gsort") or ""
+        if not effective_tool:
+            pytest.skip("GNU sort is required for --compress-program")
+
     marker = tmp_path / "executed"
     payload = tmp_path / "-payload-marker"
     payload.write_text("#!/bin/sh\nprintf executed > \"$MARKER\"\ncat\n")
@@ -68,12 +78,18 @@ def test_real_binaries_execute_leading_dash_program_payload(
         "MARKER": str(marker),
         "TERM": "xterm",
     }
-    argv = [tool, *resolved_args]
+    argv = [effective_tool, *resolved_args]
     if needs_tty:
-        argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
+        if platform.system() == "Darwin":
+            argv = ["script", "-q", "/dev/null", *argv]
+        else:
+            argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
 
-    subprocess.run(argv, input=input_text, text=True, capture_output=True, env=env, timeout=20)
+    completed = subprocess.run(
+        argv, input=input_text, text=True, capture_output=True, env=env, timeout=20
+    )
 
+    assert completed.returncode == 0, completed.stderr or completed.stdout
     assert marker.read_text() == "executed"
 
 

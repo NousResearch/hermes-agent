@@ -5,14 +5,16 @@ name = "hermes-agent"
 version = "0.21.2"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
-# Upper bound is load-bearing, not cosmetic. uv resolves the project's
-# Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
-# fresh distro whose newest interpreter uv auto-picks) will otherwise select
-# 3.14, where Rust-backed transitives (e.g. pydantic-core) have no cp314
-# wheel yet and fall back to a maturin source build that fails. Capping at
-# <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
-# build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+# Upper bound is load-bearing, not cosmetic: uv resolves the project's Python
+# from `requires-python`, and an inherited `UV_PYTHON` env var (or a fresh
+# distro whose newest interpreter uv auto-picks) will otherwise select the
+# newest version the range allows. The ceiling tracks our Rust-backed
+# transitives: it was <3.14 while they lacked cp314 wheels (a maturin source
+# build fails). Those wheels now exist for every pinned compiled dep
+# (audit on #48723, 2026-09-04), and the one 3.14-only code break found since
+# (#58596, DaemonThreadPoolExecutor._worker signature) is fixed with tests in
+# this tree — CI now exercises 3.14 directly.
+requires-python = ">=3.11,<3.15"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]

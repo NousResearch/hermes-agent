@@ -2850,6 +2850,15 @@ export const zh = defineLocale({
       toggle: (label, open) => `${open ? '展开' : '收起'} ${label} 会话`,
       back: '全部项目'
     },
+    folders: {
+      label: '文件夹',
+      newFolder: '新建文件夹',
+      rename: '重命名文件夹',
+      delete: '删除文件夹',
+      deleteHint: '删除此文件夹？其中的会话会回到主列表。',
+      unfiled: '未归入文件夹',
+      unfiledHint: '将会话拖到这里即可移出文件夹'
+    },
     newSessionIn: label => `在 ${label} 中新建会话`,
     showMoreIn: (count, label) => `在 ${label} 中再显示 ${count} 个`,
     loading: '加载中…',

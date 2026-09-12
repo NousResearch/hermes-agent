@@ -42,8 +42,9 @@ import {
   type SidebarWorkspaceTree
 } from './projects'
 import { WorkspaceAddButton } from './projects/workspace-header'
-import { ReorderableList, useSortableBindings } from './reorderable-list'
+import { ReorderableList, useDraggableBindings, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
+import { useSessionFolderSection } from './session-folders'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -153,6 +154,9 @@ interface SidebarSessionsSectionProps {
   // When false the section header is static (no caret/toggle) and always open.
   collapsible?: boolean
   sortable?: boolean
+  // Renders the session-folder strip above this list. Only the flat Sessions
+  // list groups by folder, so only it opts in.
+  enableFolders?: boolean
   // The persisted drag order, applied WITHIN each date group (see
   // orderRowsWithinGroups). Chronology decides the groups; this decides the
   // sequence inside one, so a reorder no longer costs the whole list its
@@ -218,6 +222,7 @@ export function SidebarSessionsSection({
   labelIcon,
   collapsible = true,
   sortable = false,
+  enableFolders = false,
   manualOrderIds,
   onReorderSessions,
   onReorderProjects,
@@ -264,7 +269,7 @@ export function SidebarSessionsSection({
   )
 
   const renderRow = useCallback(
-    (session: SessionInfo, draggable: boolean, branchStem?: string) => {
+    (session: SessionInfo, draggable: boolean, branchStem?: string, folderMember = false) => {
       const rowProps = {
         branchStem,
         card,
@@ -285,11 +290,19 @@ export function SidebarSessionsSection({
       // Key by (profile, id): twins with the same stored id in two profiles
       // are distinct rows (#92454) — a bare-id key makes React misattribute
       // one twin's rendered state to the other.
-      return draggable && !branchStem ? (
-        <SortableSidebarSessionRow key={`${session.profile ?? ''}::${session.id}`} {...rowProps} />
-      ) : (
-        <SidebarSessionRow key={`${session.profile ?? ''}::${session.id}`} {...rowProps} />
-      )
+      const key = `${session.profile ?? ''}::${session.id}`
+
+      if (draggable && !branchStem) {
+        return <SortableSidebarSessionRow key={key} {...rowProps} />
+      }
+
+      // A folder's own rows can't join the reorder order — the list isn't
+      // ordering them — but must stay draggable in and out of other folders.
+      if (folderMember && !branchStem) {
+        return <DraggableSessionRow key={key} {...rowProps} />
+      }
+
+      return <SidebarSessionRow key={key} {...rowProps} />
     },
     [
       activeSessionId,
@@ -303,6 +316,31 @@ export function SidebarSessionsSection({
       pinned,
       showProfileTags
     ]
+  )
+
+  // A folder's rows reuse the section's own renderer (same actions, same
+  // density/card variant), bound as drag sources so they can be moved again.
+  // The flat Sessions list is the one surface that groups by folder; the hook
+  // owns the store read, the membership split and the drop targets. Its `strip`
+  // renders nothing where a list can't group by folder (archived, all-profiles,
+  // grouped views) and its `filedIds` is then empty, so those lists still show
+  // every session rather than losing the filed ones.
+  const renderFolderMembers = useCallback(
+    (members: SessionInfo[]) => members.map(session => renderRow(session, false, undefined, true)),
+    [renderRow]
+  )
+
+  const {
+    dropTargets: folderDropTargets,
+    filedIds,
+    strip: folderStrip
+  } = useSessionFolderSection({ enabled: enableFolders, renderMembers: renderFolderMembers, sessions })
+
+  // A filed session leaves the flat rows for its folder. No folders, no
+  // filtering, so the plain path keeps its exact array identity.
+  const unfiledEntries = useMemo(
+    () => (filedIds.size ? displayEntries.filter(entry => !filedIds.has(entry.session.id)) : displayEntries),
+    [displayEntries, filedIds]
   )
 
   // Date dividers head a group the same way a repo header does, so they carry
@@ -410,17 +448,17 @@ export function SidebarSessionsSection({
   const flatRows: SidebarListRow[] = useMemo(() => {
     const rows =
       grouping === 'date'
-        ? groupEntriesByRecency(displayEntries)
+        ? groupEntriesByRecency(unfiledEntries)
         : grouping === 'status'
           ? groupEntriesByStatus(
-              displayEntries,
+              unfiledEntries,
               entry => hasLiveTurn(dotStates[entry.session.id] ?? 'idle'),
               statusDividerLabels
             )
-          : toSessionRows(displayEntries)
+          : toSessionRows(unfiledEntries)
 
     return manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
-  }, [grouping, displayEntries, dotStates, manualOrderIds, statusDividerLabels])
+  }, [grouping, unfiledEntries, dotStates, manualOrderIds, statusDividerLabels])
 
   // Closed date/status buckets keep their divider and drop the sessions under
   // it. Same array when nothing is collapsed so the virtualizer's rows ref
@@ -468,6 +506,24 @@ export function SidebarSessionsSection({
   // background refresh keeps the prior tree, so this only fires when empty.
   const showProjectsSkeleton =
     projectsLoading && !hasProjectOverview && !hasProjectContent && !projectContent && !groups?.length
+
+  // The flat list's own dnd-kit context. Folder drop targets must live inside
+  // the SAME context as the rows they accept — a nested one would trap the drag
+  // — so the strip wraps together with the rows, and the list gets a context
+  // whenever folders are on screen even with nothing left to reorder.
+  const wrapList = (children: React.ReactNode) =>
+    sessionsDraggable || folderStrip ? (
+      <ReorderableList
+        dropTargets={folderDropTargets}
+        ids={sortableRowIds}
+        onReorder={persistSessionOrder}
+        sensors={dndSensors}
+      >
+        {children}
+      </ReorderableList>
+    ) : (
+      children
+    )
 
   let inner: React.ReactNode
 
@@ -582,21 +638,20 @@ export function SidebarSessionsSection({
       />
     )
 
-    inner = sessionsDraggable ? (
-      <ReorderableList ids={sortableRowIds} onReorder={persistSessionOrder} sensors={dndSensors}>
+    inner = wrapList(
+      <>
+        {folderStrip}
         {virtual}
-      </ReorderableList>
-    ) : (
-      virtual
-    )
-  } else if (sessionsDraggable) {
-    inner = (
-      <ReorderableList ids={sortableRowIds} onReorder={persistSessionOrder} sensors={dndSensors}>
-        {visibleRows.map(row => renderListRow(row, true, dividerAction))}
-      </ReorderableList>
+      </>
     )
   } else {
-    inner = visibleRows.map(row => renderListRow(row, false, dividerAction))
+    // The flat list, hand-reorderable when a reorder handler is wired.
+    inner = wrapList(
+      <>
+        {folderStrip}
+        {visibleRows.map(row => renderListRow(row, sessionsDraggable, dividerAction))}
+      </>
+    )
   }
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow
@@ -640,6 +695,13 @@ interface SortableSessionRowProps {
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {
   return <SidebarSessionRow {...props} {...useSortableBindings(props.session.id)} />
+}
+
+/** A session rendered inside a folder: a drag source (so it can be moved to
+ *  another folder or back out) but no sortable membership — the list it lives in
+ *  orders nothing. */
+function DraggableSessionRow(props: SortableSessionRowProps) {
+  return <SidebarSessionRow {...props} {...useDraggableBindings(props.session.id)} />
 }
 
 function SortableProjectOverviewRow(props: React.ComponentProps<typeof ProjectOverviewRow>) {

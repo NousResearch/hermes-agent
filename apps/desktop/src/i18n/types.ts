@@ -2316,6 +2316,15 @@ export interface Translations {
       toggle: (label: string, open: boolean) => string
       back: string
     }
+    folders: {
+      label: string
+      newFolder: string
+      rename: string
+      delete: string
+      deleteHint: string
+      unfiled: string
+      unfiledHint: string
+    }
     newSessionIn: (label: string) => string
     showMoreIn: (count: number, label: string) => string
     loading: string

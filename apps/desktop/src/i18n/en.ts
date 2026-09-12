@@ -2693,6 +2693,15 @@ export const en: Translations = {
       toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
       back: 'All projects'
     },
+    folders: {
+      label: 'Folders',
+      newFolder: 'New folder',
+      rename: 'Rename folder',
+      delete: 'Delete folder',
+      deleteHint: 'Delete this folder? Its sessions go back to the main list.',
+      unfiled: 'Not in a folder',
+      unfiledHint: 'Drop a session here to take it out of its folder'
+    },
     newSessionIn: label => `New session in ${label}`,
     showMoreIn: (count, label) => `Show ${count} more in ${label}`,
     loading: 'Loading…',

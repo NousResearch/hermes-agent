@@ -26,13 +26,19 @@ import { hiddenWindowsChildOptions } from './windows-child-options'
 
 export function execText(command: string, args: string[], { timeout = 3000 } = {}): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
+    const child = execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout }), (error, stdout) => {
       if (error) {
         reject(error)
+      } else if (timeout > 0 && child.killed) {
+        // A SIGTERM handler can exit zero after execFile's timeout fired.
+        reject(new Error(`${command} timed out after ${timeout}ms`))
       } else {
         resolve(String(stdout || '').trim())
       }
     })
+
+    // These probes are noninteractive; do not leave readers waiting for input.
+    child.stdin?.end()
   })
 }
 

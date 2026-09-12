@@ -670,16 +670,11 @@ export const host = {
     window.location.hash = path.startsWith('#') ? path : `#${path}`
   },
 
-  /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change. Delegates to
-   *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation
-   *  guard, hover dwell, and per-profile throttle as the built-in rail
-   *  (#91545): a pointer sweep across a plugin roster (bot-row's
-   *  onPointerEnter fires with no dwell of its own) previously spawned at
-   *  pointer speed, filled the local backend pool past maxBackends, and left
-   *  the next profile's spawn queued until the 30s slot timeout — observed
-   *  as a profile surface that hangs forever while every other profile
-   *  renders. It already no-ops for shared-remote routes and the primary.
+  /** Pre-dial a profile's gateway socket in the background — no activation,
+   *  navigation or scope change. Delegates to prewarmProfileBackend for the
+   *  same active-owner skip and per-source/profile 60s attempt throttle as
+   *  the built-in rail. Local execution belongs to the canonical gateway;
+   *  Desktop retains viewer connections, not a pool of owned processes.
    *  Fire-and-forget: failures are swallowed — the click path re-runs its
    *  own ensure and surfaces errors properly. */
   warmProfile: (profile: string): void => {
@@ -825,9 +820,9 @@ export const host = {
   },
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
-   *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded
-   *  resolver (prewarmProfileBackend): a pointer sweep across a
-   *  multi-source roster must not spawn past the pool cap either.
+   *  analogue of warmProfile. The same resolver (prewarmProfileBackend)
+   *  skips the active owner and throttles attempts independently per source
+   *  and profile, without activating or taking backend process ownership.
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
   warmAgent: (connectionId: null | string | undefined, profile: string): void => {

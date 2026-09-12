@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, once } from 'node:events'
+import http from 'node:http'
 import path from 'node:path'
 
 import { test } from 'vitest'
 
+import { httpStatusError } from './api-transport'
 import { pathForRegistryBackendRequest } from './connection-config'
 import type { PumpDeps } from './gateway-file-download'
 import {
+  downloadGatewayFile,
   downloadTempPath,
   filenameFromContentDisposition,
   gatewayFilePath,
@@ -415,7 +418,7 @@ test('gatewayFileRequestPaths keeps streaming and fallback requests on the same 
   })
 })
 
-test('isNotFoundError matches only HTTP 404', () => {
+test('download compatibility requires a download 404, never a refresh failure or denial', async () => {
   const notFound: any = new Error('404: missing')
 
   notFound.statusCode = 404
@@ -427,6 +430,85 @@ test('isNotFoundError matches only HTTP 404', () => {
   assert.equal(isNotFoundError(forbidden), false)
   assert.equal(isNotFoundError(new Error('plain')), false)
   assert.equal(isNotFoundError(null), false)
+
+  let refreshStatus = 404
+  let downloadStatus = 401
+  const routes: string[] = []
+  const server = http.createServer((request, response) => {
+    const route = request.url || ''
+    routes.push(route)
+    response.statusCode = route === '/refresh' ? refreshStatus : route === '/api/fs/download' ? downloadStatus : 200
+    response.setHeader('Content-Type', 'application/json')
+    response.end(JSON.stringify({ route }))
+  })
+
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const baseUrl = `http://127.0.0.1:${address.port}`
+  const request = async (route: string) => {
+    const response = await fetch(`${baseUrl}${route}`)
+    const body = await response.json()
+
+    if (!response.ok) {
+      throw httpStatusError(response.status, route)
+    }
+
+    return body as { route: string }
+  }
+
+  try {
+    for (const auth of ['refresh-failed', 'bearer', 'legacy'] as const) {
+      refreshStatus = auth === 'refresh-failed' ? 404 : 200
+
+      for (downloadStatus of [401, 403, 404, 200, 503]) {
+        routes.length = 0
+        let refreshError: unknown
+        const run = () => downloadGatewayFile(baseUrl, auth !== 'legacy', {
+          ensureNativeAccessToken: async () => {
+            try {
+              await request('/refresh')
+            } catch (error) {
+              refreshError = error
+              throw error
+            }
+
+            return 'fixture-native-token'
+          },
+          requestWithBearer: async token => {
+            assert.equal(token, 'fixture-native-token')
+
+            return request('/api/fs/download')
+          },
+          requestWithCookie: () => request('/api/fs/download'),
+          requestWithToken: () => request('/api/fs/download'),
+          requestWithDataUrl: () => request('/api/fs/read-data-url')
+        })
+
+        if (downloadStatus === 200 || downloadStatus === 404) {
+          assert.equal((await run()).route, downloadStatus === 404 ? '/api/fs/read-data-url' : '/api/fs/download')
+        } else {
+          await assert.rejects(run, error => {
+            if (auth === 'refresh-failed' && (downloadStatus === 401 || downloadStatus === 403)) {
+              return error === refreshError
+            }
+
+            return (error as { statusCode?: number }).statusCode === downloadStatus
+          })
+        }
+
+        assert.deepEqual(routes, [
+          ...(auth === 'legacy' ? [] : ['/refresh']),
+          '/api/fs/download',
+          ...(downloadStatus === 404 ? ['/api/fs/read-data-url'] : [])
+        ], `${auth}/${downloadStatus} must not replay or change the compatibility boundary`)
+      }
+    }
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
 })
 
 test('resolveGatewayFileBackend pins registered files to their owning connection', async () => {

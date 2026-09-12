@@ -15,6 +15,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 
+import { type OauthRestRequestDeps, requestWithOauthFallback } from './oauth-rest-request'
+
 // Minimal shape of the response objects we consume. Both Node's
 // http.IncomingMessage and Electron net's IncomingMessage satisfy it.
 export interface ReadableLike {
@@ -96,6 +98,40 @@ export interface GatewayFileBackendRoute<T> {
 export interface GatewayFileRequestPaths {
   dataUrl: string
   download: string
+}
+
+export interface GatewayFileDownloadDeps<T> extends OauthRestRequestDeps<T> {
+  requestWithToken: () => Promise<T>
+  requestWithDataUrl: () => Promise<T>
+}
+
+export async function downloadGatewayFile<T>(
+  baseUrl: string,
+  isOauth: boolean,
+  deps: GatewayFileDownloadDeps<T>
+): Promise<T> {
+  // The gateway may predate /api/fs/download. Keep auth refresh outside this
+  // compatibility boundary: OAuth can preserve a refresh 404 after a download
+  // denial, but that does not mean the streaming route is missing.
+  const download = async (request: () => Promise<T>): Promise<T> => {
+    try {
+      return await request()
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return deps.requestWithDataUrl()
+      }
+
+      throw error
+    }
+  }
+
+  return isOauth
+    ? requestWithOauthFallback(baseUrl, {
+        ensureNativeAccessToken: deps.ensureNativeAccessToken,
+        requestWithBearer: bearer => download(() => deps.requestWithBearer(bearer)),
+        requestWithCookie: () => download(deps.requestWithCookie)
+      })
+    : download(deps.requestWithToken)
 }
 
 export function gatewayFileRequestPaths(

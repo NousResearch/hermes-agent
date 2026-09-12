@@ -662,6 +662,94 @@ class TestSendTelegramMediaDelivery:
 # ---------------------------------------------------------------------------
 
 
+class TestMattermostLogicalTextDelivery:
+    @pytest.mark.parametrize("outcome", ["ok", "rejected", "timeout"])
+    @pytest.mark.asyncio
+    async def test_standalone_bounded_caption_attaches_once(self, outcome, tmp_path, monkeypatch):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.mattermost.adapter import _standalone_send
+        config = PlatformConfig(token="fixture-token", extra={"url": "https://mattermost.example", "max_post_length": 500})
+        path = tmp_path / "image.png"
+        path.write_bytes(b"fixture image")
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        posts, uploads = [], []
+        def post(url, **kwargs):
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 201
+            if url.endswith("/files"):
+                uploads.append(url)
+                response.json.return_value = {"file_infos": [{"id": "file"}]}
+            else:
+                posts.append(kwargs["json"])
+                response.json.return_value = {"id": f"post-{len(posts)}"}
+                if len(posts) == 3 and outcome == "rejected":
+                    response.status = 400
+                    response.text.return_value = "rejected"
+                if len(posts) == 3 and outcome == "timeout":
+                    response.json.side_effect = TimeoutError()
+            return response
+        session.post.side_effect = post
+        monkeypatch.setattr("aiohttp.ClientSession", lambda **kwargs: session)
+        message = "  @here\n![keep](https://example.com/image)\t" + "x" * 1200 + "  "
+        result = await _standalone_send(config, "channel", message, thread_id="root", media_files=[str(path)])
+        assert len(posts) == 3
+        assert all(len(p["message"]) <= 500 for p in posts)
+        assert "".join(p["message"] for p in posts) == message
+        assert all(p["root_id"] == "root" and p["props"]["disable_mentions"] for p in posts)
+        assert len(uploads) == 1
+        assert [p.get("file_ids") for p in posts] == [None, None, ["file"]]
+        assert result.get("success", False) is (outcome == "ok")
+        assert result["message_ids"] == (["post-1", "post-2", "post-3"] if outcome == "ok" else ["post-1", "post-2"])
+
+    @pytest.mark.parametrize("live", [True, False])
+    @pytest.mark.parametrize("outcome", ["ok", "rejected", "timeout"])
+    @pytest.mark.asyncio
+    async def test_public_long_text_keeps_every_receipt(self, live, outcome, monkeypatch):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.mattermost.adapter import MattermostAdapter, _standalone_send
+        from gateway.platform_registry import platform_registry
+        config = PlatformConfig(token="fixture-token", extra={"url": "https://mattermost.example", "max_post_length": 500})
+        adapter = MattermostAdapter(config)
+        adapter.send = AsyncMock(wraps=adapter.send)
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        posts = []
+
+        def post(url, **kwargs):
+            posts.append(kwargs["json"])
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 201
+            response.json.return_value = {"id": f"post-{len(posts)}"}
+            if len(posts) == 3 and outcome == "rejected":
+                response.status = 400
+                response.text.return_value = "rejected"
+            if len(posts) == 3 and outcome == "timeout":
+                response.json.side_effect = TimeoutError()
+            return response
+
+        session.post.side_effect = post
+        adapter._session = session
+        monkeypatch.setattr("aiohttp.ClientSession", lambda **kwargs: session)
+        monkeypatch.setattr("tools.send_message_tool._live_adapter", lambda p: (None, adapter if live else None))
+        monkeypatch.setattr(platform_registry, "get", lambda name: SimpleNamespace(
+            send_message_handler=None, standalone_sender_fn=_standalone_send))
+        result = await _send_to_platform(Platform.MATTERMOST, config, "channel", "x" * 1300)
+        if live:
+            adapter.send.assert_awaited_once()
+            assert adapter.send.await_args.kwargs["content"] == "x" * 1300
+        assert result.get("success", False) is (outcome == "ok")
+        expected = ["post-1", "post-2", "post-3"] if outcome == "ok" else ["post-1", "post-2"]
+        assert result["message_ids"] == expected
+        assert result["message_id"] == expected[-1]
+        assert len(posts) == 3
+        assert all(len(p["message"]) <= 500 for p in posts)
+
+
 class TestSendToPlatformChunking:
     def test_long_message_is_chunked(self):
         """Messages exceeding the platform limit are split into multiple sends."""

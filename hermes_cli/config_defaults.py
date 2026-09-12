@@ -1528,6 +1528,7 @@ DEFAULT_CONFIG = {
     },
 
     "mattermost": {
+        "max_post_length": 4000,  # YAML-only per-post limit: 500..16383
         "require_mention": True,  # require @mention to respond in channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)

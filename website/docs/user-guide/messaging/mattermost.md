@@ -165,6 +165,29 @@ group_sessions_per_user: true
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared channels and threads
 
+### Post Length
+
+Set the outbound post limit in the active profile's `config.yaml`:
+
+```yaml
+mattermost:
+  max_post_length: 4000
+```
+
+The default is 4000 characters. Integer values from 500 through 16383 are
+accepted; invalid values or values below 500 fall back to 4000, and values above
+16383 are clamped. This YAML-only setting has no environment-variable override.
+It applies to gateway replies, streaming previews, direct sends and cron
+messages within that profile. Streaming reserves room for its cursor.
+
+Oversized edits update the first post within this limit and send only the
+overflow as continuation posts. Text delivery receipts retain every acknowledged
+post ID, with the last editable post as `message_id`. If a continuation is
+rejected, streaming can send the known missing tail using an exact source
+prefix. If its acknowledgement is lost, streaming stops rather than replaying
+content that may already be visible. This prevents immediate retry duplicates;
+it does not guarantee exactly-once delivery across separate sends or restarts.
+
 ### Start the Gateway
 
 Once configured, start the Mattermost gateway:

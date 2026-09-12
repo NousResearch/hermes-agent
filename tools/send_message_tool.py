@@ -468,6 +468,10 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             return {"error": f"Plugin platform send failed: {_bounded_send_error(e)}"}
         if isinstance(result, dict):
             return result
+        if platform_name == "mattermost":
+            ids = [*result.continuation_message_ids, *([result.message_id] if result.message_id else [])]
+            return {"success": result.success, "message_id": result.message_id, "message_ids": ids,
+                    **({"error": _bounded_send_error(result.error)} if not result.success else {})}
         if result.success:
             return {"success": True, "message_id": result.message_id}
         return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
@@ -508,10 +512,13 @@ async def _send_chunks(chunks, send_one):
     return result
 
 
-def _platform_max_length(platform):
+def _platform_max_length(platform, pconfig=None):
     """Chunking limit: Signal's adapter constant (its raw JSON-RPC path bypasses the adapter's
     chunking), the registry's ``max_message_length`` for plugins, else None (no chunking)."""
     from gateway.config import Platform
+    if platform == Platform.MATTERMOST:
+        from plugins.platforms.mattermost.adapter import _resolve_max_post_length
+        return _resolve_max_post_length(getattr(pconfig, "extra", None))
     if platform == Platform.SIGNAL:
         try:
             from gateway.platforms.signal import MAX_MESSAGE_LENGTH
@@ -600,8 +607,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
             disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
     from gateway.platforms.base import BasePlatformAdapter
-    max_len = _platform_max_length(platform)
-    chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    max_len = _platform_max_length(platform, pconfig)
+    # Mattermost's live/standalone sender owns the full logical text and receipt.
+    chunks = ([message] if platform_name == "mattermost" else
+              BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message])
     if platform_name == "discord" or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document)

@@ -161,6 +161,28 @@ class TestEditMessageFinalizeSignature:
 class TestSendOrEditMediaStripping:
     """Verify _send_or_edit strips MEDIA: before sending to the platform."""
 
+    @pytest.mark.parametrize("cursor", [" ▉", "x" * 600])
+    @pytest.mark.asyncio
+    async def test_minimum_post_limit_includes_bounded_cursor(self, cursor):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        from gateway.stream_consumer import _Tick
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
+        # Keep this regression independent of Mattermost's config plumbing.
+        adapter.MAX_MESSAGE_LENGTH = 500
+        adapter._api_post = AsyncMock(return_value={"id": "ack"})
+        cfg = StreamConsumerConfig(cursor=cursor)
+        consumer = GatewayStreamConsumer(adapter, "channel", cfg)
+        consumer._len_fn, consumer._safe_limit = consumer._resolve_length_budget()
+        assert 0 < consumer._safe_limit <= 500 - len(consumer.cfg.cursor)
+        consumer._accumulated = "a" * consumer._safe_limit
+        await consumer._push_update(_Tick())
+        posts = [call.args[1]["message"] for call in adapter._api_post.await_args_list]
+        assert len(posts) == 1
+        assert len(posts[0]) <= 500
+        assert cfg.cursor == cursor
+
+
     @pytest.mark.asyncio
     async def test_first_send_strips_media(self):
         """Initial send removes MEDIA: tags from visible text."""
@@ -1488,3 +1510,62 @@ class TestFlushPendingSync:
         consumer.finish()
         await task
 
+
+
+@pytest.mark.parametrize("done_on_first_tick", [True, False], ids=["done", "interim"])
+@pytest.mark.parametrize("lost_ack", [False, pytest.param(True, marks=pytest.mark.xfail(
+    strict=True, reason="B2 inherited first-overflow failed-head replay; broader repair needs scope approval"))],
+    ids=["acknowledged", "empty_timeout"])
+@pytest.mark.asyncio
+async def test_mattermost_run_first_overflow_preserves_failed_head(lost_ack, done_on_first_tick):
+    """Exercise run -> first-overflow -> HTTP, including the same old-PR failure path."""
+    import json
+    from gateway.config import PlatformConfig
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+    adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500, "reply_mode": "off"}))
+    posts, acknowledged = [], []
+
+    def post(url, **kwargs):
+        assert url.endswith("/api/v4/posts")
+        posts.append(kwargs["json"])
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.status = 201
+        mid = f"head-{len(posts)}"
+        response.json.return_value = {"id": mid}
+        if len(posts) == 2:
+            if not done_on_first_tick:
+                consumer.finish()
+            if lost_ack:
+                timeout = TimeoutError()
+                assert str(timeout) == ""
+                response.json.side_effect = timeout
+                return response
+        acknowledged.append(mid)
+        return response
+
+    adapter._session = MagicMock()
+    adapter._session.post.side_effect = post
+    consumer = GatewayStreamConsumer(adapter, "channel", config=StreamConsumerConfig(cursor=""))
+    source = "a" * 350 + "\n" + "b" * 350 + "\n" + "c" * 100
+    consumer.on_delta(source)
+    if done_on_first_tick:
+        consumer.finish()
+    await asyncio.wait_for(consumer.run(), timeout=2)
+    assert all(len(payload["message"]) <= 500 for payload in posts)
+    print("B2_HTTP_PROOF " + json.dumps({
+        "lost_ack": lost_ack, "done_on_first_tick": done_on_first_tick,
+        "post_messages": [payload["message"] for payload in posts],
+        "acknowledged": acknowledged, "preview_ids": sorted(consumer._preview_message_ids),
+        "message_id": consumer._message_id, "ambiguous": consumer._delivery_ambiguous,
+    }, sort_keys=True))
+    if lost_ack:
+        assert len(posts) == 2, "first-overflow replayed after an acknowledged head and empty-string timeout"
+        assert consumer._preview_message_ids == {"head-1"}
+        assert consumer._delivery_ambiguous
+    else:
+        assert len(posts) == 3
+        assert consumer._preview_message_ids == {"head-1", "head-2", "head-3"}
+        assert consumer.final_content_delivered
+        assert sum("a" * 350 in payload["message"] for payload in posts) == 1

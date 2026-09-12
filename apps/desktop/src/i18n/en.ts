@@ -2912,7 +2912,7 @@ export const en: Translations = {
     githubSuggestions: {
       label: 'Set up GitHub',
       tip: 'GitHub works through the gh CLI skills here — click to connect your account',
-      done: 'Added /github-auth',
+      done: 'Added /github',
       doneTip: 'Send the message and the agent walks you through GitHub sign-in'
     },
     repairSuggestions: {

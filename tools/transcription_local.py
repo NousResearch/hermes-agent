@@ -136,9 +136,13 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     from faster_whisper import WhisperModel
     if force_cpu:
+        # Keep the safety override on the device, but honour an explicit CPU
+        # compute_type from stt.local; ``auto`` keeps the historical int8.
+        requested = str(compute_type or "auto").strip()
+        effective_compute_type = "int8" if requested.lower() == "auto" else requested
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
-                    "(int8) to avoid native device autodetection crashes")
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+                    "(%s) to avoid native device autodetection crashes", effective_compute_type)
+        return WhisperModel(model_name, device="cpu", compute_type=effective_compute_type)
     try:
         return WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as exc:

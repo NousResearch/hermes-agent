@@ -294,18 +294,18 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str) -> List[s
 _scope_degraded_warned = False
 
 
-def _warn_scope_degraded_once(unit_suffix: str, detail: str) -> None:
-    """Warn once per process: the probe verdict is cached, so this would otherwise
-    fire on every cron dispatch on a bus-less host."""
+def _warn_scope_degraded_once(detail: str) -> None:
+    """Warn once per process: the condition is host-level and the probe verdict
+    is cached, so this would otherwise fire on every cron dispatch."""
     global _scope_degraded_warned
     if _scope_degraded_warned:
         return
     _scope_degraded_warned = True
     logger.warning(
-        "%s: %s; dispatching the gateway child as a direct external subprocess "
+        "managed gateway: %s; cron children are dispatched as direct external subprocesses "
         "without restart-safe cgroup isolation (killed if the gateway restarts mid-job). "
         "Set cron.require_restart_safe_scope=true in config.yaml to fail closed instead.",
-        unit_suffix, detail,
+        detail,
     )
 
 
@@ -346,7 +346,7 @@ def restart_safe_gateway_child_argv(
         if require_restart_safe_scope:
             # Stored as the cron execution's error and shown on the job row: name the remedy.
             raise RuntimeError(f"cannot create restart-safe systemd scope for gateway child: {detail}")
-        _warn_scope_degraded_once(unit_suffix, detail)
+        _warn_scope_degraded_once(detail)
         return GatewayChildDispatch("degraded", command)
 
     if not _systemd_run_user_scope_available():

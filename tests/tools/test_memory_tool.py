@@ -877,7 +877,7 @@ class TestBackgroundReviewDeleteGate:
         store.add("memory", "first entry")
         store.add("memory", "second entry")
         path = store._path_for("memory")
-        path.write_text(path.read_text(encoding="utf-8").replace("\n§\n", "\n§ \n"), encoding="utf-8")
+        path.write_text(path.read_text(encoding="utf-8").replace("\n§\n", "\n§\n "), encoding="utf-8")
         before = path.read_text(encoding="utf-8")
 
         token = set_current_write_origin("background_review")

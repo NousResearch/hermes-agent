@@ -464,19 +464,129 @@ def test_liveness_guard_rejects_unknown_pid_state(tmp_path, monkeypatch):
         with active_sessions.active_session_liveness_guard("session-1"):
             pass
 
-    original = state_path.read_text(encoding="utf-8")
-    # An unknown pid state means dead-owner pruning cannot be trusted, which
-    # means ownership cannot be proven. Fail closed (#94595), preserve the file.
+    # Target-session uncertainty still fails closed (#94595). An unrelated
+    # unknown-liveness sibling must not block a new session id (#107026).
     lease, message = active_sessions.try_acquire_active_session(
         session_id="cli-cap-session",
         surface="cli",
-        config={"max_concurrent_sessions": 1},
+        config={},
+    )
+    assert lease is not None and message is None
+    text = state_path.read_text(encoding="utf-8")
+    assert "unknown-owner" in text
+    assert "session-1" in text
+    assert "cli-cap-session" in text
+
+
+def test_desktop_claim_new_session_ignores_unrelated_unknown_liveness(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state = home / "runtime" / "active_sessions.json"
+    state.parent.mkdir(parents=True)
+    active_sessions._write_entries(state, [{
+        "lease_id": "stale",
+        "session_id": "other",
+        "surface": "desktop",
+        "pid": 12345,
+        "track_liveness": True,
+    }])
+    monkeypatch.setattr(
+        "gateway.status._pid_exists",
+        lambda _pid: (_ for _ in ()).throw(OSError("pid lookup unavailable")),
+    )
+    lease, msg = active_sessions.try_acquire_active_session(
+        session_id="brand-new",
+        surface="desktop",
+        config={},
+        track_liveness=True,
+        registry_home=home,
+    )
+    assert lease is not None and msg is None
+    assert "other" in state.read_text(encoding="utf-8")
+
+
+def test_desktop_claim_target_unknown_liveness_is_coordination_unavailable(
+    tmp_path, monkeypatch, caplog
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    state = home / "runtime" / "active_sessions.json"
+    state.parent.mkdir(parents=True)
+    active_sessions._write_entries(state, [{
+        "lease_id": "stale",
+        "session_id": "target",
+        "surface": "desktop",
+        "pid": 12345,
+        "track_liveness": True,
+    }])
+    monkeypatch.setattr(
+        "gateway.status._pid_exists",
+        lambda _pid: (_ for _ in ()).throw(OSError("pid lookup unavailable")),
+    )
+    caplog.set_level(logging.WARNING)
+    lease, msg = active_sessions.try_acquire_active_session(
+        session_id="target",
+        surface="desktop",
+        config={},
+        track_liveness=True,
+        registry_home=home,
     )
     assert lease is None
-    assert getattr(message, "reason", None) == (
+    assert getattr(msg, "reason", None) == (
         active_sessions.SESSION_COORDINATION_UNAVAILABLE
     )
-    assert state_path.read_text(encoding="utf-8") == original
+    assert "target" in state.read_text(encoding="utf-8")
+    assert any(
+        "active session owner liveness is unknown" in record.message
+        for record in caplog.records
+    )
+
+
+def test_desktop_claim_live_owner_stays_session_not_owned_with_unknown_sibling(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner, err = active_sessions.try_acquire_active_session(
+        session_id="held",
+        surface="desktop",
+        config={},
+        track_liveness=True,
+        registry_home=home,
+        metadata={"live_session_id": "owner-tab"},
+    )
+    assert owner is not None and err is None
+    state = home / "runtime" / "active_sessions.json"
+    entries = active_sessions._read_entries(state)
+    entries.append({
+        "lease_id": "stale",
+        "session_id": "other",
+        "surface": "desktop",
+        "pid": 12345,
+        "track_liveness": True,
+    })
+    active_sessions._write_entries(state, entries)
+
+    def _pid_exists(pid):
+        if int(pid) == 12345:
+            raise OSError("pid lookup unavailable")
+        return True
+
+    monkeypatch.setattr("gateway.status._pid_exists", _pid_exists)
+    lease, msg = active_sessions.try_acquire_active_session(
+        session_id="held",
+        surface="desktop",
+        config={},
+        track_liveness=True,
+        registry_home=home,
+        metadata={"live_session_id": "intruder-tab"},
+    )
+    assert lease is None
+    assert getattr(msg, "reason", None) == active_sessions.SESSION_NOT_OWNED
+    assert "already has a live owner" in str(msg)
+    assert "other" in state.read_text(encoding="utf-8")
 
 
 def test_liveness_release_failure_is_retryable(tmp_path, monkeypatch):

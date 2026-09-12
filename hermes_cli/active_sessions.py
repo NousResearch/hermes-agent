@@ -345,15 +345,31 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
     return abs(current_start - expected_start) < 0.001
 
 
-def _prune_dead(entries: list[dict[str, Any]], *, strict: bool = False) -> list[dict[str, Any]]:
-    """Keep entries whose owner is alive; tracked/strict entries must be provably so."""
+def _prune_dead(
+    entries: list[dict[str, Any]],
+    *,
+    strict: bool = False,
+    target_session_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Keep entries whose owner is alive; tracked/strict entries must be provably so.
+
+    Unknown liveness on an unrelated sibling must not fail a claim for a
+    different session id: leave that sibling intact instead of raising.
+    Unknown liveness on ``target_session_id`` still fails closed.
+    Missing or empty ``session_id`` also counts as unrelated, so those
+    malformed rows stay in the live set and still count toward capacity.
+    """
     live: list[dict[str, Any]] = []
+    target = str(target_session_id or "")
     for entry in entries:
         tracked = strict or bool(entry.get("track_liveness"))
         state = _pid_liveness(
             entry.get("pid"), entry.get("process_start_time"), lenient=not tracked
         )
         if state is None:
+            if target and str(entry.get("session_id") or "") != target:
+                live.append(entry)
+                continue
             raise ActiveSessionRegistryError("active session owner liveness is unknown")
         if state:
             live.append(entry)
@@ -402,19 +418,33 @@ def _holds_session(entries: list[dict[str, Any]], session_id: str) -> bool:
 
 def _read_live_entries(
     state_path: Path, *, track_liveness: bool, warn: str,
+    target_session_id: str | None = None,
 ) -> Optional[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
     """``(raw, pruned)`` from the registry, or None when it is unreadable.
 
-    Liveness-tracked callers re-raise instead (they must not proceed on an unprovable
-    registry); untracked callers get ``warn`` logged and decide how to degrade.
+    Liveness-tracked callers re-raise an unreadable/invalid registry (they must
+    not proceed on an unprovable file). Target-session liveness uncertainty
+    returns None so the acquire path can emit a typed refusal instead of
+    raising into a generic claim failure. Untracked callers get ``warn`` logged
+    and decide how to degrade.
     """
     try:
         raw_entries = _read_entries(state_path, strict=True)
-        return raw_entries, _prune_dead(raw_entries, strict=track_liveness)
     except ActiveSessionRegistryError:
         if track_liveness:
             raise
         logger.warning(warn)
+        return None
+    try:
+        return raw_entries, _prune_dead(
+            raw_entries, strict=track_liveness, target_session_id=target_session_id
+        )
+    except ActiveSessionRegistryError as exc:
+        if track_liveness and not target_session_id:
+            raise
+        # File was readable; attach the prune error so logs distinguish
+        # unprovable target liveness from an unreadable registry.
+        logger.warning("%s: %s", warn, exc)
         return None
 
 
@@ -480,6 +510,7 @@ def try_acquire_active_session(
             state_path, track_liveness=track_liveness,
             warn="Active-session registry is unavailable; refusing the session "
                  "rather than risking a concurrent writer",
+            target_session_id=key,
         )
         if loaded is None:
             return None, ActiveSessionRefusal(

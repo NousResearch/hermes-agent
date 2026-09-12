@@ -30,11 +30,29 @@ def _claim_active_session_slot(
     session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
 ) -> tuple[Any, str | None]:
     try:
-        from hermes_cli.active_sessions import try_acquire_active_session
+        from hermes_cli.active_sessions import (
+            ActiveSessionRefusal,
+            ActiveSessionRegistryError,
+            SESSION_COORDINATION_UNAVAILABLE,
+            try_acquire_active_session,
+        )
+    except Exception as exc:
+        logger.warning("Failed to claim active session slot: %s", exc)
+        return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
+    try:
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
             metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True},
             track_liveness=str(surface or "").strip().lower() == "desktop")
+    except ActiveSessionRegistryError as exc:
+        logger.warning("Failed to claim active session slot: %s", exc)
+        # Classified registry uncertainty: typed reason for 4090, not the bare toast string.
+        return (None, ActiveSessionRefusal(_SESSION_OWNERSHIP_UNAVAILABLE, SESSION_COORDINATION_UNAVAILABLE))
+    except RuntimeError as exc:
+        logger.warning("Failed to claim active session slot: %s", exc)
+        if "file lock unavailable" in str(exc):
+            return (None, ActiveSessionRefusal(_SESSION_OWNERSHIP_UNAVAILABLE, SESSION_COORDINATION_UNAVAILABLE))
+        return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
         # Fail CLOSED: an errored claim has NOT proven the session unowned; lease-less = silent double-writer hole.

@@ -1807,7 +1807,7 @@ export const zh = defineLocale({
     plugins: {
       agentTitle: 'Agent 插件',
       agentBlurb: '为所选配置扩展 agent — 工具、钩子、模型提供方。重启网关后生效。',
-      pageBlurb: '每个插件一行。插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
+      pageBlurb: '插件可以扩展本应用、agent，或两者 — 每一半都有自己的开关。',
       halfDesktop: '桌面',
       halfDesktopHint: '本应用，所有配置相同',
       halfAgent: 'Agent',

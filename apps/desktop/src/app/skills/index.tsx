@@ -70,6 +70,7 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
 import { PluginsTab } from './plugins-tab'
+import { COMPACT_SCOPE_CONTENT_CLASS, COMPACT_SCOPE_TRIGGER_CLASS, rosterScopeLabel } from './scope-label'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
 
 // 'hub' is gone as a top-level tab — the Skills Hub browser lives inside the
@@ -782,16 +783,17 @@ export function SkillsView({
   // Scope-selector rows. Multi-connection desktops list every reachable
   // (connection, profile) agent from the union roster — the selected profile
   // is configured ON ITS OWN GATEWAY. Otherwise the legacy per-profile list.
+  // Plugins embeds this selector in a HALF_COL cell — compact labels and
+  // trigger classes keep the roster from widening the window. Other tabs
+  // keep the full `profile — device (current)` rows.
+  const compactSelector = mode === 'plugins'
   const scopeOptions: { key: string; label: string; value: string }[] = useMemo(() => {
     if (multiConnection && rosterData?.agents?.length) {
       const activeId = activeGatewayConnectionId() ?? 'local'
 
       return rosterData.agents.map((agent: DesktopRosterAgent) => ({
         key: `${agent.connectionId}::${agent.profile}`,
-        label:
-          agent.connectionId === activeId
-            ? `${agent.profile} — ${agent.connectionLabel} (current)`
-            : `${agent.profile} — ${agent.connectionLabel}`,
+        label: rosterScopeLabel(agent, activeId, compactSelector),
         value: `${agent.connectionId}::${agent.profile}`
       }))
     }
@@ -801,7 +803,7 @@ export function SkillsView({
       label: p.is_default ? 'Hermes (default)' : p.name,
       value: p.name
     }))
-  }, [multiConnection, profilesData, rosterData])
+  }, [compactSelector, multiConnection, profilesData, rosterData])
 
   // The selector's current value must match one option's value exactly. On the
   // roster path an ambient (non-override) scope is the active gateway's
@@ -825,7 +827,6 @@ export function SkillsView({
   // Plugins embeds the selector in its Agent-column header (compact, no label,
   // no border): desktop halves on that page are app-level and must not read as
   // governed by "Configuring: <profile>".
-  const compactSelector = mode === 'plugins'
   const scopeLabel = scopeOptions.find(option => option.value === scopeSelectValue)?.label
 
   const profileScopeSelector =
@@ -840,10 +841,10 @@ export function SkillsView({
           <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
         )}
         <Select onValueChange={changeScope} value={scopeSelectValue}>
-          <SelectTrigger className={cn('text-xs', compactSelector ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
-            <SelectValue />
+          <SelectTrigger className={cn('text-xs', compactSelector ? COMPACT_SCOPE_TRIGGER_CLASS : 'h-7 w-56')}>
+            <SelectValue className={compactSelector ? 'min-w-0 truncate' : undefined} />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className={compactSelector ? COMPACT_SCOPE_CONTENT_CLASS : undefined}>
             {scopeOptions.map(option => (
               <SelectItem key={option.key} value={option.value}>
                 {option.label}

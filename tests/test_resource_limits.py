@@ -1,4 +1,4 @@
-"""Tests for configurable RLIMIT_NOFILE startup handling."""
+"""Tests for configurable startup resource limits (RLIMIT_NOFILE) and process hardening."""
 
 from __future__ import annotations
 
@@ -17,19 +17,26 @@ from hermes_cli import main_dashboard
 
 class _FakeResource:
     RLIMIT_NOFILE = 7
+    RLIMIT_CORE = 4
     RLIM_INFINITY = 2**63 - 1
 
     def __init__(self, soft: int, hard: int) -> None:
-        self.limits = (soft, hard)
+        self.limits = (soft, hard)  # RLIMIT_NOFILE — the tuple the nofile tests assert on
+        self.core_limits = (-1, -1)
         self.set_calls: list[tuple[int, tuple[int, int]]] = []
 
     def getrlimit(self, resource: int) -> tuple[int, int]:
+        if resource == self.RLIMIT_CORE:
+            return self.core_limits
         assert resource == self.RLIMIT_NOFILE
         return self.limits
 
     def setrlimit(self, resource: int, limits: tuple[int, int]) -> None:
-        assert resource == self.RLIMIT_NOFILE
         self.set_calls.append((resource, limits))
+        if resource == self.RLIMIT_CORE:
+            self.core_limits = limits
+            return
+        assert resource == self.RLIMIT_NOFILE
         self.limits = limits
 
 
@@ -187,6 +194,11 @@ async def test_gateway_startup_applies_limit_before_gateway_initialization(monke
         "apply_nofile_soft_limit",
         lambda: calls.append("limit"),
     )
+    monkeypatch.setattr(
+        resource_limits,
+        "apply_process_hardening",
+        lambda: calls.append("hardening"),
+    )
 
     class _StopStartup(Exception):
         pass
@@ -200,7 +212,7 @@ async def test_gateway_startup_applies_limit_before_gateway_initialization(monke
     with pytest.raises(_StopStartup):
         await gateway_run.start_gateway()
 
-    assert calls == ["limit", "gateway-init"]
+    assert calls == ["limit", "hardening", "gateway-init"]
 
 
 def test_serve_startup_applies_limit_before_web_server(monkeypatch):
@@ -221,6 +233,11 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
         resource_limits,
         "apply_nofile_soft_limit",
         lambda: calls.append("limit"),
+    )
+    monkeypatch.setattr(
+        resource_limits,
+        "apply_process_hardening",
+        lambda: calls.append("hardening"),
     )
     monkeypatch.setattr(cli_main, "_sync_bundled_skills_quietly", lambda: None)
     monkeypatch.setattr(cli_main, "_build_web_ui", lambda *args, **kwargs: True)
@@ -250,7 +267,7 @@ def test_serve_startup_applies_limit_before_web_server(monkeypatch):
 
     cli_main.cmd_dashboard(args)
 
-    assert calls == ["limit", "server"]
+    assert calls == ["limit", "hardening", "server"]
 
 
 def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_path):
@@ -268,6 +285,11 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
         resource_limits,
         "apply_nofile_soft_limit",
         lambda: calls.append("limit"),
+    )
+    monkeypatch.setattr(
+        resource_limits,
+        "apply_process_hardening",
+        lambda: calls.append("hardening"),
     )
     monkeypatch.setattr(
         hermes_cli.profiles,
@@ -330,6 +352,11 @@ def test_dashboard_lifecycle_flags_skip_limit_adjustment(monkeypatch, lifecycle_
         "apply_nofile_soft_limit",
         lambda: calls.append("limit"),
     )
+    monkeypatch.setattr(
+        resource_limits,
+        "apply_process_hardening",
+        lambda: calls.append("hardening"),
+    )
     monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda: [])
     monkeypatch.setattr(cli_main, "_find_stale_dashboard_pids", lambda: [])
     monkeypatch.setattr(hermes_cli_main_dashboard, "_find_stale_dashboard_pids", lambda: [])
@@ -353,3 +380,181 @@ def test_dashboard_lifecycle_flags_skip_limit_adjustment(monkeypatch, lifecycle_
         cli_main.cmd_dashboard(args)
 
     assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# security.process_hardening — best-effort startup hardening
+# --------------------------------------------------------------------------- #
+
+
+def test_default_hardening_drops_core_dumps(monkeypatch):
+    """The default closes the credential-to-disk path a crash would otherwise open."""
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+
+    assert resource_limits.apply_process_hardening({}) == "core-only"
+    assert fake_resource.set_calls == [(fake_resource.RLIMIT_CORE, (0, 0))]
+    assert fake_resource.core_limits == (0, 0)
+    assert fake_resource.limits == (256, 4096)
+
+
+def test_missing_security_section_falls_back_to_the_default(monkeypatch):
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+
+    assert resource_limits.apply_process_hardening({"security": {}}) == "core-only"
+    assert fake_resource.core_limits == (0, 0)
+
+
+@pytest.mark.parametrize("disabled", ["off", "none", "disabled", "false", "", False, 0, None])
+def test_disabled_values_are_noops(monkeypatch, disabled):
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+    monkeypatch.setattr(
+        resource_limits,
+        "_disable_debugger_attach",
+        lambda: pytest.fail("disabled hardening must not touch debugger attach"),
+    )
+
+    assert resource_limits.apply_process_hardening(
+        {"security": {"process_hardening": disabled}}
+    ) == "off"
+    assert fake_resource.set_calls == []
+
+
+@pytest.mark.parametrize("enabled", [True, "on", "true", "1", "yes"])
+def test_affirmative_spellings_use_the_default_mode(monkeypatch, enabled):
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+
+    assert resource_limits.apply_process_hardening(
+        {"security": {"process_hardening": enabled}}
+    ) == "core-only"
+    assert fake_resource.core_limits == (0, 0)
+
+
+@pytest.mark.parametrize("invalid", ["banana", 42, 4096.0, [], {}])
+def test_unrecognized_values_fail_open(monkeypatch, invalid):
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+
+    assert resource_limits.apply_process_hardening(
+        {"security": {"process_hardening": invalid}}
+    ) == "off"
+    assert fake_resource.set_calls == []
+
+
+def test_malformed_security_section_is_a_safe_noop(monkeypatch):
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+
+    assert resource_limits.apply_process_hardening({"security": "nope"}) == "off"
+    assert fake_resource.set_calls == []
+
+
+def test_full_mode_also_refuses_debugger_attach(monkeypatch):
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+    attach_calls: list[str] = []
+    monkeypatch.setattr(
+        resource_limits,
+        "_disable_debugger_attach",
+        lambda: attach_calls.append("attach") or True,
+    )
+
+    assert resource_limits.apply_process_hardening(
+        {"security": {"process_hardening": "full"}}
+    ) == "full"
+    assert attach_calls == ["attach"]
+    assert fake_resource.core_limits == (0, 0)
+
+
+def test_core_only_leaves_debugger_attach_alone(monkeypatch):
+    """core-only is the mode that must stay compatible with gdb/lldb attach."""
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+    monkeypatch.setattr(
+        resource_limits,
+        "_disable_debugger_attach",
+        lambda: pytest.fail("core-only must not refuse debugger attach"),
+    )
+
+    assert resource_limits.apply_process_hardening({"security": {}}) == "core-only"
+    assert fake_resource.core_limits == (0, 0)
+
+
+def test_unsupported_platform_is_a_safe_noop(monkeypatch):
+    monkeypatch.setattr(resource_limits, "_resource", None)
+
+    assert resource_limits.apply_process_hardening({}) == "off"
+
+
+def test_denied_setrlimit_does_not_block_startup(monkeypatch):
+    class _DeniedResource(_FakeResource):
+        def setrlimit(self, resource: int, limits: tuple[int, int]) -> None:
+            raise PermissionError("simulated EPERM")
+
+    fake_resource = _DeniedResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+
+    assert resource_limits.apply_process_hardening({}) == "core-only"
+    assert fake_resource.core_limits == (-1, -1)
+
+
+def test_internal_failure_never_escapes(monkeypatch):
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+
+    def _boom() -> bool:
+        raise RuntimeError("simulated")
+
+    monkeypatch.setattr(resource_limits, "_disable_core_dumps", _boom)
+
+    assert resource_limits.apply_process_hardening({}) == "core-only"
+
+
+def test_real_config_loader_reads_process_hardening_setting(monkeypatch, tmp_path):
+    """The helper uses the canonical config loader, not a second YAML parser."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "security:\n  process_hardening: full\n",
+        encoding="utf-8",
+    )
+    fake_resource = _FakeResource(soft=256, hard=4096)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(resource_limits, "_resource", fake_resource)
+    monkeypatch.setattr(resource_limits, "_disable_debugger_attach", lambda: True)
+
+    assert resource_limits.apply_process_hardening() == "full"
+    assert fake_resource.core_limits == (0, 0)
+
+
+def test_fresh_process_without_posix_resource_keeps_hardening_off():
+    code = textwrap.dedent(
+        """
+        import importlib.util
+        import pathlib
+        import sys
+
+        sys.modules["resource"] = None
+        module_path = pathlib.Path(sys.argv[1])
+        spec = importlib.util.spec_from_file_location(
+            "hermes_cli._resource_limits_hardening_without_posix_resource",
+            module_path,
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        assert module.apply_process_hardening({}) == "off"
+        """
+    )
+
+    subprocess.run(
+        [sys.executable, "-c", code, resource_limits.__file__],
+        check=True,
+        cwd=Path(resource_limits.__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+

@@ -9,7 +9,7 @@ import asyncio
 import json
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -469,7 +469,7 @@ async def test_transient_secret_hydrate_failure_retries_through_real_start_path(
     async def _noop_added(profiles):
         pass
 
-    runner._create_adapter = lambda platform, config: SimpleNamespace(platform=platform)
+    runner._create_adapter = AsyncMock(side_effect=lambda platform, config: SimpleNamespace(platform=platform))
     runner._connect_initial_adapter_with_timeout = _connect
     runner._after_profiles_added = _noop_added
 

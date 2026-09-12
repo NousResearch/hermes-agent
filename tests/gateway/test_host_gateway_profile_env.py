@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Sequence
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -254,7 +255,7 @@ class TestDuplicateRefusalNamesEnvClaim:
             platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token=_WORKER_TOKEN)},
         )
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
-        monkeypatch.setattr(runner, "_create_adapter", lambda _p, _c: adapter)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(return_value=adapter))
         monkeypatch.setattr(
             runner, "_update_platform_runtime_status",
             lambda platform, **kwargs: writes.append((platform, kwargs)),

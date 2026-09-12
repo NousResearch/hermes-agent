@@ -410,6 +410,9 @@ def _validate_child_output_schema(
     try:
         _retry_result = child.run_conversation(
             user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
+            # Agent-authored retry text, not a new user request: a no-progress
+            # streak from the first attempt must survive into this turn.
+            internal_continuation=True,
         )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)

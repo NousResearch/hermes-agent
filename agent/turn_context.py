@@ -498,13 +498,16 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
 )
 
 
-def _reset_per_turn_agent_state(agent: Any) -> None:
+def _reset_per_turn_agent_state(agent: Any, *, internal_continuation: bool = False) -> None:
     """Reset retry counters, guardrails, iteration and run budgets at turn start."""
     for name, value in _PER_TURN_RESET_STATE:
         setattr(agent, name, value)
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
-    agent._tool_guardrails.reset_for_turn()
+    # ``internal_continuation`` distinguishes a genuine new user request from an
+    # internal turn restart (compaction, preflight). Only a real user message
+    # clears the no-progress streaks (see ToolGuardrails.reset_for_turn).
+    agent._tool_guardrails.reset_for_turn(new_user_input=not internal_continuation)
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()
@@ -857,7 +860,7 @@ def build_turn_context(
     persist_user_display_metadata: Optional[Dict[str, Any]]=None, turn_author: Optional[Dict[str, Any]]=None,
     restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
-    set_current_write_origin, ra, moa_active: bool=False,
+    set_current_write_origin, ra, moa_active: bool=False, internal_continuation: bool=False,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -904,7 +907,7 @@ def build_turn_context(
         agent, task_id, stream_callback, persist_user_message,
         persist_user_timestamp, persist_user_platform_id,
     )
-    _reset_per_turn_agent_state(agent)
+    _reset_per_turn_agent_state(agent, internal_continuation=internal_continuation)
 
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")

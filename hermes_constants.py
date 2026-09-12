@@ -570,6 +570,45 @@ def _swap_node_tree(target: Path, staged: Path) -> bool | None:
     return True
 
 
+def _windows_native_machine_code() -> int | None:
+    """Raw ``SYSTEM_INFO.wProcessorArchitecture`` from ``GetNativeSystemInfo``, or ``None``.
+
+    Unlike ``PROCESSOR_ARCHITECTURE``/``PROCESSOR_ARCHITEW6432``, this reflects the true host CPU
+    even when the calling process runs under WOW64 / Prism x64 emulation (#108893) -- there is no
+    emulated view to report, because the kernel answers the query directly.
+    """
+    try:
+        import ctypes
+
+        class _SystemInfo(ctypes.Structure):
+            _fields_ = [
+                ("wProcessorArchitecture", ctypes.c_uint16),
+                ("wReserved", ctypes.c_uint16),
+                ("dwPageSize", ctypes.c_uint32),
+                ("lpMinimumApplicationAddress", ctypes.c_void_p),
+                ("lpMaximumApplicationAddress", ctypes.c_void_p),
+                ("dwActiveProcessorMask", ctypes.c_void_p),
+                ("dwNumberOfProcessors", ctypes.c_uint32),
+                ("dwProcessorType", ctypes.c_uint32),
+                ("dwAllocationGranularity", ctypes.c_uint32),
+                ("wProcessorLevel", ctypes.c_uint16),
+                ("wProcessorRevision", ctypes.c_uint16),
+            ]
+
+        info = _SystemInfo()
+        ctypes.windll.kernel32.GetNativeSystemInfo(ctypes.byref(info))
+    except (OSError, AttributeError, ValueError):
+        return None
+    return info.wProcessorArchitecture
+
+
+def _windows_native_arch() -> str | None:
+    """Emulation-invariant host arch (``"x86"``/``"amd64"``/``"arm64"``), mirroring ``install.ps1``'s
+    ``Get-WindowsArch``; ``None`` when the native query is unavailable and callers should fall back
+    to the env-var pair."""
+    return {0: "x86", 9: "amd64", 12: "arm64"}.get(_windows_native_machine_code())
+
+
 def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
     """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows.
 
@@ -588,7 +627,9 @@ def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
     """
     import time
 
-    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
+    arch = _windows_native_arch() or (
+        os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")
+    ).lower()
     node_arch = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "x86": "x86"}.get(arch)
     if node_arch is None:
         return False
@@ -667,8 +708,24 @@ def heal_hermes_managed_node() -> bool:
     return bool(result)
 
 
+def _windows_node_arch_mismatched(node_path: Path) -> bool:
+    """True when an existing Windows managed-node binary's compiled arch doesn't match the real
+    host arch (#108893). ``process.arch`` reflects how the binary was built, not the emulated
+    process view ``PROCESSOR_ARCHITECTURE`` reports under Prism, so a wrong-arch node from a prior
+    heal is caught here even though it runs fine under emulation."""
+    expected = _windows_native_arch()
+    if expected is None:
+        return False
+    expected_node_arch = {"amd64": "x64", "arm64": "arm64", "x86": "x86"}[expected]
+    result = _run_version_probe([str(node_path), "-p", "process.arch"])
+    if result is None:
+        return False
+    return result.stdout.decode().strip() != expected_node_arch
+
+
 def _managed_node_tree_outdated(home: Path | None = None) -> bool:
-    """True when the managed node runs but is below the target major (heals like a broken tree)."""
+    """True when the managed node runs but is below the target major, is a pre-release, or (Windows
+    only) was provisioned for the wrong CPU arch (heals like a broken tree)."""
     for candidate in _iter_managed_node_candidates(_candidate_node_command_names("node"), home):
         result = _run_version_probe([str(candidate), "--version"])
         if result is None:
@@ -682,7 +739,9 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
         # final releases, so node-gyp cannot build node-pty. Mirrors node_satisfies_build() in install.sh.
         if "-" in version:
             return True
-        return major < _HERMES_NODE_TARGET_MAJOR
+        if major < _HERMES_NODE_TARGET_MAJOR:
+            return True
+        return sys.platform == "win32" and _windows_node_arch_mismatched(candidate)
     return False
 
 

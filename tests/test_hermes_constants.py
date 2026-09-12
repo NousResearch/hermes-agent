@@ -1130,6 +1130,108 @@ class TestWindowsHealStageSwap:
         assert fresh_backup.exists()
 
 
+class TestWindowsNodeArchDetection:
+    """The managed node's architecture must track the real host CPU, not the emulated view
+    ``PROCESSOR_ARCHITECTURE`` reports under Prism x64 emulation on Windows ARM64 (#108893)."""
+
+    def test_heal_prefers_native_arch_over_emulated_env_vars(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        # Prism reports the emulated x64 view in both env vars...
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+        monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+        # ...but GetNativeSystemInfo sees the real ARM64 host (12 = PROCESSOR_ARCHITECTURE_ARM64).
+        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 12)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(hermes_constants, "managed_node_tree_in_use", lambda _home=None: False)
+
+        captured = {}
+
+        def fake_stage(_home, node_arch):
+            captured["node_arch"] = node_arch
+            return None
+
+        monkeypatch.setattr(hermes_constants, "_stage_windows_node_zip", fake_stage)
+
+        hermes_constants._heal_managed_node_windows()
+
+        assert captured["node_arch"] == "arm64"
+
+    def test_heal_falls_back_to_env_vars_when_native_query_unavailable(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "ARM64")
+        monkeypatch.delenv("PROCESSOR_ARCHITEW6432", raising=False)
+        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: None)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(hermes_constants, "managed_node_tree_in_use", lambda _home=None: False)
+
+        captured = {}
+
+        def fake_stage(_home, node_arch):
+            captured["node_arch"] = node_arch
+            return None
+
+        monkeypatch.setattr(hermes_constants, "_stage_windows_node_zip", fake_stage)
+
+        hermes_constants._heal_managed_node_windows()
+
+        assert captured["node_arch"] == "arm64"
+
+    def test_outdated_check_flags_wrong_arch_binary_on_windows(self, tmp_path, monkeypatch):
+        """A pre-existing wrong-arch node from an earlier (unpatched) heal must be flagged so it
+        gets re-provisioned, even though it runs fine under Prism emulation."""
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        node_dir.mkdir(parents=True)
+        node_exe = node_dir / "node.exe"
+        node_exe.write_text("fake-x64-node", encoding="utf-8")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 12)  # real ARM64 host
+
+        def fake_probe(argv, **kwargs):
+            class _Result:
+                pass
+
+            r = _Result()
+            if argv[1:] == ["--version"]:
+                r.stdout = f"v{hermes_constants._HERMES_NODE_TARGET_MAJOR}.5.1".encode()
+            else:
+                r.stdout = b"x64"  # the binary's own compiled arch, unaffected by emulation
+            return r
+
+        monkeypatch.setattr(hermes_constants, "_run_version_probe", fake_probe)
+
+        assert hermes_constants._managed_node_tree_outdated(home) is True
+
+    def test_outdated_check_passes_matching_arch_binary_on_windows(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        node_dir.mkdir(parents=True)
+        (node_dir / "node.exe").write_text("fake-arm64-node", encoding="utf-8")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(hermes_constants, "_windows_native_machine_code", lambda: 12)
+
+        def fake_probe(argv, **kwargs):
+            class _Result:
+                pass
+
+            r = _Result()
+            if argv[1:] == ["--version"]:
+                r.stdout = f"v{hermes_constants._HERMES_NODE_TARGET_MAJOR}.5.1".encode()
+            else:
+                r.stdout = b"arm64"
+            return r
+
+        monkeypatch.setattr(hermes_constants, "_run_version_probe", fake_probe)
+
+        assert hermes_constants._managed_node_tree_outdated(home) is False
+
+
 class TestHealAttemptFlagSemantics:
     """An in-use deferral must not record the once-per-process heal attempt,
     so a later call can retry once the tree is free (#80926)."""

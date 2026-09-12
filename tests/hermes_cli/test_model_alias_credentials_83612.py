@@ -723,6 +723,94 @@ class TestOneshotPassesAliasCredential:
         assert captured["explicit_api_key"] == "sk-theta-ALIAS"
 
 
+class TestCLIStartupKeepsAliasEndpoint:
+    @staticmethod
+    def _build_cli(monkeypatch, *, provider=None, base_url=None):
+        import cli as cli_mod
+        from hermes_cli.model_switch import DirectAlias
+        import hermes_cli.model_switch as model_switch
+        import hermes_cli.runtime_provider as runtime_provider
+
+        cfg = {
+            **cli_mod.CLI_CONFIG,
+            "model": {
+                **cli_mod.CLI_CONFIG["model"],
+                "default": "gpt-4",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        }
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", cfg)
+        monkeypatch.setattr(
+            model_switch,
+            "DIRECT_ALIASES",
+            {"theta": DirectAlias("theta-1", "custom", ALIAS_HOST)},
+        )
+        monkeypatch.setattr(model_switch, "_ensure_direct_aliases", lambda: None)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
+        monkeypatch.setenv("OPENROUTER_API_KEY", DEFAULT_PROVIDER_SECRET)
+
+        for method in (
+            "_init_display_options",
+            "_init_turn_limits",
+            "_init_toolsets",
+            "_init_checkpoints_and_rules",
+            "_init_prompt_and_reasoning",
+            "_init_runtime_state",
+        ):
+            monkeypatch.setattr(cli_mod.HermesCLI, method, lambda *a, **k: None)
+        monkeypatch.setattr(
+            cli_mod.HermesCLI,
+            "_maybe_print_free_tier_available_notice",
+            lambda self: None,
+        )
+
+        resolved = {}
+        real_resolve = runtime_provider.resolve_runtime_provider
+
+        def _capture_runtime(**kwargs):
+            runtime = real_resolve(**kwargs)
+            resolved.update(runtime)
+            return runtime
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", _capture_runtime)
+
+        cli = cli_mod.HermesCLI(
+            model="theta", provider=provider, base_url=base_url
+        )
+        cli._fallback_model = []
+        cli.agent = None
+
+        assert cli._ensure_runtime_credentials() is True
+        return cli, resolved
+
+    def test_runtime_refresh_never_routes_default_key_to_alias_host(self, monkeypatch):
+        """``hermes chat -q -m theta`` keeps the alias URL through refresh."""
+        _, resolved = self._build_cli(monkeypatch)
+
+        assert resolved["base_url"] == ALIAS_HOST
+        assert resolved.get("api_key") != DEFAULT_PROVIDER_SECRET
+
+    def test_explicit_provider_does_not_receive_alias_endpoint(self, monkeypatch):
+        """``--provider`` must not pair its credential with the alias host."""
+        cli, resolved = self._build_cli(monkeypatch, provider="openrouter")
+
+        assert cli._explicit_base_url is None
+        assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+        assert resolved["base_url"] != ALIAS_HOST
+        assert resolved["api_key"] == DEFAULT_PROVIDER_SECRET
+
+    def test_explicit_base_url_still_wins_over_provider_and_alias(self, monkeypatch):
+        """``--base-url`` retains top precedence with an explicit provider."""
+        explicit_url = "https://openrouter.example.test/v1"
+        cli, resolved = self._build_cli(
+            monkeypatch, provider="openrouter", base_url=explicit_url
+        )
+
+        assert cli._explicit_base_url == explicit_url
+        assert resolved["base_url"] == explicit_url
+
+
 class TestNoProductionCodeMutatesTheAliasCacheInPlace:
     """The profile-isolation property depends on an unwritten rule.
 

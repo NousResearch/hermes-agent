@@ -159,6 +159,11 @@ class WebhookAdapter(BasePlatformAdapter):
     # ``/p/<profile>/webhooks/<route>`` on the shared listener (``_resolve_request_profile``).
     serves_profile_prefix: bool = True
 
+    # Webhook sessions are one inbound → one response. Background completions
+    # after the parent turn ends are dropped by the #55578 ended_at guard
+    # (see #69145 / #66617). Force sync delegation like api_server.
+    supports_async_delivery: bool = False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
         extra = config.extra

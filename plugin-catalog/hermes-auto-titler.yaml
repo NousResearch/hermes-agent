@@ -1,0 +1,15 @@
+name: hermes-auto-titler
+repo: https://github.com/Vocllum/hermes-auto-titler
+sha: 307993c36e261af2769e486befc6841e96f93423
+description: Provenance-aware automatic session title maintenance that never overrides user titles.
+maintainer: Vocllum
+tier: community
+docs_url: https://github.com/Vocllum/hermes-auto-titler
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_end
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

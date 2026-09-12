@@ -174,15 +174,11 @@ async def test_idle_restart_drain_queues_every_message_but_throttles_notice():
         text="second", message_type=MessageType.TEXT, source=source, message_id="m2"
     )
 
-    first_result = await runner._hm_dispatch_quick_and_plugin_commands(
-        first, source, session_key, None
-    )
-    second_result = await runner._hm_dispatch_quick_and_plugin_commands(
-        second, source, session_key, None
-    )
+    first_result = await runner._hm_dispatch_idle_commands(first, source, session_key)
+    second_result = await runner._hm_dispatch_idle_commands(second, source, session_key)
 
     assert first_result[0] is True and "queued" in first_result[1]
-    assert second_result == (True, None, None)
+    assert second_result == (True, None)
     assert adapter._pending_messages[session_key] is first
     assert runner._session_state(session_key).conversation.queued_events == [second]
 
@@ -202,9 +198,7 @@ async def test_busy_and_idle_restart_drain_share_chat_notice_cooldown():
         text="busy", message_type=MessageType.TEXT, source=source, message_id="m2"
     )
 
-    idle_result = await runner._hm_dispatch_quick_and_plugin_commands(
-        idle_event, source, session_key, None
-    )
+    idle_result = await runner._hm_dispatch_idle_commands(idle_event, source, session_key)
     await runner._send_busy_drain_notice(busy_event, session_key, "queue")
 
     assert "queued" in idle_result[1]

@@ -22,6 +22,97 @@ from typing import Optional
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
+    def _prepare_main_turn_attempt(self, message):
+        """Resolve after confirming that an execution-router registration is active."""
+        from agent.execution_router import ExecutionRouteCandidateV1
+        from hermes_cli.plugins import get_plugin_manager
+        from hermes_cli.execution_router_runtime import (
+            ExecutionRouteResolutionState,
+            prepare_main_turn_attempt,
+        )
+
+        manager = get_plugin_manager()
+        registration = (
+            manager.get_execution_router_registration() if manager is not None else None
+        )
+        if registration is None:
+            return None
+
+        provider = str(getattr(self, "requested_provider", None) or getattr(self, "provider", None) or "auto")
+        model = str(getattr(self, "model", None) or "auto")
+        reasoning_config = getattr(self, "reasoning_config", None)
+        reasoning = reasoning_config.get("effort") if isinstance(reasoning_config, dict) else None
+        candidates = [ExecutionRouteCandidateV1("native", provider, model, reasoning)]
+        for index, item in enumerate(getattr(self, "_fallback_model", None) or ()):
+            if not isinstance(item, dict):
+                continue
+            fallback_model = item.get("model")
+            fallback_provider = item.get("provider")
+            if isinstance(fallback_model, str) and fallback_model and isinstance(fallback_provider, str) and fallback_provider:
+                candidates.append(ExecutionRouteCandidateV1(
+                    f"fallback-{index}", fallback_provider, fallback_model, item.get("reasoning_effort")
+                ))
+        db = getattr(self, "_session_db", None)
+        session_id = str(self.session_id)
+        if db is not None and db.get_session(session_id) is None:
+            db.create_session(session_id, source="cli")
+        lifecycle = db.execution_route_lifecycle(session_id) if db is not None else None
+        self._main_turn_candidates = tuple(candidates)
+        self._main_turn_router_registration = registration
+        prepared = prepare_main_turn_attempt(
+            raw_instruction=message if isinstance(message, str) else None,
+            surface_class="cli",
+            session_id=session_id,
+            native_candidate_id="native",
+            eligible_candidates=tuple(candidates),
+            explicit_model_pin=model if getattr(self, "_explicit_model_override", False) else None,
+            explicit_provider_pin=provider if getattr(self, "_explicit_provider_override", False) else None,
+            explicit_reasoning_pin=reasoning if getattr(self, "_explicit_reasoning_override", False) else None,
+            registration=registration,
+            lifecycle=lifecycle,
+            revalidate=lambda _request, accepted: accepted in tuple(c.identity() for c in candidates),
+        )
+        self._main_turn_prepared_attempt = prepared
+        if prepared.resolution.state is ExecutionRouteResolutionState.ROUTE:
+            self.model = prepared.selected_model
+            self.requested_provider = prepared.selected_provider
+            self.provider = prepared.selected_provider
+            if prepared.selected_reasoning is not None:
+                self.reasoning_config = {"enabled": True, "effort": prepared.selected_reasoning}
+        return prepared
+
+    def _prepare_main_turn_continuation(self, record, message):
+        from hermes_cli import plugins as plugin_api
+        from hermes_cli.execution_router_runtime import (
+            ExecutionRouteResolutionState,
+            _prepare_main_turn_continuation_attempt,
+        )
+
+        db = getattr(self, "_session_db", None)
+        manager = plugin_api.get_plugin_manager()
+        registration = (
+            manager.get_execution_router_registration() if manager is not None else None
+        )
+        if registration is None:
+            raise RuntimeError("execution router registration is no longer active")
+        self._main_turn_router_registration = registration
+        prepared = _prepare_main_turn_continuation_attempt(
+            record,
+            raw_instruction=message if isinstance(message, str) else None,
+            surface_class="cli",
+            eligible_candidates=self._main_turn_candidates,
+            registration=registration,
+            lifecycle=(db.execution_route_lifecycle(record.session_id) if db is not None else None),
+        )
+        self._main_turn_prepared_attempt = prepared
+        if prepared.resolution.state is ExecutionRouteResolutionState.ROUTE:
+            self.model = prepared.selected_model
+            self.requested_provider = prepared.selected_provider
+            self.provider = prepared.selected_provider
+            if prepared.selected_reasoning is not None:
+                self.reasoning_config = {"enabled": True, "effort": prepared.selected_reasoning}
+        return prepared
+
     def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
@@ -41,29 +132,119 @@ class CLIChatTurnMixin:
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
 
-        if not self._ensure_runtime_credentials():
-            return None
+        from hermes_cli.plugins import get_plugin_manager
 
-        turn_route = self._resolve_turn_agent_config(message)
-        if turn_route["signature"] != self._active_agent_route_signature:
-            self.agent = None
-        if self.agent is None:
-            _cprint(f"{_DIM}Initializing agent...{_RST}")
-        if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
-                                request_overrides=turn_route.get("request_overrides")):
-            return None
-        agent = self.agent
-        if agent is None:
-            return None
-        message = self._chat_route_images(message, images)
+        manager = get_plugin_manager()
+        kanban_route_state = None
+        if os.environ.get("HERMES_KANBAN_ROUTED_ATTEMPT") is not None:
+            from tools.kanban_tools import _validated_kanban_worker_route_state
 
-        if isinstance(message, str) and not isinstance(message, SubagentNotification):
-            message, blocked = self._chat_expand_context_references(message)
-            if blocked is not None:
-                return blocked
-            # Lone surrogates (rich-text clipboard paste) crash the OpenAI SDK's JSON serialization.
-            from agent.message_sanitization import _sanitize_surrogates
-            message = _sanitize_surrogates(message)
+            kanban_route_state = _validated_kanban_worker_route_state()
+        registration = None if kanban_route_state is not None else (
+            manager.get_execution_router_registration() if manager is not None else None
+        )
+        prepared_attempt = None
+        if registration is None:
+            if not self._ensure_runtime_credentials():
+                return None
+
+            turn_route = self._resolve_turn_agent_config(message)
+            if turn_route["signature"] != self._active_agent_route_signature:
+                self.agent = None
+            if self.agent is None:
+                _cprint(f"{_DIM}Initializing agent...{_RST}")
+            if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
+                                    request_overrides=turn_route.get("request_overrides")):
+                return None
+            agent = self.agent
+            if agent is None:
+                return None
+            message = self._chat_route_images(message, images)
+
+            if isinstance(message, str) and not isinstance(message, SubagentNotification):
+                message, blocked = self._chat_expand_context_references(message)
+                if blocked is not None:
+                    return blocked
+                # Lone surrogates (rich-text clipboard paste) crash the OpenAI SDK's JSON serialization.
+                from agent.message_sanitization import _sanitize_surrogates
+                message = _sanitize_surrogates(message)
+        else:
+            if isinstance(message, str) and not isinstance(message, SubagentNotification):
+                message, blocked = self._chat_expand_context_references(message)
+                if blocked is not None:
+                    return blocked
+                from agent.message_sanitization import _sanitize_surrogates
+                message = _sanitize_surrogates(message)
+            prepared_attempt = self._prepare_main_turn_attempt(message)
+            if prepared_attempt is None:
+                return None
+            if not prepared_attempt.may_start:
+                response = (
+                    prepared_attempt.resolution.reason_text
+                    or prepared_attempt.resolution.reason_code
+                    or "Execution router did not start this turn."
+                )
+                del self._main_turn_prepared_attempt
+                return response
+
+            if not self._ensure_runtime_credentials():
+                from hermes_cli.execution_router_runtime import record_main_turn_not_started
+                record_main_turn_not_started(prepared_attempt, "credential_binding_failed")
+                del self._main_turn_prepared_attempt
+                return None
+
+            from hermes_cli.execution_router_runtime import ExecutionRouteResolutionState
+            routed = prepared_attempt.resolution.state is ExecutionRouteResolutionState.ROUTE
+            if routed:
+                try:
+                    turn_route = self._resolve_turn_agent_config(message)
+                    turn_route["signature"] = tuple(turn_route["signature"]) + tuple(
+                        prepared_attempt.route_signature or ()
+                    )
+                    if turn_route["signature"] != self._active_agent_route_signature:
+                        old_agent = self.agent
+                        self.agent = None
+                        if old_agent is not None:
+                            try:
+                                old_agent.release_clients()
+                            except Exception:
+                                pass
+                    if self.agent is None:
+                        _cprint(f"{_DIM}Initializing agent...{_RST}")
+                    if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
+                                            request_overrides=turn_route.get("request_overrides")):
+                        raise RuntimeError("executor construction failed")
+                    agent = self.agent
+                    if agent is None:
+                        raise RuntimeError("executor construction returned no agent")
+                except Exception:
+                    from hermes_cli.execution_router_runtime import record_main_turn_not_started
+                    record_main_turn_not_started(prepared_attempt, "executor_construction_failed")
+                    del self._main_turn_prepared_attempt
+                    print("Error: failed to construct the selected execution route.")
+                    return None
+                self._active_agent_route_signature = turn_route["signature"]
+                from hermes_cli.execution_router_runtime import bind_main_turn_attempt
+                bind_main_turn_attempt(
+                    prepared_attempt,
+                    agent,
+                    getattr(self, "_main_turn_candidates", ()),
+                )
+            else:
+                turn_route = self._resolve_turn_agent_config(message)
+                if turn_route["signature"] != self._active_agent_route_signature:
+                    self.agent = None
+                if self.agent is None:
+                    _cprint(f"{_DIM}Initializing agent...{_RST}")
+                if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
+                                        request_overrides=turn_route.get("request_overrides")):
+                    del self._main_turn_prepared_attempt
+                    return None
+                agent = self.agent
+                if agent is None:
+                    del self._main_turn_prepared_attempt
+                    return None
+            message = self._chat_route_images(message, images)
 
         self._chat_stage_user_message(agent, message)
         if isinstance(message, SubagentNotification):
@@ -310,12 +491,134 @@ class CLIChatTurnMixin:
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
         try:
-            turn.result = self.agent.run_conversation(
-                user_message=agent_message,
-                conversation_history=self.conversation_history[:-1],  # exclude the message just staged
-                stream_callback=turn.stream_callback, task_id=self.session_id,
-                persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
-            )
+            prepared_attempt = getattr(self, "_main_turn_prepared_attempt", None)
+            active_agent = self.agent
+            if prepared_attempt is None:
+                turn.result = active_agent.run_conversation(
+                    user_message=agent_message,
+                    conversation_history=self.conversation_history[:-1],  # exclude the message just staged
+                    stream_callback=turn.stream_callback, task_id=self.session_id,
+                    persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                )
+                routed = False
+            else:
+                from hermes_cli.execution_router_runtime import (
+                    ExecutionRouteResolutionState,
+                    record_main_turn_started,
+                )
+
+                record_main_turn_started(prepared_attempt, active_agent)
+                routed = (
+                    prepared_attempt.resolution.state is ExecutionRouteResolutionState.ROUTE
+                )
+                if routed:
+                    from agent.main_turn_continuation import _bind_routed_main_turn_callbacks
+
+                    attempt_callbacks = _bind_routed_main_turn_callbacks(
+                        self, {"stream_callback": turn.stream_callback}
+                    )
+                else:
+                    attempt_callbacks = {"stream_callback": turn.stream_callback}
+                turn.result = active_agent.run_conversation(
+                    user_message=agent_message,
+                    conversation_history=self.conversation_history[:-1],  # exclude the message just staged
+                    stream_callback=attempt_callbacks["stream_callback"], task_id=self.session_id,
+                    persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                )
+            while routed and getattr(active_agent, "_routed_restart_required", None) is not None:
+                from agent.main_turn_continuation import (
+                    _bind_routed_main_turn_callbacks,
+                    _continue_main_turn_attempt,
+                    _invalidate_routed_main_turn_callbacks,
+                    _seal_main_turn_continuation,
+                )
+                from hermes_cli.execution_router_runtime import (
+                    bind_main_turn_attempt,
+                    record_main_turn_not_started,
+                    record_main_turn_routed_restart,
+                    record_main_turn_started,
+                )
+
+                record = _seal_main_turn_continuation(active_agent, prepared_attempt, turn.result)
+                record_main_turn_routed_restart(prepared_attempt)
+                _invalidate_routed_main_turn_callbacks(self)
+                prepared_attempt = None
+                try:
+                    prepared_attempt = self._prepare_main_turn_continuation(record, message)
+                except RuntimeError as exc:
+                    turn.result = {
+                        "final_response": str(exc), "messages": turn.result["messages"],
+                        "api_calls": turn.result.get("api_calls", 0),
+                        "completed": False, "failed": True, "error": str(exc),
+                        "turn_id": record.turn_id,
+                        "current_turn_user_idx": record.current_turn_user_idx,
+                    }
+                    break
+                if not prepared_attempt.may_start:
+                    turn.result = {
+                        "final_response": (
+                            prepared_attempt.resolution.reason_text
+                            or prepared_attempt.resolution.reason_code
+                            or "Execution router did not continue this turn."
+                        ),
+                        "messages": turn.result["messages"], "api_calls": turn.result.get("api_calls", 0),
+                        "completed": False, "failed": True,
+                        "turn_id": record.turn_id,
+                        "current_turn_user_idx": record.current_turn_user_idx,
+                    }
+                    break
+                if not self._ensure_runtime_credentials():
+                    record_main_turn_not_started(prepared_attempt, "credential_binding_failed")
+                    prepared_attempt = None
+                    turn.result = {
+                        "final_response": "Continuation credential binding failed.",
+                        "messages": turn.result["messages"], "completed": False,
+                        "failed": True, "error": "credential_binding_failed",
+                        "turn_id": record.turn_id,
+                        "current_turn_user_idx": record.current_turn_user_idx,
+                    }
+                    break
+                turn_route = self._resolve_turn_agent_config(message)
+                turn_route["signature"] = tuple(turn_route["signature"]) + tuple(
+                    prepared_attempt.route_signature or ()
+                )
+                if tuple(turn_route["signature"]) != self._active_agent_route_signature:
+                    try:
+                        active_agent.release_clients()
+                    except Exception:
+                        pass
+                    self.agent = None
+                if not self._init_agent(
+                    model_override=turn_route["model"],
+                    runtime_override=turn_route["runtime"],
+                    request_overrides=turn_route.get("request_overrides"),
+                ) or self.agent is None:
+                    record_main_turn_not_started(prepared_attempt, "executor_construction_failed")
+                    prepared_attempt = None
+                    turn.result = {
+                        "final_response": "Continuation executor construction failed.",
+                        "messages": turn.result["messages"], "completed": False,
+                        "failed": True, "error": "executor_construction_failed",
+                        "turn_id": record.turn_id,
+                        "current_turn_user_idx": record.current_turn_user_idx,
+                    }
+                    break
+                self._active_agent_route_signature = turn_route["signature"]
+                active_agent = self.agent
+                bind_main_turn_attempt(
+                    prepared_attempt,
+                    active_agent,
+                    getattr(self, "_main_turn_candidates", ()),
+                )
+                record_main_turn_started(prepared_attempt, active_agent)
+                attempt_callbacks = _bind_routed_main_turn_callbacks(
+                    self, {"_stream_callback": turn.stream_callback}
+                )
+                turn.result = _continue_main_turn_attempt(
+                    active_agent,
+                    record,
+                    existing_surface_callbacks=attempt_callbacks,
+                )
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}
                 for _key, _value in _restore.items():
@@ -332,6 +635,11 @@ class CLIChatTurnMixin:
                 "completed": False, "failed": True, "error": _summary,
             }
         finally:
+            if prepared_attempt is not None:
+                from hermes_cli.execution_router_runtime import record_main_turn_finished
+                record_main_turn_finished(prepared_attempt, turn.result)
+                if hasattr(self, "_main_turn_prepared_attempt"):
+                    del self._main_turn_prepared_attempt
             if _one_turn_model_restore:
                 self._restore_model_runtime_snapshot(_one_turn_model_restore)
             # Credit notices paint cleanly above the prompt here, not behind streamed output.

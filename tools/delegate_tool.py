@@ -24,14 +24,15 @@ logger = logging.getLogger(__name__)
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
-    _ChildRun, _attach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
+    _ChildRun, _attach_child, _build_result_entry, _close_child, _detach_child,
+    _dump_subagent_timeout_diagnostic, _fabricated_entry, _lease_child_credential,
+    _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
-    _resolve_child_runtime, _resolve_delegation_credentials,
+    _resolve_child_fallback_chain, _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
@@ -309,17 +310,50 @@ def _run_single_child(
     * ``"completed"``       — normal finish. See #97655.
     """
     child_progress_cb = getattr(child, "tool_progress_callback", None)
-    child_pool, leased_cred_id = _lease_child_credential(child)
-    # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while the
-    # child works; it stops itself once the child looks stale (see _HEARTBEAT_STALE_CYCLES_*).
-    heartbeat = _start_heartbeat(child, parent_agent, task_index)
-    # TUI/RPC registry entry (kill/pause/status by subagent_id); None for test
-    # doubles without a stable id. Unregistered in the finally block.
-    _subagent_id = _register_child(
-        child, parent_agent, goal, owner_session_id=owner_session_id, owner_transport=owner_transport,
-        owner_session_record=owner_session_record,
+    child_state = getattr(child, "__dict__", None)
+    prepared_attempt = (
+        child_state.get("_execution_router_native_child_attempt")
+        if isinstance(child_state, dict) else None
     )
-    run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb)
+    attempt_finished = False
+
+    def finish_attempt(entry: Dict[str, Any], terminal_state: Optional[str] = None) -> Dict[str, Any]:
+        nonlocal attempt_finished
+        if prepared_attempt is not None and not attempt_finished:
+            attempt_finished = True
+            from hermes_cli.execution_router_runtime import _finish_native_child_attempt
+            _finish_native_child_attempt(
+                prepared_attempt,
+                terminal_state or ("completed" if entry.get("status") == "completed" else "error"),
+            )
+        return entry
+
+    child_pool = leased_cred_id = heartbeat = _subagent_id = None
+    try:
+        child_pool, leased_cred_id = _lease_child_credential(child)
+        # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while the
+        # child works; it stops itself once the child looks stale (see _HEARTBEAT_STALE_CYCLES_*).
+        heartbeat = _start_heartbeat(child, parent_agent, task_index)
+        # TUI/RPC registry entry (kill/pause/status by subagent_id); None for test
+        # doubles without a stable id. Unregistered in the finally block.
+        _subagent_id = _register_child(
+            child, parent_agent, goal, owner_session_id=owner_session_id, owner_transport=owner_transport,
+            owner_session_record=owner_session_record,
+        )
+        run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb)
+    except Exception:
+        if prepared_attempt is not None:
+            finish_attempt({}, "child_setup_failed")
+            if _subagent_id:
+                _unregister_subagent(_subagent_id, agent=child)
+            if heartbeat is not None:
+                heartbeat.stop()
+            if child_pool is not None and leased_cred_id is not None:
+                with _quiet("Failed to release credential lease: %s"):
+                    child_pool.release_lease(leased_cred_id)
+            _detach_child(parent_agent, child)
+            _close_child(child, "Failed to close active routed child after setup failure")
+        raise
     # Set when a timed-out Future still owns the child: closing it from this
     # thread before the worker settles races the conversation's finally path.
     _child_close_deferred = False
@@ -329,7 +363,18 @@ def _run_single_child(
         run.seed_workspace()
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
-            return failure_entry
+            return finish_attempt(failure_entry)
+
+        routed_fallback = _native_child_routed_fallback_result(task_index, child)
+        if routed_fallback is not None:
+            error_text = routed_fallback["error"]
+            return finish_attempt(run.finish_failed(
+                routed_fallback,
+                run.close_steering(),
+                preview=error_text,
+                summary=error_text,
+                status="failed",
+            ), "routed_restart_required")
 
         schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
         _merge_late_steer(result, _subagent_id, child)
@@ -343,39 +388,76 @@ def _run_single_child(
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
-        return run.attach_worktree(entry)
+        return finish_attempt(run.attach_worktree(entry))
     except Exception as exc:
         # Close steer acceptance before any completion callback (see _merge_late_steer).
         _late_pending_steer = run.close_steering()
         logging.exception(f"[subagent-{task_index}] failed")
         # Entry status "error" (contract), progress event status "failed" (UI vocabulary).
-        return run.finish_failed(
+        return finish_attempt(run.finish_failed(
             _fabricated_entry(task_index, "error", str(exc), child, run.elapsed()), _late_pending_steer,
             preview=str(exc), summary=str(exc), status="failed",
-        )
+        ))
     finally:
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
+
+
+def _abort_native_child_batch(
+    attempts_by_index: Dict[int, Any],
+    children: List[tuple],
+    parent_agent: Any,
+    reason_code: str,
+) -> None:
+    """Settle and release an active routed batch that cannot enter `_run_batch`."""
+    built_by_index = {i: child for i, _task, child in children}
+    for i, prepared in attempts_by_index.items():
+        child = built_by_index.get(i)
+        try:
+            if child is not None and hasattr(child, "_execution_router_native_child_attempt"):
+                prepared.lifecycle.record_finished(
+                    reason_code,
+                    request_id=prepared.request.request_id,
+                    attempt_id=prepared.request.attempt_id,
+                )
+            else:
+                prepared.lifecycle.record_not_started(
+                    reason_code,
+                    "Native child batch aborted before execution.",
+                    request_id=prepared.request.request_id,
+                    attempt_id=prepared.request.attempt_id,
+                )
+        except Exception:
+            logger.warning("execution-router native-child abort lifecycle failed", exc_info=True)
+    for _i, _task, child in children:
+        _detach_child(parent_agent, child)
+        _close_child(child, "Could not close native child after active batch abort")
 
 
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list,
+    credentials_by_index: Optional[Dict[int, Dict[str, Any]]] = None,
+    attempts_by_index: Optional[Dict[int, Any]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
     for i, t in enumerate(task_list):
+        if credentials_by_index is not None and i not in credentials_by_index:
+            continue
+        child_creds = credentials_by_index[i] if credentials_by_index is not None else creds
+        child_routing_cfg = child_creds.get("_routing_cfg", routing_cfg)
+        overrides = {
+            "override_provider": child_creds["provider"], "override_base_url": child_creds["base_url"],
+            "override_api_key": child_creds["api_key"], "override_api_mode": child_creds["api_mode"],
+            "override_request_overrides": child_creds.get("request_overrides"),
+            "override_acp_command": child_creds.get("command"),
+            "override_acp_args": child_creds.get("args"),
+            "routing_cfg": child_routing_cfg,
+        }
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -384,11 +466,25 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=child_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
+            if attempts_by_index is not None:
+                _abort_native_child_batch(attempts_by_index, children, parent_agent, "child_construction_failed")
             return [], str(exc)
+        except Exception:
+            if attempts_by_index is not None:
+                _abort_native_child_batch(attempts_by_index, children, parent_agent, "child_construction_failed")
+            raise
+        children.append((i, t, child))
+        if attempts_by_index is not None:
+            from hermes_cli.execution_router_runtime import _start_native_child_attempt
+            try:
+                _start_native_child_attempt(attempts_by_index[i], child)
+            except Exception:
+                _abort_native_child_batch(attempts_by_index, children, parent_agent, "child_start_failed")
+                raise
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
@@ -403,8 +499,106 @@ def _build_children(
             _ident_ref = getattr(child, "_progress_identity_ref", None)
             if isinstance(_ident_ref, dict):
                 _ident_ref["delegation_id"] = live_deleg_id
-        children.append((i, t, child))
     return children, None
+
+
+def _native_child_route_inputs(routing_cfg: Dict[str, Any], parent_agent) -> tuple[tuple, Dict[str, Dict[str, Any]]]:
+    """Credential-free native/fallback candidates and their existing config inputs."""
+    from agent.execution_router import ExecutionRouteCandidateV1
+
+    provider_pin = str(routing_cfg.get("provider") or "").strip() or None
+    model_pin = str(routing_cfg.get("model") or "").strip() or None
+    reasoning_raw = routing_cfg.get("reasoning_effort")
+    reasoning_pin = str(reasoning_raw).strip() if isinstance(reasoning_raw, str) and reasoning_raw.strip() else None
+    requested_provider = getattr(parent_agent, "requested_provider", None)
+    parent_provider = getattr(parent_agent, "provider", None)
+    parent_model = getattr(parent_agent, "model", None)
+    native_provider = provider_pin or next(
+        (value for value in (requested_provider, parent_provider) if isinstance(value, str) and value), "auto"
+    )
+    native_model = model_pin or (parent_model if isinstance(parent_model, str) and parent_model else "auto")
+    parent_reasoning = getattr(parent_agent, "reasoning_config", None)
+    native_reasoning = reasoning_pin or (
+        parent_reasoning.get("effort") if isinstance(parent_reasoning, dict) and parent_reasoning.get("enabled", True) else None
+    )
+    candidates = [ExecutionRouteCandidateV1("native", native_provider, native_model, native_reasoning)]
+    configs = {"native": routing_cfg}
+    fallbacks = _resolve_child_fallback_chain(
+        parent_agent,
+        routing_cfg,
+        pinned=bool(provider_pin or model_pin or routing_cfg.get("base_url")),
+    ) or []
+    for index, item in enumerate(fallbacks):
+        if not isinstance(item, dict):
+            continue
+        provider, model = item.get("provider"), item.get("model")
+        if not isinstance(provider, str) or not provider or not isinstance(model, str) or not model:
+            continue
+        reasoning = item.get("reasoning_effort")
+        if reasoning is not None and not isinstance(reasoning, str):
+            continue
+        candidate_id = f"fallback-{index}"
+        candidates.append(ExecutionRouteCandidateV1(candidate_id, provider, model, reasoning))
+        configs[candidate_id] = {**routing_cfg, **item}
+    return tuple(candidates), configs
+
+
+def _render_native_child_route_notice(parent_agent, task_index: int, request, resolution) -> None:
+    emit = getattr(parent_agent, "_emit_notice", None)
+    if not callable(emit):
+        return
+    from agent.credits_tracker import AgentNotice
+    from agent.redact import redact_sensitive_text
+
+    reason = redact_sensitive_text(
+        resolution.reason_text or resolution.reason_code or "no reason supplied",
+        force=True,
+        redact_url_credentials=True,
+    )
+    reason = _clean_error_text(reason, max_chars=160)
+    text = (
+        f"Native child {task_index + 1}: {resolution.state.value}; {reason} "
+        f"(request {request.request_id}, attempt {request.attempt_id})"
+    )
+    emit(AgentNotice(
+        text=text[:400],
+        level="warn" if resolution.state.value in {"stop", "router_error"} else "info",
+    ))
+
+
+def _native_child_terminal_result(task_index: int, prepared) -> Dict[str, Any]:
+    from agent.redact import redact_sensitive_text
+
+    resolution = prepared.resolution
+    reason = redact_sensitive_text(
+        resolution.reason_text or resolution.reason_code or "execution router refused the child",
+        force=True,
+        redact_url_credentials=True,
+    )
+    reason = _clean_error_text(reason, max_chars=200)
+    text = (
+        f"Native child was not started ({resolution.state.value}/{resolution.reason_code or 'unspecified'}): {reason}; "
+        f"request={prepared.request.request_id} attempt={prepared.request.attempt_id}"
+    )
+    return _fabricated_entry(task_index, "error", text[:400], None)
+
+
+def _native_child_routed_fallback_result(task_index: int, child: Any) -> Optional[Dict[str, Any]]:
+    """Translate the valid host receipt before output-schema correction."""
+    child_state = getattr(child, "__dict__", None)
+    if not isinstance(child_state, dict):
+        return None
+    signal = child_state.get("_routed_restart_required")
+    if signal is None:
+        return None
+
+    prepared = child_state.get("_execution_router_native_child_attempt")
+    request = prepared.request
+    text = (
+        "Native child terminated (routed_restart_required); "
+        f"request={request.request_id} attempt={request.attempt_id}"
+    )
+    return _fabricated_entry(task_index, "error", text[:400], child)
 
 
 def delegate_task(
@@ -460,38 +654,160 @@ def delegate_task(
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
     routing_cfg = credentials_cfg if credentials_cfg is not None else cfg
-    try:
-        creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
-    except ValueError as exc:
-        # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
-        # spawn loudly (#80450).
-        return tool_error(str(exc))
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    registration = manager.get_execution_router_registration() if manager is not None else None
+    if registration is None:
+        try:
+            creds = _resolve_delegation_credentials(routing_cfg, parent_agent)
+        except ValueError as exc:
+            # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
+            # spawn loudly (#80450).
+            return tool_error(str(exc))
+        max_children = _get_max_concurrent_children()
+        task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+        if not err:
+            task_schemas, err = _coerce_task_schemas(task_list, output_schema)
+        if err:
+            return tool_error(err)
+
+        overall_start = time.monotonic()
+        # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
+        # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
+        from tools.delegation_live_log import create_live_transcripts
+        live_deleg_id, live_writers, live_paths = create_live_transcripts(
+            task_list, context, model=creds.get("model"), provider=creds.get("provider")
+        )
+        _announce_batch(parent_agent, len(task_list), live_deleg_id)
+        origin = _capture_origin()
+
+        children, err = _build_children(
+            task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+            routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        )
+        if err:
+            return tool_error(err)
+        batch = _Batch(
+            task_list, children, parent_agent, creds, context, top_role, max_children,
+            live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        )
+        return _run_batch(batch, background)
+
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if err:
         return tool_error(err)
+    assert task_list is not None
 
+    from hermes_cli.execution_router_runtime import (
+        ExecutionRouteResolutionState,
+        _prepare_native_child_attempt,
+    )
+    candidates, candidate_configs = _native_child_route_inputs(routing_cfg, parent_agent)
+    provider_pin = str(routing_cfg.get("provider") or "").strip() or None
+    model_pin = str(routing_cfg.get("model") or "").strip() or None
+    reasoning_raw = routing_cfg.get("reasoning_effort")
+    reasoning_pin = str(reasoning_raw).strip() if isinstance(reasoning_raw, str) and reasoning_raw.strip() else None
+    parent_db = getattr(parent_agent, "_session_db", None)
+    parent_db = getattr(parent_db, "_db", parent_db)
+    parent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+    lifecycle = (
+        parent_db.execution_route_lifecycle(parent_session_id)
+        if parent_db is not None and parent_session_id else None
+    )
+    if lifecycle is None:
+        terminal_results = [
+            _fabricated_entry(
+                i,
+                "error",
+                "Native child was not started: active execution router requires parent SessionDB lifecycle.",
+                None,
+            )
+            for i in range(len(task_list))
+        ]
+        empty_creds = {
+            "provider": None, "model": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": None,
+        }
+        overall_start = time.monotonic()
+        origin = _capture_origin()
+        batch = _Batch(
+            task_list, [], parent_agent, empty_creds, context, top_role, max_children,
+            None, [], [], *origin, overall_start, terminal_results,
+        )
+        return _run_batch(batch, background)
+
+    attempts_by_index = {}
+    terminal_results = []
+    selected_configs = {}
+    for i, task in enumerate(task_list):
+        prepared = _prepare_native_child_attempt(
+            raw_instruction=task["goal"],
+            surface_class=str(getattr(parent_agent, "platform", None) or "delegate_task")[:64],
+            session_id=parent_session_id or "delegate-task",
+            task_index=i,
+            native_candidate_id="native",
+            eligible_candidates=candidates,
+            explicit_model_pin=model_pin,
+            explicit_provider_pin=provider_pin,
+            explicit_reasoning_pin=reasoning_pin,
+            registration=registration,
+            lifecycle=lifecycle,
+            render_notice=lambda request, resolution, index=i: _render_native_child_route_notice(
+                parent_agent, index, request, resolution
+            ),
+        )
+        if prepared.may_start:
+            attempts_by_index[i] = prepared
+            selected_configs[i] = (
+                candidate_configs[prepared.selected_route.candidate_id]
+                if prepared.resolution.state is ExecutionRouteResolutionState.ROUTE
+                else routing_cfg
+            )
+        else:
+            terminal_results.append(_native_child_terminal_result(i, prepared))
+
+    credentials_by_index = {}
+    native_creds = None
+    for i, child_cfg in selected_configs.items():
+        try:
+            if child_cfg is routing_cfg and native_creds is not None:
+                child_creds = native_creds
+            else:
+                child_creds = _resolve_delegation_credentials(child_cfg, parent_agent)
+                if child_cfg is routing_cfg:
+                    native_creds = child_creds
+            child_creds["_routing_cfg"] = child_cfg
+            credentials_by_index[i] = child_creds
+        except ValueError as exc:
+            _abort_native_child_batch(attempts_by_index, [], parent_agent, "credential_binding_failed")
+            return tool_error(str(exc))
+        except Exception:
+            _abort_native_child_batch(attempts_by_index, [], parent_agent, "credential_binding_failed")
+            raise
+    creds = next(iter(credentials_by_index.values()), {
+        "provider": None, "model": None, "base_url": None, "api_key": None,
+        "api_mode": None, "request_overrides": None,
+    })
     overall_start = time.monotonic()
-    # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
-    # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider")
     )
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
-
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        credentials_by_index=credentials_by_index, attempts_by_index=attempts_by_index,
     )
     if err:
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
-        live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        live_deleg_id, live_writers, live_paths, *origin, overall_start, terminal_results,
     )
     return _run_batch(batch, background)
 

@@ -6,6 +6,10 @@ Accepted-Draft-SHA256: `b55b5a1fc9eb4e9c39b67a4a6df22b6a5f7dd82d22d3641105793912
 Accepted-Amendment-PA-001-SHA256: `5cc39122232ca68ff406f73e76a55d2ed76191175bdcae69a9998d990cc04b9f`
 Owner-Acceptance: Telegram current session — «Принять canonical product spec по указанному SHA-256»
 Amendment-Acceptance: Telegram current session — «Принять PA-001 по указанному SHA-256»
+Accepted-Correction-C9-SHA256: `8c46a9e0083edd9dd6b8591664e62d530f1c80d6e2692c49b75cde1080db2223`
+Correction-C9-Acceptance: Telegram current session — «Хорошо. Делаем по твоей рекомендации, а это полезное дополнение оставим для следующей версии»
+Accepted-Correction-C10-SHA256: `f714322813b498a778059d691b2ebb2d953aa297d4a10631d8ff39c3a926ba0a`
+Correction-C10-Acceptance: Telegram current session — «Минимальный T005: existing claim + defer в той же lane»
 Project-Version: 0.1.1
 Change-Level: patch
 Traceability-Schema: 1
@@ -116,7 +120,7 @@ Router не может расширить eligibility. Невалидный ил
 
 - FR-011: **Изоляция решения**
 
-Решение связано с одним immutable execution/attempt ID. Оно не записывается как новый profile default, не меняет параллельные sessions и не может быть повторно использовано для другого запуска. Любой fallback или escalation является отдельным новым attempt и требует нового host-mediated решения.
+Решение связано с одним immutable execution/attempt ID. Оно не записывается как новый profile default, не меняет параллельные sessions и не может быть повторно использовано для другого запуска. Для `main_turn` и `kanban_worker` новый fallback/escalation attempt требует нового host-mediated решения. В v1 router-selected `native_child`, которому для fallback нужна смена route/model, завершается bounded видимой ошибкой без автоматического replacement/resubmit внутри того же `delegate_task` unit; последующий обычный parent `delegate_task` является новой execution и маршрутизируется заново.
 
 - FR-012: **Единственный активный владелец**
 
@@ -218,11 +222,11 @@ Host задаёт короткий bounded deadline ожидания route decis
 
 - FR-027: **Failure, fallback и escalation**
 
-Если attempt с router-selected route не может продолжаться, Hermes завершает его наблюдаемым terminal state и создаёт новый attempt только когда штатная authority разрешает retry/fallback/escalation.
+Если attempt с router-selected route не может продолжаться, Hermes завершает его наблюдаемым terminal state. Для `main_turn` и `kanban_worker` новый attempt создаётся только когда соответствующая штатная authority разрешает retry/fallback/escalation; новый request получает bounded failure context и новый attempt ID, а active router заново возвращает `route | pass_through | stop`.
 
-Новый request содержит bounded failure context и новый attempt ID; active router заново возвращает `route | pass_through | stop`. Старое решение не переносится автоматически.
+Для `native_child` v1 не создаёт и не resubmit-ит replacement внутри того же `delegate_task` unit: fallback, требующий смены route/model, завершает child attempt bounded видимым failure. Parent может позднее выполнить обычный новый delegate call; это новая execution с новой начальной route resolution.
 
-Router предлагает следующий route, но не решает сам, разрешён ли повторный запуск, не увеличивает retry/depth/cost budget и не объявляет verification outcome.
+Старое решение не переносится автоматически. Router не решает сам, разрешён ли повторный запуск, не увеличивает retry/depth/cost budget и не объявляет verification outcome. No-router и explicit `pass_through` сохраняют native in-agent fallback для каждого execution kind.
 
 - FR-028: **Native pass-through semantics**
 
@@ -234,11 +238,11 @@ Feature plugin, которому требуется гарантия новог�
 
 После принятия decision Hermes заново разрешает provider identity, credentials, endpoint/API mode и совместимость reasoning для выбранной цели. Router никогда не возвращает API key или credential handle.
 
-Если credential binding или capability validation не удались, исполнитель не создаётся; host фиксирует `route_not_started`, а дальнейший retry является отдельным решением штатной authority.
+Если credential binding или capability validation не удались, исполнитель не создаётся; host фиксирует `route_not_started`. Для `main_turn` и `kanban_worker` возможный retry является отдельным решением их штатной authority. Для `native_child` v1 не создаёт same-unit replacement; позднейший обычный parent delegate call является новой execution.
 
 - FR-030: **Уведомления**
 
-До запуска router-selected attempt штатная поверхность получает структурированное route notice с execution kind, requested/accepted route и bounded reason. При fallback/escalation новое уведомление показывает предыдущий terminal state и новый accepted route до старта нового attempt.
+До запуска router-selected attempt штатная поверхность получает структурированное route notice с execution kind, requested/accepted route и bounded reason. Для `main_turn` и `kanban_worker` при разрешённом fallback/escalation новое уведомление показывает предыдущий terminal state и новый accepted route до старта нового attempt. Для router-selected `native_child` route-change fallback в v1 вместо replacement выдаёт bounded видимый terminal failure.
 
 Отсутствие surface-specific renderer не блокирует host event: используется безопасный текстовый fallback. Generic core не содержит product-specific русских формулировок; feature plugin предоставляет локализованный reason, а surface локализует стандартные host states.
 
@@ -264,6 +268,12 @@ Auxiliary LLM calls, cron scheduler jobs, plugin-owned `ctx.llm` calls, model ag
 
 Локальная реализация и commit не означают merge в upstream, публикацию, установку в рабочий Hermes, pilot или LIVE. Подключение Feature 002 начинается только после отдельной qualification exact API/version и отдельного разрешения на возврат к T005.
 
+- FR-034: **Минимальная Kanban reservation в исходной lane**
+
+Для `kanban_worker` каждый фактически предлагаемый worker attempt маршрутизируется до credentials, `task_run`, process или executor. Reservation использует существующие `claim_lock`/`claim_expires`, не меняет исходный статус `ready` или `review` и не требует нового task status, task column/index/dashboard mapping, reservation store, queue, scheduler или dispatcher. Истёкшая pre-run claim освобождается без phantom run; `stop/router_error` оставляет задачу в исходной lane под коротким bounded defer, записывает bounded/redacted not-started evidence в существующие `task_events` и не затрагивает worker failure accounting/circuit breaker.
+
+Validated route/open выполняется одной существующей write transaction: повторно проверяет claim token/expiry/current lane, создаёт canonical `task_run` с route metadata/events и только затем переводит задачу в running. Корреляция использует существующую run primary identity и metadata/event payload; невозможность обеспечить identity/idempotency этими полями является STOP для отдельного решения, а не разрешением импровизировать schema. После реально начатого worker/model failure действуют существующие close/failure-budget/retry/requeue/circuit-breaker rules; следующий обычный eligible attempt получает fresh request/attempt IDs и заново вызывает router. No-router/pass-through сохраняет точный текущий claim/open/spawn/retry path. Crash contract различает только reserved/no run и opened run, если реализация не докажет ещё одно внешне различимое состояние. C10 полностью supersedes более широкое прежнее T005 wording.
+
 ## Whole-spec acceptance criteria
 
 The product specification is accepted only if the owner approves this exact whole-file DRAFT and confirms all of the following:
@@ -273,11 +283,12 @@ The product specification is accepted only if the owner approves this exact whol
 3. Explicit pins, eligibility, credentials, permissions, dispatch, lifecycle, retry budgets and completion authority remain host-owned.
 4. Route decisions are `route | pass_through | stop`, one-attempt-bound, validated, observable and non-recursive.
 5. Active-router error/timeout stops dispatch visibly; late results are discarded; no hard-kill/sandbox guarantee is claimed for arbitrary trusted plugin code.
-6. Router-selected routes are immutable within an attempt; fallback/escalation creates a new attempt and a new decision.
+6. Router-selected routes are immutable within an attempt; `main_turn` and `kanban_worker` fallback/escalation create a new attempt and decision when their existing authority permits, while v1 `native_child` route-change fallback terminates visibly without automatic same-unit replacement.
 7. No-router and explicit pass-through preserve native behavior.
 8. One active consented provider owns the capability; route events distinguish requested, accepted and actual without a plugin-owned store.
 9. Auxiliary LLM, cron, `ctx.llm`, aggregation and provider-internal retry are outside v1 and require amendment.
 10. Planning and local implementation do not authorize merge, publication, installation, pilot or LIVE.
+11. `kanban_worker` reuses the existing claim in the unchanged `ready`/`review` lane, defers `stop/router_error` without worker-failure accounting, opens the canonical run atomically after routing, and adds no routing status or mandatory task schema.
 
 ## Planning boundary
 

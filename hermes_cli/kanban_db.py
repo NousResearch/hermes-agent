@@ -1070,6 +1070,14 @@ def _host_prefix() -> str:
     return f"{_claimer_id().split(':', 1)[0]}:"
 
 
+def _claim_lock_is_host_local(claim_lock: Optional[str]) -> bool:
+    """Interpret native and routed-run claim locks through one host owner rule."""
+    lock = str(claim_lock or "")
+    if lock.startswith(_ROUTING_RESERVATION_PREFIX):
+        lock = lock[len(_ROUTING_RESERVATION_PREFIX):]
+    return lock.startswith(_host_prefix())
+
+
 # --- Task creation / mutation ---
 
 def _validate_model_override(model: Optional[str], provider: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -1862,6 +1870,8 @@ def _end_run(
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    _record_routed_run_close(conn, task_id, run_id, status or outcome)
+    metadata = _merge_routed_run_metadata(conn, run_id, metadata)
     conn.execute(
         """
         UPDATE task_runs
@@ -1881,6 +1891,250 @@ def _end_run(
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
+
+
+def _routed_run_binding(conn: sqlite3.Connection, run_id: int) -> Optional[dict]:
+    row = conn.execute("SELECT metadata FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    binding = _json_dict(_row_get(row, "metadata")).get("execution_router")
+    return binding if isinstance(binding, dict) else None
+
+
+def _merge_routed_run_metadata(
+    conn: sqlite3.Connection, run_id: int, metadata: Optional[dict],
+) -> Optional[dict]:
+    binding = _routed_run_binding(conn, run_id)
+    if binding is None:
+        return metadata
+    merged = dict(metadata or {})
+    merged["execution_router"] = binding
+    return merged
+
+
+def _route_identity_from_binding(binding: dict, key: str):
+    from agent.execution_router import ExecutionRouteIdentityV1
+
+    value = binding.get(key)
+    return ExecutionRouteIdentityV1(**value) if isinstance(value, dict) else None
+
+
+def _next_route_event_sequence(
+    conn: sqlite3.Connection, task_id: str, request_id: str, attempt_id: str,
+) -> int:
+    sequence = 0
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind LIKE 'route_%'",
+        (task_id,),
+    ).fetchall()
+    for row in rows:
+        payload = _json_dict(row["payload"])
+        if payload.get("request_id") == request_id and payload.get("attempt_id") == attempt_id:
+            value = payload.get("sequence")
+            if type(value) is int:
+                sequence = max(sequence, value)
+    return sequence + 1
+
+
+def _append_route_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    binding: dict,
+    *,
+    run_id: Optional[int] = None,
+    actual_route=None,
+    reason_code: Optional[str] = None,
+    reason_text: Optional[str] = None,
+    terminal_state: Optional[str] = None,
+    requested_bindings: Optional[dict] = None,
+) -> None:
+    """Validate and canonically persist the exact public route-event envelope."""
+    from agent.execution_router import (
+        CONTRACT_VERSION,
+        ExecutionKind,
+        ExecutionRouteDecisionKind,
+        ExecutionRouteEventType,
+        ExecutionRouteEventV1,
+        canonical_json_bytes,
+    )
+
+    context = binding["event_context"]
+    event_type = ExecutionRouteEventType(kind)
+    state = binding.get("state")
+    decision_state = ExecutionRouteDecisionKind(state) if state is not None else None
+    accepted_route = _route_identity_from_binding(binding, "accepted_route")
+    requested_candidate_id = binding.get("candidate_id") if state == "route" else None
+    requested = requested_bindings or {}
+    event = ExecutionRouteEventV1(
+        contract_version=CONTRACT_VERSION,
+        event_id=secrets.token_hex(16),
+        root_id=context["root_id"],
+        task_id=task_id,
+        execution_id=context["execution_id"],
+        attempt_id=context["attempt_id"],
+        request_id=context["request_id"],
+        previous_attempt_id=context.get("previous_attempt_id"),
+        sequence=_next_route_event_sequence(
+            conn, task_id, context["request_id"], context["attempt_id"],
+        ),
+        timestamp_utc_ms=int(time.time() * 1000),
+        execution_kind=ExecutionKind(context["execution_kind"]),
+        surface_class=context["surface_class"],
+        router_plugin_id=context["router_plugin_id"],
+        router_provider_id=context["router_provider_id"],
+        router_contract_version=context["router_contract_version"],
+        event_type=event_type,
+        decision_state=None if event_type is ExecutionRouteEventType.REQUESTED else decision_state,
+        requested_candidate_id=(
+            None if event_type is ExecutionRouteEventType.REQUESTED else requested_candidate_id
+        ),
+        accepted_route=(
+            None if event_type is ExecutionRouteEventType.REQUESTED else accepted_route
+        ),
+        actual_route=actual_route,
+        reason_code=reason_code,
+        reason_text=reason_text,
+        terminal_state=terminal_state,
+        request_digest=requested.get("request_digest"),
+        instruction_digest=requested.get("instruction_digest"),
+        eligibility_revision=requested.get("eligibility_revision"),
+    )
+    conn.execute(
+        "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            task_id,
+            run_id,
+            kind,
+            canonical_json_bytes(event).decode("utf-8"),
+            int(time.time()),
+        ),
+    )
+
+
+def _record_routed_run_close(
+    conn: sqlite3.Connection, task_id: str, run_id: int, terminal_state: str,
+) -> None:
+    binding = _routed_run_binding(conn, run_id)
+    if binding is None:
+        return
+    if _latest_event(conn, task_id, "route_started", run_id) is not None:
+        if _latest_event(conn, task_id, "route_finished", run_id) is None:
+            _append_route_event(
+                conn,
+                task_id,
+                "route_finished",
+                binding,
+                run_id=run_id,
+                actual_route=_route_identity_from_binding(binding, "actual_route"),
+                reason_code=binding.get("reason_code"),
+                reason_text=binding.get("reason_text"),
+                terminal_state=terminal_state,
+            )
+        return
+    if _latest_event(conn, task_id, "route_not_started", run_id) is not None:
+        return
+    _append_route_event(
+        conn,
+        task_id,
+        "route_not_started",
+        binding,
+        run_id=run_id,
+        reason_code=terminal_state,
+        reason_text=binding.get("reason_text"),
+    )
+
+
+def record_routed_run_started(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+    claim_lock: str,
+    *,
+    provider: str,
+    model: str,
+    reasoning: Optional[str],
+) -> bool:
+    """CAS a child-created executor receipt onto its exact dispatcher-owned run."""
+    from agent.execution_router import ExecutionRouteIdentityV1
+
+    with write_txn(conn):
+        task = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ? AND status = 'running' "
+            "AND current_run_id = ? AND claim_lock = ?",
+            (task_id, int(run_id), claim_lock),
+        ).fetchone()
+        if task is None:
+            return False
+        binding = _routed_run_binding(conn, run_id)
+        if binding is None or binding.get("state") not in {"route", "pass_through"}:
+            return False
+        if _latest_event(conn, task_id, "route_started", run_id) is not None:
+            return True
+        actual = ExecutionRouteIdentityV1(
+            binding["candidate_id"], provider, model, reasoning,
+        )
+        actual_wire = {
+            "candidate_id": actual.candidate_id,
+            "provider": actual.provider,
+            "model": actual.model,
+            "reasoning": actual.reasoning,
+        }
+        binding["actual_route"] = actual_wire
+        run_row = conn.execute(
+            "SELECT metadata FROM task_runs WHERE id = ? AND ended_at IS NULL", (run_id,),
+        ).fetchone()
+        metadata = _json_dict(_row_get(run_row, "metadata"))
+        metadata["execution_router"] = binding
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ? AND ended_at IS NULL",
+            (json.dumps(metadata, sort_keys=True), run_id),
+        )
+        _append_route_event(
+            conn,
+            task_id,
+            "route_started",
+            binding,
+            run_id=run_id,
+            actual_route=actual,
+            reason_code=binding.get("reason_code"),
+            reason_text=binding.get("reason_text"),
+        )
+        return True
+
+
+def previous_terminal_routed_attempt(conn: sqlite3.Connection, task_id: str):
+    """Project the immediately preceding terminal routed run for a fresh request."""
+    row = conn.execute(
+        "SELECT id, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    binding = _json_dict(row["metadata"]).get("execution_router")
+    if not isinstance(binding, dict) or binding.get("state") != "route":
+        return None
+    finished = _latest_event(conn, task_id, "route_finished", int(row["id"]))
+    payload = _json_dict(_row_get(finished, "payload"))
+    if not payload.get("terminal_state"):
+        return None
+    from agent.execution_router import ExecutionRouteIdentityV1, ExecutionRoutePreviousAttemptV1
+
+    actual = binding.get("actual_route")
+    if not isinstance(actual, dict):
+        return None
+
+    return ExecutionRoutePreviousAttemptV1(
+        attempt_id=binding["attempt_id"],
+        terminal_state=payload["terminal_state"],
+        route=ExecutionRouteIdentityV1(
+            actual["candidate_id"],
+            actual["provider"],
+            actual["model"],
+            actual.get("reasoning"),
+        ),
+        reason_text=None,
+    )
 
 
 def _first_line(text: Optional[str], limit: int) -> str:
@@ -2068,6 +2322,10 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 
 # --- Claim / complete / block ---
 
+_ROUTING_RESERVATION_PREFIX = "__execution_route__:"
+_ROUTING_RESERVATION_MAX_CHARS = 256
+
+
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     """Return whether every direct parent is terminal for dependency gating."""
     return conn.execute(
@@ -2125,6 +2383,132 @@ def _claim_and_open_run(
         {"lock": lock, "expires": expires, "run_id": run_id, **(event_extra or {})}, run_id=run_id,
     )
     return run_id
+
+
+def reserve_task_for_routing(
+    conn: sqlite3.Connection, task_id: str, source_status: str, *,
+    ttl_seconds: Optional[int] = None, claimer: Optional[str] = None,
+) -> Optional[Task]:
+    """CAS-reserve ready/review work without changing lane or opening a run."""
+    if source_status not in {"ready", "review"}:
+        raise ValueError("routing reservation source must be ready or review")
+    now = int(time.time())
+    native_lock = claimer or _claimer_id()
+    lock = (_ROUTING_RESERVATION_PREFIX + native_lock)[
+        :_ROUTING_RESERVATION_MAX_CHARS
+    ]
+    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    with write_txn(conn):
+        if not _parents_satisfied(conn, task_id):
+            target = "todo"
+            cur = conn.execute(
+                "UPDATE tasks SET status = ? WHERE id = ? AND status = ? AND claim_lock IS NULL",
+                (target, task_id, source_status),
+            )
+            if cur.rowcount == 1:
+                _append_event(
+                    conn, task_id,
+                    "claim_rejected" if source_status == "ready" else "dependency_wait",
+                    {"reason": "parents_not_done" if source_status == "ready" else "parent_reopened",
+                     **({"source_status": "review"} if source_status == "review" else {})},
+                )
+            return None
+        _reclaim_dangling_run(
+            conn, task_id, statuses=(source_status,), now=now,
+            note="invariant recovery on routed re-claim",
+        )
+        cur = conn.execute(
+            "UPDATE tasks SET claim_lock = ?, claim_expires = ?, current_run_id = NULL "
+            "WHERE id = ? AND status = ? AND claim_lock IS NULL",
+            (lock, expires, task_id, source_status),
+        )
+        if cur.rowcount != 1:
+            return None
+        return get_task(conn, task_id)
+
+
+def open_reserved_routed_run(
+    conn: sqlite3.Connection, task_id: str, source_status: str, claim_lock: str,
+    request_id: str, attempt_id: str, route_metadata: dict,
+) -> Optional[Task]:
+    """Revalidate a reservation and atomically bind its route to the canonical run."""
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT assignee, current_step_key, claim_expires, max_runtime_seconds "
+            "FROM tasks WHERE id = ? AND status = ? AND claim_lock = ? "
+            "AND claim_expires IS NOT NULL AND claim_expires >= ? "
+            "AND current_run_id IS NULL",
+            (task_id, source_status, claim_lock, now),
+        ).fetchone()
+        if row is None:
+            return None
+        binding = {"request_id": request_id, "attempt_id": attempt_id, **route_metadata}
+        metadata = json.dumps({"execution_router": binding}, sort_keys=True)
+        run_cur = conn.execute(
+            "INSERT INTO task_runs (task_id, profile, step_key, status, claim_lock, "
+            "claim_expires, max_runtime_seconds, started_at, metadata) "
+            "VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)",
+            (
+                task_id, row["assignee"], row["current_step_key"], claim_lock,
+                row["claim_expires"], row["max_runtime_seconds"], now, metadata,
+            ),
+        )
+        run_id = run_cur.lastrowid
+        assert run_id is not None
+        run_id = int(run_id)
+        common = binding
+        if route_metadata.get("state") == "route":
+            _append_route_event(
+                conn,
+                task_id,
+                "route_accepted",
+                common,
+                run_id=run_id,
+                reason_code=binding.get("reason_code"),
+                reason_text=binding.get("reason_text"),
+            )
+        _append_event(
+            conn, task_id, "claimed",
+            {"lock": claim_lock, "expires": row["claim_expires"], "run_id": run_id,
+             **({"source_status": "review"} if source_status == "review" else {})},
+            run_id=run_id,
+        )
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?), "
+            "current_run_id = ? WHERE id = ? AND status = ? AND claim_lock = ? "
+            "AND claim_expires IS NOT NULL AND claim_expires >= ? "
+            "AND current_run_id IS NULL",
+            (now, run_id, task_id, source_status, claim_lock, now),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("routing reservation changed before canonical run binding")
+        return get_task(conn, task_id)
+
+
+def defer_reserved_route(
+    conn: sqlite3.Connection, task_id: str, source_status: str, claim_lock: str,
+    *, route_metadata: dict, defer_seconds: int = 30,
+) -> bool:
+    """Retain a short same-lane claim and record bounded not-started evidence."""
+    expires = int(time.time()) + max(1, min(int(defer_seconds), 60))
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET claim_expires = ? "
+            "WHERE id = ? AND status = ? AND claim_lock = ? AND current_run_id IS NULL",
+            (expires, task_id, source_status, claim_lock),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_route_event(
+            conn,
+            task_id,
+            "route_not_started",
+            route_metadata,
+            reason_code=route_metadata.get("reason_code"),
+            reason_text=route_metadata.get("reason_text"),
+        )
+        return True
 
 
 def claim_task(
@@ -2296,7 +2680,34 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
     """
     now = int(time.time())
     reclaimed = 0
-    host_prefix = _host_prefix()
+    reservations = conn.execute(
+        "SELECT id, status, claim_lock, claim_expires FROM tasks "
+        "WHERE status IN ('ready', 'review') AND claim_lock IS NOT NULL "
+        "AND substr(claim_lock, 1, ?) = ? "
+        "AND claim_expires IS NOT NULL AND claim_expires < ? AND current_run_id IS NULL",
+        (len(_ROUTING_RESERVATION_PREFIX), _ROUTING_RESERVATION_PREFIX, now),
+    ).fetchall()
+    for row in reservations:
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL "
+                "WHERE id = ? AND status = ? AND claim_lock = ? "
+                "AND substr(claim_lock, 1, ?) = ? "
+                "AND claim_expires IS NOT NULL AND claim_expires < ? "
+                "AND current_run_id IS NULL",
+                (
+                    row["id"], row["status"], row["claim_lock"],
+                    len(_ROUTING_RESERVATION_PREFIX), _ROUTING_RESERVATION_PREFIX, now,
+                ),
+            )
+            if cur.rowcount != 1:
+                continue
+            _append_event(conn, row["id"], "route_recovered", {
+                "source_status": row["status"],
+                "reason": "reservation_expired_before_run",
+                "claim_expires": int(row["claim_expires"]),
+            })
+            reclaimed += 1
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
         "       assignee "
@@ -2305,7 +2716,7 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
         "  AND claim_expires < ?", (now,),
     ).fetchall()
     for row in stale:
-        host_local = (row["claim_lock"] or "").startswith(host_prefix)
+        host_local = _claim_lock_is_host_local(row["claim_lock"])
         hb = row["last_heartbeat_at"]
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).

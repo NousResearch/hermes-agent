@@ -211,6 +211,13 @@ class LoadedPlugin:
     deferred: bool = False
 
 
+@dataclass(frozen=True)
+class ExecutionRouterRegistrationResult:
+    status: str
+    subject: Any
+    registration: Optional[PluginRegistration] = None
+
+
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
 
@@ -234,6 +241,84 @@ class PluginContext:
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
             for key, loaded in self._manager._plugins.items()
         )
+
+    def register_execution_router(self, provider: Any) -> ExecutionRouterRegistrationResult:
+        """Register one exact-consented synchronous execution-router provider."""
+        from agent.execution_router import (
+            CONTRACT_VERSION, ExecutionKind, ExecutionRouterProviderV1,
+            ExecutionRouterProviderDescriptorV1,
+        )
+        from hermes_cli.execution_router_runtime import ExecutionRouterRegistration
+        from hermes_cli.plugin_capabilities import (
+            EXECUTION_ROUTING_CAPABILITY, ExecutionRouterConsentState,
+            execution_router_consent_status, make_execution_router_consent_subject,
+            record_pending_execution_router_consent,
+        )
+
+        from agent.execution_router import validate_provider
+        validate_provider(provider)
+        descriptor = provider.descriptor
+        if type(descriptor) is not ExecutionRouterProviderDescriptorV1:
+            raise TypeError("execution router descriptor must be the exact frozen v1 type")
+        if descriptor.plugin_id != self.plugin_id or descriptor.plugin_version != self.manifest.version:
+            raise ValueError("execution router descriptor does not match its plugin identity/version")
+        if descriptor.contract_version != CONTRACT_VERSION:
+            raise ValueError("unsupported execution-router contract version")
+        if descriptor.supported_execution_kinds != tuple(ExecutionKind):
+            raise ValueError("execution router contract 1.0 must declare all three execution kinds")
+        if EXECUTION_ROUTING_CAPABILITY not in self.manifest.capabilities or not self.has_capability(
+            EXECUTION_ROUTING_CAPABILITY
+        ):
+            raise PermissionError("execution.routing capability is not granted")
+        subject = make_execution_router_consent_subject(
+            plugin_id=self.plugin_id,
+            plugin_version=self.manifest.version,
+            provider_id=descriptor.provider_id,
+            execution_router_contract_version=descriptor.contract_version,
+            declared_capabilities=self.manifest.capabilities,
+        )
+        status = execution_router_consent_status(self.plugin_id, subject)
+        if status.state is not ExecutionRouterConsentState.CONSENTED:
+            self._manager._execution_router_pending_plugins.add(self.plugin_id)
+            record_pending_execution_router_consent(subject)
+            logger.warning(
+                "Plugin '%s' execution router requires exact consent for provider '%s'",
+                self.plugin_id, descriptor.provider_id,
+            )
+            return ExecutionRouterRegistrationResult("consent_required", subject)
+
+        manager = self._manager
+        with manager._execution_router_lock:
+            if manager._execution_router_registration is not None:
+                owner = manager._execution_router_registration.descriptor.plugin_id
+                raise ValueError(f"execution router already active for plugin {owner!r}")
+            manager._execution_router_generation += 1
+            generation = manager._execution_router_generation
+
+            def is_current(value: int) -> bool:
+                from hermes_cli.plugin_capabilities import plugin_capability_granted
+                with manager._execution_router_lock:
+                    current = manager._execution_router_registration
+                    active = current is registration and current.generation == value
+                if not active or not plugin_capability_granted(
+                    self.plugin_id, EXECUTION_ROUTING_CAPABILITY
+                ):
+                    return False
+                return execution_router_consent_status(self.plugin_id, subject).state is ExecutionRouterConsentState.CONSENTED
+
+            registration = ExecutionRouterRegistration(provider, generation, is_current)
+            manager._execution_router_registration = registration
+            manager._execution_router_pending_plugins.discard(self.plugin_id)
+
+            def release() -> None:
+                with manager._execution_router_lock:
+                    if manager._execution_router_registration is registration:
+                        registration.revoke()
+                        manager._execution_router_registration = None
+                        manager._execution_router_generation += 1
+
+            handle = self._track("execution_router", descriptor.provider_id, release)
+        return ExecutionRouterRegistrationResult("active", subject, handle)
 
     def _segments(self, key: str) -> tuple[str, ...]:
         """Validated plugin-relative settings path (warn + re-raise on rejection)."""
@@ -1139,6 +1224,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
         self._approval_transports: Dict[str, Any] = {}
+        self._execution_router_lock = threading.RLock()
+        self._execution_router_generation = 0
+        self._execution_router_registration: Any = None
+        self._execution_router_pending_plugins: set[str] = set()
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
@@ -1179,6 +1268,20 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # and contributed tool names (so `hermes plugins list` still attributes them).
         self._predeclared_modules: Dict[str, types.ModuleType] = {}
         self._predeclared_tools: Dict[str, List[str]] = {}
+
+    def get_execution_router_registration(self):
+        """Return the active profile-scoped generation, or None."""
+        with self._execution_router_lock:
+            registration = self._execution_router_registration
+            if registration is not None and (
+                registration.is_revoked()
+                or not registration.is_current(registration.generation)
+            ):
+                registration.revoke()
+                self._execution_router_registration = None
+                self._execution_router_generation += 1
+                return None
+            return registration
 
     @property
     def has_gateway_message_injector(self) -> bool:

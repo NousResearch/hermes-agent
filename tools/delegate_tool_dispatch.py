@@ -45,6 +45,7 @@ class _Batch:
     origin_owner_session_record: Any
     origin_session_history_delivery: bool
     overall_start: float
+    terminal_results: List[Dict[str, Any]] | None = None
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
@@ -159,13 +160,14 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     children) so each group JOINS only on itself. Live transcripts are finalized but retained as the full-fidelity
     record (retention pruning happens on future dispatches)."""
     from tools.delegation_live_log import update_manifest_statuses
-    results: list = []
+    executed_results: list = []
     if len(batch.children) == 1:
-        results.append(batch.run_child(*batch.children[0]))
-    else:
-        _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
-
-    _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
+        executed_results.append(batch.run_child(*batch.children[0]))
+    elif batch.children:
+        _run_children_parallel(batch, executed_results, honor_parent_interrupt=honor_parent_interrupt)
+    _finalize_child_results(executed_results, batch.task_list, batch.children, batch.parent_agent)
+    results = list(batch.terminal_results or ()) + executed_results
+    results.sort(key=lambda item: item["task_index"])
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
         _idx = entry.get("task_index", -1)
@@ -182,7 +184,12 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
     if process_notes:
         combined["process_notes"] = process_notes
-    unit_paths = [batch.live_paths[i] for (i, _, _) in batch.children if i < len(batch.live_paths)]
+    unit_indexes = {i for (i, _, _) in batch.children}
+    unit_indexes.update(
+        item["task_index"] for item in (batch.terminal_results or ())
+        if isinstance(item.get("task_index"), int)
+    )
+    unit_paths = [batch.live_paths[i] for i in sorted(unit_indexes) if i < len(batch.live_paths)]
     if unit_paths:
         combined["live_transcripts"] = unit_paths
     if batch.group is not None:
@@ -325,7 +332,14 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     }
     if len(units) > 1:
         payload["units"] = [
-            {"delegation_id": uid, "group": unit.group, "task_indexes": [i for (i, _, _) in unit.children]}
+            {
+                "delegation_id": uid,
+                "group": unit.group,
+                "task_indexes": sorted(
+                    [i for (i, _, _) in unit.children]
+                    + [entry["task_index"] for entry in (unit.terminal_results or ())]
+                ),
+            }
             for unit, uid in units
         ]
     sids = [getattr(c, "_subagent_id", None) for (_, _, c) in batch.children]
@@ -347,12 +361,27 @@ def _units_of(batch: _Batch) -> List[_Batch]:
     from tools.delegate_tool_config import _get_independent_completions
     if not _get_independent_completions():
         return [batch]
-    members: Dict[Any, List[tuple]] = {}
-    for i, t, c in batch.children:
+    children_by_index = {i: (i, task, child) for i, task, child in batch.children}
+    terminal_by_index = {
+        entry["task_index"]: entry for entry in (batch.terminal_results or ())
+        if isinstance(entry.get("task_index"), int)
+    }
+    members: Dict[Any, List[int]] = {}
+    for i, t in enumerate(batch.task_list):
+        if i not in children_by_index and i not in terminal_by_index:
+            continue
         g = t.get("group")
         key = ("g", str(g)) if g not in (None, "") else ("i", i)
-        members.setdefault(key, []).append((i, t, c))
-    return [replace(batch, children=ch, group=(key[1] if key[0] == "g" else None)) for key, ch in members.items()]
+        members.setdefault(key, []).append(i)
+    return [
+        replace(
+            batch,
+            children=[children_by_index[i] for i in indexes if i in children_by_index],
+            terminal_results=[terminal_by_index[i] for i in indexes if i in terminal_by_index],
+            group=(key[1] if key[0] == "g" else None),
+        )
+        for key, indexes in members.items()
+    ]
 
 def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str], routing: dict) -> dict:
     """Hand ONE unit to the async registry; the runner joins on that unit's children only."""
@@ -370,7 +399,14 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
         role=unit.top_role, model=unit.creds["model"],
         runner=lambda: _execute_and_aggregate(unit, honor_parent_interrupt=False),
         interrupt_fn=_interrupt, delegation_id=unit_id, slot_key=slot_key,
-        task_indexes=[i for (i, _, _) in unit.children] if len(unit.children) < len(unit.task_list) else None,
+        task_indexes=(
+            sorted(
+                [i for (i, _, _) in unit.children]
+                + [entry["task_index"] for entry in (unit.terminal_results or ())]
+            )
+            if len(unit.children) + len(unit.terminal_results or ()) < len(unit.task_list)
+            else None
+        ),
         progress_fn=lambda: _batch_progress_token(child_agents), **routing,
     )
 

@@ -2265,6 +2265,7 @@ def init_agent(
     agent.suppress_status_output = False
 
     _set_defaults(agent, _CONTROL_STATE)
+    agent._execution_router_selected_attempt = False
 
     # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
@@ -2306,6 +2307,22 @@ def init_agent(
     _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _emit_compression_summary(agent, cs)
     _snapshot_primary_runtime(agent)
+
+    from agent.delegation_context import (
+        _KANBAN_ROUTED_ATTEMPT_ENV_MARKER,
+        is_dispatcher_owned_worker_context,
+    )
+    kanban_route_state = os.environ.get(_KANBAN_ROUTED_ATTEMPT_ENV_MARKER)
+    if kanban_route_state is not None:
+        if (
+            kanban_route_state not in {"route", "pass_through"}
+            or not is_dispatcher_owned_worker_context()
+        ):
+            raise RuntimeError("invalid dispatcher-owned Kanban route marker")
+        from tools.kanban_tools import _record_kanban_worker_start_receipt
+
+        _record_kanban_worker_start_receipt(agent, kanban_route_state)
+        agent._execution_router_selected_attempt = kanban_route_state == "route"
 
 
 __all__ = ["init_agent"]

@@ -954,14 +954,21 @@ class TurnRunner:
         agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
         return agent if agent and agent is not _AGENT_PENDING_SENTINEL else None
 
-    def _lookup_cached_agent(self, sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count):
+    def _lookup_cached_agent(
+        self, sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count,
+        *, evict_signature_mismatch=False,
+    ):
         ctx = self._ctx
         out = self._CachedAgentLookup()
         if not (cache_lock and cache is not None):
             return out
         with cache_lock:
             cached = cache.get(ctx.session_key)
-            if not (cached and cached[1] == sig):
+            if not cached:
+                return out
+            if cached[1] != sig:
+                if evict_signature_mismatch:
+                    out.evicted = self._pop_cached_agent_for_eviction()
                 return out
             # cached[2] = message_count at cache time (stale when a second process appended rows);
             # cached[3] = the session_id the snapshot was taken for.
@@ -1051,11 +1058,17 @@ class TurnRunner:
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
         )
+        routed_route_signature = turn_route.get("router_route_signature")
+        if routed_route_signature is not None:
+            sig = (sig, tuple(routed_route_signature))
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)
         peek_sid, dead = self._cached_sid_is_dead(cache_lock, cache)
         msg_count = self._current_message_count()
-        found = self._lookup_cached_agent(sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count)
+        found = self._lookup_cached_agent(
+            sig, cache_lock, cache, max_iterations, peek_sid, dead, msg_count,
+            evict_signature_mismatch=routed_route_signature is not None,
+        )
         agent = found.agent
         # Lock released — refresh the reused agent's fallback chain from disk OUTSIDE the cache lock
         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
@@ -1693,6 +1706,122 @@ class TurnRunner:
         unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))
         return final_response + "\n" + "\n".join(unique_tags)
 
+    def _prepare_main_turn_attempt(self):
+        """Build the gateway's credential-free host candidate projection and resolve it."""
+        from agent.execution_router import ExecutionRouteCandidateV1
+        from gateway.run import _resolve_gateway_model
+        from hermes_cli.execution_router_runtime import prepare_main_turn_attempt
+        from hermes_cli.plugins import get_plugin_manager
+
+        registration = get_plugin_manager().get_execution_router_registration()
+        if registration is None:
+            return None
+        ctx, runner = self._ctx, self._runner
+        model = str(_resolve_gateway_model(ctx.user_config) or "auto")
+        model_cfg = ctx.user_config.get("model", {}) if isinstance(ctx.user_config, dict) else {}
+        provider = str(model_cfg.get("provider") or "auto") if isinstance(model_cfg, dict) else "auto"
+        existing_agent = ctx.agent_holder[0] if ctx.agent_holder else None
+        if existing_agent is not None:
+            provider = str(
+                getattr(existing_agent, "requested_provider", None)
+                or getattr(existing_agent, "provider", None)
+                or provider
+            )
+        if provider == "auto":
+            from hermes_cli.runtime_provider import _get_model_config
+
+            model_config = _get_model_config()
+            provider = str(model_config.get("provider") or provider)
+            model = str(model_config.get("default") or model)
+        gateway_config = getattr(runner, "config", None)
+        if gateway_config is not None and ctx.source is not None:
+            from gateway.run import _get_channel_override
+
+            channel = _get_channel_override(
+                gateway_config,
+                ctx.source.platform,
+                str(ctx.source.chat_id) if ctx.source.chat_id else "",
+                thread_id=(
+                    str(ctx.source.thread_id)
+                    if getattr(ctx.source, "thread_id", None) else None
+                ),
+                parent_id=(
+                    str(ctx.source.parent_chat_id)
+                    if getattr(ctx.source, "parent_chat_id", None) else None
+                ),
+            )
+            if channel:
+                model = str(channel.model or model)
+                provider = str(channel.provider or provider)
+        state = runner._peek_session_state(ctx.session_key) if ctx.session_key else None
+        override = state.conversation.model_override if state else None
+        if isinstance(override, dict):
+            model = str(override.get("model") or model)
+            provider = str(override.get("requested_provider") or override.get("provider") or provider)
+        if provider == "auto":
+            raise ValueError("gateway provider candidate is unresolved before routing")
+        native_reasoning_config = runner._resolve_session_reasoning_config(
+            source=ctx.source, session_key=ctx.session_key, model=model,
+        )
+        native_reasoning = (
+            native_reasoning_config.get("effort")
+            if isinstance(native_reasoning_config, dict)
+            and native_reasoning_config.get("enabled", True)
+            else None
+        )
+        candidates = [ExecutionRouteCandidateV1("native", provider, model, native_reasoning)]
+        for index, item in enumerate(runner._refresh_fallback_model() or ()):
+            if not isinstance(item, dict):
+                continue
+            fallback_model, fallback_provider = item.get("model"), item.get("provider")
+            if isinstance(fallback_model, str) and fallback_model and isinstance(fallback_provider, str) and fallback_provider:
+                candidates.append(ExecutionRouteCandidateV1(
+                    f"fallback-{index}", fallback_provider, fallback_model, item.get("reasoning_effort")
+                ))
+        db = getattr(runner._session_db, "_db", runner._session_db)
+        session_id = str(ctx.session_id or ctx.session_key)
+        if db is not None and db.get_session(session_id) is None:
+            db.create_session(session_id, source=ctx.source.platform.value)
+        prepared = prepare_main_turn_attempt(
+            raw_instruction=ctx.message if isinstance(ctx.message, str) else None,
+            surface_class=ctx.source.platform.value,
+            session_id=session_id,
+            native_candidate_id="native",
+            eligible_candidates=tuple(candidates),
+            explicit_model_pin=model if isinstance(override, dict) and override.get("model") else None,
+            explicit_provider_pin=provider if isinstance(override, dict) and (
+                override.get("provider") or override.get("requested_provider")
+            ) else None,
+            registration=registration,
+            lifecycle=db.execution_route_lifecycle(session_id) if db is not None else None,
+            revalidate=lambda _request, accepted: accepted in tuple(c.identity() for c in candidates),
+        )
+        from hermes_cli.execution_router_runtime import ExecutionRouteResolutionState
+
+        if prepared.resolution.state is ExecutionRouteResolutionState.ROUTE:
+            self._main_turn_candidates = tuple(candidates)
+        return prepared
+
+    def _prepare_main_turn_continuation(self, record):
+        from hermes_cli import plugins as plugin_api
+        from hermes_cli.execution_router_runtime import _prepare_main_turn_continuation_attempt
+
+        ctx, runner = self._ctx, self._runner
+        db = getattr(runner._session_db, "_db", runner._session_db)
+        manager = plugin_api.get_plugin_manager()
+        registration = (
+            manager.get_execution_router_registration() if manager is not None else None
+        )
+        prepared = _prepare_main_turn_continuation_attempt(
+            record,
+            raw_instruction=ctx.message if isinstance(ctx.message, str) else None,
+            surface_class=ctx.source.platform.value,
+            eligible_candidates=self._main_turn_candidates,
+            registration=registration,
+            lifecycle=(db.execution_route_lifecycle(record.session_id) if db is not None else None),
+        )
+        return prepared
+
     def run_sync(self):
         """Executor-thread body of the turn; returns the gateway result dict.
 
@@ -1717,29 +1846,228 @@ class TurnRunner:
         platform_key = "cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value
         combined_ephemeral = self._combined_ephemeral_prompt()
         max_iterations = _current_max_iterations()
+        prepared_attempt = self._prepare_main_turn_attempt()
+        if prepared_attempt is not None and not prepared_attempt.may_start:
+            return {
+                "final_response": (
+                    prepared_attempt.resolution.reason_text
+                    or prepared_attempt.resolution.reason_code
+                    or "Execution router did not start this turn."
+                ),
+                "messages": [], "api_calls": 0, "tools": [],
+            }
+        routed_attempt = bool(
+            prepared_attempt is not None
+            and getattr(prepared_attempt.resolution.state, "value", None) == "route"
+        )
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
             )
+            if routed_attempt:
+                model = prepared_attempt.selected_model
+                if prepared_attempt.selected_provider != runtime_kwargs.get("provider"):
+                    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                        prepared_attempt.selected_provider
+                    )
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
         except Exception as exc:
-            return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}
+            if not routed_attempt:
+                return {
+                    "final_response": f"⚠️ Provider authentication failed: {exc}",
+                    "messages": [], "api_calls": 0, "tools": [],
+                }
+            from hermes_cli.execution_router_runtime import record_main_turn_not_started
+
+            record_main_turn_not_started(prepared_attempt, "credential_binding_failed")
+            return {
+                "final_response": "Provider authentication failed for the selected route.",
+                "messages": [], "api_calls": 0, "tools": [],
+                "failed": True, "error": "credential_binding_failed",
+            }
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
+        if routed_attempt:
+            reasoning_config = (
+                {"enabled": True, "effort": prepared_attempt.selected_reasoning}
+                if prepared_attempt.selected_reasoning is not None else None
+            )
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
+        attempt_callbacks = {
+            "stream": stream_delta_cb,
+            "interim": interim_cb,
+        }
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
-        agent, reused_cached_agent = self._resolve_turn_agent(
-            turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+        if routed_attempt:
+            turn_route["router_route_signature"] = prepared_attempt.route_signature
+        if not routed_attempt:
+            agent, reused_cached_agent = self._resolve_turn_agent(
+                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+            )
+        else:
+            try:
+                agent, reused_cached_agent = self._resolve_turn_agent(
+                    turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+                )
+            except Exception:
+                from hermes_cli.execution_router_runtime import record_main_turn_not_started
+
+                record_main_turn_not_started(prepared_attempt, "executor_construction_failed")
+                return {
+                    "final_response": "Failed to construct the selected execution route.",
+                    "messages": [], "api_calls": 0, "tools": [],
+                    "failed": True, "error": "executor_construction_failed",
+                }
+        if routed_attempt:
+            from agent.main_turn_continuation import _bind_routed_main_turn_callbacks
+
+            self._attach_session_title_callback(agent, ctx)
+            attempt_callbacks["_on_session_title"] = getattr(agent, "_on_session_title", None)
+            attempt_callbacks = _bind_routed_main_turn_callbacks(ctx, attempt_callbacks)
+        if prepared_attempt is not None:
+            from hermes_cli.execution_router_runtime import (
+                bind_main_turn_attempt,
+                record_main_turn_started,
+            )
+
+            bind_main_turn_attempt(
+                prepared_attempt,
+                agent,
+                getattr(self, "_main_turn_candidates", ()),
+            )
+            record_main_turn_started(prepared_attempt, agent)
+        self._wire_turn_agent_callbacks(
+            agent,
+            turn_route,
+            reasoning_config,
+            attempt_callbacks["stream"],
+            attempt_callbacks["interim"],
+            want_interim,
         )
-        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        if routed_attempt:
+            agent._on_session_title = attempt_callbacks["_on_session_title"]
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        result = self._run_conversation_with_approval(
+            agent, agent_history, observed_group_context, persist_msg, persist_ts
+        )
+        while routed_attempt and getattr(agent, "_routed_restart_required", None) is not None:
+            from agent.main_turn_continuation import (
+                _bind_routed_main_turn_callbacks,
+                _continue_main_turn_attempt,
+                _invalidate_routed_main_turn_callbacks,
+                _seal_main_turn_continuation,
+            )
+            from hermes_cli.execution_router_runtime import (
+                bind_main_turn_attempt,
+                record_main_turn_not_started,
+                record_main_turn_routed_restart,
+                record_main_turn_started,
+            )
+
+            continuation_record = _seal_main_turn_continuation(agent, prepared_attempt, result)
+            record_main_turn_routed_restart(prepared_attempt)
+            _invalidate_routed_main_turn_callbacks(ctx)
+            prepared_attempt = None
+            try:
+                prepared_attempt = self._prepare_main_turn_continuation(continuation_record)
+            except RuntimeError as exc:
+                result = {
+                    "final_response": str(exc), "messages": result["messages"],
+                    "completed": False, "failed": True, "error": str(exc),
+                    "turn_id": continuation_record.turn_id,
+                    "current_turn_user_idx": continuation_record.current_turn_user_idx,
+                }
+                break
+            if not prepared_attempt.may_start:
+                result = {
+                    "final_response": (
+                        prepared_attempt.resolution.reason_text
+                        or prepared_attempt.resolution.reason_code
+                        or "Execution router did not continue this turn."
+                    ),
+                    "messages": result["messages"], "completed": False, "failed": True,
+                    "turn_id": continuation_record.turn_id,
+                    "current_turn_user_idx": continuation_record.current_turn_user_idx,
+                }
+                break
+            try:
+                model, runtime_kwargs = runner._resolve_session_agent_runtime(
+                    source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
+                )
+                model = prepared_attempt.selected_model
+                if prepared_attempt.selected_provider != runtime_kwargs.get("provider"):
+                    from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                        prepared_attempt.selected_provider
+                    )
+            except Exception as exc:
+                record_main_turn_not_started(prepared_attempt, "credential_binding_failed")
+                prepared_attempt = None
+                result = {
+                    "final_response": "Continuation credential binding failed.",
+                    "messages": result["messages"], "completed": False,
+                    "failed": True, "error": "credential_binding_failed",
+                    "turn_id": continuation_record.turn_id,
+                    "current_turn_user_idx": continuation_record.current_turn_user_idx,
+                }
+                break
+            reasoning_config = runner._resolve_session_reasoning_config(
+                source=ctx.source, session_key=ctx.session_key, model=model
+            )
+            turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+            turn_route["router_route_signature"] = prepared_attempt.route_signature
+            try:
+                agent, _reused = self._resolve_turn_agent(
+                    turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+                )
+            except Exception as exc:
+                record_main_turn_not_started(prepared_attempt, "executor_construction_failed")
+                prepared_attempt = None
+                result = {
+                    "final_response": "Continuation executor construction failed.",
+                    "messages": result["messages"], "completed": False,
+                    "failed": True, "error": "executor_construction_failed",
+                    "turn_id": continuation_record.turn_id,
+                    "current_turn_user_idx": continuation_record.current_turn_user_idx,
+                }
+                break
+            bind_main_turn_attempt(
+                prepared_attempt,
+                agent,
+                self._main_turn_candidates,
+            )
+            record_main_turn_started(prepared_attempt, agent)
+            self._attach_session_title_callback(agent, ctx)
+            attempt_callbacks = _bind_routed_main_turn_callbacks(ctx, {
+                "stream": stream_delta_cb,
+                "interim": interim_cb,
+                "_on_session_title": getattr(agent, "_on_session_title", None),
+            })
+            self._wire_turn_agent_callbacks(
+                agent,
+                turn_route,
+                reasoning_config,
+                attempt_callbacks["stream"],
+                attempt_callbacks["interim"],
+                want_interim,
+            )
+            agent._on_session_title = attempt_callbacks["_on_session_title"]
+            result = _continue_main_turn_attempt(
+                agent,
+                continuation_record,
+                existing_surface_callbacks={"_stream_callback": attempt_callbacks["stream"]},
+            )
+        if prepared_attempt is not None:
+            from hermes_cli.execution_router_runtime import record_main_turn_finished
+
+            record_main_turn_finished(prepared_attempt, result)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.

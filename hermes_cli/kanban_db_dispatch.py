@@ -17,6 +17,7 @@ import sys
 import time
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from typing import Callable
@@ -298,7 +299,7 @@ def _terminate_reclaimed_worker(
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
-    if not str(claim_lock).startswith(_kb._host_prefix()):
+    if not _kb._claim_lock_is_host_local(claim_lock):
         return info
     info["host_local"] = True
 
@@ -424,8 +425,6 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     """
     timed_out: list[str] = []
     now = int(time.time())
-    host_prefix = _kb._host_prefix()
-
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
@@ -438,7 +437,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
-        if not lock.startswith(host_prefix):
+        if not _kb._claim_lock_is_host_local(lock):
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
@@ -811,10 +810,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
-        host_prefix = _kb._host_prefix()
         for row in rows:
             lock = row["claim_lock"] or ""
-            if not lock.startswith(host_prefix):
+            if not _kb._claim_lock_is_host_local(lock):
                 continue
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
             # before its PID is visible on /proc.
@@ -828,6 +826,12 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             dead = _classify_dead_worker(pid, row["claim_lock"])
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
+            run_id = _kb._current_run_id(conn, row["id"])
+            routed_pre_start = bool(
+                run_id is not None
+                and _kb._routed_run_binding(conn, run_id) is not None
+                and _kb._latest_event(conn, row["id"], "route_started", run_id) is None
+            )
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -839,11 +843,18 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 continue
             run_id = _kb._end_run(
                 conn, row["id"],
-                outcome=dead.run_outcome, status=dead.run_outcome,
+                outcome="not_started" if routed_pre_start else dead.run_outcome,
+                status="not_started" if routed_pre_start else dead.run_outcome,
                 error=dead.error_text,
                 metadata=dict(dead.event_payload),
             )
-            _kb._append_event(conn, row["id"], dead.event_kind, dead.event_payload, run_id=run_id)
+            _kb._append_event(
+                conn,
+                row["id"],
+                "spawn_failed" if routed_pre_start else dead.event_kind,
+                dead.event_payload,
+                run_id=run_id,
+            )
             sweep.exited_hook_payloads.append({
                 "task_id": row["id"],
                 "assignee": row["assignee"],
@@ -854,6 +865,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
+            if routed_pre_start:
+                continue
             if dead.rate_limited or dead.protocol_violation:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
@@ -1487,6 +1500,50 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _kanban_worker_route_inputs(task: Task) -> tuple:
+    """Build credential-free candidates from the worker profile's existing config."""
+    from agent.execution_router import ExecutionRouteCandidateV1
+
+    config = {}
+    if task.assignee:
+        try:
+            from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+            from hermes_cli.config import load_config
+            from hermes_cli.profiles import resolve_profile_env
+
+            token = set_hermes_home_override(resolve_profile_env(task.assignee))
+            try:
+                config = load_config()
+            finally:
+                reset_hermes_home_override(token)
+        except (FileNotFoundError, ValueError):
+            config = {}
+    native = ExecutionRouteCandidateV1(
+        "native",
+        task.provider_override or "auto",
+        task.model_override or str(config.get("model") or "auto"),
+        task.reasoning_effort,
+    )
+    candidates = [native]
+    fallbacks = config.get("fallback_model") or []
+    if isinstance(fallbacks, dict):
+        fallbacks = [fallbacks]
+    if isinstance(fallbacks, list):
+        for index, item in enumerate(fallbacks):
+            if not isinstance(item, dict):
+                continue
+            provider, model = item.get("provider"), item.get("model")
+            reasoning = item.get("reasoning_effort")
+            if not isinstance(provider, str) or not provider or not isinstance(model, str) or not model:
+                continue
+            if reasoning is not None and not isinstance(reasoning, str):
+                continue
+            candidates.append(ExecutionRouteCandidateV1(
+                f"fallback-{index}", provider, model, reasoning,
+            ))
+    return native, tuple(candidates)
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1547,8 +1604,158 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
-    claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    from hermes_cli.plugins import get_plugin_manager
+    registration = get_plugin_manager().get_execution_router_registration()
+    if registration is None:
+        claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
+        claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    else:
+        claimed = _kb.reserve_task_for_routing(
+            conn, task_id, lane, ttl_seconds=ttl_seconds,
+        )
+        if claimed is not None:
+            assert claimed.claim_lock is not None
+            from hermes_cli.execution_router_runtime import _prepare_kanban_worker_attempt
+
+            class _Lifecycle:
+                def get_execution_route_resolution(self, request_id, attempt_id):
+                    return None
+
+                def record_execution_route_requested(self, request, _registration):
+                    descriptor = _registration.descriptor
+                    binding = {
+                        "event_context": {
+                            "root_id": request.root_id,
+                            "execution_id": request.execution_id,
+                            "attempt_id": request.attempt_id,
+                            "request_id": request.request_id,
+                            "previous_attempt_id": (
+                                request.previous_attempt.attempt_id
+                                if request.previous_attempt is not None
+                                else None
+                            ),
+                            "execution_kind": request.execution_kind.value,
+                            "surface_class": request.surface_class,
+                            "router_plugin_id": descriptor.plugin_id,
+                            "router_provider_id": descriptor.provider_id,
+                            "router_contract_version": descriptor.contract_version,
+                        },
+                    }
+                    with _kb.write_txn(conn):
+                        _kb._append_route_event(
+                            conn,
+                            task_id,
+                            "route_requested",
+                            binding,
+                            requested_bindings={
+                                "request_digest": request.request_digest,
+                                "instruction_digest": request.instruction.digest,
+                                "eligibility_revision": request.eligibility_revision,
+                            },
+                        )
+                    return True
+
+                def record_execution_route_result(self, request, resolution, _registration):
+                    return resolution
+
+            native, candidates = _kanban_worker_route_inputs(claimed)
+            prepared = _prepare_kanban_worker_attempt(
+                raw_instruction=claimed.body or claimed.title,
+                task_id=claimed.id,
+                native_candidate=native,
+                eligible_candidates=candidates,
+                explicit_model_pin=claimed.model_override,
+                explicit_provider_pin=claimed.provider_override,
+                explicit_reasoning_pin=claimed.reasoning_effort,
+                previous_attempt=_kb.previous_terminal_routed_attempt(conn, claimed.id),
+                registration=registration,
+                lifecycle=_Lifecycle(),
+            )
+            if not prepared.may_start:
+                descriptor = registration.descriptor
+                _kb.defer_reserved_route(
+                    conn, claimed.id, lane, claimed.claim_lock,
+                    route_metadata={
+                        "state": prepared.resolution.state.value,
+                        "candidate_id": None,
+                        "accepted_route": None,
+                        "reason_code": prepared.resolution.reason_code,
+                        "reason_text": prepared.resolution.reason_text,
+                        "event_context": {
+                            "root_id": prepared.request.root_id,
+                            "execution_id": prepared.request.execution_id,
+                            "attempt_id": prepared.request.attempt_id,
+                            "request_id": prepared.request.request_id,
+                            "previous_attempt_id": (
+                                prepared.request.previous_attempt.attempt_id
+                                if prepared.request.previous_attempt is not None
+                                else None
+                            ),
+                            "execution_kind": prepared.request.execution_kind.value,
+                            "surface_class": prepared.request.surface_class,
+                            "router_plugin_id": descriptor.plugin_id,
+                            "router_provider_id": descriptor.provider_id,
+                            "router_contract_version": descriptor.contract_version,
+                        },
+                    },
+                )
+                return False
+            route = prepared.selected_route
+            assert route is not None
+            descriptor = registration.descriptor
+            claimed = _kb.open_reserved_routed_run(
+                conn, claimed.id, lane, claimed.claim_lock,
+                prepared.request.request_id, prepared.request.attempt_id,
+                {
+                    "state": prepared.resolution.state.value,
+                    "candidate_id": route.candidate_id,
+                    "provider": route.provider,
+                    "model": route.model,
+                    "reasoning": route.reasoning,
+                    "accepted_route": (
+                        {
+                            "candidate_id": route.candidate_id,
+                            "provider": route.provider,
+                            "model": route.model,
+                            "reasoning": route.reasoning,
+                        }
+                        if prepared.resolution.state.value == "route"
+                        else None
+                    ),
+                    "reason_code": prepared.resolution.reason_code,
+                    "reason_text": prepared.resolution.reason_text,
+                    "event_context": {
+                        "root_id": prepared.request.root_id,
+                        "execution_id": prepared.request.execution_id,
+                        "attempt_id": prepared.request.attempt_id,
+                        "request_id": prepared.request.request_id,
+                        "previous_attempt_id": (
+                            prepared.request.previous_attempt.attempt_id
+                            if prepared.request.previous_attempt is not None
+                            else None
+                        ),
+                        "execution_kind": prepared.request.execution_kind.value,
+                        "surface_class": prepared.request.surface_class,
+                        "router_plugin_id": descriptor.plugin_id,
+                        "router_provider_id": descriptor.provider_id,
+                        "router_contract_version": descriptor.contract_version,
+                    },
+                },
+            )
+            if claimed is not None:
+                if prepared.resolution.state.value == "route":
+                    claimed = replace(
+                        claimed,
+                        provider_override=route.provider,
+                        model_override=route.model,
+                        reasoning_effort=route.reasoning,
+                    )
+                    setattr(claimed, "_execution_router_selected_attempt", True)
+                setattr(
+                    claimed,
+                    "_execution_router_attempt_state",
+                    prepared.resolution.state.value,
+                )
     if claimed is None:
         return False
     try:
@@ -1744,6 +1951,20 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     return name
 
 
+def _active_router_selected_task_ids(conn: sqlite3.Connection) -> set[str]:
+    """Running tasks whose current durable run was router-selected."""
+    rows = conn.execute(
+        "SELECT t.id, r.metadata FROM tasks t "
+        "JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running'"
+    ).fetchall()
+    return {
+        row["id"]
+        for row in rows
+        if _kb._json_dict(row["metadata"]).get("execution_router", {}).get("state") == "route"
+    }
+
+
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
@@ -1768,6 +1989,7 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    routed_before_recovery = _active_router_selected_task_ids(conn)
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
@@ -1815,6 +2037,8 @@ def _dispatch_once_locked(
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
     for row in ready_rows:
+        if row["id"] in routed_before_recovery:
+            continue
         if ready_budget is not None and spawned >= ready_budget:
             break
         row_assignee = row["assignee"]
@@ -1836,6 +2060,8 @@ def _dispatch_once_locked(
     # checks the FULL shared ``spawn_budget`` — the reservation above caps the
     # ready lane, it grants no extra capacity here.
     for row in review_rows:
+        if row["id"] in routed_before_recovery:
+            continue
         if spawn_budget is not None and spawned >= spawn_budget:
             break
         if not row["assignee"]:
@@ -2247,8 +2473,15 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg
     # This is the grant boundary: the dispatcher assigned this new worker's task.
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from agent.delegation_context import (
+        DELEGATED_CHILD_ENV_MARKER,
+        _KANBAN_ROUTED_ATTEMPT_ENV_MARKER,
+    )
     env.pop(DELEGATED_CHILD_ENV_MARKER, None)
+    env.pop(_KANBAN_ROUTED_ATTEMPT_ENV_MARKER, None)
+    attempt_state = getattr(task, "_execution_router_attempt_state", None)
+    if attempt_state in {"route", "pass_through"}:
+        env[_KANBAN_ROUTED_ATTEMPT_ENV_MARKER] = attempt_state
     # `--cli` is the highest-precedence TUI override; dropping HERMES_TUI covers
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)

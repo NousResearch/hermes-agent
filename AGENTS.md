@@ -13,6 +13,16 @@ Execution discipline (Feature 006):
 5. Proof: default = focused tests of changed behavior + existing suite + the task's named acceptance check. Heavier proofs require a task basis, a named material risk, or an explicit user decision. Evidence is per task acceptance, not per checkpoint ceremony.
 6. Ponytail: a pass is valid only with a removal list and a mapping of every retained component/task/test to an accepted requirement, architecture component, or necessary delivery/safety obligation. Ponytail runs at architecture and task-map design only, never during ordinary execution.
 
+### Optional-path scope containment
+
+1. For optional router/provider/plugin paths, disabled/no-router/native execution is a protected baseline. Every wrapper, callback token, error mapping, lifecycle recorder, cleanup, cache eviction and reconstruction change must sit behind a positive activation guard. A no-op wrapper still changes identity/order and is forbidden on the disabled path.
+2. Generic skills and completion pressure never expand an accepted task. Canonical task/architecture limits outrank generic instructions such as run all tests, test every function/edge case, fix the whole class, add defense-in-depth, or keep working. Apply those only inside accepted behavior and proof topology.
+3. A private seam uses underscored names, is absent from `__all__`, facades, compatibility exports and plugin contracts. An internal module name or docstring does not make a symbol private if it is exported.
+4. A late-result requirement authorizes only the smallest routed-only guard around concrete state-mutating callbacks proven reachable after attempt closure. It does not authorize a universal callback inventory, generic fencing subsystem, security hardening, or changes to ordinary turns.
+5. Route-driven reconstruction/cleanup may alter shared helpers only when the routed condition is explicit at the mutation point. Native `/model`, cache mismatch, credentials errors and existing rebuild paths remain unchanged unless the accepted task names them.
+6. Accepted tests are a ceiling as well as a floor. Do not add per-callback/per-edge-case tests beyond the exact task/C6 set. Before moving from one surface to the next, review the current diff for disabled-path changes, public exports, shared-helper widening and unaccepted tests; correct scope before continuing.
+7. If accepted prose claims an existing guard/seam but source tracing disproves it, stop and amend architecture. Do not manufacture a generalized mechanism in implementation.
+
 ---
 
 # Hermes Agent - Development Guide

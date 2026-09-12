@@ -24,7 +24,7 @@ from hermes_state_repair import _db_opens_cleanly
 ProgressCallback = Callable[[dict[str, Any]], None]
 _CANONICAL_TABLES = (
     "system_prompts", "sessions", "messages", "session_model_usage", "compression_locks", "gateway_routing",
-    "async_delegations",
+    "async_delegations", "execution_route_attempts", "execution_route_events",
 )
 _TOPIC_TABLES = ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
 

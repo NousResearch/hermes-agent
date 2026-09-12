@@ -25,6 +25,11 @@ def _declared_now(table: str) -> tuple[str, ...]:
         conn.close()
 
 
+def test_execution_router_tables_have_lost_and_found_physical_history() -> None:
+    assert "execution_route_attempts" in history.SCHEMA_HISTORY
+    assert "execution_route_events" in history.SCHEMA_HISTORY
+
+
 @pytest.mark.parametrize("table", sorted(history.SCHEMA_HISTORY))
 def test_replayed_history_ends_at_current_schema(table: str) -> None:
     """Replaying every recorded edit must reproduce today's declared order.

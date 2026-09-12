@@ -1028,6 +1028,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
 
     # Built-in tool override is a privileged grant; bundled plugins are trusted.
     if source == "bundled":
+        declared_caps = _declared_capabilities_for_key(key)
+        if "execution.routing" in declared_caps:
+            _run_capability_consent(console, key, declared_caps, context="enable")
+            _run_execution_router_consent(console, key)
         return
     # When the manifest declares capabilities the consent screen is the canonical grant path
     # (it covers tools.override too); the legacy prompt then only runs on an explicit flag.
@@ -1035,6 +1039,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     declared_caps = _declared_capabilities_for_key(key)
     if declared_caps:
         _run_capability_consent(console, key, declared_caps, context="enable")
+        _run_execution_router_consent(console, key)
         if allow_tool_override is not None:
             _resolve_tool_override_grant(console, key, allow_tool_override)
         return
@@ -1115,6 +1120,59 @@ def _run_capability_consent(console, plugin_id: str, declared: list, *, context:
     return False
 
 
+def _run_execution_router_consent(console, plugin_id: str) -> bool:
+    """Acquire exact pending router consent only in an interactive enable invocation."""
+    from hermes_cli.plugin_capabilities import (
+        EXECUTION_ROUTING_CAPABILITY, ExecutionRouterConsentState,
+        capability_set_hash, execution_router_consent_status,
+        plugin_capability_granted, record_execution_router_consent,
+    )
+    status = execution_router_consent_status(plugin_id)
+    if status.subject is None:
+        return True
+    if status.state is ExecutionRouterConsentState.CONSENTED:
+        return True
+    subject = status.subject
+    entry = _find_plugin_entry(plugin_id)
+    declared = _declared_capabilities_for_key(plugin_id)
+    current_subject_matches = (
+        entry is not None
+        and subject.plugin_id == plugin_id
+        and subject.plugin_version == entry[1]
+        and subject.capability_set_hash == capability_set_hash(declared)
+        and EXECUTION_ROUTING_CAPABILITY in declared
+    )
+    if not plugin_capability_granted(plugin_id, EXECUTION_ROUTING_CAPABILITY) or not current_subject_matches:
+        console.print(
+            "  [yellow]Execution router consent is stale; load the current plugin normally "
+            "to record its exact pending provider tuple.[/yellow]"
+        )
+        return False
+    labels = (
+        "plugin_id", "plugin_version", "provider_id",
+        "execution_router_contract_version", "capability_set_hash",
+    )
+    console.print("\n  [yellow]Execution router requests dedicated consent:[/yellow]")
+    for label, value in zip(labels, subject.as_tuple()):
+        console.print(f"    [bold]{label}[/bold]: {value}")
+    console.print(
+        "  [dim]This permits selecting only host-issued candidates and disclosure of bounded "
+        "authorized task text. It grants no credentials, tools, dispatch, retry, or completion authority.[/dim]"
+    )
+    if not _is_tty():
+        console.print("  [yellow]Non-interactive session: execution router consent NOT granted.[/yellow]")
+        return False
+    if not _ask_yes("  Grant this exact execution router tuple? [y/N] ", console.input):
+        console.print("  [dim]Declined. The execution router remains inactive.[/dim]")
+        return False
+    record_execution_router_consent(subject)
+    console.print(
+        "  [green]✓[/green] Exact execution router consent recorded. "
+        "Activation occurs on the next normal plugin load/reload."
+    )
+    return True
+
+
 def cmd_capabilities(name: Optional[str] = None) -> None:
     """``hermes plugins capabilities [<id>]`` — declared vs granted."""
     from hermes_cli.plugin_capabilities import (
@@ -1156,6 +1214,10 @@ def cmd_capabilities(name: Optional[str] = None) -> None:
             console.print(f"  {cap}: {mark}")
         for cap in sorted(effective - set(declared)):
             console.print(f"  {cap}: [green]granted[/green] [dim](not declared in manifest)[/dim]")
+        from hermes_cli.plugin_capabilities import execution_router_consent_status
+        router_status = execution_router_consent_status(key)
+        if router_status.subject is not None:
+            console.print(f"  execution_router: {router_status.state.value}")
 
 
 def _resolve_tool_override_grant(console, key: str, allow_tool_override: Optional[bool]) -> None:

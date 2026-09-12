@@ -493,6 +493,45 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS execution_route_attempts (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    request_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    root_id TEXT NOT NULL,
+    task_id TEXT,
+    execution_id TEXT NOT NULL,
+    previous_attempt_id TEXT,
+    execution_kind TEXT NOT NULL,
+    surface_class TEXT NOT NULL,
+    router_plugin_id TEXT NOT NULL,
+    router_provider_id TEXT NOT NULL,
+    router_contract_version TEXT NOT NULL,
+    router_generation INTEGER NOT NULL,
+    request_digest TEXT NOT NULL,
+    instruction_digest TEXT,
+    eligibility_revision TEXT NOT NULL,
+    resolution_state TEXT,
+    decision_json TEXT,
+    accepted_route_json TEXT,
+    reason_code TEXT,
+    reason_text TEXT,
+    PRIMARY KEY (request_id, attempt_id)
+);
+
+CREATE TABLE IF NOT EXISTS execution_route_events (
+    event_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    request_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    event_json TEXT NOT NULL,
+    UNIQUE (request_id, attempt_id, sequence),
+    UNIQUE (request_id, attempt_id, event_type),
+    FOREIGN KEY (request_id, attempt_id)
+        REFERENCES execution_route_attempts(request_id, attempt_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -513,6 +552,10 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_execution_route_attempts_session
+    ON execution_route_attempts(session_id, attempt_id);
+CREATE INDEX IF NOT EXISTS idx_execution_route_events_session
+    ON execution_route_events(session_id, attempt_id, sequence);
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.

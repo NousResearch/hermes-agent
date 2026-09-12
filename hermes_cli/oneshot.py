@@ -12,7 +12,8 @@ import json
 import logging
 import os
 import sys
-from contextlib import redirect_stderr, redirect_stdout
+import uuid
+from contextlib import redirect_stderr, redirect_stdout, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -282,6 +283,7 @@ class _ModelChoice:
     base_url: str | None = None
     api_key: str | None = None
     api_mode: str | None = None
+    direct_alias_name: str | None = None
 
 
 def _configured_model(model_cfg: object) -> str:
@@ -295,7 +297,13 @@ def _configured_model(model_cfg: object) -> str:
     return str(raw or "")
 
 
-def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optional[str]) -> _ModelChoice:
+def _resolve_model_and_provider(
+    cfg: dict,
+    model: Optional[str],
+    provider: Optional[str],
+    *,
+    bind_direct_alias_runtime: bool = True,
+) -> _ModelChoice:
     """Effective model = arg → env → config; provider = arg → auto-detect → config/env.
 
     Auto-detection only runs when the model was explicitly requested (arg or env var) — same
@@ -335,12 +343,36 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     # with a URL-bearing alias would let a label like `anthropic` keep the alias's base_url yet
     # fall back to the live vendor token — a bearer credential crossing an origin boundary. The
     # helper forces bare `custom` for URL-bearing aliases and carries the alias's own key.
-    try:
-        choice.provider, choice.api_key = _ms.direct_alias_runtime_request(direct)
-    except Exception:
-        choice.api_key = None
-    if direct.base_url:
-        choice.base_url = direct.base_url.rstrip("/")
+    if bind_direct_alias_runtime:
+        try:
+            choice.provider, choice.api_key = _ms.direct_alias_runtime_request(direct)
+        except Exception:
+            choice.api_key = None
+        if direct.base_url:
+            choice.base_url = direct.base_url.rstrip("/")
+    else:
+        choice.provider = "custom" if direct.base_url else direct.provider
+        choice.direct_alias_name = explicit_model.strip().lower()
+    return choice
+
+
+def _bind_direct_alias_runtime(choice: _ModelChoice) -> _ModelChoice:
+    """Bind a remembered direct alias only after execution routing permits construction."""
+    if not choice.direct_alias_name:
+        return choice
+    from hermes_cli import model_switch as _ms
+
+    _ms._ensure_direct_aliases()
+    direct = _ms.DIRECT_ALIASES.get(choice.direct_alias_name)
+    if direct is None or direct.model != choice.model:
+        choice.direct_alias_name = None
+        return choice
+    expected_provider = "custom" if direct.base_url else direct.provider
+    if choice.provider not in {direct.provider, expected_provider}:
+        choice.direct_alias_name = None
+        return choice
+    choice.provider, choice.api_key = _ms.direct_alias_runtime_request(direct)
+    choice.base_url = direct.base_url.rstrip("/") if direct.base_url else None
     return choice
 
 
@@ -422,19 +454,67 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
-    choice = _resolve_model_and_provider(cfg, model, provider)
+    from hermes_cli.plugins import get_plugin_manager
+
+    registration = get_plugin_manager().get_execution_router_registration()
+    choice = _resolve_model_and_provider(
+        cfg, model, provider, bind_direct_alias_runtime=registration is None
+    )
     # Resume resolves BEFORE the runtime provider: the session's stored model/route must
     # replace the ambient config (see _apply_stored_session_runtime) and the ended row must
     # be reopened before the agent can stamp a new lifecycle boundary.
     session_db = _create_session_db_for_oneshot()
     resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
     choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
-    runtime = resolve_runtime_provider(
-        requested=choice.provider,
-        target_model=choice.model or None,
-        explicit_base_url=choice.base_url,
-        explicit_api_key=choice.api_key,
-    )
+    fallback_chain = (get_fallback_chain(cfg) or ()) if registration is not None else ()
+    if registration is None:
+        prepared_attempt, routed_session_id = None, resume_sid
+    else:
+        prepared_attempt, routed_session_id = _prepare_oneshot_main_turn_attempt(
+            prompt,
+            choice,
+            session_db,
+            resume_sid,
+            fallback_chain=fallback_chain,
+            explicit_model=bool((model or "").strip()),
+            explicit_provider=bool((provider or "").strip()),
+            registration=registration,
+        )
+    if prepared_attempt is not None and not prepared_attempt.may_start:
+        text = (
+            prepared_attempt.resolution.reason_text
+            or prepared_attempt.resolution.reason_code
+            or "Execution router did not start this turn."
+        )
+        if session_db is not None:
+            session_db.close()
+        return text, {"final_response": text, "messages": [], "api_calls": 0, "completed": False}
+    if prepared_attempt is not None:
+        choice.model = prepared_attempt.selected_model
+        choice.provider = prepared_attempt.selected_provider
+    if prepared_attempt is not None:
+        _bind_direct_alias_runtime(choice)
+    if prepared_attempt is None:
+        runtime = resolve_runtime_provider(
+            requested=choice.provider,
+            target_model=choice.model or None,
+            explicit_base_url=choice.base_url,
+            explicit_api_key=choice.api_key,
+        )
+    else:
+        try:
+            runtime = resolve_runtime_provider(
+                requested=choice.provider,
+                target_model=choice.model or None,
+                explicit_base_url=choice.base_url,
+                explicit_api_key=choice.api_key,
+            )
+        except Exception:
+            from hermes_cli.execution_router_runtime import record_main_turn_not_started
+            record_main_turn_not_started(prepared_attempt, "credential_binding_failed")
+            if session_db is not None:
+                session_db.close()
+            raise
     if choice.api_mode:
         runtime["api_mode"] = choice.api_mode
 
@@ -458,6 +538,7 @@ def _run_agent(
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
+    result = None
     try:
         agent = AIAgent(
             api_key=runtime.get("api_key"),
@@ -470,9 +551,13 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
-            session_id=resume_sid,
+            session_id=routed_session_id or resume_sid,
             credential_pool=runtime.get("credential_pool"),
-            fallback_model=get_fallback_chain(cfg) or None,
+            fallback_model=(
+                fallback_chain or None
+                if prepared_attempt is not None
+                else get_fallback_chain(cfg) or None
+            ),
             ephemeral_system_prompt=skills_prompt,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
@@ -484,10 +569,237 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
+        if prepared_attempt is not None:
+            from hermes_cli.execution_router_runtime import (
+                bind_main_turn_attempt,
+                record_main_turn_started,
+            )
+            bind_main_turn_attempt(
+                prepared_attempt,
+                agent,
+                _oneshot_main_turn_candidates(choice, fallback_chain),
+            )
+            record_main_turn_started(prepared_attempt, agent)
+
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        while (
+            prepared_attempt is not None
+            and getattr(agent, "_routed_restart_required", None) is not None
+        ):
+            from agent.main_turn_continuation import (
+                _continue_main_turn_attempt,
+                _seal_main_turn_continuation,
+            )
+            from hermes_cli.execution_router_runtime import (
+                record_main_turn_not_started,
+                record_main_turn_routed_restart,
+            )
+
+            continuation_record = _seal_main_turn_continuation(agent, prepared_attempt, result)
+            record_main_turn_routed_restart(prepared_attempt)
+            prepared_attempt = None
+            try:
+                prepared_attempt = _prepare_oneshot_main_turn_continuation(
+                    continuation_record,
+                    prompt,
+                    session_db,
+                    fallback_chain=fallback_chain,
+                )
+            except RuntimeError as exc:
+                result = {
+                    "final_response": str(exc), "messages": result["messages"],
+                    "completed": False, "failed": True, "error": str(exc),
+                    "turn_id": continuation_record.turn_id,
+                    "current_turn_user_idx": continuation_record.current_turn_user_idx,
+                }
+                break
+            if not prepared_attempt.may_start:
+                result = {
+                    "final_response": (
+                        prepared_attempt.resolution.reason_text
+                        or prepared_attempt.resolution.reason_code
+                        or "Execution router did not continue this turn."
+                    ),
+                    "messages": result["messages"], "completed": False, "failed": True,
+                    "turn_id": continuation_record.turn_id,
+                    "current_turn_user_idx": continuation_record.current_turn_user_idx,
+                }
+                prepared_attempt = None
+                break
+            choice.model = str(prepared_attempt.selected_model)
+            choice.provider = str(prepared_attempt.selected_provider)
+            choice.base_url = choice.api_key = None
+            try:
+                runtime = resolve_runtime_provider(
+                    requested=choice.provider,
+                    target_model=choice.model or None,
+                )
+            except Exception as exc:
+                record_main_turn_not_started(prepared_attempt, "credential_binding_failed")
+                prepared_attempt = None
+                result = {
+                    "final_response": "Continuation credential binding failed.",
+                    "messages": result["messages"], "completed": False,
+                    "failed": True, "error": "credential_binding_failed",
+                    "turn_id": continuation_record.turn_id,
+                    "current_turn_user_idx": continuation_record.current_turn_user_idx,
+                }
+                break
+            with suppress(Exception):
+                agent.release_clients()
+            agent = None
+            try:
+                agent = AIAgent(
+                    api_key=runtime.get("api_key"),
+                    base_url=runtime.get("base_url"),
+                    provider=runtime.get("provider"),
+                    requested_provider=runtime.get("requested_provider"),
+                    api_mode=runtime.get("api_mode"),
+                    model=choice.model,
+                    enabled_toolsets=toolsets_list,
+                    quiet_mode=True,
+                    platform="cli",
+                    session_db=session_db,
+                    session_id=routed_session_id or resume_sid,
+                    credential_pool=runtime.get("credential_pool"),
+                    fallback_model=fallback_chain or None,
+                    ephemeral_system_prompt=skills_prompt,
+                    clarify_callback=_oneshot_clarify_callback,
+                )
+            except Exception as exc:
+                record_main_turn_not_started(prepared_attempt, "executor_construction_failed")
+                prepared_attempt = None
+                result = {
+                    "final_response": "Continuation executor construction failed.",
+                    "messages": result["messages"], "completed": False,
+                    "failed": True, "error": "executor_construction_failed",
+                    "turn_id": continuation_record.turn_id,
+                    "current_turn_user_idx": continuation_record.current_turn_user_idx,
+                }
+                break
+            agent.suppress_status_output = True
+            agent.stream_delta_callback = None
+            agent.tool_gen_callback = None
+            bind_main_turn_attempt(
+                prepared_attempt,
+                agent,
+                _oneshot_main_turn_candidates(choice, fallback_chain),
+            )
+            record_main_turn_started(prepared_attempt, agent)
+            result = _continue_main_turn_attempt(
+                agent, continuation_record, existing_surface_callbacks={}
+            )
         return (result.get("final_response") or "", result)
     finally:
+        if prepared_attempt is not None:
+            from hermes_cli.execution_router_runtime import (
+                record_main_turn_finished,
+                record_main_turn_not_started,
+            )
+            if agent is None:
+                record_main_turn_not_started(prepared_attempt, "executor_construction_failed")
+            else:
+                record_main_turn_finished(prepared_attempt, result)
         _close_agent(agent, session_db)
+
+
+def _oneshot_main_turn_candidates(choice, fallback_chain=()):
+    from agent.execution_router import ExecutionRouteCandidateV1
+
+    candidates = [ExecutionRouteCandidateV1(
+        "native", str(choice.provider or "auto"), str(choice.model or "auto"), None
+    )]
+    for index, item in enumerate(fallback_chain):
+        if not isinstance(item, dict):
+            continue
+        fallback_model, fallback_provider = item.get("model"), item.get("provider")
+        if isinstance(fallback_model, str) and fallback_model and isinstance(fallback_provider, str) and fallback_provider:
+            candidates.append(ExecutionRouteCandidateV1(
+                f"fallback-{index}", fallback_provider, fallback_model, item.get("reasoning_effort")
+            ))
+    return tuple(candidates)
+
+
+def _prepare_oneshot_main_turn_attempt(
+    prompt, choice, session_db, resume_sid, *, fallback_chain=(),
+    explicit_model=False, explicit_provider=False, registration=None,
+):
+    """Resolve one-shot routing before runtime-provider/credential binding."""
+    from agent.execution_router import ExecutionRouteCandidateV1
+    from hermes_cli.execution_router_runtime import prepare_main_turn_attempt
+    from hermes_cli.plugins import get_plugin_manager
+
+    if registration is None:
+        registration = get_plugin_manager().get_execution_router_registration()
+    if registration is None:
+        return None, resume_sid
+    model = str(choice.model or "auto")
+    provider = str(choice.provider or "auto")
+    candidates = [ExecutionRouteCandidateV1("native", provider, model, None)]
+    for index, item in enumerate(fallback_chain):
+        if not isinstance(item, dict):
+            continue
+        fallback_model, fallback_provider = item.get("model"), item.get("provider")
+        if isinstance(fallback_model, str) and fallback_model and isinstance(fallback_provider, str) and fallback_provider:
+            candidates.append(ExecutionRouteCandidateV1(
+                f"fallback-{index}", fallback_provider, fallback_model, item.get("reasoning_effort")
+            ))
+    session_id = str(resume_sid or f"oneshot_{uuid.uuid4().hex}")
+    if session_db is not None and session_db.get_session(session_id) is None:
+        session_db.create_session(session_id, source="cli")
+    prepared = prepare_main_turn_attempt(
+        raw_instruction=prompt if isinstance(prompt, str) else None,
+        surface_class="oneshot",
+        session_id=session_id,
+        native_candidate_id="native",
+        eligible_candidates=tuple(candidates),
+        explicit_model_pin=model if explicit_model else None,
+        explicit_provider_pin=provider if explicit_provider else None,
+        registration=registration,
+        lifecycle=(
+            session_db.execution_route_lifecycle(session_id)
+            if session_db is not None else None
+        ),
+        revalidate=lambda _request, accepted: accepted in tuple(c.identity() for c in candidates),
+    )
+    return prepared, session_id
+
+
+def _prepare_oneshot_main_turn_continuation(
+    record, prompt, session_db, *, fallback_chain=(),
+):
+    """Resolve one fresh one-shot attempt from the carried spent-slot cursor."""
+    from agent.execution_router import ExecutionRouteCandidateV1
+    from hermes_cli.execution_router_runtime import _prepare_main_turn_continuation_attempt
+    from hermes_cli.plugins import get_plugin_manager
+
+    old_signature = tuple(record.old_route_signature)
+    candidates = [ExecutionRouteCandidateV1(
+        "native",
+        str(old_signature[0] if len(old_signature) > 0 else "auto"),
+        str(old_signature[1] if len(old_signature) > 1 else "auto"),
+        old_signature[2] if len(old_signature) > 2 else None,
+    )]
+    for index, item in enumerate(fallback_chain):
+        if not isinstance(item, dict):
+            continue
+        fallback_model, fallback_provider = item.get("model"), item.get("provider")
+        if isinstance(fallback_model, str) and fallback_model and isinstance(fallback_provider, str) and fallback_provider:
+            candidates.append(ExecutionRouteCandidateV1(
+                f"fallback-{index}", fallback_provider, fallback_model, item.get("reasoning_effort")
+            ))
+    registration = get_plugin_manager().get_execution_router_registration()
+    return _prepare_main_turn_continuation_attempt(
+        record,
+        raw_instruction=prompt if isinstance(prompt, str) else None,
+        surface_class="oneshot",
+        eligible_candidates=tuple(candidates),
+        registration=registration,
+        lifecycle=(
+            session_db.execution_route_lifecycle(record.session_id)
+            if session_db is not None else None
+        ),
+    )
 
 
 def _quietly(what: str, fn) -> None:

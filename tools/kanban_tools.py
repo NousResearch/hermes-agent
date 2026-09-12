@@ -155,6 +155,130 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _record_kanban_worker_start_receipt(agent: Any, route_state: str) -> None:
+    """Persist the exact worker-owned executor receipt after agent initialization."""
+    if route_state not in {"route", "pass_through"} or not _is_dispatcher_owned_worker():
+        raise RuntimeError("invalid dispatcher-owned Kanban route receipt")
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    run_id = _worker_run_id(task_id or "")
+    claim_lock = _own_task_env(task_id or "", "HERMES_KANBAN_CLAIM_LOCK")
+    if not task_id or run_id is None or not claim_lock:
+        raise RuntimeError("incomplete dispatcher-owned Kanban route identity")
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    reasoning = (
+        reasoning_config.get("effort")
+        if isinstance(reasoning_config, dict)
+        else None
+    )
+    with _board(None) as (kb, conn):
+        if not kb.record_routed_run_started(
+            conn,
+            task_id,
+            run_id,
+            claim_lock,
+            provider=str(agent.provider),
+            model=str(agent.model),
+            reasoning=reasoning,
+        ):
+            raise RuntimeError("Kanban route start receipt lost task/run/claim ownership")
+
+
+def _validated_kanban_worker_route_state() -> Optional[str]:
+    """Return the dispatcher-admitted state before this exact worker starts its agent."""
+    route_state = os.environ.get("HERMES_KANBAN_ROUTED_ATTEMPT")
+    if route_state not in {"route", "pass_through"} or not _is_dispatcher_owned_worker():
+        return None
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    run_id = _worker_run_id(task_id or "")
+    claim_lock = _own_task_env(task_id or "", "HERMES_KANBAN_CLAIM_LOCK")
+    if not task_id or run_id is None or not claim_lock:
+        return None
+    try:
+        with _board(None) as (_kb, conn):
+            task = conn.execute(
+                "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if (
+                task is None
+                or task["status"] != "running"
+                or int(task["current_run_id"] or 0) != run_id
+                or task["claim_lock"] != claim_lock
+            ):
+                return None
+            run = conn.execute(
+                "SELECT status, claim_lock, metadata FROM task_runs "
+                "WHERE id = ? AND task_id = ? AND ended_at IS NULL",
+                (run_id, task_id),
+            ).fetchone()
+            metadata = json.loads(run["metadata"] or "{}") if run is not None else {}
+            binding = metadata.get("execution_router") if isinstance(metadata, dict) else None
+            if (
+                run is None
+                or run["status"] != "running"
+                or run["claim_lock"] != claim_lock
+                or not isinstance(binding, dict)
+                or binding.get("state") != route_state
+            ):
+                return None
+            request_id = binding.get("request_id")
+            attempt_id = binding.get("attempt_id")
+            event_context = binding.get("event_context")
+            route = {
+                key: binding.get(key)
+                for key in ("candidate_id", "provider", "model", "reasoning")
+            }
+            if (
+                not isinstance(request_id, str)
+                or not request_id
+                or not isinstance(attempt_id, str)
+                or not attempt_id
+                or not isinstance(event_context, dict)
+                or event_context.get("request_id") != request_id
+                or event_context.get("attempt_id") != attempt_id
+                or event_context.get("execution_kind") != "kanban_worker"
+                or not all(isinstance(route[key], str) and route[key] for key in (
+                    "candidate_id", "provider", "model",
+                ))
+                or (route["reasoning"] is not None and not isinstance(route["reasoning"], str))
+            ):
+                return None
+            if route_state == "route":
+                if binding.get("accepted_route") != route:
+                    return None
+                decision_event = conn.execute(
+                    "SELECT payload FROM task_events WHERE task_id = ? AND run_id = ? "
+                    "AND kind = 'route_accepted' ORDER BY id DESC LIMIT 1",
+                    (task_id, run_id),
+                ).fetchone()
+                decision = json.loads(decision_event["payload"]) if decision_event is not None else {}
+                if (
+                    decision.get("request_id") != request_id
+                    or decision.get("attempt_id") != attempt_id
+                    or decision.get("decision_state") != "route"
+                    or decision.get("accepted_route") != route
+                ):
+                    return None
+            else:
+                if binding.get("accepted_route") is not None:
+                    return None
+                requested_event = conn.execute(
+                    "SELECT payload FROM task_events WHERE task_id = ? "
+                    "AND kind = 'route_requested' ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                requested = json.loads(requested_event["payload"]) if requested_event is not None else {}
+                if (
+                    requested.get("request_id") != request_id
+                    or requested.get("attempt_id") != attempt_id
+                    or requested.get("execution_kind") != "kanban_worker"
+                ):
+                    return None
+            return route_state
+    except Exception:
+        return None
+
+
 def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
     session_id = _own_task_env(task_id, "HERMES_SESSION_ID")

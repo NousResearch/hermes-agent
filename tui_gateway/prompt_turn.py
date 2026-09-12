@@ -430,6 +430,73 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    _main_turn_callback_token: str | None = None
+
+
+def _prepare_tui_main_turn_attempt(sid: str, session: dict, text: Any):
+    """Resolve a TUI/backend turn before the session agent is rebound or rebuilt."""
+    from agent.execution_router import ExecutionRouteCandidateV1
+    from hermes_cli.execution_router_runtime import prepare_main_turn_attempt
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+    registration = manager.get_execution_router_registration() if manager is not None else None
+    if registration is None:
+        return None
+    agent = session["agent"]
+    provider = str(getattr(agent, "requested_provider", None) or getattr(agent, "provider", None) or "auto")
+    model = str(getattr(agent, "model", None) or "auto")
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    reasoning = reasoning_config.get("effort") if isinstance(reasoning_config, dict) else None
+    candidates = [ExecutionRouteCandidateV1("native", provider, model, reasoning)]
+    for index, item in enumerate(getattr(agent, "_fallback_chain", None) or ()):
+        if not isinstance(item, dict):
+            continue
+        fallback_model, fallback_provider = item.get("model"), item.get("provider")
+        if isinstance(fallback_model, str) and fallback_model and isinstance(fallback_provider, str) and fallback_provider:
+            candidates.append(ExecutionRouteCandidateV1(
+                f"fallback-{index}", fallback_provider, fallback_model, item.get("reasoning_effort")
+            ))
+    db = getattr(agent, "_session_db", None)
+    key = str(session["session_key"])
+    prepared = prepare_main_turn_attempt(
+        raw_instruction=text if isinstance(text, str) else None,
+        surface_class="tui",
+        session_id=key,
+        native_candidate_id="native",
+        eligible_candidates=tuple(candidates),
+        explicit_model_pin=model if session.get("model_override") else None,
+        registration=registration,
+        lifecycle=db.execution_route_lifecycle(key) if db is not None else None,
+        revalidate=lambda _request, accepted: accepted in tuple(c.identity() for c in candidates),
+    )
+    session["_main_turn_candidates"] = tuple(candidates)
+    session["_main_turn_router_registration"] = registration
+    session["_main_turn_prepared_attempt"] = prepared
+    return prepared
+
+
+def _prepare_tui_main_turn_continuation(session: dict, record, text: Any):
+    from hermes_cli import plugins as plugin_api
+    from hermes_cli.execution_router_runtime import _prepare_main_turn_continuation_attempt
+
+    agent = session["agent"]
+    db = getattr(agent, "_session_db", None)
+    manager = plugin_api.get_plugin_manager()
+    registration = (
+        manager.get_execution_router_registration() if manager is not None else None
+    )
+    session["_main_turn_router_registration"] = registration
+    prepared = _prepare_main_turn_continuation_attempt(
+        record,
+        raw_instruction=text if isinstance(text, str) else None,
+        surface_class="tui",
+        eligible_candidates=session["_main_turn_candidates"],
+        registration=registration,
+        lifecycle=(db.execution_route_lifecycle(record.session_id) if db is not None else None),
+    )
+    session["_main_turn_prepared_attempt"] = prepared
+    return prepared
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
@@ -463,7 +530,15 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         _sync_agent_model_with_config(sid, session)
         _sync_agent_compression_with_config(sid, session)
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
-    st.agent = agent = session["agent"]
+    agent = session["agent"]
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+    router_active = (
+        manager is not None and manager.get_execution_router_registration() is not None
+    )
+    if not router_active:
+        st.agent = agent
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.
     with session["history_lock"]:
         st.history = list(session["history"])
@@ -489,6 +564,48 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
                 "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})
             return None
         prompt = ctx.message
+    prepared_attempt = (
+        _prepare_tui_main_turn_attempt(sid, session, prompt) if router_active else None
+    )
+    if prepared_attempt is not None and not prepared_attempt.may_start:
+        _emit("error", sid, {"message": (
+            prepared_attempt.resolution.reason_text
+            or prepared_attempt.resolution.reason_code
+            or "Execution router did not start this turn."
+        )})
+        return None
+    if prepared_attempt is not None:
+        from hermes_cli.execution_router_runtime import ExecutionRouteResolutionState
+
+        routed = prepared_attempt.resolution.state is ExecutionRouteResolutionState.ROUTE
+        if routed and prepared_attempt.route_signature != session.get("_main_turn_route_signature"):
+            old_agent = agent
+            try:
+                replacement = _rebuild_session_agent(
+                    sid,
+                    session,
+                    session_id=session["session_key"],
+                    model_override=prepared_attempt.selected_model,
+                    provider_override=prepared_attempt.selected_provider,
+                    reasoning_config_override=(
+                        {"enabled": True, "effort": prepared_attempt.selected_reasoning}
+                        if prepared_attempt.selected_reasoning is not None else None
+                    ),
+                    platform_override=_session_source(session),
+                )
+            except Exception:
+                from hermes_cli.execution_router_runtime import record_main_turn_not_started
+
+                record_main_turn_not_started(prepared_attempt, "executor_construction_failed")
+                _emit("error", sid, {"message": "Failed to construct the selected execution route."})
+                return None
+            if old_agent is not replacement:
+                with contextlib.suppress(Exception):
+                    old_agent.release_clients()
+        if routed:
+            session["_main_turn_route_signature"] = prepared_attempt.route_signature
+            agent = session["agent"]
+    st.agent = agent
     st.prompt_text = prompt if isinstance(prompt, str) else ""
     run_message: Any = _route_turn_images(agent, prompt, images) if images else prompt
     st.tts_queue, st.thinking_started = _start_turn_voice()
@@ -506,6 +623,7 @@ def _invoke_agent(
     images: list[str], display_kind: str | None, display_metadata: dict | None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``."""
     agent = st.agent
+    prepared_attempt = session.get("_main_turn_prepared_attempt")
 
     def _stream(delta):
         with session["history_lock"]:
@@ -521,13 +639,56 @@ def _invoke_agent(
     # by the desktop as its own segment instead of being lost to message.complete.
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
         _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
+
+    if prepared_attempt is None:
+        agent.interim_assistant_callback = (
+            _interim_assistant_cb if _load_interim_assistant_messages() else None)
+        # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
+        # not a raw user bubble; the post-turn stamp is the fallback for an older agent.
+        st.run_kwargs = run_kwargs = {
+            "conversation_history": list(st.history),
+            "stream_callback": _stream,
+            "persist_user_message": (
+                _build_persist_user_message(prompt, images, run_message) if images else prompt)}
+        try:
+            run_params = inspect.signature(agent.run_conversation).parameters
+        except (TypeError, ValueError):
+            run_params = {}
+        if "task_id" in run_params:
+            run_kwargs["task_id"] = session["session_key"]
+        if display_kind and "persist_user_display_kind" in run_params:
+            run_kwargs["persist_user_display_kind"] = display_kind
+            run_kwargs["persist_user_display_metadata"] = display_metadata
+        # Live-rename hook: auto-titling fires inside the turn prologue.
+        _title_key = session.get("session_key") or sid
+        agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
+            "session.title", sid, {"session_id": _k, "title": t})
+        _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
+        try:
+            st.result = agent.run_conversation(run_message, **st.run_kwargs)
+        finally:
+            # Stop AND join before anything emits: a tick surviving past message.complete would
+            # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
+            _usage_stop.set()
+            _usage_thread.join()
+        return
+
+    _title_key = session.get("session_key") or sid
+    native_callbacks = {
+        "stream": _stream,
+        "interim": _interim_assistant_cb,
+        "title": lambda t, _src, _k=_title_key: _emit(
+            "session.title", sid, {"session_id": _k, "title": t}
+        ),
+    }
+    attempt_callbacks = native_callbacks
     agent.interim_assistant_callback = (
-        _interim_assistant_cb if _load_interim_assistant_messages() else None)
+        attempt_callbacks["interim"] if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
     # not a raw user bubble; the post-turn stamp is the fallback for an older agent.
     st.run_kwargs = run_kwargs = {
         "conversation_history": list(st.history),
-        "stream_callback": _stream,
+        "stream_callback": attempt_callbacks["stream"],
         "persist_user_message": (
             _build_persist_user_message(prompt, images, run_message) if images else prompt)}
     try:
@@ -540,17 +701,144 @@ def _invoke_agent(
         run_kwargs["persist_user_display_kind"] = display_kind
         run_kwargs["persist_user_display_metadata"] = display_metadata
     # Live-rename hook: auto-titling fires inside the turn prologue.
-    _title_key = session.get("session_key") or sid
-    agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
-        "session.title", sid, {"session_id": _k, "title": t})
-    _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
-    try:
-        st.result = agent.run_conversation(run_message, **st.run_kwargs)
-    finally:
-        # Stop AND join before anything emits: a tick surviving past message.complete would
-        # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
-        _usage_stop.set()
-        _usage_thread.join()
+    agent._on_session_title = attempt_callbacks["title"]
+    from hermes_cli.execution_router_runtime import (
+        ExecutionRouteResolutionState,
+        bind_main_turn_attempt,
+        record_main_turn_finished,
+        record_main_turn_started,
+    )
+
+    routed = prepared_attempt.resolution.state is ExecutionRouteResolutionState.ROUTE
+    bind_main_turn_attempt(
+        prepared_attempt,
+        agent,
+        session.get("_main_turn_candidates", ()),
+    )
+    record_main_turn_started(prepared_attempt, agent)
+    if not routed:
+        _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
+        try:
+            st.result = agent.run_conversation(run_message, **st.run_kwargs)
+        finally:
+            _usage_stop.set()
+            _usage_thread.join()
+        record_main_turn_finished(prepared_attempt, st.result)
+        return
+
+    from agent.main_turn_continuation import _bind_routed_main_turn_callbacks
+
+    attempt_callbacks = _bind_routed_main_turn_callbacks(st, native_callbacks)
+    agent.interim_assistant_callback = (
+        attempt_callbacks["interim"] if _load_interim_assistant_messages() else None)
+    st.run_kwargs["stream_callback"] = attempt_callbacks["stream"]
+    agent._on_session_title = attempt_callbacks["title"]
+    first_attempt = True
+    while True:
+        _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
+        try:
+            if first_attempt:
+                st.result = agent.run_conversation(run_message, **st.run_kwargs)
+                first_attempt = False
+            else:
+                from agent.main_turn_continuation import _continue_main_turn_attempt
+                st.result = _continue_main_turn_attempt(
+                    agent,
+                    continuation_record,
+                    existing_surface_callbacks={"_stream_callback": attempt_callbacks["stream"]},
+                )
+        finally:
+            _usage_stop.set()
+            _usage_thread.join()
+
+        if getattr(agent, "_routed_restart_required", None) is None:
+            record_main_turn_finished(prepared_attempt, st.result)
+            break
+        from agent.main_turn_continuation import (
+            _invalidate_routed_main_turn_callbacks,
+            _seal_main_turn_continuation,
+        )
+        from hermes_cli.execution_router_runtime import (
+            record_main_turn_not_started,
+            record_main_turn_routed_restart,
+            record_main_turn_started,
+        )
+
+        continuation_record = _seal_main_turn_continuation(agent, prepared_attempt, st.result)
+        record_main_turn_routed_restart(prepared_attempt)
+        _invalidate_routed_main_turn_callbacks(st)
+        prepared_attempt = None
+        try:
+            prepared_attempt = _prepare_tui_main_turn_continuation(
+                session, continuation_record, prompt
+            )
+        except RuntimeError as exc:
+            st.result = {
+                "final_response": str(exc), "messages": st.result["messages"],
+                "completed": False, "failed": True, "error": str(exc),
+                "turn_id": continuation_record.turn_id,
+                "current_turn_user_idx": continuation_record.current_turn_user_idx,
+            }
+            break
+        if not prepared_attempt.may_start:
+            st.result = {
+                "final_response": (
+                    prepared_attempt.resolution.reason_text
+                    or prepared_attempt.resolution.reason_code
+                    or "Execution router did not continue this turn."
+                ),
+                "messages": st.result["messages"], "completed": False, "failed": True,
+                "turn_id": continuation_record.turn_id,
+                "current_turn_user_idx": continuation_record.current_turn_user_idx,
+            }
+            break
+        old_agent = agent
+        try:
+            agent = _rebuild_session_agent(
+                sid,
+                session,
+                session_id=session["session_key"],
+                model_override=prepared_attempt.selected_model,
+                provider_override=prepared_attempt.selected_provider,
+                reasoning_config_override=(
+                    {"enabled": True, "effort": prepared_attempt.selected_reasoning}
+                    if prepared_attempt.selected_reasoning is not None else None
+                ),
+                platform_override=_session_source(session),
+            )
+        except Exception:
+            record_main_turn_not_started(prepared_attempt, "executor_construction_failed")
+            prepared_attempt = None
+            st.result = {
+                "final_response": "Continuation executor construction failed.",
+                "messages": st.result["messages"], "completed": False,
+                "failed": True, "error": "executor_construction_failed",
+                "turn_id": continuation_record.turn_id,
+                "current_turn_user_idx": continuation_record.current_turn_user_idx,
+            }
+            break
+        if old_agent is not agent:
+            with contextlib.suppress(Exception):
+                old_agent.release_clients()
+        st.agent = agent
+        _wire_callbacks(sid)
+        attempt_callbacks = _bind_routed_main_turn_callbacks(st, {
+            "stream": _stream,
+            "interim": _interim_assistant_cb,
+            "title": lambda t, _src, _k=_title_key: _emit(
+                "session.title", sid, {"session_id": _k, "title": t}
+            ),
+        })
+        agent.interim_assistant_callback = (
+            attempt_callbacks["interim"] if _load_interim_assistant_messages() else None
+        )
+        agent._on_session_title = attempt_callbacks["title"]
+        bind_main_turn_attempt(
+            prepared_attempt,
+            agent,
+            session.get("_main_turn_candidates", ()),
+        )
+        record_main_turn_started(prepared_attempt, agent)
 
 
 def _absorb_turn_result(

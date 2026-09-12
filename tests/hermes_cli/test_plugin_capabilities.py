@@ -43,10 +43,13 @@ def _read_cfg(home):
 
 
 class TestRegistry:
-    def test_every_capability_has_legacy_gate(self):
+    def test_every_capability_is_described_and_only_legacy_bridges_have_paths(self):
         for spec in CAPABILITY_REGISTRY.values():
-            assert spec.legacy_path, spec.id
             assert spec.description
+            if spec.id == "execution.routing":
+                assert spec.legacy_path == ()
+            else:
+                assert spec.legacy_path, spec.id
 
     def test_known_ids(self):
         assert "tools.override" in VALID_CAPABILITY_IDS

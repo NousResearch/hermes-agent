@@ -412,7 +412,8 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
     before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
     required_env_vars = _get_required_environment_variables(frontmatter)
-    backend = str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
+    from tools.terminal_scope import terminal_env
+    backend = str(terminal_env("TERMINAL_ENV", "local")).strip().lower() or "local"
     env_snapshot = load_env()
     missing_required_env_vars = [
         e for e in required_env_vars

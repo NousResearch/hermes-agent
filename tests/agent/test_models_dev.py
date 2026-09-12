@@ -825,6 +825,33 @@ class TestGetModelCapabilities:
         assert caps is not None
         assert caps.supports_vision is False
 
+    def test_astra_builtin_metadata_fills_catalog_lag_without_listing_it(self):
+        """An explicitly discovered Astra remains fully described before models.dev catches up."""
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("openai", "gpt-6-astra")
+
+        assert caps is not None
+        assert caps.supports_vision is True  # the one thing _UNKNOWN_MODEL_BASE could not supply
+
+        api_caps = get_model_capabilities("openai-api", "gpt-6-astra")
+        assert api_caps == caps
+
+    def test_deepseek_flash_builtin_vision_fills_catalog_lag(self):
+        """Native Flash stays multimodal when models.dev is empty; Pro does not.
+
+        Vendor docs: deepseek-flash accepts images, deepseek-v4-pro does not.
+        A global model.supports_vision pin would lie about Pro.
+        """
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            flash = get_model_capabilities("deepseek", "deepseek-flash")
+            alias = get_model_capabilities("deepseek", "deepseek-v4-flash")
+            pro = get_model_capabilities("deepseek", "deepseek-v4-pro")
+
+        assert flash is not None and flash.supports_vision is True
+        assert flash.context_window == 1_000_000
+        assert alias is not None and alias.supports_vision is True
+        assert pro is None
+
 
 # ---------------------------------------------------------------------------
 # Per-model metadata overrides (model_overrides config)
@@ -1144,8 +1171,8 @@ class TestModelOverrides:
     def test_model_info_override_for_unknown_model(self):
         """Canonical-schema override provides metadata for an unknown model.
 
-        Same key space as every other consumer — context_window,
-        max_output_tokens, supports_* — NOT the internal catalog shape.
+        Context and capabilities remain configurable; a legacy output override
+        cannot displace the unknown-model metadata fallback.
         """
         overrides = {
             "custom:my-vllm": {
@@ -1161,10 +1188,13 @@ class TestModelOverrides:
         with self._setup_overrides(overrides), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             info = get_model_info("custom:my-vllm", "my-llava-model")
+            del overrides["custom:my-vllm"]["my-llava-model"]["max_output_tokens"]
+            uncapped_info = get_model_info("custom:my-vllm", "my-llava-model")
         assert info is not None
         assert info.family == "llava"
         assert info.context_window == 8192
-        assert info.max_output == 4096
+        assert uncapped_info is not None
+        assert info.max_output == uncapped_info.max_output > 0
         assert info.tool_call is True
         assert info.reasoning is False
 
@@ -1305,3 +1335,49 @@ class TestModelOverrides:
         assert info is not None
         assert "image" in info.input_modalities
         assert info.attachment is True
+
+
+# =========================================================================
+# OpenRouter routing-variant suffixes — catalog lookup across consumers
+# =========================================================================
+
+class TestOpenRouterRoutingVariantCatalogLookup:
+    """models.dev, like OpenRouter's /models, lists only the base id of a routed
+    `:nitro`/`:floor`/`:exacto`/`:online` model, so every catalog consumer resolves the base's
+    metadata for it (#97820). `:free` is a real SKU whose window may differ from its base
+    (z-ai/glm-5.2 1.05M vs :free 256K) — stripping it would over-report the window and fail
+    at the API, so it keeps exact-match semantics and an absent SKU still misses."""
+
+    REGISTRY = {
+        "openrouter": {
+            "id": "openrouter",
+            "models": {
+                "z-ai/glm-5.3-flash": {
+                    "id": "z-ai/glm-5.3-flash",
+                    "limit": {"context": 1310720, "output": 131072},
+                    "tool_call": True,
+                    "reasoning": True,
+                },
+                "z-ai/glm-5.2": {"id": "z-ai/glm-5.2", "limit": {"context": 1048576, "output": 131072}},
+                "z-ai/glm-5.2:free": {"id": "z-ai/glm-5.2:free", "limit": {"context": 256000, "output": 131072}},
+            },
+        },
+    }
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    def test_routed_id_matches_base_across_consumers(self, suffix):
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            routed = f"z-ai/glm-5.3-flash:{suffix}"
+            assert lookup_models_dev_context("openrouter", routed) == 1310720
+            base_caps = get_model_capabilities("openrouter", "z-ai/glm-5.3-flash")
+            routed_caps = get_model_capabilities("openrouter", routed)
+            assert routed_caps.context_window == base_caps.context_window == 1310720
+            assert routed_caps.supports_tools == base_caps.supports_tools
+            assert get_model_info("openrouter", routed).context_window == 1310720
+            # Other providers' colon tags keep exact-match semantics.
+            assert lookup_models_dev_context("anthropic", f"claude-x:{suffix}") is None
+
+    def test_real_sku_suffix_is_not_stripped(self):
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            assert lookup_models_dev_context("openrouter", "z-ai/glm-5.2:free") == 256000
+            assert lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash:free") is None

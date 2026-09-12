@@ -52,6 +52,8 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+# Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
+_permanent_approved_by_home: dict[str, set] = {}
 
 # --- Consecutive-denial circuit breaker for smart approvals ---------------------------------------------------------
 # Each retry of a smart-denied command burns another guardian LLM call. After ``approvals.denial_breaker_threshold``
@@ -288,25 +290,47 @@ def _yolo_active() -> bool:
     return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
 
 
+def _permanent_set() -> set:
+    """The permanent allowlist that governs the ACTIVE profile. Unscoped (single-profile process,
+    or the multiplexer's own launch profile) → the module-level set tests and the CLI seed. A routed
+    profile (HERMES_HOME override) → its own set, lazily loaded from ITS ``command_allowlist``: the
+    launch profile's "always" approvals must not pre-approve commands for a secondary, nor may a
+    secondary's "always" choice be written back into the launch profile's config. Callers hold ``_lock``.
+    """
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None:
+        return _permanent_approved
+    home_key = hermes_home_key()
+    approved = _permanent_approved_by_home.get(home_key)
+    if approved is None:
+        try:
+            approved = _read_permanent_allowlist()
+        except Exception as e:
+            logger.warning("Failed to load permanent allowlist: %s", e)
+            approved = set()
+        _permanent_approved_by_home[home_key] = approved
+    return approved
+
+
 def is_approved(session_key: str, pattern_key: str) -> bool:
     """Session-scoped or permanent approval. Accepts the canonical key and the legacy
     regex-derived key so existing command_allowlist entries survive key migrations."""
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
-        approved = _permanent_approved | _session_approved.get(session_key, set())
+        approved = _permanent_set() | _session_approved.get(session_key, set())
     return any(alias in approved for alias in aliases)
 
 
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
     with _lock:
-        _permanent_approved.add(pattern_key)
+        _permanent_set().add(pattern_key)
 
 
 def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
-        _permanent_approved.update(patterns)
+        _permanent_set().update(patterns)
 
 
 def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> None:
@@ -319,18 +343,41 @@ def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> Non
         approve_session(session_key, key)
         if choice == "always" and not is_tirith:
             approve_permanent(key)
-            save_permanent_allowlist(_permanent_approved)
+            with _lock:
+                snapshot = set(_permanent_set())
+            save_permanent_allowlist(snapshot)
 
 
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
+
+def _read_permanent_allowlist() -> set:
+    """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
+    from hermes_cli.config import load_config_readonly
+    config = load_config_readonly()
+    raw = config.get("command_allowlist")
+    legacy = isinstance(raw, str)
+    if legacy:
+        # Old config-set versions serialized list values as scalar strings.
+        import yaml
+        try:
+            raw = yaml.safe_load(raw)
+        except yaml.YAMLError:
+            raw = False
+    if raw is None and not legacy:
+        raw = []
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        logger.warning("Ignoring malformed command_allowlist; configure a list of strings.")
+        return set()
+    if legacy:
+        logger.warning("Recovered legacy string command_allowlist; re-save it as a list of strings.")
+    return set(raw)
+
 
 def load_permanent_allowlist() -> set:
     """Load ``command_allowlist`` from config and sync it into the approval state
     so is_approved() honors 'always' choices from previous sessions."""
     try:
-        from hermes_cli.config import load_config_readonly
-        config = load_config_readonly()
-        patterns = set(config.get("command_allowlist", []) or [])
+        patterns = _read_permanent_allowlist()
         if patterns:
             load_permanent(patterns)
         return patterns
@@ -857,6 +904,17 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
 
 
+def _user_deny_block(command: str) -> dict | None:
+    """The operator's ``approvals.deny`` rules are documented as never bypassable — not by yolo,
+    not by mode=off, and not by an isolated container either: they express intent about what the
+    agent may DO, not what it can reach, so they are evaluated before the container fast path."""
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is None:
+        return None
+    logger.warning("User deny rule %r blocked command: %s", deny_pattern, command[:200])
+    return _user_deny_block_result(deny_pattern)
+
+
 def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     """Unconditional floors, BEFORE yolo / mode=off / cron approve-mode so no
     session-level setting can bypass them: hardline catastrophic commands,
@@ -871,11 +929,7 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
         if is_sudo_guess:
             logger.warning("Sudo stdin guard block: %s (command: %s)", sudo_guess_desc, command[:200])
             return _sudo_stdin_block_result(sudo_guess_desc)
-    deny_pattern = _match_user_deny_rule(command)
-    if deny_pattern is not None:
-        logger.warning("User deny rule %r blocked command: %s", deny_pattern, command[:200])
-        return _user_deny_block_result(deny_pattern)
-    return None
+    return _user_deny_block(command)
 
 
 def check_dangerous_command(command: str, env_type: str,
@@ -885,7 +939,7 @@ def check_dangerous_command(command: str, env_type: str,
     a Docker sandbox that bind-mounts host paths must not skip approval.
     Returns ``{"approved": True/False, "message": str or None, ...}``."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _approved()
+        return _user_deny_block(command) or _approved()
     blocked = _floor_block(command)
     if blocked is not None:
         return blocked
@@ -976,7 +1030,7 @@ def check_all_command_guards(command: str, env_type: str,
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _approved()
+        return _user_deny_block(command) or _approved()
 
     blocked = _floor_block(command, sudo_guard=True)
     if blocked is not None:

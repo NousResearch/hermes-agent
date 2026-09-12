@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import (
     _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home, display_hermes_home,
 )
+from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
 )
@@ -64,13 +65,23 @@ _EXCLUDED_DIRS = {
 # ``profiles/<name>/`` — a deeper dir of the same name (a skill's ``models/``) is user data.
 _EXCLUDED_ROOT_DIRS = {"models", "runtimes", "node"}
 
+# ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
+# profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
+# the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
+# subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
+_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations"}
+
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
-    """True when *rel_path* is, or sits inside, a managed runtime tree at a profile-home root."""
+    """True when *rel_path* is inside a regenerable tree at a profile-home root."""
     parts = rel_path.parts
-    return bool(parts) and (
-        parts[0] in _EXCLUDED_ROOT_DIRS
-        or (len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _EXCLUDED_ROOT_DIRS))
+    if len(parts) >= 3 and parts[0] == "profiles":
+        parts = parts[2:]
+    if not parts:
+        return False
+    if parts[0] in _EXCLUDED_ROOT_DIRS:
+        return True
+    return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in _KEPT_CACHE_SUBDIRS
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:
@@ -85,7 +96,14 @@ _EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;
 # a plain ``.bak`` suffix rule would drop user files.
-_EXCLUDED_PREFIXES = ("state.db.pre-update-emergency-",)
+# Retired-WAL capture dirs (``<name>.retired-wal-<ts>-<pid>/``) are excluded whole: a
+# ``sqlite3.backup()`` snapshot of the live db paired with the captured ``-wal`` is exactly the
+# torn-restore hazard the sidecar exclusion below exists to prevent, and the capture is an
+# operator-recovery artifact that must move as a unit (manifest + image + WAL), never partially.
+_EXCLUDED_PREFIXES = (
+    "state.db.pre-update-emergency-",
+    f"state.db{RETIRED_GENERATION_DIR_SUFFIX}",
+)
 
 # Files ``hermes import`` must never overwrite, matched by basename so root and named profiles are
 # both covered. They hold runtime state namespaced to the SOURCE machine: ``gateway_state.json``
@@ -96,7 +114,10 @@ _EXCLUDED_PREFIXES = ("state.db.pre-update-emergency-",)
 _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}
+# vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)
+# IS included in backups (user-entered secrets, not regenerable — unlike the
+# excluded browser-profile/ snapshot) but must come back owner-only.
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}
 
 # Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.honcho, via
 # MemoryProvider.backup_paths()), stored and restored relative to the user's home; paths not
@@ -215,9 +236,21 @@ def _iter_external_files(base: Path) -> List[Path]:
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
-                     if not (fp.is_symlink() or fp.name in _EXCLUDED_NAMES
+                     if not (_is_non_regular_path(fp) or fp.name in _EXCLUDED_NAMES
                              or fp.name.endswith(_EXCLUDED_SUFFIXES)))
     return files
+
+
+def _is_non_regular_path(path: Path) -> bool:
+    """True for symlinks, sockets, devices, and other non-regular filesystem entries.
+
+    A failed ``lstat`` is not treated as an exclusion: the archive writer must see the path and
+    report the read failure instead of silently claiming a complete backup.
+    """
+    try:
+        return not stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
 
 
 def _should_exclude(rel_path: Path) -> bool:
@@ -254,7 +287,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             fpath = hermes_root / rel
             # zipfile.write() follows file symlinks, so skip links before any archive write can
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel) or fpath.is_symlink():
+            if _should_exclude(rel) or _is_non_regular_path(fpath):
                 continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():
@@ -563,11 +596,14 @@ def _print_capped(header: str, lines: List[str], indent: str) -> None:
 
 # --- Backup ---
 
+_RUN_BACKUP_PREFIX = "hermes-backup-"
+
+
 def _resolve_backup_output_path(output: Optional[str]) -> Path:
     """Turn ``--output`` (file, directory, or None) into a ``.zip`` path whose parent exists;
     an unwritable path exits with a one-line error, not a traceback."""
     out_path = None
-    default_name = f"hermes-backup-{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
+    default_name = f"{_RUN_BACKUP_PREFIX}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     try:
         if output:
             out_path = Path(output).expanduser().resolve()
@@ -679,6 +715,11 @@ def _run_backup_locked(args, hermes_root: Path) -> None:
         _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "  ")
     else:
         print(f"\nRestore with: hermes import {out_path.name}")
+    keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
+    if keep and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+        pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
+        if pruned:
+            print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
 
 
 # --- Import ---

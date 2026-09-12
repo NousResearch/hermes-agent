@@ -346,6 +346,14 @@ def _terminalize_wait_timeout(execution_id: str) -> str:
             "SELECT status, error FROM deliveries WHERE execution_id=?",
             (str(execution_id),),
         ).fetchone()
+        if row is None:
+            # Retention can move a completed send between the worker's last
+            # poll and its deadline. Its durable outcome still confirms it.
+            row = conn.execute(
+                "SELECT terminal_status AS status, NULL AS error "
+                "FROM delivery_tombstones WHERE execution_id=?",
+                (str(execution_id),),
+            ).fetchone()
         _prune_terminal_unlocked(conn)
     if row is None:
         return "timed out waiting for live gateway delivery"

@@ -33,6 +33,7 @@ class ProcessCheckpointMixin:
                     # PID, never re-runs it), so masking is lossless.
                     # See #77484.
                     entry["command"] = redact_sensitive_text(s.command, code_file=True)
+                    entry["handoff_note"] = redact_sensitive_text(s.handoff_note, code_file=True)
                     entry["owner_task_id"] = s.owner_task_id or s.task_id
                     entries.append(entry)
                 if extra_entries:

@@ -458,7 +458,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "watch_patterns")
+    "parent_session_id", "notify_on_complete", "watch_patterns", "handoff_note")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -1958,10 +1958,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
-                           to_session_key: str, note: str = "") -> Optional[ProcessSession]:
+                           to_session_key: str, to_parent_session_id: str = "",
+                           notify_on_complete: bool = True, note: str = "") -> Optional[ProcessSession]:
         """Move a RUNNING process from one owner to another under the registry lock. Ownership is the ``owner_task_id``
-        field: completion notices are stamped from it at exit time and teardown kills by it, so flipping it here is the
-        whole transfer. Returns the session, or None when it is unknown, already exited, or not owned by ``from_owner``
+        field: completion notices and teardown follow it. Move completion eligibility and its durable session target
+        alongside it. Returns the session, or None when it is unknown, already exited, or not owned by ``from_owner``
         (the caller must not report a transfer that did not happen)."""
         session = self.get(session_id)
         with self._lock:
@@ -1970,6 +1971,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
             session.owner_task_id = to_owner
             session.task_id = to_task_id
             session.session_key = to_session_key
+            session.parent_session_id = to_parent_session_id
+            session.notify_on_complete = notify_on_complete
             session.handoff_note = note
             return session
 
@@ -2149,6 +2152,7 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
     no-op, so a PID mentioned in prose can't masquerade as a transfer."""
     from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
     from tools.terminal_tool import _resolve_container_task_id
+    from gateway.session_context import async_delivery_supported, get_session_env, scoped_current_session_id
     with _active_subagents_lock:
         record = _active_subagents.get(str(task_id or ""))
     child = record.get("agent") if record else None
@@ -2167,17 +2171,31 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
     note = str(args.get("data") or "").strip()
     if not note:
         return {"error": "handoff requires `data`: one sentence saying what the process is for and what the parent should do with its result."}
+    notify = async_delivery_supported()
+    parent_session_id = str(getattr(parent, "session_id", "") or "")
     session = process_registry.transfer_ownership(
         session_id, from_owner=str(task_id or ""), to_owner=parent_owner,
         to_task_id=_resolve_container_task_id(parent_owner),
-        to_session_key=str(getattr(parent, "session_id", "") or ""), note=note)
+        to_session_key=get_session_env("HERMES_SESSION_KEY", "") or parent_session_id,
+        to_parent_session_id=parent_session_id, notify_on_complete=notify, note=note)
     if session is None:
         return {"error": f"cannot hand off {session_id}: not a running process you own (already exited? read its result "
                          "with poll/log and report it instead)."}
-    handed.append({"session_id": session.id, "command": session.command, "note": note})
+    if notify:
+        from tools.terminal_tool_background import _stamp_gateway_routing, _register_completion_watcher
+        with scoped_current_session_id(parent_session_id):
+            _stamp_gateway_routing(session, get_session_env)
+        if session.watcher_platform and not session.watcher_interval:
+            _register_completion_watcher(process_registry, session, session.session_key)
+    process_registry._write_checkpoint()
+    handed.append({"session_id": session.id, "command": session.command, "note": note,
+                   "notify_on_complete": notify})
     return {"status": "handed_off", "session_id": session.id, "command": session.command,
-            "note": "Your parent now owns this process and will receive its completion; you will not. Mention the handoff "
-                    "in your final answer."}
+            "notify_on_complete": notify,
+            "note": ("Your parent now owns this process and will receive its completion; you will not. "
+                     "Mention the handoff in your final answer." if notify else
+                     "Your parent now owns this process. This session cannot receive asynchronous completions; "
+                     "the parent must poll/log/wait for its result. Mention the handoff in your final answer.")}
 
 
 _MAX_HANDOFFS_PER_CHILD = 3

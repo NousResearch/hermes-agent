@@ -49,7 +49,8 @@ def clean_queue():
         process_registry.completion_queue.get_nowait()
 
 
-def test_handed_off_process_completion_reaches_parent_and_leftover_is_reported(clean_queue):
+@pytest.mark.parametrize("notify_at_spawn", [False, True])
+def test_handed_off_process_completion_reaches_parent_and_leftover_is_reported(clean_queue, notify_at_spawn):
     """A real child-owned process handed off carries the parent's owner id (so the parent's drain accepts it, with the
     handoff purpose), while a sibling the child did not hand off is still owned by the child and is listed as orphaned
     on the child's result."""
@@ -59,7 +60,7 @@ def test_handed_off_process_completion_reaches_parent_and_leftover_is_reported(c
     _register(sid, child)
     try:
         handed = process_registry.spawn_local("sleep 0.4; echo ci-green", task_id=sid, owner_task_id=sid)
-        handed.notify_on_complete = True
+        handed.notify_on_complete = notify_at_spawn
         leftover = process_registry.spawn_local("sleep 30", task_id=sid, owner_task_id=sid)
 
         out = json.loads(_handle_process(
@@ -129,5 +130,62 @@ def test_handoff_refuses_exited_foreign_or_non_child_callers(clean_queue):
         assert format_process_notification({"type": "completion", "session_id": "p", "command": "c", "exit_code": 0,
                                             "output": "", "handoff_note": "why"}).count("Handed off to you") == 1
     finally:
+        process_registry.kill_all(source="test")
+        _unregister_subagent(sid)
+
+
+@pytest.mark.parametrize("notify_at_spawn,async_delivery", [(False, True), (True, True), (False, False)])
+def test_gateway_handoff_retargets_completion_and_persists_owner(
+    clean_queue, tmp_path, monkeypatch, notify_at_spawn, async_delivery,
+):
+    from types import SimpleNamespace
+    from agent.delegation_context import delegated_child_context
+    from gateway.run_notifications import GatewayNotificationsMixin
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from tools.terminal_tool_background import spawn_background_process
+    import tools.process_registry as pr
+
+    checkpoint = tmp_path / "processes.json"
+    monkeypatch.setattr(pr, "CHECKPOINT_PATH", checkpoint)
+    monkeypatch.setattr(process_registry, "pending_watchers", [])
+    sid = "sa-0-handoff-gateway"
+    parent = _Parent()
+    child = _Child(parent)
+    _register(sid, child)
+    tokens = set_session_vars(platform="telegram", chat_id="chat", session_key="parent-route",
+                              session_id=parent.session_id, async_delivery=async_delivery)
+    try:
+        with delegated_child_context("child-session"):
+            spawned = json.loads(spawn_background_process(
+                command="sleep 2; echo gateway-result", env=SimpleNamespace(env={}), env_type="local",
+                effective_task_id=sid, task_id=sid, session_key="parent-route", workdir=None,
+                cwd=str(tmp_path), effective_pty=False, notify_on_complete=notify_at_spawn,
+                watch_patterns=None, approval_note=None, pty_disabled_reason=None,
+            ))
+            out = json.loads(_handle_process(
+                {"action": "handoff", "session_id": spawned["session_id"], "data": "forward result"}, task_id=sid))
+        assert out["status"] == "handed_off"
+        session = process_registry.get(spawned["session_id"])
+        watchers = [w for w in process_registry.pending_watchers if w["session_id"] == session.id]
+        if not async_delivery:
+            assert session.owner_task_id == parent._current_task_id
+            assert out["notify_on_complete"] is False
+            assert "must poll/log/wait" in out["note"]
+            notice = _process_accounting_lines({"handed_off_processes": child._handed_off_processes})[0]
+            assert "poll/log/wait" in notice
+            assert not watchers
+            return
+        assert len(watchers) == 1, "handoff must register exactly one gateway completion watcher"
+        event = GatewayNotificationsMixin._build_process_completion_event(watchers[0], session, session.id)
+        assert event["parent_session_id"] == parent.session_id, "handoff must stop targeting the child session"
+        assert event["session_key"] == "parent-route"
+        assert event["handoff_note"] == "forward result"
+        saved = next(row for row in json.loads(checkpoint.read_text()) if row["session_id"] == session.id)
+        assert saved["owner_task_id"] == session.owner_task_id == parent._current_task_id
+        assert saved["parent_session_id"] == parent.session_id
+        assert saved["notify_on_complete"] is True
+        assert saved["handoff_note"] == event["handoff_note"]
+    finally:
+        clear_session_vars(tokens)
         process_registry.kill_all(source="test")
         _unregister_subagent(sid)

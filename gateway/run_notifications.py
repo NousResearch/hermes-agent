@@ -1670,6 +1670,13 @@ class GatewayNotificationsMixin:
         from gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
+        handoff_note = getattr(session, "handoff_note", "")
+        if isinstance(handoff_note, str) and handoff_note:
+            # A watcher may already be running when ownership moves. Its spawn-time session id is stale.
+            watcher = {**watcher, "session_key": session.session_key,
+                       "parent_session_id": session.parent_session_id}
+        else:
+            handoff_note = ""
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
         _raw = redact_terminal_output(_raw, _command)
@@ -1688,6 +1695,7 @@ class GatewayNotificationsMixin:
         return {
             "type": "completion",
             "session_id": session_id,
+            **({"handoff_note": handoff_note} if handoff_note else {}),
             **{k: watcher.get(k, "") for k in _WATCHER_ROUTE_FIELDS},
             "message_id": str(watcher.get("message_id") or "").strip() or None,
             "started_at": getattr(session, "started_at", None),

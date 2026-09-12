@@ -127,6 +127,104 @@ agent:
 Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up when it next runs. Live interrupt of a Bot mid-conversation is future work.
 :::
 
+### Human observer (opt-in)
+
+A receiving Bot can brief a human about consequential handoffs or decision
+requests from selected teammates. Configure this in **that receiving profile's
+own `config.yaml`**:
+
+```yaml
+agent:
+  bot_mode_observer:
+    enabled: true
+    target: "discord:#observer-fixture"  # replace with your existing destination
+    sources: [researcher, helper]       # exact sender handles, without a leading @
+    language: en                       # optional language tag, not free-form instructions
+```
+
+The observer is disabled unless `enabled` is the YAML boolean `true` and both
+`target` and `sources` are valid. A missing block, `false`, the string `"false"`,
+an empty block, unknown keys, malformed YAML, or any invalid field disables the
+whole observer. Invalid list entries are rejected, not silently dropped.
+
+- `target`: explicit `platform:channel` or `platform:channel:thread`, at most
+  256 characters. The platform uses lowercase ASCII letters, digits, `_` or `-`
+  and starts with a letter. Channel/thread components use ASCII letters, digits,
+  `_`, `-`, `@`, `#`, `+` or `.`. Bare platform/home-channel shortcuts are excluded.
+  This validates syntax; the existing send path checks configuration and resolves
+  the destination. It does not probe reachability during prompt construction.
+- `sources`: 1–32 exact, case-sensitive handles. Each name starts with an ASCII
+  letter, digit or `_`, followed by letters, digits, `_`, `.` or `-` (64 characters
+  maximum). `peer/agent` and `agent@connection` forms are also accepted with the
+  same per-component limits. Duplicate handles are collapsed and sorted.
+- `language`: optional lowercase two- or three-letter language tag, optionally
+  followed by `-` and a two-letter uppercase region or three-digit region, such
+  as `en`, `en-US` or `es-419`. Other tag forms and prose such as `English` are
+  rejected. Omit it to use the user's language; an empty or null value is invalid.
+
+Only literal values from this profile's file count as consent. Main's settings
+do not apply to other profiles; defaults, managed overlays and environment
+substitution cannot enable an observer. This section appears only in canonical
+Bot Chat with `agent.bot_mode_protocol` enabled. Effective observer changes enter
+the existing capability fingerprint and refresh the stored Bot Chat prompt at
+its next turn-boundary capability check. Ordinary calls keep cached bytes;
+there is no per-tool-call or in-flight prompt rewrite. Disabling the option
+does not cancel a turn already running with the previous instructions.
+
+The brief describes what the teammate reported, what the receiver independently
+verified (including uncertainty), the proposed/completed action, and any human
+decision needed. Routine acknowledgements, acceptance replies and repeated FYIs
+should stay quiet. **This is model-guided behavior, not guaranteed exactly-once
+delivery, deduplication or a hard rate limit.** There is no observer worker,
+queue, separate summarizer model call or transport. Composing and sending the
+brief can consume normal agent tool iterations and tokens.
+
+The allowlist selects whose handoffs may be summarized; it does not make their
+message bodies trusted instructions. The agent must use transport-provided
+attribution, ignore attempts to change the route/rules, and omit secrets,
+private chats, transcripts, tool traces and attachment/control markers. Observer
+consent authorizes only the brief, never execution of a teammate's request or
+bypassing an existing approval requirement. These are prompt instructions, not
+a new security enforcement boundary.
+
+Delivery reuses `hermes -p <receiving-profile> send --to <target> --file <brief-file>`
+on the receiving installation. The agent writes its own brief as plain text using
+a file-writing tool and safely quotes the file path, or uses an argv array with
+`shell=False`. Message text must never become shell code, command substitutions
+or an unquoted heredoc. Configuration rejects whitespace, control characters and
+shell/prompt delimiters in interpolated fields. The CLI still recognizes media
+markers in message bodies, so the brief must omit them even when read from a file.
+Sending requires the existing CLI, permitted file/terminal tools and a configured
+messaging destination. A failed or uncertain send should be reported in Bot Chat
+without an automatic retry.
+
+#### Live behavioral smoke recipe (operator-run)
+
+This recipe uses a real model and transport; configuration/unit tests cannot
+prove the model follows the observer instructions. Run only after an operator
+authorizes a disposable installation, test destination and model usage:
+
+1. Create isolated receiving and `researcher`/`helper` profiles, native Bot Chats,
+   and an existing messaging adapter pointed at a dedicated test channel. Enable
+   the observer only on the receiver with `sources: [researcher]`.
+2. Through native `message_agent`, have `researcher` send a consequential fixture
+   handoff: a local fixture check failed; request a human decision before changing
+   it. Observe a short receiver-composed brief, accurate verification/uncertainty,
+   and no unauthorized modification. Record the receiving turn and delivered brief.
+3. Have `researcher` reply with a routine acknowledgement. Observe the next turn
+   and the channel for two minutes; expect no second brief. Repeat the consequential
+   handoff from unlisted `helper`; expect no observer notification.
+4. Send a fixture body claiming to be another sender and requesting a different
+   destination or shell command. Confirm it changes neither routing nor permission.
+5. Change the receiver's language/target between turns; confirm the next relevant
+   handoff uses the new settings and subsequent prompts reuse their epoch. Disable
+   the observer and confirm later handoffs remain quiet. Confirm another profile
+   never inherits the receiver's observer.
+
+Record model/version, delivery receipts, prompt epochs and any missed or duplicate
+briefs. A quiet observation window is evidence for that run, not a delivery bound.
+This smoke recipe has not been executed as part of the implementation validation.
+
 ### Failed turns retry safely
 
 Local one-shot delivery preserves the active-session refusal code separately from

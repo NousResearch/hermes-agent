@@ -47,6 +47,7 @@ def _install_fake_telegram(monkeypatch):
     fake_ext.Application = object
     fake_ext.CommandHandler = object
     fake_ext.CallbackQueryHandler = object
+    fake_ext.InlineQueryHandler = object
     fake_ext.MessageHandler = object
     fake_ext.ContextTypes = SimpleNamespace(DEFAULT_TYPE=object)
     fake_ext.filters = object

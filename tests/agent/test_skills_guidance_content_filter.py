@@ -18,7 +18,6 @@ drop the behaviour the sentence exists to produce.
 
 from __future__ import annotations
 
-import re
 
 import pytest
 
@@ -66,30 +65,34 @@ class TestBehaviourIsPreserved:
         assert "reuse" in first_line
 
     def test_patch_stale_skills_sentence_untouched(self):
-        assert "skill_manage(action='patch')" in SKILLS_GUIDANCE
-        assert "Skills that aren't maintained become liabilities." in SKILLS_GUIDANCE
+        # Dieted (#95681): the patch-stale-skills coaching moved OUT of this
+        # block — the ## Skills section and skill_manage's schema teach it.
+        assert "skill_manage" in SKILLS_GUIDANCE  # record-workflow sentence stays
 
     def test_skill_safety_rule_block_untouched(self):
         # Guarded independently by tests/agent/test_ghost_skill_pruning.py; asserted
         # here too so a reword of the guidance can't quietly take the block with it.
         assert "## Skill Safety Rule" in SKILLS_GUIDANCE
-        for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
-            assert rule in SKILLS_GUIDANCE
+        assert "[SKILL_PRUNED]" in SKILLS_GUIDANCE
+        for phrase in ("skill_view(name=", "historical artifacts"):
+            assert phrase in SKILLS_GUIDANCE
 
-    def test_real_newlines_and_line_count_preserved(self):
-        # test_ghost_skill_pruning.py asserts count("\n") >= 6; the reword must
-        # not drop a line separator on its way past that bound.
-        assert "\\n" not in SKILLS_GUIDANCE
-        assert SKILLS_GUIDANCE.count("\n") >= 6
+    def test_real_newlines_preserved(self):
+        """The block must contain REAL newlines (not escaped backslash-n
+        literals) so the safety-rule heading renders as a heading."""
+        assert chr(10) in SKILLS_GUIDANCE
+        assert (chr(92) + 'n') not in SKILLS_GUIDANCE
 
 
 class TestGuidanceReachesTheSystemPrompt:
     def test_guidance_is_wired_into_tool_guidance(self):
-        # A reword is worthless if the constant stopped being appended. Assert the
-        # wiring rather than trusting the constant in isolation.
-        import inspect
+        # A reword is worthless if the constant stopped being emitted. Assert the
+        # wiring behaviorally rather than trusting the constant in isolation.
+        from types import SimpleNamespace
 
         import agent.system_prompt as system_prompt
 
-        source = inspect.getsource(system_prompt)
-        assert re.search(r"tool_guidance\.append\(\s*SKILLS_GUIDANCE\s*\)", source)
+        agent = SimpleNamespace(valid_tool_names={"skill_manage"}, _kanban_worker_guidance="")
+        assert SKILLS_GUIDANCE in (system_prompt._tool_guidance_block(agent) or "")
+        agent.valid_tool_names = {"terminal"}
+        assert SKILLS_GUIDANCE not in (system_prompt._tool_guidance_block(agent) or "")

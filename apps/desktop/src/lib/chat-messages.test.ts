@@ -224,7 +224,7 @@ describe('toChatMessages', () => {
 
     expect(toolPart?.result).toMatchObject({ image: 'https://cdn.example/cat.png', success: true })
     // The duplicated image is stripped, but the agent's words survive.
-    expect(chatMessageText(message)).toBe('Here you go.')
+    expect(chatMessageText(message)).toBe('Here you go.\n\n')
   })
 
   it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
@@ -270,7 +270,7 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect(chatMessageText(message)).toBe('what is in this photo?\n')
     expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
   })
 
@@ -1248,13 +1248,23 @@ describe('mergeFinalAssistantText', () => {
     expect(result.filter(p => p.type === 'text')).toHaveLength(1)
   })
 
-  it('handles empty final text', () => {
+  it('does not erase streamed text when the final completion is empty (#95514)', () => {
     const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
 
     const result = mergeFinalAssistantText(parts, '')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'streamed' })
     expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+
+  it('treats whitespace-only final text as non-authoritative (#95514)', () => {
+    const parts = [{ type: 'text' as const, text: 'already on screen' }]
+
+    const result = mergeFinalAssistantText(parts, '   \n\t')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'already on screen' })
   })
 })
 
@@ -1331,6 +1341,30 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
+  })
+
+  it('does not replay earlier turns when the spoken id is missing or stale', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      user('u2', 'new question'),
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'vanished-stream-id')?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'a1')?.text).toBe('Live reply only.')
+  })
+
+  it('bounds to a hidden user turn too (widget intents render no bubble)', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      { ...user('u2', 'widget intent'), hidden: true },
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
   })
 })
 

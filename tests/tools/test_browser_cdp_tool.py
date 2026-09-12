@@ -18,6 +18,10 @@ import websockets
 from websockets.asyncio.server import serve
 
 from tools import browser_cdp_tool
+import requests
+from tools import browser_tool_eval_policy as bt_eval_policy
+from tools import browser_tool_install as bt_install
+from tools import browser_tool_cdp as bt_cdp
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +205,243 @@ def test_browser_level_redacts_secret_result(cdp_server):
     assert result["result"]["result"]["value"].startswith("sk-")
 
 
+def test_screenshot_base64_passes_through_unredacted(cdp_server):
+    """The Fernet pattern matches arbitrary spans inside base64 payloads —
+    a screenshot whose base64 contains "gAAAA..." must stay byte-identical
+    instead of being collapsed to "first6...last4" (#94138)."""
+    # Real-world shape: the Fernet pattern fires when "gAAAA" follows a "+"
+    # or "/" inside the base64 stream (word-boundary requirement).
+    shot_b64 = "iVBORw0KGgoAAAANSUhEUg+" + "gAAAA" + "B" * 60 + "=="
+    cdp_server.on(
+        "Page.captureScreenshot",
+        lambda params, sid: {"data": shot_b64},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Page.captureScreenshot"))
+
+    assert result["success"] is True
+    assert result["result"]["data"] == shot_b64
+
+
+def test_print_to_pdf_base64_passes_through_unredacted(cdp_server):
+    pdf_b64 = "JVBERi0xLjcK/" + "gAAAA" + "C" * 60 + "="
+    cdp_server.on(
+        "Page.printToPDF",
+        lambda params, sid: {"data": pdf_b64},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Page.printToPDF"))
+
+    assert result["success"] is True
+    assert result["result"]["data"] == pdf_b64
+
+
+def test_binary_payload_flag_keeps_secret_redaction_off_method_list(cdp_server):
+    """Fail-closed pin: methods without a binary payload field keep full
+    secret redaction; the listed methods pass their payload through."""
+    fake_key = "sk-" + "CDPSECRETSTILLREDACTED1234567890"
+    cdp_server.on(
+        "Runtime.evaluate",
+        lambda params, sid: {"result": {"type": "string", "value": fake_key}},
+    )
+    cdp_server.on(
+        "Page.captureScreenshot",
+        lambda params, sid: {"data": "gAAAA" + "B" * 60},
+    )
+
+    text_result = json.loads(browser_cdp_tool.browser_cdp(method="Runtime.evaluate"))
+    assert "CDPSECRETSTILLREDACTED" not in json.dumps(text_result)
+
+    shot_result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Page.captureScreenshot")
+    )
+    assert shot_result["result"]["data"] == "gAAAA" + "B" * 60
+
+
+def test_binary_payload_field_sibling_string_still_redacted(cdp_server):
+    """Path-scoped exemption: on a binary-bearing result only the payload
+    field skips redaction; a sibling string keeps full secret redaction,
+    proving the exemption cannot widen to the whole result object."""
+    fake_key = "sk-" + "CDPSECRETSIBLING1234567890"
+    shot_b64 = "iVBORw0KGgoAAAANSUhEUg+" + "gAAAA" + "B" * 60 + "=="
+    cdp_server.on(
+        "Page.captureScreenshot",
+        lambda params, sid: {"data": shot_b64, "note": fake_key},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Page.captureScreenshot"))
+
+    assert result["success"] is True
+    assert result["result"]["data"] == shot_b64
+    assert "CDPSECRETSIBLING" not in json.dumps(result)
+    assert result["result"]["note"].startswith("sk-")
+
+
+def test_get_response_body_base64_discriminator_passes_through(cdp_server):
+    """Network.getResponseBody with base64Encoded: true — the body is opaque
+    base64 bytes and must remain byte-identical (#94138 review on #94142)."""
+    body_b64 = "q9Z7" + "gAAAA" + "B" * 60 + "=="
+    cdp_server.on(
+        "Network.getResponseBody",
+        lambda params, sid: {"body": body_b64, "base64Encoded": True},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getResponseBody")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["body"] == body_b64
+
+
+def test_get_response_body_text_discriminator_still_redacts(cdp_server):
+    """Same method with base64Encoded: false — the body is text and a real
+    secret in it must still be redacted."""
+    fake_key = "sk-" + "CDPSECRETBODY1234567890"
+    cdp_server.on(
+        "Network.getResponseBody",
+        lambda params, sid: {"body": f"leak {fake_key} here", "base64Encoded": False},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getResponseBody")
+    )
+
+    assert result["success"] is True
+    assert "CDPSECRETBODY" not in json.dumps(result)
+
+
+def test_io_read_base64_discriminator_passes_through(cdp_server):
+    """IO.read honors the same discriminator contract for its data field."""
+    chunk_b64 = "AAA" + "gAAAA" + "C" * 60 + "="
+    cdp_server.on(
+        "IO.read",
+        lambda params, sid: {"data": chunk_b64, "base64Encoded": True, "eof": True},
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="IO.read"))
+
+    assert result["success"] is True
+    assert result["result"]["data"] == chunk_b64
+    assert result["result"]["eof"] is True
+
+
+def test_fetch_get_response_body_base64_discriminator_passes_through(cdp_server):
+    """Fetch.getResponseBody pins the same body/base64Encoded contract."""
+    body_b64 = "zz7+" + "gAAAA" + "D" * 60 + "=="
+    cdp_server.on(
+        "Fetch.getResponseBody",
+        lambda params, sid: {"body": body_b64, "base64Encoded": True},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Fetch.getResponseBody")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["body"] == body_b64
+
+
+def test_runtime_evaluate_spoofed_base64_flag_still_redacts(cdp_server):
+    """base64Encoded is trusted ONLY on the protocol-defined carrier paths.
+    A Runtime.evaluate by-value object carrying
+    {"base64Encoded": true, "data": "<secret>"} is untrusted nested JSON —
+    the secret must still be redacted (second review on #94142)."""
+    fake_key = "sk-" + "CDPSPOOFEDFLAG1234567890"
+    cdp_server.on(
+        "Runtime.evaluate",
+        lambda params, sid: {
+            "result": {
+                "type": "object",
+                "value": {"base64Encoded": True, "data": fake_key},
+            }
+        },
+    )
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Runtime.evaluate"))
+
+    assert result["success"] is True
+    assert "CDPSPOOFEDFLAG" not in json.dumps(result)
+
+
+def test_stream_resource_content_unflagged_buffered_data_passes_through(cdp_server):
+    """Network.streamResourceContent returns bare binary bufferedData with no
+    base64Encoded sibling — declared-binary path, must stay byte-identical."""
+    chunk_b64 = "Q2FjaGU/" + "gAAAA" + "E" * 60 + "=="
+    cdp_server.on(
+        "Network.streamResourceContent",
+        lambda params, sid: {"bufferedData": chunk_b64},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.streamResourceContent")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["bufferedData"] == chunk_b64
+
+
+def test_get_request_post_data_flagged_passes_through(cdp_server):
+    """Network.getRequestPostData's postData honors its base64Encoded
+    discriminator on the trusted result path."""
+    post_b64 = "cG9zdA==" + "gAAAA" + "F" * 60 + "="
+    cdp_server.on(
+        "Network.getRequestPostData",
+        lambda params, sid: {"postData": post_b64, "base64Encoded": True},
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getRequestPostData")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["postData"] == post_b64
+
+
+def test_get_request_post_data_unflagged_still_redacts(cdp_server):
+    fake_key = "sk-" + "CDPPOSTDATASECRET1234567890"
+    cdp_server.on(
+        "Network.getRequestPostData",
+        lambda params, sid: {
+            "postData": f"leak {fake_key} here",
+            "base64Encoded": False,
+        },
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getRequestPostData")
+    )
+
+    assert result["success"] is True
+    assert "CDPPOSTDATASECRET" not in json.dumps(result)
+
+
+def test_nested_unflagged_binary_path_passes_through(cdp_server):
+    """CacheStorage.requestCachedResponse.response.body is a nested binary
+    carrier — the path must exempt the nested field while unrelated nested
+    text keeps redaction."""
+    fake_key = "sk-" + "CDPNESTEDSECRET1234567890"
+    body_b64 = "SUNBRQ/" + "gAAAA" + "G" * 60 + "=="
+    cdp_server.on(
+        "CacheStorage.requestCachedResponse",
+        lambda params, sid: {
+            "response": {
+                "url": "https://example.test/x",
+                "body": body_b64,
+                "note": fake_key,
+            }
+        },
+    )
+
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="CacheStorage.requestCachedResponse")
+    )
+
+    assert result["success"] is True
+    assert result["result"]["response"]["body"] == body_b64
+    assert "CDPNESTEDSECRET" not in json.dumps(result)
+
+
 # ---------------------------------------------------------------------------
 # Happy-path: target-attached call
 # ---------------------------------------------------------------------------
@@ -243,10 +484,9 @@ def test_runtime_evaluate_blocked_when_current_page_is_private(monkeypatch):
         lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
     )
 
-    import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: PRIVATE_URL)
 
     async def fake_call(*args, **kwargs):
         calls.append((args, kwargs))
@@ -273,10 +513,9 @@ def test_frame_id_route_blocked_when_current_page_is_private(monkeypatch):
     applied to the stateless path — same private-page boundary either way."""
     supervisor_calls = []
 
-    import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: PRIVATE_URL)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: PRIVATE_URL)
 
     def fake_supervisor_route(**kwargs):
         supervisor_calls.append(kwargs)
@@ -306,10 +545,9 @@ def test_frame_id_route_allowed_when_page_is_not_private(monkeypatch):
     routing when the current page isn't private."""
     supervisor_calls = []
 
-    import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
-    monkeypatch.setattr(bt, "_current_page_private_url", lambda task_id: None)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", lambda task_id: None)
 
     def fake_supervisor_route(**kwargs):
         supervisor_calls.append(kwargs)
@@ -341,9 +579,8 @@ def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
         lambda: "ws://127.0.0.1:9222/devtools/browser/mock",
     )
 
-    import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: True)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: True)
 
     async def fake_call(*args, **kwargs):
         calls.append((args, kwargs))
@@ -367,14 +604,13 @@ def test_page_navigate_to_private_url_blocked_before_cdp(monkeypatch):
 def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
     cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "ok"}})
 
-    import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "_eval_ssrf_guard_active", lambda task_id: False)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
 
     def fail_probe(task_id):
         raise AssertionError("_current_page_private_url must not be probed")
 
-    monkeypatch.setattr(bt, "_current_page_private_url", fail_probe)
+    monkeypatch.setattr(bt_eval_policy, "_current_page_private_url", fail_probe)
 
     result = json.loads(
         browser_cdp_tool.browser_cdp(
@@ -397,13 +633,12 @@ def test_check_fn_does_not_probe_network(monkeypatch):
     """The availability gate must never hit the network: a stale/unreachable
     configured endpoint used to cost multiple blocking HTTP probes at every
     CLI/Desktop startup (tool-schema assembly), stalling launch by 10+ s."""
-    import tools.browser_tool as bt
 
     def _boom(*a, **k):  # pragma: no cover — the assertion is that it's unused
         raise AssertionError("check_fn must not perform network I/O")
 
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
-    monkeypatch.setattr(bt.requests, "get", _boom)
+    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: True)
+    monkeypatch.setattr(requests, "get", _boom)
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     assert browser_cdp_tool._browser_cdp_check() is True
 
@@ -413,8 +648,8 @@ def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
     unavailable (e.g. agent-browser not installed)."""
     import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: False)
+    monkeypatch.setattr(bt_install, "check_browser_requirements", lambda: False)
     monkeypatch.setattr(
-        bt, "_get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
+        bt_cdp, "_get_cdp_override_raw", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is False

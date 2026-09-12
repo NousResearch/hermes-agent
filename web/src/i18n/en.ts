@@ -418,6 +418,21 @@ export const en: Translations = {
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
+    catalogHeading: "Plugin catalog",
+    catalogHint:
+      "Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
+    catalogSearchPlaceholder: "Search catalog...",
+    catalogEmpty: "No catalog entries match.",
+    catalogEmptyDocsLink: "Learn about Hermes plugins",
+    catalogInstallBtn: "Install",
+    catalogInstalledBadge: "Installed ✓",
+    catalogUpdateBtn: "Update available",
+    catalogRemovedBadge: "Removed",
+    catalogConfirmTitle: "Install this plugin?",
+    catalogConfirmInstallNote:
+      "Plugins install disabled; enable it after install to activate.",
+    catalogRequiresEnv: "Requires env",
+    removedFromCatalog: "Removed from catalog",
   },
 
   skills: {
@@ -534,6 +549,8 @@ export const en: Translations = {
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",
     sessionExpires: "Session expires in {time}",
+    sessionExpiredNoError:
+      "Sign-in expired without reaching the provider. This usually means the sign-in page stalled in the opened tab (server-side issue) — finish signing in there, then click Retry. If it keeps failing, use an API key or the CLI fallback instead.",
     initiatingLogin: "Initiating login flow…",
     exchangingCode: "Exchanging code for tokens…",
     connectedClosing: "Connected! Closing…",

@@ -17,6 +17,7 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
+import { $agentDockCollapsed } from './agentRoster.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type GatewayRpc,
@@ -166,6 +167,10 @@ export function dismissSensitivePrompt(
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
+
+export function shouldDetachEditedHistoryInput(historyIdx: null | number, history: readonly string[], value: string) {
+  return historyIdx !== null && value !== history[historyIdx]
+}
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
@@ -362,7 +367,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // still the dedicated discard (pushes the draft to history so Up recalls it).
   const lastEscRef = useRef(0)
 
-  useInput((ch, key) => {
+  useInput((ch, key, event) => {
     const live = getUiState()
 
     if (key.escape) {
@@ -627,6 +632,16 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // typed to run the command. Works mid-stream: picking a model writes the
     // session model (config.set), which the next turn reads while the in-flight
     // turn keeps streaming.
+    if (event.keypress.name === 'f7' && !key.ctrl && !key.meta && !key.shift && !key.super) {
+      $agentDockCollapsed.set(!$agentDockCollapsed.get())
+
+      return
+    }
+
+    if (isCtrl(key, ch, 't')) {
+      return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+
     if (isCtrl(key, ch, 'o')) {
       return patchOverlayState({ modelPicker: true })
     }

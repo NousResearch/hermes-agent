@@ -79,11 +79,13 @@ def _quiet_sync(call, default=None):
         return default
 
 
-def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
+def _status_model_route(
+    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
+):
     """``(model, provider, context_used, context_total)`` for /status.
 
-    Order: live/cached agent route -> persisted recent route -> SessionDB row -> gateway config
-    (only loaded when something is still missing).
+    Order: live/cached agent route -> active session override -> persisted recent route ->
+    SessionDB row -> gateway config (only loaded when something is still missing).
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
@@ -95,6 +97,8 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
+    routes.append((_clean_str(active_override.get("model")),
+                   _clean_str(active_override.get("provider"))))
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider"))))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
@@ -230,10 +234,13 @@ class GatewayStatusCommandsMixin:
             session_entry.session_id
         )
         # Prefer the live or cached agent (actual runtime route + context compressor); fall back
-        # to SessionDB metadata + last_prompt_tokens so /status stays useful between turns.
+        # to an active /model override, then SessionDB metadata + last_prompt_tokens so /status
+        # stays useful between turns. Rehydrate first so this precedence survives gateway restarts.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
+        self._rehydrate_session_model_override(session_key)
+        active_override = self._session_model_override(session_key) or {}
         model_name, provider_name, context_used, context_total = _status_model_route(
-            status_agent, persisted_route, session_row, session_entry
+            status_agent, active_override, persisted_route, session_row, session_entry
         )
 
         stamp = "%Y-%m-%d %H:%M"

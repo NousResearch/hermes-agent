@@ -1745,13 +1745,17 @@ DEFAULT_CONFIG = {
         # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
         # cap. Set an explicit value to override the derived default in either direction.
         "max_in_progress": None,
-        # Per-profile cap: positive int = no single profile runs more than N workers even if the
-        # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful
-        # when fan-out would saturate one profile's model/API quota/browser pool.
-        # Unset (None) means "no per-profile cap" — backward-compatible with existing installs. Useful for
-        # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
-        # pool while leaving other profiles idle. See #21582.
+        # Per-profile cap: positive int = every assignee shares the same N; or a mapping
+        # {profile: N, default: N} for asymmetric caps (local vs cloud). Non-positive / non-int
+        # entries are ignored; missing keys fall through to ``default`` then to no cap.
+        # None = no per-profile cap. See #21582 / #106784.
         "max_in_progress_per_profile": None,
+        # Optional capability-aware routing for unassigned ready tasks. Unset / disabled /
+        # unknown strategy keeps today's default_assignee then skipped_unassigned path.
+        # strategy local-first-overflow: first unsaturated local_pool profile, else cloud_pool.
+        # A pool member with no resolved cap (no map entry and no ``default``) is
+        # unbounded and always eligible — set ``default`` or a per-profile cap on
+        # every pool name if auto-assign should stay inside those bounds.
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,

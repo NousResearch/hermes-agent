@@ -98,9 +98,9 @@ class DispatchResult:
     """Ready task ids with no assignee at all — operator-actionable (usually a
     misfiled task waiting for routing)."""
     auto_assigned_default: list[str] = field(default_factory=list)
-    """Unassigned task ids that had ``kanban.default_assignee`` applied this
-    tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
-    acting on the fallback rule rather than explicit assignments."""
+    """Unassigned task ids that had ``kanban.auto_assign`` or
+    ``kanban.default_assignee`` applied this tick before spawning. Event
+    ``source`` distinguishes the two; the list is shared to avoid API churn."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
     """Ready task ids whose assignee names a control-plane lane (e.g. a Claude
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
@@ -1427,7 +1427,8 @@ def dispatch_once(
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
-    max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile: Any = None,
+    auto_assign: Any = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1451,6 +1452,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            auto_assign=auto_assign,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -1499,8 +1501,9 @@ def _dispatch_lane_task(
     board: Optional[str],
     failure_limit: int,
     spawn_fn,
-    per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    resolve_cap: Callable[[str], Optional[int]],
+    per_profile_caps_active: bool,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1517,11 +1520,14 @@ def _dispatch_lane_task(
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
-    if per_profile_cap is not None:
-        current = per_profile_running.get(assignee, 0)
-        if current >= per_profile_cap:
-            result.skipped_per_profile_capped.append((task_id, assignee, current))
-            return False
+    # Cap is resolved per assignee so a map can be asymmetric.
+    if per_profile_caps_active:
+        per_profile_cap = resolve_cap(assignee)
+        if per_profile_cap is not None:
+            current = per_profile_running.get(assignee, 0)
+            if current >= per_profile_cap:
+                result.skipped_per_profile_capped.append((task_id, assignee, current))
+                return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -1539,8 +1545,9 @@ def _dispatch_lane_task(
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
-        # ticks re-query from the DB.
-        if per_profile_cap is not None and name:
+        # ticks re-query from the DB. Increment whenever any map or scalar
+        # cap is active so mixed assignees stay accurate.
+        if per_profile_caps_active and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
@@ -1595,12 +1602,14 @@ def _dispatch_lane_task(
 
 def _apply_default_assignee(
     conn: sqlite3.Connection, task_id: str, assignee: str, *, dry_run: bool,
+    source: str = "kanban.default_assignee",
 ) -> bool:
-    """Persist ``kanban.default_assignee`` on an unassigned ready row.
+    """Persist an auto-chosen assignee on an unassigned ready row.
 
     Mutating the row keeps board state honest: the task is legitimately owned
-    by the default, not "unassigned but secretly routed". ``dry_run`` reports
-    without writing. Returns False when the write failed.
+    by the chosen profile, not "unassigned but secretly routed". ``dry_run``
+    reports without writing. ``source`` is ``kanban.auto_assign`` or
+    ``kanban.default_assignee``. Returns False when the write failed.
     """
     if dry_run:
         return True
@@ -1613,12 +1622,12 @@ def _apply_default_assignee(
             )
             _kb._append_event(
                 conn, task_id, "assigned",
-                {"assignee": assignee, "source": "kanban.default_assignee"},
+                {"assignee": assignee, "source": source},
             )
     except Exception:
         _kb._log.debug(
-            "kanban dispatch: failed to apply default_assignee=%r to task %s",
-            assignee, task_id, exc_info=True,
+            "kanban dispatch: failed to apply assignee=%r (source=%s) to task %s",
+            assignee, source, task_id, exc_info=True,
         )
         return False
     return True
@@ -1744,6 +1753,155 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     return name
 
 
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    """Positive int, or None. Bools are rejected (``True`` is a subclass of int)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def parse_max_in_progress_per_profile(value: Any) -> Optional[int | dict[str, int]]:
+    """Scalar positive int or ``{profile: N, default: N}`` map. Fail-open to None."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, dict):
+        cleaned: dict[str, int] = {}
+        for key, raw in value.items():
+            if not isinstance(key, str) or not key:
+                continue
+            cap = _coerce_positive_int(raw)
+            if cap is not None:
+                cleaned[key] = cap
+        return cleaned or None
+    return _coerce_positive_int(value)
+
+
+def resolve_per_profile_cap(parsed: Any, assignee: str) -> Optional[int]:
+    """Cap for one assignee from a parsed scalar or map, else None."""
+    if parsed is None or isinstance(parsed, bool):
+        return None
+    if isinstance(parsed, int):
+        return parsed if parsed > 0 else None
+    if isinstance(parsed, dict):
+        name = (assignee or "").strip()
+        if name:
+            cap = _coerce_positive_int(parsed.get(name))
+            if cap is not None:
+                return cap
+        return _coerce_positive_int(parsed.get("default"))
+    return _coerce_positive_int(parsed)
+
+
+def _normalize_profile_pool(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        name = raw.strip()
+        return [name] if name else []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+
+
+def parse_auto_assign(value: Any) -> Optional[dict[str, Any]]:
+    """Normalize ``kanban.auto_assign`` or return None (disabled / fail-open)."""
+    if not isinstance(value, dict):
+        return None
+    if value.get("enabled") is not True:
+        return None
+    if value.get("strategy") != "local-first-overflow":
+        return None
+    return {
+        "enabled": True,
+        "strategy": "local-first-overflow",
+        "local_pool": _normalize_profile_pool(value.get("local_pool")),
+        "cloud_pool": _normalize_profile_pool(value.get("cloud_pool")),
+    }
+
+
+def _assignee_profile_usable(name: str) -> bool:
+    fn = _profile_exists_fn()
+    if fn is None:
+        return True
+    try:
+        return bool(fn(name))
+    except Exception:
+        return False
+
+
+def pick_auto_assign_profile(
+    local_pool: Any,
+    cloud_pool: Any,
+    *,
+    running: Mapping[str, int],
+    cap_for: Callable[[str], Optional[int]],
+    profile_usable: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
+    """First unsaturated local-pool profile, else first unsaturated cloud-pool.
+
+    A profile with no resolved cap is unsaturated. Names rejected by
+    ``profile_usable`` are skipped. Returns None when nothing usable remains.
+    """
+    def _usable_pool(raw: Any) -> list[str]:
+        names = list(raw) if isinstance(raw, (list, tuple)) else _normalize_profile_pool(raw)
+        out: list[str] = []
+        for name in names:
+            if not isinstance(name, str):
+                continue
+            name = name.strip()
+            if not name:
+                continue
+            if profile_usable is not None:
+                try:
+                    if not profile_usable(name):
+                        continue
+                except Exception:
+                    continue
+            out.append(name)
+        return out
+
+    def _first_unsaturated(names: list[str]) -> Optional[str]:
+        for name in names:
+            cap = cap_for(name)
+            current = int(running.get(name, 0) or 0)
+            if cap is None or current < cap:
+                return name
+        return None
+
+    picked = _first_unsaturated(_usable_pool(local_pool))
+    if picked:
+        return picked
+    return _first_unsaturated(_usable_pool(cloud_pool))
+
+
+def _choose_unassigned_assignee(
+    parsed_auto: Optional[dict[str, Any]],
+    default_assignee: Optional[str],
+    *,
+    running: Mapping[str, int],
+    cap_for: Callable[[str], Optional[int]],
+) -> tuple[Optional[str], Optional[str]]:
+    """``(assignee, event_source)`` for an unassigned ready row. Fail-open."""
+    if parsed_auto is not None:
+        try:
+            picked = pick_auto_assign_profile(
+                parsed_auto.get("local_pool"),
+                parsed_auto.get("cloud_pool"),
+                running=running,
+                cap_for=cap_for,
+                profile_usable=_assignee_profile_usable,
+            )
+        except Exception:
+            picked = None
+        if picked:
+            return picked, "kanban.auto_assign"
+    if default_assignee:
+        return default_assignee, "kanban.default_assignee"
+    return None, None
+
+
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
@@ -1759,7 +1917,8 @@ def _dispatch_once_locked(
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
-    max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile: Any = None,
+    auto_assign: Any = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -1791,16 +1950,16 @@ def _dispatch_once_locked(
         ready_budget = max(spawn_budget - 1, 0)
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
-    per_profile_cap = max_in_progress_per_profile if (
-        # Per-profile concurrency cap (#21582): when set, track how many workers each assignee already has
-        # in flight, and refuse to spawn when this would push that assignee past the cap. Prevents fan-out
-        # workloads from melting a single profile's local model / API quota / browser pool while leaving
-        # other profiles idle.
-        isinstance(max_in_progress_per_profile, int)
-        and max_in_progress_per_profile > 0
-    ) else None
+    # Scalar positive int keeps the #21582 behavior (same cap for every
+    # assignee). A mapping enables asymmetric caps (#106784).
+    parsed_caps = parse_max_in_progress_per_profile(max_in_progress_per_profile)
+    per_profile_caps_active = parsed_caps is not None
+
+    def _cap_for(name: str) -> Optional[int]:
+        return resolve_per_profile_cap(parsed_caps, name)
+
     per_profile_running: dict[str, int] = {}
-    if per_profile_cap is not None:
+    if per_profile_caps_active:
         for prow in conn.execute(
             "SELECT assignee, COUNT(*) AS n FROM tasks "
             "WHERE status = 'running' AND assignee IS NOT NULL "
@@ -1810,8 +1969,14 @@ def _dispatch_once_locked(
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        per_profile_running=per_profile_running,
+        resolve_cap=_cap_for, per_profile_caps_active=per_profile_caps_active,
     )
+    parsed_auto: Optional[dict[str, Any]] = None
+    try:
+        parsed_auto = parse_auto_assign(auto_assign)
+    except Exception:
+        parsed_auto = None
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
     for row in ready_rows:
@@ -1819,14 +1984,17 @@ def _dispatch_once_locked(
             break
         row_assignee = row["assignee"]
         if not row_assignee:
-            # Honour kanban.default_assignee so an unassigned task doesn't
-            # park in 'ready' forever.
-            if not default_assignee or not _apply_default_assignee(
-                conn, row["id"], default_assignee, dry_run=dry_run,
+            assigned, source = _choose_unassigned_assignee(
+                parsed_auto, default_assignee,
+                running=per_profile_running, cap_for=_cap_for,
+            )
+            if not assigned or not _apply_default_assignee(
+                conn, row["id"], assigned, dry_run=dry_run,
+                source=source or "kanban.default_assignee",
             ):
                 result.skipped_unassigned.append(row["id"])
                 continue
-            row_assignee = default_assignee
+            row_assignee = assigned
             result.auto_assigned_default.append(row["id"])
         if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
             spawned += 1

@@ -40,7 +40,8 @@ class _DispatcherSettings:
     stale_timeout_seconds: int
     reconcile_orphans: bool
     default_assignee: Optional[str]
-    max_in_progress_per_profile: Optional[int]
+    max_in_progress_per_profile: Any
+    auto_assign: Optional[dict]
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -101,6 +102,30 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
                     "will route to this profile)", default_assignee)
 
+    # Scalar int or {profile: N} map. Do not force the map through
+    # _positive_int_setting — that would drop asymmetric caps.
+    try:
+        max_in_progress_per_profile = _kbd().parse_max_in_progress_per_profile(
+            kanban_cfg.get("max_in_progress_per_profile")
+        )
+    except Exception:
+        max_in_progress_per_profile = None
+    if max_in_progress_per_profile is not None:
+        logger.info("kanban dispatcher: max_in_progress_per_profile=%s",
+                    max_in_progress_per_profile)
+
+    try:
+        auto_assign = _kbd().parse_auto_assign(kanban_cfg.get("auto_assign"))
+    except Exception:
+        auto_assign = None
+    if auto_assign:
+        logger.info(
+            "kanban dispatcher: auto_assign strategy=%s local_pool=%s cloud_pool=%s",
+            auto_assign.get("strategy"),
+            auto_assign.get("local_pool"),
+            auto_assign.get("cloud_pool"),
+        )
+
     return _DispatcherSettings(
         interval=interval,
         max_spawn=max_spawn,
@@ -111,9 +136,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # reconciliation); false keeps orphans frozen for manual forensics.
         reconcile_orphans=bool(kanban_cfg.get("reconcile_orphans", True)),
         default_assignee=default_assignee,
-        # Per-profile concurrency cap: no single profile's local model / API
-        # quota / browser pool gets overwhelmed by a fan-out.
-        max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        max_in_progress_per_profile=max_in_progress_per_profile,
+        auto_assign=auto_assign,
     )
 
 

@@ -855,13 +855,23 @@ All commands are also available as a slash command in the interactive CLI and in
 | Config key | Default | What it does |
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
-| `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
+| `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — a positive int caps every assignee the same way, or a mapping (`{local: 1, cloud: 2, default: 1}`) sets asymmetric caps. Applies alongside `max_in_progress`; both must allow a spawn. |
+| `kanban.auto_assign` | unset (off) | When `enabled: true` and `strategy: local-first-overflow`, unassigned ready tasks go to the first unsaturated `local_pool` profile, overflowing to `cloud_pool`. A pool member with no resolved cap (no per-profile entry and no `default`) is treated as unbounded and is always eligible. Set `default` or a per-profile cap on every pool member if auto-assign should stay inside those bounds. Explicit assignees and review-lane rows are never rewritten. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
 ```yaml
 kanban:
   max_in_progress: 2
+  max_in_progress_per_profile:
+    local: 1
+    cloud: 2
+    default: 1
+  auto_assign:
+    enabled: true
+    strategy: local-first-overflow
+    local_pool: [local]
+    cloud_pool: [cloud]
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```

@@ -20,6 +20,7 @@
  */
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import * as baileys from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -380,7 +381,17 @@ function emitPairEvent(event) {
 }
 
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
-const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
+// fetchLatestWaWebVersion() reads the build web.whatsapp.com is actually
+// serving, so it stays correct while the version list Baileys ships from
+// GitHub is unreachable or behind. Resolve it off the namespace rather than
+// naming it in the import list: an older Baileys without the export would
+// otherwise fail the whole module at link time instead of degrading to the
+// single-resolver behaviour (#88516).
+const fetchLatestWaWebVersion =
+  baileys.fetchLatestWaWebVersion || baileys.default?.fetchLatestWaWebVersion || null;
+const getWAVersion = createVersionResolver(fetchLatestBaileysVersion, {
+  fallbackFetchVersionFn: fetchLatestWaWebVersion,
+});
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);

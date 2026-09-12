@@ -690,27 +690,62 @@ export function createReconnectScheduler(startFn, {
  * pend forever and wedge the reconnect path (the scheduler above cannot
  * retry past an await that never settles). Bound the fetch and fall back to
  * the last known-good version, or the Baileys default before first success.
+ *
+ * A fetch can also "succeed" with a build WhatsApp no longer accepts:
+ * fetchLatestBaileysVersion() swallows its own transport errors (a 503 from
+ * the version host, say) and resolves with the version baked into the
+ * library plus `isLatest: false`. Pairing against that stale build is
+ * rejected with HTTP 405 before a QR code is ever drawn (#88516), so a
+ * stale answer is treated as a failed one: `fallbackFetchVersionFn` (the
+ * caller passes Baileys' own fetchLatestWaWebVersion, which reads the live
+ * web.whatsapp.com build) is tried next, and the stale version is used only
+ * when nothing fresher is available.
  */
 export function createVersionResolver(fetchVersionFn, {
   timeoutMs = 15000,
   log = console.log,
+  fallbackFetchVersionFn = null,
 } = {}) {
+  const fetchers = [fetchVersionFn, fallbackFetchVersionFn].filter(
+    fn => typeof fn === 'function',
+  );
   let cachedVersion = null;
   return async function resolveVersion() {
-    let timer = null;
-    try {
-      const { version } = await Promise.race([
-        fetchVersionFn(),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('version fetch timed out')), timeoutMs);
-        }),
-      ]);
-      cachedVersion = version;
-    } catch (err) {
-      log(`⚠️  Baileys version fetch failed (${err?.message || err}); using ${cachedVersion ? 'cached version' : 'library default'}.`);
-    } finally {
-      if (timer) clearTimeout(timer);
+    let staleVersion = null;
+    for (let i = 0; i < fetchers.length; i++) {
+      const isLastFetcher = i === fetchers.length - 1;
+      const nextHint = isLastFetcher
+        ? `using ${cachedVersion ? 'cached version' : 'library default'}`
+        : 'trying the next resolver';
+      let timer = null;
+      try {
+        const result = await Promise.race([
+          fetchers[i](),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('version fetch timed out')), timeoutMs);
+          }),
+        ]);
+        const version = result?.version || null;
+        if (!version) {
+          throw new Error('version missing from response');
+        }
+        if (result.isLatest === false) {
+          staleVersion = staleVersion || version;
+          const printable = Array.isArray(version) ? version.join('.') : String(version);
+          log(`⚠️  Baileys version fetch returned a stale WhatsApp build (${printable}); WhatsApp rejects it with HTTP 405, ${nextHint}.`);
+          continue;
+        }
+        cachedVersion = version;
+        return cachedVersion;
+      } catch (err) {
+        log(`⚠️  Baileys version fetch failed (${err?.message || err}); ${nextHint}.`);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     }
-    return cachedVersion;
+    // Every resolver came back stale or failed. A previously cached version
+    // is the best answer; without one, the stale build still beats no
+    // version at all (it is what Baileys would have used anyway).
+    return cachedVersion || staleVersion;
   };
 }

@@ -750,34 +750,347 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 # ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
-# Commands that read file contents to stdout. A ``.env`` target is a credential
-# dump (per AGENTS.md ``.env`` holds only secrets), so the ENV pass must run.
+# Commands that read file contents to stdout. Secret-bearing targets need the
+# assignment passes even though arbitrary source/config dumps do not.
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat",
+    "zcat", "tac", "view", "batcat", "grep", "egrep", "fgrep", "rg",
+    "awk", "sed",
+})
+
+_SHELL_SECRET_FILE_BASENAMES = frozenset({
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zlogin",
+    ".zprofile",
 })
 
 
+def _is_hermes_config_path(path: str) -> bool:
+    """Whether ``path`` names the active Hermes home's config file."""
+    shell_path = path.replace("\\", "/")
+    if shell_path in {"$HERMES_HOME/config.yaml", "${HERMES_HOME}/config.yaml"}:
+        return True
+
+    from hermes_constants import get_hermes_home
+
+    expanded_path = os.path.expanduser(path)
+    expected_path = str(get_hermes_home().expanduser() / "config.yaml")
+    return os.path.normcase(os.path.normpath(expanded_path)) == os.path.normcase(
+        os.path.normpath(expected_path)
+    )
+
+
+def _heredoc_marker(command: str, start: int) -> tuple[str, bool] | None:
+    """Return the delimiter following an unquoted ``<<`` redirection."""
+    cursor = start + 2
+    if cursor < len(command) and command[cursor] == "<":
+        return None  # here-string, not a heredoc
+    strip_tabs = cursor < len(command) and command[cursor] == "-"
+    if strip_tabs:
+        cursor += 1
+    while cursor < len(command) and command[cursor] in " \t":
+        cursor += 1
+    word_start = cursor
+    quote: str | None = None
+    escaped = False
+    while cursor < len(command):
+        char = command[cursor]
+        if escaped:
+            escaped = False
+            cursor += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            cursor += 1
+            continue
+        if char in "\"'":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+            cursor += 1
+            continue
+        if quote is None and (char.isspace() or char in "|;&<>"):
+            break
+        cursor += 1
+    raw_word = command[word_start:cursor]
+    if not raw_word or quote is not None:
+        return None
+    try:
+        words = shlex.split(raw_word)
+    except ValueError:
+        return None
+    return (words[0], strip_tabs) if words else None
+
+
+def _without_heredoc_bodies(command: str) -> str:
+    """Remove heredoc payload lines before classifying executable commands."""
+    output: list[str] = []
+    pending: list[tuple[str, bool]] = []
+    in_heredoc_body = False
+    quote: str | None = None
+    escaped = False
+    comment = False
+    arithmetic_depth = 0
+    index = 0
+    while index < len(command):
+        if in_heredoc_body:
+            line_end = command.find("\n", index)
+            if line_end < 0:
+                line_end = len(command)
+            line = command[index:line_end].removesuffix("\r")
+            delimiter, strip_tabs = pending[0]
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                pending.pop(0)
+            if line_end < len(command):
+                output.append("\n")
+            index = line_end + 1
+            in_heredoc_body = bool(pending)
+            continue
+
+        char = command[index]
+        output.append(char)
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if comment:
+            if char in "\r\n":
+                comment = False
+            else:
+                output.pop()
+            index += 1
+            continue
+        if char in "\"'":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+            index += 1
+            continue
+        if quote is None and char == "#" and (
+            index == 0 or command[index - 1].isspace() or command[index - 1] in ";&|"
+        ):
+            output.pop()
+            comment = True
+            index += 1
+            continue
+        if quote is None and command[index:index + 3] == "$((":
+            arithmetic_depth += 1
+        elif (
+            quote is None
+            and command[index:index + 2] == "(("
+            and (index == 0 or command[index - 1].isspace() or command[index - 1] in ";&|")
+        ):
+            arithmetic_depth += 1
+        elif quote is None and arithmetic_depth and command[index:index + 2] == "))":
+            arithmetic_depth -= 1
+        if (
+            quote is None
+            and not arithmetic_depth
+            and char == "<"
+            and (index == 0 or command[index - 1] != "<")
+            and command[index:index + 2] == "<<"
+        ):
+            marker = _heredoc_marker(command, index)
+            if marker is not None:
+                pending.append(marker)
+        if quote is None and char in "\r\n" and pending:
+            in_heredoc_body = True
+        index += 1
+    return "".join(output)
+
+
 def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments of a shell command, stripped, empties dropped."""
-    return [seg.strip() for seg in re.split(r"[|;&]+", command) if seg.strip()]
+    """Shell command segments, split only at unquoted operators."""
+    command = _without_heredoc_bodies(command)
+    segments: list[str] = []
+    start = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if char in "\"'":
+            if quote == char:
+                quote = None
+            elif quote is None:
+                quote = char
+            continue
+        if quote is None and char in "|;&\r\n":
+            segment = command[start:index].strip()
+            if segment:
+                segments.append(segment)
+            start = index + 1
+    segment = command[start:].strip()
+    if segment:
+        segments.append(segment)
+    return segments
 
 
-def _command_reads_env_file(command: str | None) -> bool:
-    """True if ``command`` reads a ``.env``-style file (by basename) to stdout.
-    Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
-    .env)``, ``sed``/``awk``) are not detected, matching ``is_env_dump_command``."""
+def _command_words(segment: str) -> list[str]:
+    """Tokenize one command segment without consuming Windows path separators."""
+    lexer = shlex.shlex(segment, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        return segment.split()
+
+
+_SEARCH_READ_COMMANDS = frozenset({"grep", "egrep", "fgrep", "rg"})
+_PROGRAM_READ_COMMANDS = frozenset({"awk", "sed"})
+
+_READER_VALUE_SHORT_FLAGS = {
+    "grep": frozenset("ABCDdm"),
+    "egrep": frozenset("ABCDdm"),
+    "fgrep": frozenset("ABCDdm"),
+    "rg": frozenset("ABCEMdgjmMrTt"),
+    "awk": frozenset("FvW"),
+    "sed": frozenset("l"),
+}
+_READER_VALUE_LONG_FLAGS = {
+    "grep": frozenset({
+        "--after-context", "--before-context", "--binary-files", "--context",
+        "--devices", "--directories", "--exclude", "--exclude-dir",
+        "--exclude-from", "--group-separator", "--include", "--label",
+        "--max-count",
+    }),
+    "egrep": frozenset({
+        "--after-context", "--before-context", "--binary-files", "--context",
+        "--devices", "--directories", "--exclude", "--exclude-dir",
+        "--exclude-from", "--group-separator", "--include", "--label",
+        "--max-count",
+    }),
+    "fgrep": frozenset({
+        "--after-context", "--before-context", "--binary-files", "--context",
+        "--devices", "--directories", "--exclude", "--exclude-dir",
+        "--exclude-from", "--group-separator", "--include", "--label",
+        "--max-count",
+    }),
+    "rg": frozenset({
+        "--after-context", "--before-context", "--color", "--colors", "--context",
+        "--context-separator", "--dfa-size-limit", "--encoding", "--engine",
+        "--field-context-separator", "--field-match-separator", "--glob",
+        "--hostname-bin", "--hyperlink-format", "--iglob", "--ignore-file",
+        "--max-columns", "--max-count", "--max-depth", "--max-filesize",
+        "--path-separator", "--pre", "--pre-glob", "--regex-size-limit",
+        "--replace", "--sort", "--sortr", "--threads", "--type", "--type-add",
+        "--type-clear", "--type-not",
+    }),
+    "awk": frozenset({"--assign", "--field-separator", "--include", "--load"}),
+    "sed": frozenset({"--line-length"}),
+}
+
+
+def _reader_file_operands(reader: str, args: list[str]) -> list[str]:
+    """Return operands that a supported reader treats as input files."""
+    if reader not in _SEARCH_READ_COMMANDS | _PROGRAM_READ_COMMANDS:
+        return [arg for arg in args if not arg.startswith("-")]
+
+    long_program_flags = {"--regexp", "--file"}
+    if reader == "sed":
+        long_program_flags.add("--expression")
+    elif reader == "awk":
+        long_program_flags.add("--source")
+    short_program_flags = "ef" if reader != "awk" else "f"
+    value_short_flags = _READER_VALUE_SHORT_FLAGS[reader]
+    value_long_flags = _READER_VALUE_LONG_FLAGS[reader]
+
+    explicit_program = False
+    positionals: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            positionals.extend(args[index + 1:])
+            break
+
+        if arg in long_program_flags:
+            explicit_program = True
+            index += 2
+            continue
+        if any(arg.startswith(flag + "=") for flag in long_program_flags):
+            explicit_program = True
+            index += 1
+            continue
+
+        if arg in value_long_flags:
+            index += 2
+            continue
+        if any(arg.startswith(flag + "=") for flag in value_long_flags):
+            index += 1
+            continue
+
+        if arg.startswith("-") and not arg.startswith("--"):
+            marker = next(
+                (pos for pos, char in enumerate(arg[1:], start=1) if char in short_program_flags),
+                None,
+            )
+            if marker is not None:
+                explicit_program = True
+                index += 2 if marker == len(arg) - 1 else 1
+                continue
+            value_marker = next(
+                (pos for pos, char in enumerate(arg[1:], start=1) if char in value_short_flags),
+                None,
+            )
+            if value_marker is not None:
+                index += 2 if value_marker == len(arg) - 1 else 1
+                continue
+            index += 1
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        positionals.append(arg)
+        index += 1
+
+    return positionals if explicit_program else positionals[1:]
+
+
+def _redirection_target(operand: str) -> str:
+    """Return an attached stdin-redirection target, or the operand unchanged."""
+    match = re.fullmatch(r"\d*<([^<].*)", operand)
+    return match.group(1) if match else operand
+
+
+def _command_reads_secret_file(command: str | None) -> bool:
+    """True if ``command`` reads a known secret-bearing file to stdout.
+
+    This is defense-in-depth, not a boundary: indirect readers such as ``sudo``
+    and command substitutions are not detected, matching ``is_env_dump_command``.
+    """
     if not command:
         return False
     for seg in _command_segments(command):
-        tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
+        tokens = _command_words(seg)
+        while tokens and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0]):
+            tokens.pop(0)
         if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
             continue
-        for arg in tokens[1:]:
-            if arg.startswith("-"):
-                continue
-            basename = arg.strip("\"'").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if basename.lower() in _ENV_FILE_BASENAMES:
+        for arg in _reader_file_operands(tokens[0], tokens[1:]):
+            arg = _redirection_target(arg)
+            basename = arg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            if (
+                basename.lower() in _ENV_FILE_BASENAMES | _SHELL_SECRET_FILE_BASENAMES
+                or _is_hermes_config_path(arg)
+            ):
                 return True
     return False
 
@@ -788,10 +1101,7 @@ def is_env_dump_command(command: str | None) -> bool:
     if not command or not isinstance(command, str):
         return False
     for seg in _command_segments(command):
-        try:
-            tokens = shlex.split(seg)
-        except ValueError:
-            tokens = seg.split()
+        tokens = _command_words(seg)
         if tokens and tokens[0] in _ENV_DUMP_COMMANDS:
             return True
     return False
@@ -799,11 +1109,11 @@ def is_env_dump_command(command: str | None) -> bool:
 
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
     """Single redaction policy for ALL terminal-output surfaces: the ENV-assignment
-    pass runs only when ``command`` is an env dump or reads a ``.env`` file
-    (otherwise code_file=True avoids false positives on source/config dumps)."""
+    pass runs when ``command`` is an env dump or reads a known secret-bearing
+    file (otherwise code_file=True avoids false positives on arbitrary dumps)."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_env_file(command))
+    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 

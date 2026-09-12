@@ -225,11 +225,10 @@ def finalize_foreground_result(
     from agent.redact import redact_terminal_output
     from tools.ansi_strip import strip_ansi
     output = strip_ansi(output)
-    # For source/config dumps (MAX_TOKENS=100, "apiKey": "x" fixtures, postgresql:// f-string templates) the
-    # ENV/JSON/template passes are skipped to avoid false positives (code_file=True). But for env-dump
-    # commands (env/printenv/set/export/declare) the output IS a KEY=value credential dump, so
-    # redact_terminal_output runs the ENV pass (code_file=False) to mask opaque tokens with no vendor
-    # prefix. Real prefixes, auth headers, JWTs, private keys are masked in both modes. See issue #43025.
+    # For arbitrary source/config dumps (MAX_TOKENS=100, "apiKey": "x" fixtures, postgresql:// f-string
+    # templates) the assignment passes are skipped to avoid false positives (code_file=True). Env dumps
+    # and reads of known secret-bearing files use code_file=False, so opaque credentials are masked.
+    # Real prefixes, auth headers, JWTs, private keys are masked in both modes. See issue #43025.
     output = redact_terminal_output(output.strip(), command) if output else ""
 
     exit_note = _interpret_exit_code(command, returncode)

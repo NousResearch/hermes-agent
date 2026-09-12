@@ -839,7 +839,7 @@ class TestTerminalOutputRedaction:
 
     Terminal/process stdout must be redacted on every surface (foreground
     `terminal` AND background `process(poll/log/wait)`). Env-dump commands
-    and commands that read ``.env`` files get the ENV-assignment pass so
+    and commands that read known secret-bearing files get the assignment passes so
     opaque tokens (no vendor prefix) are masked; other commands stay on
     the code_file path to avoid false positives.
     """
@@ -859,55 +859,202 @@ class TestTerminalOutputRedaction:
         assert not is_env_dump_command("")
         assert not is_env_dump_command(None)
 
-    # ── .env file detection (issue #61352 v2) ──
+    # ── secret-bearing file detection (issues #61352, #109362) ──
 
-    def test_command_reads_env_file_detection(self):
-        from agent.redact import _command_reads_env_file
+    def test_command_reads_secret_file_detection(self):
+        from agent.redact import _command_reads_secret_file
         # Basic detection
-        assert _command_reads_env_file("cat .env")
-        assert _command_reads_env_file("cat .env.local")
-        assert _command_reads_env_file("cat .env.production")
-        assert _command_reads_env_file("cat .envrc")
-        assert _command_reads_env_file("head .env")
-        assert _command_reads_env_file("tail .env")
-        assert _command_reads_env_file("type .env")
-        assert _command_reads_env_file("nl .env")
-        assert _command_reads_env_file("bat .env")
+        assert _command_reads_secret_file("cat .env")
+        assert _command_reads_secret_file("cat .env.local")
+        assert _command_reads_secret_file("cat .env.production")
+        assert _command_reads_secret_file("cat .envrc")
+        assert _command_reads_secret_file("head .env")
+        assert _command_reads_secret_file("tail .env")
+        assert _command_reads_secret_file("type .env")
+        assert _command_reads_secret_file("nl .env")
+        assert _command_reads_secret_file("bat .env")
         # With flags
-        assert _command_reads_env_file("cat -n .env")
-        assert _command_reads_env_file("cat -A .env")
+        assert _command_reads_secret_file("cat -n .env")
+        assert _command_reads_secret_file("cat -A .env")
         # With paths
-        assert _command_reads_env_file("cat ~/.hermes/.env")
-        assert _command_reads_env_file("cat /home/user/project/.env")
-        assert _command_reads_env_file("cat ./config/.env.local")
+        assert _command_reads_secret_file("cat ~/.hermes/.env")
+        assert _command_reads_secret_file("cat /home/user/project/.env")
+        assert _command_reads_secret_file("cat ./config/.env.local")
+        assert _command_reads_secret_file("grep TOKEN $HERMES_HOME/config.yaml")
+        assert _command_reads_secret_file("grep TOKEN ${HERMES_HOME}/config.yaml")
+        assert _command_reads_secret_file("awk '{print $0}' ~/.bashrc")
+        assert _command_reads_secret_file("cat ~/.bash_login")
+        assert _command_reads_secret_file("cat ~/.zshenv")
+        assert _command_reads_secret_file("cat ~/.zlogin")
+        assert _command_reads_secret_file("grep -E 'API_KEY|TOKEN' $HERMES_HOME/config.yaml")
+        assert _command_reads_secret_file("sed -n '1;5p' ~/.bashrc")
+        assert _command_reads_secret_file("grep -e config.yaml $HERMES_HOME/config.yaml")
+        assert _command_reads_secret_file("sed --expression='1p' ~/.profile")
         # In a pipeline / sequence
-        assert _command_reads_env_file("cat .env | grep KEY")
-        assert _command_reads_env_file("echo '---' && cat .env")
+        assert _command_reads_secret_file("cat .env | grep KEY")
+        assert _command_reads_secret_file("echo '---' && cat .env")
         # Windows-style backslash paths
-        assert _command_reads_env_file("cat C:\\Users\\test\\.env")
+        assert _command_reads_secret_file("cat C:\\Users\\test\\.env")
         # Quoted paths (plain split leaves the quotes attached)
-        assert _command_reads_env_file('cat ".env"')
-        assert _command_reads_env_file("cat '.env'")
+        assert _command_reads_secret_file('cat ".env"')
+        assert _command_reads_secret_file("cat '.env'")
         # Case-insensitive basename (macOS/Windows filesystems)
-        assert _command_reads_env_file("cat .ENV")
+        assert _command_reads_secret_file("cat .ENV")
 
-    def test_command_reads_env_file_excludes_templates(self):
-        from agent.redact import _command_reads_env_file
+    def test_command_reads_secret_file_excludes_templates(self):
+        from agent.redact import _command_reads_secret_file
         # Templates/examples should NOT trigger
-        assert not _command_reads_env_file("cat .env.example")
-        assert not _command_reads_env_file("cat .env.sample")
-        assert not _command_reads_env_file("cat .env.template")
-        assert not _command_reads_env_file("cat .env.dist")
+        assert not _command_reads_secret_file("cat .env.example")
+        assert not _command_reads_secret_file("cat .env.sample")
+        assert not _command_reads_secret_file("cat .env.template")
+        assert not _command_reads_secret_file("cat .env.dist")
 
-    def test_command_reads_env_file_rejects_non_env_files(self):
-        from agent.redact import _command_reads_env_file
-        assert not _command_reads_env_file("cat config.py")
-        assert not _command_reads_env_file("cat README.md")
-        assert not _command_reads_env_file("cat .envrc.bak")  # .bak not in list
-        assert not _command_reads_env_file("python app.py")
-        assert not _command_reads_env_file("echo .env")  # echo is not a file-read cmd
-        assert not _command_reads_env_file("")
-        assert not _command_reads_env_file(None)
+    def test_command_reads_secret_file_rejects_other_files(self):
+        from agent.redact import _command_reads_secret_file
+        assert not _command_reads_secret_file("cat config.py")
+        assert not _command_reads_secret_file("cat README.md")
+        assert not _command_reads_secret_file("cat .envrc.bak")  # .bak not in list
+        assert not _command_reads_secret_file("python app.py")
+        assert not _command_reads_secret_file("echo .env")  # echo is not a file-read cmd
+        assert not _command_reads_secret_file("cat ./config.yaml")
+        assert not _command_reads_secret_file("cat fixtures/config.yaml")
+        assert not _command_reads_secret_file("cat /tmp/config.yaml")
+        assert not _command_reads_secret_file("grep config.yaml README.md")
+        assert not _command_reads_secret_file("grep -e config.yaml README.md")
+        assert not _command_reads_secret_file("sed -e config.yaml README.md")
+        assert not _command_reads_secret_file("awk -f config.yaml README.md")
+        assert not _command_reads_secret_file("")
+        assert not _command_reads_secret_file(None)
+
+    @pytest.mark.parametrize(
+        ("output", "command"),
+        [
+            ("ADS_API_TOKEN: " + "A" * 40, "grep -n mcp $HERMES_HOME/config.yaml"),
+            ("export FOO_TOKEN=" + "B" * 40, "awk '{print $0}' ~/.bashrc"),
+            ("ADS_API_TOKEN: " + "C" * 40, "grep -E 'API_KEY|TOKEN' ${HERMES_HOME}/config.yaml"),
+            ("export FOO_TOKEN=" + "D" * 40, "sed -n '1;5p' ~/.bashrc"),
+        ],
+    )
+    def test_secret_bearing_file_reads_mask_opaque_assignments(self, output, command):
+        from agent.redact import redact_terminal_output
+        secret = output.rsplit(" ", 1)[-1].split("=", 1)[-1]
+        assert secret not in redact_terminal_output(output, command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "printf x\ncat .env",
+            "printf x\r\ncat $HERMES_HOME/config.yaml",
+            "printf x\ncat ~/.bashrc",
+        ],
+    )
+    def test_multiline_secret_file_reads_mask_opaque_assignments(self, command):
+        from agent.redact import redact_terminal_output
+        secret = "G" * 40
+        assert secret not in redact_terminal_output(f"FOO_TOKEN={secret}", command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "printf 'x\ncat .env'",
+            "printf x \\\ncat .env",
+        ],
+    )
+    def test_quoted_or_escaped_newlines_do_not_split_commands(self, command):
+        from agent.redact import _command_reads_secret_file
+        assert not _command_reads_secret_file(command)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "cat .env",
+            "cat $HERMES_HOME/config.yaml",
+            "cat ~/.bashrc",
+        ],
+    )
+    def test_heredoc_payloads_do_not_become_commands(self, body):
+        from agent.redact import redact_terminal_output
+        secret = "H" * 40
+        command = f"cat <<'EOF'\n{body}\nFOO_TOKEN={secret}\nEOF"
+        assert secret in redact_terminal_output(f"FOO_TOKEN={secret}", command)
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("cat <<EOF; cat .env\ntext\nEOF", True),
+            ("cat <<< ignored; cat .env", True),
+            ("echo $((1 << 2)); cat .env", True),
+            ("((1 << 2))\ncat .env", True),
+            ("for ((i = 1; i << 2; i++)); do :; done\ncat .env", True),
+            ("echo x # <<EOF\ncat .env", True),
+            ("echo x # ; cat .env", False),
+            ("cat <<EOF\ntext\nEOF\ncat .env", True),
+            ("cat <<A <<B\ntext\nA\ncat .env\nB", False),
+        ],
+    )
+    def test_heredoc_syntax_preserves_executable_commands(self, command, expected):
+        from agent.redact import _command_reads_secret_file
+        assert _command_reads_secret_file(command) is expected
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "FOO=bar cat .env",
+            "cat <.env",
+            "cat 0<.env",
+        ],
+    )
+    def test_reader_shell_syntax_preserves_secret_file_operands(self, command):
+        from agent.redact import _command_reads_secret_file
+        assert _command_reads_secret_file(command)
+
+    def test_search_pattern_named_like_secret_file_preserves_unrelated_output(self):
+        from agent.redact import redact_terminal_output
+        secret = "E" * 40
+        output = f"config.yaml example: FOO_TOKEN={secret}"
+        assert secret in redact_terminal_output(output, "grep config.yaml README.md")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -A 3 config.yaml README.md",
+            "grep -A3 config.yaml README.md",
+            "grep --after-context=3 config.yaml README.md",
+            "rg -g '*.py' config.yaml README.md",
+            "rg -g'*.py' config.yaml README.md",
+            "rg --glob='*.py' config.yaml README.md",
+            "rg --color never config.yaml README.md",
+            "rg --ignore-file .gitignore config.yaml README.md",
+            "rg -d 3 config.yaml README.md",
+            "awk -v x=1 'config.yaml' README.md",
+            "awk -vx=1 'config.yaml' README.md",
+            "awk --assign=x=1 'config.yaml' README.md",
+        ],
+    )
+    def test_reader_option_values_do_not_become_programs(self, command):
+        from agent.redact import _command_reads_secret_file, redact_terminal_output
+        secret = "F" * 40
+        output = f"config.yaml example: FOO_TOKEN={secret}"
+        assert not _command_reads_secret_file(command)
+        assert secret in redact_terminal_output(output, command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep --after-context 3 TOKEN $HERMES_HOME/config.yaml",
+            "grep --after-context=3 TOKEN ${HERMES_HOME}/config.yaml",
+            "rg --glob '*.py' TOKEN $HERMES_HOME/config.yaml",
+            "rg --glob='*.py' TOKEN ${HERMES_HOME}/config.yaml",
+            "rg --color never TOKEN $HERMES_HOME/config.yaml",
+            "awk --assign x=1 '{print $0}' ~/.bashrc",
+            "awk --assign=x=1 '{print $0}' ~/.bashrc",
+            "sed --line-length 80 -n '1p' ~/.profile",
+            "sed --line-length=80 -n '1p' ~/.profile",
+        ],
+    )
+    def test_reader_option_values_preserve_secret_file_operands(self, command):
+        from agent.redact import _command_reads_secret_file
+        assert _command_reads_secret_file(command)
 
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""

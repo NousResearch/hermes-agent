@@ -16,6 +16,7 @@ import pytest
 
 from hermes_state import SessionDB
 from tools.session_search_tool import (
+    SESSION_SEARCH_SCHEMA,
     _format_timestamp,
     _is_compacted_message,
     _resolve_to_parent,
@@ -282,6 +283,34 @@ class TestDiscoveryShape:
             r["match_message_id"] for r in full["results"]
         ]
         assert len(adaptive_json.encode("utf-8")) < len(full_json.encode("utf-8")) * 0.6
+
+    def test_index_detail_contract_for_fts_and_title_hits(self, db):
+        _seed_modpack_sessions(db)
+        expected = {"session_id", "title", "when", "snippet", "match_message_id"}
+        assert SESSION_SEARCH_SCHEMA["parameters"]["properties"]["detail"]["enum"] == [
+            "adaptive", "full", "index",
+        ]
+
+        fts = json.loads(session_search(query="modpack", limit=3, detail="index", db=db))
+        assert fts["success"] is True and fts["detail"] == "index"
+        assert len(fts["results"]) == 3
+        assert all(set(hit) == expected for hit in fts["results"])
+
+        title = json.loads(session_search(
+            query="Modpack Mob Spawn Fix", limit=1, detail="index", db=db,
+        ))
+        assert title["count"] == 1
+        assert set(title["results"][0]) == expected
+        assert title["results"][0]["match_message_id"] is not None
+
+        secret = "ghp_" + "A" * 36
+        db.create_session("s_secret_idx", source="cli")
+        db._conn.execute("UPDATE sessions SET title = ? WHERE id = ?", ("Secret Index Check", "s_secret_idx"))
+        db.append_message("s_secret_idx", role="user", content=f"deploy key {secret} rotated")
+        db.end_session("s_secret_idx", "completed")
+        sec_hit = json.loads(session_search(query="rotated", limit=3, detail="index", db=db))
+        assert sec_hit["count"] == 1
+        assert secret not in json.dumps(sec_hit)
 
 
     def test_current_session_filtered_out(self, db):

@@ -41,6 +41,14 @@ from agent.deadline import (
 
 
 class TestClampTimeout:
+    def test_platform_cap_tracks_runtime_threading_limit(self):
+        assert MAX_SAFE_TIMEOUT_S == min(365 * 24 * 3600, threading.TIMEOUT_MAX)
+
+    @pytest.mark.windows_only
+    def test_windows_preserves_valid_timeout_above_legacy_millisecond_scale(self):
+        assert 7_200 < threading.TIMEOUT_MAX
+        assert clamp_timeout(7_200) == 7_200
+
     def test_none_stays_none(self):
         assert clamp_timeout(None) is None
 

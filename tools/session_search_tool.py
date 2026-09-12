@@ -183,7 +183,8 @@ def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
     return entry
 
 
-def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> Optional[Dict[str, Any]]:
+def _title_match_result(db, query: str, current_lineage_root: Optional[str],
+                        detail: str = "adaptive") -> Optional[Dict[str, Any]]:
     """Discovery-shaped result when the query matches a session title, else None."""
     title_query = query.strip().strip("`'\"")  # models often quote a remembered title
     session_id = title_query and _quiet(lambda: db.resolve_session_by_title(title_query), None,
@@ -201,10 +202,19 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
         return None
     messages = _quiet(lambda: db.get_messages(session_id), [], "get_messages failed for title match %s", session_id)
     anchor_id = messages[0].get("id") if messages else None
+    title = session_meta.get("title") or title_query
+    if detail == "index":
+        return {
+            "session_id": session_id,
+            "title": title,
+            "when": _format_timestamp(session_meta.get("started_at")),
+            "snippet": f"Session title matched: {title}",
+            "match_message_id": anchor_id,
+            "_lineage_root": lineage_root,
+        }
     view = {} if anchor_id is None else _quiet(
         lambda: db.get_anchored_view(session_id, anchor_id, window=5, bookend=3), {},
         "get_anchored_view failed for title match %s/%s", session_id, anchor_id)
-    title = session_meta.get("title") or title_query
     def shape(key, fallback, anchor=None):
         return [_shape_message(m, anchor_id=anchor) for m in (view.get(key) or fallback)]
     return {**_discovery_entry(
@@ -262,7 +272,7 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
               detail: str, current_session_id: str = None, link_profile: str = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    title_result = _title_match_result(db, query, current_lineage_root, detail=detail)
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
         exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
@@ -312,12 +322,25 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
             continue
+        if detail == "index":
+            session_meta = _get_session_meta(db, lineage_root)
+            results.append({
+                "session_id": match_info.get("session_id") or lineage_root,
+                "title": session_meta.get("title") or None,
+                "when": _format_timestamp(
+                    session_meta.get("started_at") or match_info.get("session_started")
+                ),
+                "snippet": match_info.get("snippet") or "",
+                "match_message_id": match_info.get("id"),
+            })
+            continue
         # Adaptive: only the top-ranked result is fully hydrated.
         entry = _hydrate_hit(db, lineage_root, match_info, "full" if detail == "full" or not results else "compact")
         if entry is not None:
             results.append(entry)
-    for entry in results:
-        entry["link"] = _session_link(entry["session_id"], link_profile)
+    if detail != "index":
+        for entry in results:
+            entry["link"] = _session_link(entry["session_id"], link_profile)
     return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "
@@ -497,11 +520,29 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
     limit = _clamp_int(limit, 3, 1, 10)
     if not query or not isinstance(query, str) or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
-    sort_norm = sort.strip().lower() if isinstance(sort, str) else None
+
+    # Parse role_filter
+    role_list: Optional[List[str]] = None
+    if isinstance(role_filter, str) and role_filter.strip():
+        role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
+
+    # Normalise sort
+    sort_norm: Optional[str] = None
+    if isinstance(sort, str):
+        candidate = sort.strip().lower()
+        if candidate in ("newest", "oldest"):
+            sort_norm = candidate
+
+    detail_norm = (
+        "full"
+        if isinstance(detail, str) and detail.strip().lower() == "full"
+        else "index"
+        if isinstance(detail, str) and detail.strip().lower() == "index"
+        else "adaptive"
+    )
     return _discover(
-        db=db, query=query.strip(), limit=limit, sort=sort_norm if sort_norm in ("newest", "oldest") else None,
-        role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
-        detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
+        db=db, query=query.strip(), limit=limit, sort=sort_norm,
+        role_filter=role_list, detail=detail_norm,
         current_session_id=current_session_id, link_profile=profile)
 
 
@@ -583,12 +624,16 @@ SESSION_SEARCH_SCHEMA = {
             },
             "detail": {
                 "type": "string",
-                "enum": ["adaptive", "full"],
+                "enum": ["adaptive", "full", "index"],
                 "description": (
                     "Discovery shape only. 'adaptive' (default) fully hydrates the "
                     "top-ranked result and returns only the exact anchor message for "
                     "lower-ranked results. 'full' returns bookends and the complete "
-                    "anchored window for every result."
+                    "anchored window for every result. 'index' returns ONLY "
+                    "session_id, title, when, snippet, and match_message_id for every "
+                    "result — no messages, no bookends. Use 'index' for broad recall "
+                    "(limit=10+) when you need to scan many sessions cheaply, then "
+                    "scroll into promising hits with session_id + around_message_id."
                 ),
                 "default": "adaptive",
             },

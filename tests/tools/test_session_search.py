@@ -73,7 +73,7 @@ class TestSchema:
         assert "query" in params
         assert "limit" in params
         assert params["sort"]["enum"] == ["newest", "oldest"]
-        assert params["detail"]["enum"] == ["adaptive", "full"]
+        assert params["detail"]["enum"] == ["adaptive", "full", "index"]
         assert params["detail"]["default"] == "adaptive"
         # Scroll shape
         assert "session_id" in params
@@ -315,6 +315,78 @@ class TestDiscoveryShape:
             r["match_message_id"] for r in full["results"]
         ]
         assert len(adaptive_json.encode("utf-8")) < len(full_json.encode("utf-8")) * 0.6
+
+    def test_index_detail_returns_snippets_only(self, db):
+        """detail='index' returns no messages/bookends — pure snippet index."""
+        _seed_modpack_sessions(db)
+
+        result = json.loads(session_search(query="modpack", limit=3, detail="index", db=db))
+
+        assert result["success"] is True
+        assert result["detail"] == "index"
+        assert len(result["results"]) == 3
+
+        expected_keys = {
+            "session_id", "title", "when", "snippet", "match_message_id",
+        }
+        for hit in result["results"]:
+            assert set(hit) == expected_keys
+
+    def test_index_detail_applies_to_exact_title_matches(self, db):
+        """Exact-title hits must not bypass the five-field index contract."""
+        _seed_modpack_sessions(db)
+        result = json.loads(session_search(
+            query="Modpack Mob Spawn Fix", limit=1, detail="index", db=db,
+        ))
+
+        assert result["detail"] == "index"
+        assert result["count"] == 1
+        hit = result["results"][0]
+        assert set(hit) == {
+            "session_id", "title", "when", "snippet", "match_message_id",
+        }
+        assert hit["title"] == "Modpack Mob Spawn Fix"
+        assert hit["match_message_id"] is not None
+
+    def test_index_detail_smaller_than_adaptive(self, db):
+        """index mode produces a smaller payload than adaptive mode."""
+        now = int(time.time())
+        for session_index in range(3):
+            session_id = f"idx_{session_index}"
+            db.create_session(session_id, source="cli")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?",
+                (now - session_index, session_id),
+            )
+            for message_index in range(8):
+                db.append_message(
+                    session_id,
+                    role="user" if message_index % 2 == 0 else "assistant",
+                    content=f"opening {session_index}-{message_index} " + "o" * 2500,
+                )
+            db.append_message(
+                session_id,
+                role="user",
+                content=f"idxneedle anchor {session_index} " + "a" * 3500,
+            )
+            for message_index in range(8):
+                db.append_message(
+                    session_id,
+                    role="assistant" if message_index % 2 == 0 else "user",
+                    content=f"closing {session_index}-{message_index} " + "c" * 2500,
+                )
+        db._conn.commit()
+
+        index_json = session_search(query="idxneedle", limit=3, detail="index", db=db)
+        adaptive_json = session_search(query="idxneedle", limit=3, detail="adaptive", db=db)
+
+        index = json.loads(index_json)
+        adaptive = json.loads(adaptive_json)
+
+        assert [r["session_id"] for r in index["results"]] == [
+            r["session_id"] for r in adaptive["results"]
+        ]
+        assert len(index_json.encode("utf-8")) < len(adaptive_json.encode("utf-8")) * 0.3
 
 
     def test_current_session_filtered_out(self, db):

@@ -26,6 +26,7 @@ router = APIRouter()
 
 _READ_CHUNK = 64 * 1024
 _CLOSE_CONTROL_TAKEN = 4000
+_CLEAN_CLOSE = frozenset({1000, 1001})
 _CLOSE_DESKTOP_GONE = 4001
 _CLOSE_BAD_TICKET = 4401
 _CLOSE_NOT_ALLOWED = 4403
@@ -55,7 +56,11 @@ async def display_ws(ws: WebSocket) -> None:
     if info is None:
         await ws.close(code=_CLOSE_BAD_TICKET, reason="display ticket missing, expired or used")
         return
+    await _bridge(ws, info)
 
+
+async def _bridge(ws: WebSocket, info: dict) -> None:
+    """Pump RFB bytes between the viewer socket and THIS profile's Xvnc, gated by the lease."""
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _lease
     from tools.bot_desktop.rfb_filter import RfbClientFilter
@@ -94,6 +99,8 @@ async def display_ws(ws: WebSocket) -> None:
 
     rfb_filter = RfbClientFilter(lambda: _lease.viewer_may_send_input(viewer_id, profile_key=profile_home))
 
+    viewer_closed = asyncio.Event()
+
     async def rfb_to_ws() -> None:
         while True:
             chunk = await reader.read(_READ_CHUNK)
@@ -105,6 +112,9 @@ async def display_ws(ws: WebSocket) -> None:
         while True:
             message = await ws.receive()
             if message.get("type") == "websocket.disconnect":
+                # 1000/1001 = the viewer closed the window; anything else is a dropped link.
+                if message.get("code") in _CLEAN_CLOSE:
+                    viewer_closed.set()
                 return
             data = message.get("bytes")
             if data is None:
@@ -136,8 +146,10 @@ async def display_ws(ws: WebSocket) -> None:
     finally:
         unsubscribe()
         writer.close()
-        # Closing the viewer window hands control back; a stale holder never pins the agent out.
-        if _lease.viewer_may_send_input(viewer_id, profile_key=profile_home):
+        # Closing the viewer window hands control back. A DROPPED link (laptop lid, Wi-Fi, 1006)
+        # keeps the human's exclusion: they may be mid-login on that screen and the agent must not
+        # resume into it. The Desktop reconnects into the same lease, or the human hands back.
+        if viewer_closed.is_set() and _lease.viewer_may_send_input(viewer_id, profile_key=profile_home):
             _lease.release(viewer_id, profile_key=profile_home)
         try:
             await ws.close()

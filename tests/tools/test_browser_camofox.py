@@ -107,8 +107,12 @@ class TestCamofoxNavigate:
         assert result["url"] == "https://example.com"
 
 
-    def test_connection_error_returns_helpful_message(self, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
+    @patch("tools.browser_camofox.requests.post")
+    def test_connection_error_returns_helpful_message(self, mock_post, monkeypatch):
+        from requests import ConnectionError as RequestsConnectionError
+
+        mock_post.side_effect = RequestsConnectionError("camofox unavailable")
+        monkeypatch.setenv("CAMOFOX_URL", "http://camofox.test")
         result = json.loads(camofox_navigate("https://example.com", task_id="t_err"))
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
@@ -360,5 +364,4 @@ class TestBrowserToolRouting:
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         from tools.browser_tool_install import check_browser_requirements
         assert check_browser_requirements() is True
-
 

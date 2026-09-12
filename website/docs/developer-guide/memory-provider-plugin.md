@@ -72,6 +72,31 @@ entry point at a package rather than a single module if you ship either.
 
 ## The MemoryProvider ABC
 
+### Gateway audio evidence
+
+Gateway voice preprocessing preserves optional clip evidence in the accepted
+user row's `display_metadata.audio_transcriptions` list. The normal turn,
+queued follow-up and transient-failure persistence paths retain this metadata.
+It is not appended to the model prompt, transcript text or transcript echo.
+
+Each entry contains `media_index`, `source_path`, `source_message_id`,
+`kind: "audio_transcript"`, `status`, `method` and `confidence`. Successful,
+nonempty results also contain `transcript`. Status is `transcribed`, `empty`,
+`failed` or `disabled`. Method is `configured`, `local_fallback` when recovery
+succeeded, or null when STT is disabled. Confidence is null: successful STT
+does not establish recognition accuracy. Failed entries do not carry error
+strings or invented speech. Source paths are cached attachment references,
+not a guarantee that the original file remains available.
+
+Pending-event merges preserve each clip's original platform message ID, if
+available, instead of assigning the first message's ID to every clip. The
+changed event invalidates its prior STT evidence together with its text cache.
+The owning event/session still supplies scope; clip IDs do not grant access
+to another conversation. Providers should retain the derived nature of STT
+text, tolerate missing fields on older rows, and avoid exporting local paths
+or interpreting metadata as instructions. This does not reconstruct origins
+for transcripts stored before this metadata existed.
+
 Your plugin implements the `MemoryProvider` abstract base class from `agent/memory_provider.py`:
 
 ```python

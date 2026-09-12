@@ -1705,6 +1705,10 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
             if both_photo or incoming_has_media:
+                from gateway.transcription_metadata import media_source_message_ids
+                existing.media_source_message_ids = (
+                    media_source_message_ids(existing) + media_source_message_ids(event)
+                )
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
                 existing.media_text_inlined.extend(incoming_inline_flags)
@@ -1716,6 +1720,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.message_type = event.message_type
             # Drop the *derived* STT cache (event changed); the echo ledger must survive or
             # notes echo twice.
+            existing.metadata.pop("audio_transcriptions", None)
             for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts"):
                 if hasattr(existing, attr):
                     delattr(existing, attr)

@@ -29,6 +29,7 @@ from gateway.session import (
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
+from gateway.transcription_metadata import user_display_metadata
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -1658,8 +1659,8 @@ class GatewayTurnMixin:
         }
         if prepared.persist_user_display_kind:
             _user_entry["display_kind"] = prepared.persist_user_display_kind
-        if prepared.persistence_owner:
-            _user_entry["display_metadata"] = {"gateway_input_owner": prepared.persistence_owner}
+        if metadata := user_display_metadata(event, persistence_owner=prepared.persistence_owner):
+            _user_entry["display_metadata"] = metadata
         if getattr(event, "message_id", None):
             _user_entry["message_id"] = str(event.message_id)
         return _user_entry
@@ -2023,7 +2024,7 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
-                persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
+                persist_user_display_metadata=user_display_metadata(event, persistence_owner=prepared.persistence_owner),
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
@@ -3577,6 +3578,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
             event_message_id=next_message_id, inbound_message_id=next_inbound_id,
             channel_prompt=next_channel_prompt, message_type=next_message_type,
+            persist_user_display_metadata=user_display_metadata(pending_event),
         )
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which

@@ -256,7 +256,7 @@ class TestBusySessionAck:
         await runner._handle_active_session_busy_message(event, sk)
 
         runner._enrich_message_with_transcription.assert_awaited_once_with(
-            "", ["/tmp/follow-up.ogg"]
+            "", ["/tmp/follow-up.ogg"], event=event,
         )
         agent.steer.assert_called_once()
         injected = agent.steer.call_args.args[0]
@@ -517,5 +517,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
 

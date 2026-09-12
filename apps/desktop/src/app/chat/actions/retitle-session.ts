@@ -5,13 +5,24 @@ import { notify, notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
+  $sessions,
   sessionMatchesStoredId,
   setSessions
 } from '@/store/session'
 
 export interface RetitleSessionOptions {
   sessionId?: string
-  profile?: string
+}
+
+/** True when a row id and the current selection resolve to the same stored conversation. */
+export function sessionRetitleMatchesSelection(sessionId?: string): boolean {
+  const selectedStoredSessionId = $selectedStoredSessionId.get()
+  if (!sessionId || !selectedStoredSessionId) {
+    return false
+  }
+
+  const row = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
+  return Boolean(row && sessionMatchesStoredId(row, selectedStoredSessionId))
 }
 
 /** Regenerate the currently selected session title through the canonical backend RPC. */
@@ -20,10 +31,9 @@ export async function runSessionRetitle(options: RetitleSessionOptions = {}): Pr
   const storedSessionId = $selectedStoredSessionId.get()
   const runtimeSessionId = $activeSessionId.get()
 
-  // The Desktop surface intentionally supports only the active session. The
-  // menu is disabled for every other row; this re-check covers a selection
-  // change between opening the menu and clicking the action.
-  if (!storedSessionId || !runtimeSessionId || (options.sessionId && options.sessionId !== storedSessionId)) {
+  // Snapshot the target before the request. The lineage-aware re-check covers
+  // both a menu opened on a stale row and auto-compression id rotation.
+  if (!storedSessionId || !runtimeSessionId || (options.sessionId && !sessionRetitleMatchesSelection(options.sessionId))) {
     return null
   }
 

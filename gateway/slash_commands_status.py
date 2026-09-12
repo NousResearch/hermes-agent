@@ -79,7 +79,7 @@ def _quiet_sync(call, default=None):
         return default
 
 
-def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
+async def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
     """``(model, provider, context_used, context_total)`` for /status.
 
     Order: live/cached agent route -> persisted dominant route -> SessionDB row -> gateway config
@@ -90,27 +90,52 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
     routes = []
     if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
         routes.append((_clean_str(getattr(status_agent, "model", "")),
-                       _clean_str(getattr(status_agent, "provider", ""))))
+                       _clean_str(getattr(status_agent, "provider", "")),
+                       _clean_str(getattr(status_agent, "base_url", ""))))
         ctx = getattr(status_agent, "context_compressor", None)
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
     routes.append((_clean_str(persisted_route.get("model")),
-                   _clean_str(persisted_route.get("billing_provider"))))
-    row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
+                   _clean_str(persisted_route.get("billing_provider")),
+                   _clean_str(persisted_route.get("billing_base_url"))))
+    row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")),
+                 _clean_str(session_row.get("billing_base_url")))
     # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
-    model_name, provider_name = next((r for r in routes if r[0] and r[1]), row_route)
+    model_name, provider_name, base_url = next((r for r in routes if r[0] and r[1]), row_route)
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
     if not model_name or not provider_name or not context_total:
         user_config = _quiet_sync(_load_gateway_config, {})
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
+    # Only a config-selected route may inherit the configured endpoint. A blank
+    # resident/persisted endpoint must not borrow an unrelated default route.
+    if not model_name and not provider_name:
+        base_url = _clean_str(model_cfg.get("base_url"))
     model_name = model_name or _resolve_gateway_model(user_config)
     provider_name = provider_name or _clean_str(model_cfg.get("provider"))
-    configured_context = model_cfg.get("context_length")
-    if not context_total and isinstance(configured_context, int) and configured_context > 0:
-        context_total = configured_context
+    if not context_total and model_name:
+        try:
+            from agent.model_metadata import get_model_context_length_async
+            custom_providers = user_config.get("custom_providers") if isinstance(user_config, dict) else None
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+                custom_providers = get_compatible_custom_providers(user_config) or custom_providers
+            except Exception:
+                pass  # Retain legacy settings if normalization is unavailable.
+            resolved_context = await asyncio.wait_for(
+                get_model_context_length_async(
+                    model_name, provider=provider_name, base_url=base_url, api_key="",
+                    config_context_length=model_cfg.get("context_length"),
+                    custom_providers=custom_providers,
+                ),
+                timeout=3.0,
+            )
+            if isinstance(resolved_context, int) and not isinstance(resolved_context, bool) and resolved_context > 0:
+                context_total = resolved_context
+        except Exception:
+            pass  # Metadata is optional; keep used-token status available on failure.
     return model_name, provider_name, context_used, context_total
 
 
@@ -232,7 +257,7 @@ class GatewayStatusCommandsMixin:
         # Prefer the live or cached agent (actual runtime route + context compressor); fall back
         # to SessionDB metadata + last_prompt_tokens so /status stays useful between turns.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
-        model_name, provider_name, context_used, context_total = _status_model_route(
+        model_name, provider_name, context_used, context_total = await _status_model_route(
             status_agent, persisted_route, session_row, session_entry
         )
 

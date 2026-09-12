@@ -4190,9 +4190,19 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
 
 def _try_main_provider_route(
     main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
+    *, allow_endpoint_default_model: bool = False,
 ) -> Optional[Tuple[Any, str, str]]:
-    """Step 1: route aux onto the main provider + main model; None if unusable."""
-    if not (main_provider and main_model and main_provider not in {"auto", ""}):
+    """Step 1: route aux onto the main provider + main model; None if unusable.
+
+    ``allow_endpoint_default_model`` lets a custom/self-hosted route stand in for a missing model
+    id: the endpoint (or its ``custom_providers`` entry) is the only thing that can supply a model
+    in an install with no external provider, so ``_resolve_auto_route()`` retries it there instead
+    of dead-ending every auxiliary subsystem (#107509). Off for Step 1, so a named provider with no
+    model id keeps deferring to the configured fallback policy exactly as before.
+    """
+    _custom_route = main_provider == "custom" or main_provider.startswith("custom:")
+    _has_model = bool(main_model) or (allow_endpoint_default_model and _custom_route)
+    if not (main_provider and _has_model and main_provider not in {"auto", ""}):
         return None
     resolved_provider = main_provider
     explicit_base_url = runtime_base_url or None
@@ -4300,6 +4310,22 @@ def _resolve_auto_route(
         task, main_provider or "auto", reason="main provider unavailable")
     if fb_client is not None:
         return fb_client, fb_model, fb_label
+    # Self-hosted-only install (#107509): model.provider is a custom endpoint with no model id
+    # configured, and no external provider exists to fall back to. Step 1 vetoed the route on the
+    # missing model above and _discovery_chain_allowed() below refuses the built-in chain once a
+    # main provider is named, so every auxiliary subsystem used to hard-fail even though the
+    # endpoint IS main. Retry it and let the endpoint (or its custom_providers entry) supply the
+    # model. Gated on a reachable endpoint so a bare "custom" can never fall through to an
+    # API-key provider the user did not select.
+    _custom_route = main_provider == "custom" or main_provider.startswith("custom:")
+    if not main_model and _custom_route and (
+            main_provider.startswith("custom:") or base_url or _read_main_base_url()):
+        routed = _try_main_provider_route(
+            main_provider, main_model, base_url, api_key, api_mode, allow_endpoint_default_model=True)
+        if routed is not None:
+            logger.info("Auxiliary %s: no model configured for %s — using the endpoint's own model (%s)",
+                        task or "call", main_provider, routed[1] or "default")
+            return routed
     if not _discovery_chain_allowed(main_provider, task):
         return None, None, ""
     return _try_discovery_chain()

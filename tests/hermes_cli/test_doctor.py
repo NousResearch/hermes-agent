@@ -163,7 +163,7 @@ class TestDoctorToolAvailabilitySummary:
 
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows
-    Chinese locale (GBK) because `.env` was read with Path.read_text() which
+    Chinese locale (GBK) because `.env` was read with Path.read_text(encoding="utf-8") which
     defaults to the system locale encoding, not UTF-8."""
 
     def test_doctor_reads_env_as_utf8_even_when_locale_is_not_utf8(
@@ -330,7 +330,7 @@ class TestDoctorMemoryProviderSection:
         if provider:
             config["provider"] = provider
         config = {"memory": config}
-        (home / "config.yaml").write_text(yaml.dump(config))
+        (home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
         return home
 
     def _run_doctor_and_capture(
@@ -467,7 +467,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
                 },
             }
         )
-    )
+    , encoding="utf-8")
 
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")

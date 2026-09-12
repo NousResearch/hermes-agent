@@ -481,6 +481,11 @@ class GatewayModelCommandsMixin:
         # Check for session override. See #30479.
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
+        # Runtime routing rehydrates persisted per-session overrides before every turn.
+        # Do the same before rendering /model or snapshotting --once, otherwise a
+        # post-restart status reply can show the global default while turns use the
+        # persisted override.
+        self._rehydrate_session_model_override(session_key)
         ctx = _ModelSwitchContext(
             # Gateway routing columns — forward ALL of them at CREATE time, same fix as the
             # compression-rotation bug in agent/conversation_compression.py. Without these, the branched

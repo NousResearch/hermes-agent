@@ -227,7 +227,28 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+
+  # Opt in to treating the first eligible execution request in a session as a drafted goal.
+  # Explicit /goal commands and sessions that already have a goal are unchanged.
+  auto_start: false
 ```
+
+### Automatic goal start
+
+Set `goals.auto_start: true` when you want eligible execution requests to enter the persistent-goal loop without
+typing `/goal`. The first eligible request in a session is used as the objective, Hermes asks the
+configured `goal_judge` auxiliary model to draft a completion contract, and the original message is
+then run as the first turn. If drafting is unavailable, Hermes keeps the plain-language objective and
+the normal per-turn judge still applies.
+
+Automatic start is deliberately opt-in: the first eligible request in each new session may create continuation turns
+and may make one additional auxiliary model call. It does not replace an existing active or paused goal,
+does not apply to slash commands, and a drafting or persistence failure never blocks the original turn.
+
+Hermes uses a conservative local heuristic to identify execution requests. Messages with action language
+such as "implement", "fix", "research", "test", or "configure" (and equivalent supported Japanese verbs)
+are eligible; questions, explanations, and short replies remain ordinary turns. This is not an LLM
+classification call, so a false negative should use the explicit `/goal` command.
 
 ### Choosing the judge model
 

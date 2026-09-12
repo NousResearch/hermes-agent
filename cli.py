@@ -3500,6 +3500,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
+        if not is_seeded_query:
+            self._maybe_auto_start_goal(user_input)
         print()
         self._print_user_message_preview(notification_preview or user_input)
 

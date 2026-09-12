@@ -1993,6 +1993,9 @@ class GatewayTurnMixin:
         history, message_text = prepared.history, prepared.message_text
 
         try:
+            # Classify only the normalized user-authored text. ``message_text`` may contain
+            # auto-loaded skill instructions or vision enrichment and must remain agent-only input.
+            await self._maybe_auto_start_goal(event, session_entry.session_id, event.text)
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,

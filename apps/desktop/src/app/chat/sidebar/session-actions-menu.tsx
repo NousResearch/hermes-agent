@@ -44,11 +44,13 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import { $sessionTiles, closeAllOpenSessionTiles, openSessionTile } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
 import type { SessionTitleResponse } from '../../types'
+
+import { SplitSubmenu } from './split-submenu'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -462,6 +464,17 @@ function useSessionActions({
   const renderItems = (kit: MenuKit) => (
     <>
       {openItems.map(item => renderActionItem(kit, item))}
+      <SplitSubmenu
+        disabled={!sessionId}
+        kit={kit}
+        label={t.sidebar.row.openInSplit}
+        onSplit={dir => {
+          // Dock relative to the focused chat zone (anchor omitted →
+          // focusedSessionTabAnchor()); an already-open tile MOVES there, the
+          // same gesture the sidebar drag performs.
+          openSessionTile(sessionId, dir)
+        }}
+      />
       {openItems.length > 0 && <kit.Separator />}
       {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>

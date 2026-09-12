@@ -1323,3 +1323,75 @@ class TestLightpandaPostSetup:
         # Not in the forced-setup gate: a missing binary must not nag every
         # user who toggles the browser toolset.
         assert "lightpanda" not in _POST_SETUP_INSTALLED
+
+
+# ---------------------------------------------------------------------------
+# #97111 — deny declarations that nothing reads must fail loud
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_agent_disabled_toolsets_entry_warns(caplog):
+    """An unrecognized name in agent.disabled_toolsets must warn, not silently
+    leave the toolset enabled (a deny list is security posture)."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": ["hermes-cli", "definitely-not-a-toolset"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("definitely-not-a-toolset" in m and "not a known toolset" in m for m in warnings), warnings
+    # the valid deny still applies
+    assert "hermes-cli" not in enabled
+
+
+def test_env_deny_var_warns_that_it_is_ignored(caplog, monkeypatch):
+    """HERMES_DISABLED_TOOLSETS env var is set but nothing reads it — warn."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    monkeypatch.setenv("HERMES_DISABLED_TOOLSETS", "terminal,memory")
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("HERMES_DISABLED_TOOLSETS" in m and "not consulted" in m for m in warnings), warnings
+
+
+def test_root_level_disabled_toolsets_warns_that_it_is_ignored(caplog):
+    """A root-level disabled_toolsets: (beside toolsets:) is not read — warn."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "disabled_toolsets": ["memory"],  # root, not agent.
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("root-level disabled_toolsets" in m and "not read" in m for m in warnings), warnings
+    # the root deny is ignored -> memory still not explicitly affected here
+    # (just assert resolution did not crash and the warn fired)
+    assert isinstance(enabled, set)
+
+
+def test_valid_disabled_toolsets_no_warning(caplog):
+    """A well-formed agent.disabled_toolsets emits none of the #97111 warnings."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": []},
+    }
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("not a known toolset" in m or "not consulted" in m or "not read" in m for m in messages)

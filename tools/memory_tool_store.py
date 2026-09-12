@@ -381,9 +381,25 @@ class MemoryStore:
             return "", False
 
     @staticmethod
+    def _normalize_newlines(raw: str) -> str:
+        """Collapse CRLF/CR to LF so WSL/Windows write_file snapshots split on ``ENTRY_DELIMITER``."""
+        return raw.replace("\r\n", "\n").replace("\r", "\n")
+
+    @staticmethod
     def _parse_entries(raw: str) -> List[str]:
-        """Stripped, non-empty entries; splits on the FULL delimiter so a bare "§" survives."""
-        return [e for e in (x.strip() for x in raw.split(ENTRY_DELIMITER)) if e]
+        """Stripped, non-empty entries; splits on the FULL delimiter so a bare "§" survives.
+
+        Newlines are normalized first: a CRLF-delimited file (``\\r\\n§\\r\\n``) would
+        otherwise be one giant segment because it never contains the LF delimiter.
+        """
+        normalized = MemoryStore._normalize_newlines(raw)
+        return [e for e in (x.strip() for x in normalized.split(ENTRY_DELIMITER)) if e]
+
+    @staticmethod
+    def _round_trip_content_key(text: str) -> str:
+        """Non-whitespace, non-delimiter chars. Trailing §, blank lines around the
+        delimiter, and per-entry strip collapse away; real content drops do not."""
+        return "".join(ch for ch in text if not ch.isspace() and ch != "§")
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:
@@ -403,10 +419,21 @@ class MemoryStore:
     def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
         """``.bak.<ts>`` snapshot path if *raw* shows external drift, else None. Signals:
         round-trip mismatch, or one entry over the whole-file limit (no tool-written
-        entry can be — an external writer appended free-form text)."""
+        entry can be — an external writer appended free-form text).
+
+        Format-only differences must not fire (#107270): CRLF vs LF, trailing
+        delimiter(s), extra blank lines around ``§``, per-entry strip. A true
+        #26045 blob (no delimiters after newline-normalize, one entry over the
+        whole-file char limit) still refuses. Do not treat MEMORY.md byte-identical
+        to the .bak as a no-drift signal — the bak is a copy of current raw.
+        """
+        normalized = self._normalize_newlines(raw)
         parsed = self._parse_entries(raw)
-        if not raw.strip() or (raw.strip() == ENTRY_DELIMITER.join(parsed)
-                               and max(map(len, parsed), default=0) <= self._char_limit(target)):
+        canonical = ENTRY_DELIMITER.join(parsed)
+        if not normalized.strip() or (
+            self._round_trip_content_key(normalized) == self._round_trip_content_key(canonical)
+            and max(map(len, parsed), default=0) <= self._char_limit(target)
+        ):
             return None
         path = self._path_for(target)
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")

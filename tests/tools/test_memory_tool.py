@@ -499,6 +499,68 @@ class TestExternalDriftGuard:
         assert result["success"] is False
         assert path.stat().st_size == original_size
 
+    def test_crlf_delimited_file_over_limit_is_not_false_drift(self, store):
+        # Issue #107270: WSL write_file MEMORY.md uses CRLF. Collapsed as one
+        # entry the body exceeds the 500-char fixture limit; each real entry does not.
+        path = store._path_for("memory")
+        entries = [
+            "User likes brevity.",
+            "Deploy target is Ubuntu 24.04.",
+            "x" * 160,
+            "y" * 160,
+            "z" * 160,
+        ]
+        raw = "\r\n§\r\n".join(entries)
+        assert len(raw) > 500
+        assert max(map(len, entries)) <= 500
+        # read_text() may translate CRLF; the guard still receives whatever
+        # snapshot _parse_entries sees. Un-normalized CRLF must not collapse
+        # into one giant entry (confirmed n_entries=1 on current main).
+        parsed = store._parse_entries(raw)
+        assert len(parsed) == len(entries)
+        assert store._detect_external_drift("memory", raw) is None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw.encode("utf-8"))
+        result = store.replace("memory", "User likes", "User prefers concise notes.")
+        assert "drift_backup" not in result
+        assert "round-trip" not in result.get("error", "").lower()
+        # After CRLF parse, total may still exceed 500 → consolidation error is OK.
+        # The bug is the FALSE drift refusal.
+
+    def test_trailing_delimiter_on_tool_shaped_file_is_not_drift(self, store):
+        store.add("memory", "User likes brevity.")
+        store.add("memory", "Deploy target is Ubuntu 24.04.")
+        path = store._path_for("memory")
+        path.write_text(path.read_text(encoding="utf-8") + "\n§\n", encoding="utf-8")
+        result = store.replace("memory", "User likes", "User prefers concise notes.")
+        assert result["success"] is True
+        assert "drift_backup" not in result
+
+    def test_entry_padding_on_tool_shaped_file_is_not_drift(self, store):
+        """write_file-style leading/trailing padding per entry is format-only (#107270)."""
+        path = store._path_for("memory")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "  User likes brevity.  \n§\n  Deploy target is Ubuntu 24.04.  ",
+            encoding="utf-8",
+        )
+        result = store.replace("memory", "User likes", "User prefers concise notes.")
+        assert result["success"] is True
+        assert "drift_backup" not in result
+
+    def test_no_delimiter_blob_over_limit_still_drifts(self, store):
+        """CONTROL: unstructured blob with no § delimiters over the fixture
+        limit is still true #26045 drift — not silenced by the #107270 fix."""
+        path = store._path_for("memory")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        blob = "unstructured vendor notes\n" + "x" * 600
+        assert "§" not in blob
+        assert len(blob) > 500
+        path.write_text(blob, encoding="utf-8")
+        result = store.replace("memory", "unstructured", "structured")
+        assert result["success"] is False
+        assert "drift_backup" in result
+
 
 class TestUnreadableFileDoesNotWipeMemory:
     """A file that exists but can't be read must NOT be treated as empty.

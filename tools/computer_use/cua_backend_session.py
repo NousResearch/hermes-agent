@@ -158,6 +158,18 @@ def _logical_error_text(result: Dict[str, Any]) -> str:
             chunks.append(str(value))
     return "\n".join(chunks)
 
+# The MCP Python SDK's ``Tool`` model has no ``capabilities`` field, so the non-spec per-tool
+# `capabilities[]` array (trycua/cua#1961) is silently dropped on the round-trip through
+# `tools/list`, even when the driver genuinely advertises it (#108846). ``inputSchema``, being
+# part of the spec, always survives — so a schema property that could ONLY exist to serve a given
+# capability is itself proof the driver supports that capability. Kept intentionally small: only
+# properties that are an unambiguous 1:1 stand-in for the capability token belong here.
+_CAPABILITY_SCHEMA_PROPERTIES = {
+    "accessibility.element_tokens": "element_token",
+    "input.delivery_mode": "delivery_mode",
+}
+
+
 def _is_ended_session_result(result: Any) -> bool:
     """Recognise cua-driver's explicit recoverable ended-session result."""
     if not isinstance(result, dict) or result.get("isError") is not True:
@@ -357,10 +369,19 @@ class _CuaDriverSession:
     def supports_capability(self, capability: str, tool: Optional[str] = None) -> bool:
         """Driver advertises *capability* for *tool* (or ANY tool). False before start.
 
-        capability token (trycua/cua#1961 capability vocabulary).
+        capability token (trycua/cua#1961 capability vocabulary). Falls back to
+        ``_CAPABILITY_SCHEMA_PROPERTIES`` when ``_capabilities`` doesn't have it: the MCP SDK
+        drops the non-spec ``capabilities`` field from ``tools/list``, but ``inputSchema`` (spec)
+        survives, so a matching input property still proves the capability (#108846).
         """
         caps = [self._capabilities.get(tool, set())] if tool is not None else self._capabilities.values()
-        return any(capability in c for c in caps)
+        if any(capability in c for c in caps):
+            return True
+        schema_property = _CAPABILITY_SCHEMA_PROPERTIES.get(capability)
+        if schema_property is None:
+            return False
+        tools = [tool] if tool is not None else list(self._tool_schemas)
+        return any(self.supports_input_property(t, schema_property) for t in tools)
 
     def _has_tool(self, name: str) -> bool:
         """``tools/list`` advertised *name*. Routes capture() (PNG capture moved into ``get_window_state``).

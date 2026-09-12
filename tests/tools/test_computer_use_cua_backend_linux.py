@@ -142,3 +142,30 @@ def test_explicit_app_capture_preserves_filtered_target_order():
     chrome = _normalized_windows(LINUX_LIST_WINDOWS)[1]
 
     assert _select_capture_target([chrome], app_requested=True) == chrome
+
+def test_supports_capability_falls_back_to_tool_schema_property():
+    """Verify #108846: when MCP SDK drops the non-spec capabilities array from tools/list,
+    supports_capability falls back to detecting unambiguous inputSchema properties."""
+    from tools.computer_use.cua_backend_session import _CuaDriverSession, _AsyncBridge
+
+    session = _CuaDriverSession(_AsyncBridge())
+    # Simulate empty _capabilities due to MCP SDK drop
+    session._capabilities = {}
+    session._tool_schemas = {
+        "click": {
+            "type": "object",
+            "properties": {
+                "element_token": {"type": "string"},
+                "delivery_mode": {"type": "string"},
+            },
+        }
+    }
+
+    # Should detect accessibility.element_tokens via element_token property
+    assert session.supports_capability("accessibility.element_tokens", tool="click") is True
+    # Should detect input.delivery_mode via delivery_mode property
+    assert session.supports_capability("input.delivery_mode", tool="click") is True
+    # Unmapped or absent capability returns False
+    assert session.supports_capability("nonexistent.capability", tool="click") is False
+    # Check across any tool when tool=None
+    assert session.supports_capability("accessibility.element_tokens") is True

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -35,6 +36,67 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
+# How long shutdown waits for an in-flight auto-decompose pass to quiesce
+# before releasing the dispatcher lease anyway (a hung LLM call must not
+# wedge gateway shutdown forever).
+_AD_DRAIN_TIMEOUT_S = 30.0
+
+
+def _log_ad_tick_result(task: asyncio.Task) -> None:
+    """Surface a failed background auto-decompose tick (per-task outcomes are logged inline)."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("kanban auto-decompose: background tick failed: %s", exc)
+
+
+class _AdPassState:
+    """Lifecycle flags for one background auto-decompose pass.
+
+    ``started`` is set on the executor thread before the callable runs;
+    ``quiesced`` is set in its ``finally``, so it fires even when the pass
+    raises.
+    """
+
+    __slots__ = ("started", "quiesced")
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.quiesced = threading.Event()
+
+
+async def _drain_background_ad(
+    ad_task: Optional[asyncio.Task], ad_state: Optional[_AdPassState]
+) -> None:
+    """Wait out an in-flight background auto-decompose pass before the lease goes.
+
+    Cancelling a task parked on ``asyncio.to_thread`` does not stop the
+    already-running worker callable, and the machine-global dispatcher lock
+    must not be released while that callable is still mutating boards — a
+    replacement gateway could otherwise acquire the lock and start a second
+    concurrent decompose pass (#106998). A pass that was queued but never
+    reached the executor thread is simply cancelled (nothing is running);
+    a started pass is awaited for at most ``_AD_DRAIN_TIMEOUT_S`` so a hung
+    LLM call cannot wedge shutdown.
+    """
+    if ad_task is None or ad_task.done():
+        return
+    if not ad_state.started.is_set():
+        # Queued but not yet picked up by the executor: cancelling the task
+        # leaves nothing running.
+        ad_task.cancel()
+        if not ad_state.started.is_set():
+            return
+        # Lost the race with the executor thread mid-cancel: keep waiting
+        # like a started pass.
+    quiesced = await asyncio.to_thread(ad_state.quiesced.wait, _AD_DRAIN_TIMEOUT_S)
+    if not quiesced:
+        logger.warning(
+            "kanban dispatcher: background auto-decompose still running after "
+            "%.0fs drain; releasing dispatcher lock anyway",
+            _AD_DRAIN_TIMEOUT_S,
+        )
 
 
 class GatewayKanbanWatchersMixin:
@@ -236,8 +298,12 @@ class GatewayKanbanWatchersMixin:
         Gated by `kanban.dispatch_in_gateway` (default True); when false the
         loop exits and an external `hermes kanban daemon` is expected. Each
         tick runs :func:`kanban_db_dispatch.dispatch_once` in a thread; one tick's
-        failure never stops the next. Shutdown: ``self._running`` is checked
-        between ticks and the in-flight ``to_thread`` returns on its own.
+        failure never stops the next. The auto-decompose pass runs as a single
+        in-flight background task so a slow triage LLM call never delays the
+        spawn step. Shutdown: ``self._running`` is checked between ticks, and
+        an in-flight background decompose pass is drained before the
+        dispatcher lease is released so a replacement gateway cannot start a
+        second concurrent pass.
         """
         boot = self._kanban_dispatcher_boot()
         if boot is None:
@@ -246,64 +312,101 @@ class GatewayKanbanWatchersMixin:
         settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
         interval = settings.interval
 
-        # Initial delay so adapters are wired before workers spawn (matches the notifier).
-        await asyncio.sleep(5)
-
         # Health telemetry (mirrors `_cmd_daemon`): warn when the ready queue
         # is non-empty but spawns are 0 for N consecutive ticks — usually a
         # broken PATH, missing venv, or credential loss.
         bad_ticks = 0
         last_warn_at = 0
         dispatcher = _KanbanDispatcher(_kb, settings)
+        ad_task: Optional[asyncio.Task] = None
+        ad_state: Optional[_AdPassState] = None
 
-        logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
-        while self._running:
-            try:
-                # Reap zombies before per-board work so a board DB failure
-                # cannot block cleanup of unrelated workers.
-                from hermes_cli import kanban_db_dispatch as _kbd
-                pids = await _to_thread_process_service(_kbd.reap_worker_zombies)
-                if pids:
-                    logger.info("kanban dispatcher: reaped %d zombie worker(s), pids=%s", len(pids), pids)
-            except Exception:
-                logger.exception("kanban dispatcher: zombie reaper failed")
+        try:
+            # Initial delay so adapters are wired before workers spawn
+            # (matches the notifier).
+            await asyncio.sleep(5)
 
+            logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
+            while self._running:
+                try:
+                    # Reap zombies before per-board work so a board DB failure
+                    # cannot block cleanup of unrelated workers.
+                    from hermes_cli import kanban_db_dispatch as _kbd
+                    pids = await _to_thread_process_service(_kbd.reap_worker_zombies)
+                    if pids:
+                        logger.info(
+                            "kanban dispatcher: reaped %d zombie worker(s), pids=%s",
+                            len(pids),
+                            pids,
+                        )
+                except Exception:
+                    logger.exception("kanban dispatcher: zombie reaper failed")
+
+                try:
+                    # Emergency stop (`hermes pause`): no auto-decompose or
+                    # dispatch while paused; running workers finish naturally.
+                    if not _kanban_dispatch_allowed():
+                        bad_ticks = 0
+                    else:
+                        # Re-read the auto-decompose toggle live so disabling it
+                        # takes effect on the next tick, not on restart.
+                        _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
+                        # See #49638. #106985: the decompose call is a whole-board
+                        # LLM pass, so it runs as a single in-flight background task
+                        # instead of being awaited inline — otherwise one slow or
+                        # stuck triage decompose delays every unrelated ready-task
+                        # spawn on every board sharing this dispatcher.
+                        if _ad_enabled and (ad_task is None or ad_task.done()):
+                            pass_state = _AdPassState()
+
+                            def _ad_pass(state: _AdPassState = pass_state) -> int:
+                                state.started.set()
+                                try:
+                                    return dispatcher.auto_decompose_tick(_ad_per_tick)
+                                finally:
+                                    state.quiesced.set()
+
+                            ad_state = pass_state
+                            ad_task = asyncio.create_task(
+                                _to_thread_process_service(_ad_pass)
+                            )
+                            ad_task.add_done_callback(_log_ad_tick_result)
+                        results = await _to_thread_process_service(dispatcher.tick_once)
+                        any_spawned = _log_spawn_results(results)
+                        ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
+                        bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    now = int(time.time())
+                    if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
+                        logger.warning(
+                            "kanban dispatcher stuck: ready queue non-empty for "
+                            "%d consecutive ticks but 0 workers spawned. Check "
+                            "profile health (venv, PATH, credentials) and "
+                            "`hermes kanban list --status ready`.",
+                            bad_ticks,
+                        )
+                        last_warn_at = now
+                except asyncio.CancelledError:
+                    logger.debug("kanban dispatcher: cancelled")
+                    raise
+                except Exception:
+                    logger.exception("kanban dispatcher: unexpected watcher error")
+
+                await self._sleep_between_ticks(interval)
+        finally:
+            # Loop exit and cancellation — in tick work or between ticks — all
+            # land here. Cancelling the wrapper task does not stop a
+            # to_thread worker that is already mutating boards; the
+            # machine-global dispatcher lease is released only after the
+            # in-flight pass has quiesced (or its bounded drain window
+            # expired), so a replacement gateway cannot start a second
+            # concurrent decompose pass (#106998).
             try:
-                # Emergency stop (`hermes pause`): no auto-decompose or
-                # dispatch while paused; running workers finish naturally.
-                if not _kanban_dispatch_allowed():
-                    bad_ticks = 0
-                else:
-                    # Re-read the auto-decompose toggle live so disabling it
-                    # takes effect on the next tick, not on restart.
-                    _ad_enabled, _ad_per_tick = _resolve_auto_decompose_settings(_load_config)
-                    # See #49638.
-                    if _ad_enabled:
-                        await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
-                    results = await _to_thread_process_service(dispatcher.tick_once)
-                    any_spawned = _log_spawn_results(results)
-                    ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
-                now = int(time.time())
-                if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
-                    logger.warning(
-                        "kanban dispatcher stuck: ready queue non-empty for "
-                        "%d consecutive ticks but 0 workers spawned. Check "
-                        "profile health (venv, PATH, credentials) and "
-                        "`hermes kanban list --status ready`.",
-                        bad_ticks,
-                    )
-                    last_warn_at = now
+                await _drain_background_ad(ad_task, ad_state)
             except asyncio.CancelledError:
-                logger.debug("kanban dispatcher: cancelled")
-                self._release_kanban_dispatcher_lock()
-                raise
-            except Exception:
-                logger.exception("kanban dispatcher: unexpected watcher error")
-
-            await self._sleep_between_ticks(interval)
-
-        self._release_kanban_dispatcher_lock()
+                # Repeated cancellation during shutdown: release the lease
+                # rather than leak it (pre-#106985 teardown semantics).
+                pass
+            self._release_kanban_dispatcher_lock()
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

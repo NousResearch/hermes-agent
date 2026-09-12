@@ -2993,6 +2993,7 @@ export const ja = defineLocale({
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
       contextUsage: 'コンテキスト使用状況',
+      compressions: count => `圧縮回数: ${count}`,
       systemResources: {
         title: 'システムリソース',
         loading: 'リソース…',

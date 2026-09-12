@@ -2884,6 +2884,7 @@ export const zhHant = defineLocale({
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
       contextUsage: '上下文使用量',
+      compressions: count => `壓縮次數：${count}`,
       systemResources: {
         title: '系統資源',
         loading: '資源…',

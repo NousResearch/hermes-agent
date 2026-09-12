@@ -2567,6 +2567,7 @@ export const ar = defineLocale({
       openCron: 'فتح المهام المجدولة',
       turnRunning: 'الدور يعمل',
       contextUsage: 'استخدام السياق',
+      compressions: count => `مرات الضغط: ${count}`,
       session: 'الجلسة',
       yoloOn: 'YOLO مفعل',
       yoloOff: 'YOLO معطل',

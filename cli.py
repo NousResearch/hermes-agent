@@ -4825,15 +4825,20 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         state["reviewing"] = False
         state["submitted"] = False
         state["question"] = entry["question"]
-        state["choices"] = entry["choices"] or []
+        from tools.clarify_tool import strip_recommended
+        state["choices"] = sorted(
+            entry["choices"] or [], key=lambda c: c == strip_recommended(c))
         state["selected"] = 0
         state["multi_select"] = bool(entry["multi_select"])
         state["selected_indices"] = set() if entry["multi_select"] else None
         self._clarify_freetext = not entry["choices"]
         self._clarify_multi_base = None
+        from hermes_cli.cli_clarify_panel import restore_draft
+        if restore_draft(self, state, index):
+            return
         # Restore the earlier answer's cursor/checkbox position on re-visit.
         meta = (state.get("answer_meta") or {}).get(entry["qid"])
-        choices = entry["choices"] or []
+        choices = state["choices"]
         if meta is None:
             return
         if meta.get("kind") == "choice":

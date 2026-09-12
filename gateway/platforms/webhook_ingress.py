@@ -97,6 +97,7 @@ def finalize_webhook(authority, receipt):
 async def recover_webhook_finalizations(authority):
     """Close settled original webhooks only after current route authorization succeeds."""
     from gateway.session_envelope import check_native_route
+    from gateway.session_contract import SessionRef
     from hermes_state_runtime import RuntimeStoreError, get_session_admission
 
     rows = authority.db._read_all("""
@@ -120,7 +121,8 @@ async def recover_webhook_finalizations(authority):
             if entry is None or authority.logical_owner(entry.session_id) != sid:
                 raise RuntimeStoreError('admission_conflict')
             adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
-            await check_native_route(authority.runner, row['payload'], sid, entry.origin, adapter)
+            target = authority.physical_target(SessionRef(authority.profile_id, sid))
+            await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
             results[sid] = 'finalized' if finalize_webhook(
                 authority, authority._receipt(row)) else 'unchanged'
         except (KeyError, RuntimeStoreError):

@@ -90,6 +90,8 @@ async def test_local_entry_timestamps_keep_fallback_recovery_sweeping_other_rout
     actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
     ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path),
                                                   'model': 'frozen', 'toolsets': []})
+    from gateway.session_api import bind_api_session
+    bind_api_session(authority, 'api-owner')
     telegram = SessionSource(platform=Platform.TELEGRAM, chat_id='7', user_id='7', chat_type='dm')
     entry = store.get_or_create_session(telegram)
     assert not entry.resume_pending

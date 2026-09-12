@@ -7,6 +7,7 @@ import {
   defaultVisibleKeys,
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
+  hiddenModelVisibilityKey,
   isProviderSentinel,
   modelVisibilityKey,
   resolveVisibleKeys,
@@ -34,13 +35,19 @@ describe('model visibility', () => {
     expect(visible.has(modelVisibilityKey('local-ollama', 'llama3.2:latest'))).toBe(true)
   })
 
-  it('does not re-add models from a provider that already has stored choices', () => {
-    const stored = new Set([modelVisibilityKey('local-ollama', 'qwen3:latest')])
+  it('shows newly discovered models without restoring explicitly hidden models', () => {
+    const stored = new Set([
+      modelVisibilityKey('local-ollama', 'qwen3:latest'),
+      hiddenModelVisibilityKey('local-ollama', 'llama3.2:latest')
+    ])
 
-    const visible = effectiveVisibleKeys(stored, [provider('local-ollama', ['qwen3:latest', 'llama3.2:latest'])])
+    const visible = effectiveVisibleKeys(stored, [
+      provider('local-ollama', ['qwen3:latest', 'llama3.2:latest', 'deepseek-r1:latest'])
+    ])
 
     expect(visible.has(modelVisibilityKey('local-ollama', 'qwen3:latest'))).toBe(true)
     expect(visible.has(modelVisibilityKey('local-ollama', 'llama3.2:latest'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('local-ollama', 'deepseek-r1:latest'))).toBe(true)
   })
 
   it('preserves hidden-provider sentinel without re-adding defaults', () => {
@@ -64,15 +71,13 @@ describe('model visibility', () => {
     // Simulates: user hid all "nous" models, then toggles one back on.
     const stored = new Set([emptyProviderSentinelKey('nous'), modelVisibilityKey('ollama', 'qwen3:latest')])
 
-    // After toggle: sentinel removed, one model added.
-    const afterToggle = new Set(stored)
-    afterToggle.delete(emptyProviderSentinelKey('nous'))
-    afterToggle.add(modelVisibilityKey('nous', 'hermes-3-llama-3.1-70b'))
-
-    const visible = effectiveVisibleKeys(afterToggle, [
+    const providers = [
       provider('nous', ['hermes-3-llama-3.1-70b', 'hermes-3-llama-3.1-8b']),
       provider('ollama', ['qwen3:latest'])
-    ])
+    ]
+
+    const afterToggle = toggleModelVisibility(stored, providers, 'nous', 'hermes-3-llama-3.1-70b')
+    const visible = effectiveVisibleKeys(afterToggle, providers)
 
     expect(visible.has(modelVisibilityKey('nous', 'hermes-3-llama-3.1-70b'))).toBe(true)
     expect(visible.has(modelVisibilityKey('nous', 'hermes-3-llama-3.1-8b'))).toBe(false)

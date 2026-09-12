@@ -1,6 +1,9 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { HermesNotification } from '../electron/notification-types'
+import type { PoolLimits } from '../electron/pool-limits'
+
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
   PetOverlayBounds,
@@ -18,12 +21,16 @@ declare global {
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
-      getConnection: (profile?: string | null) => Promise<HermesConnection>
+      getConnection: (
+        profile?: string | null,
+        opts?: { priority?: 'foreground' | 'background' }
+      ) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
       getConnectionFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
+        priority?: 'foreground' | 'background'
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {
@@ -46,13 +53,24 @@ declare global {
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      // Pool sizing (Settings → Advanced): device-local, live-applied by the
+      // main process. get resolves the limits currently in force; set applies
+      // (and persists) new ones, evicting/reaping to converge immediately.
+      getPoolLimits: () => Promise<PoolLimits>
+      setPoolLimits: (limits: { maxBackends?: number; idleMs?: number }) => Promise<{
+        ok: boolean
+        limits: PoolLimits
+      }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
-      openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
+      openSessionWindow: (
+        sessionId: string,
+        opts?: { profile?: null | string; watch?: boolean }
+      ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
       openSessionInTerminal: (
@@ -91,6 +109,35 @@ declare global {
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
       }
+      // Intro reveal: the full-screen first-run brand sequence. The main
+      // renderer owns the phase; the overlay window (`?win=intro`) owns
+      // the animation clock and plays sound locally.
+      introReveal?: {
+        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
+        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
+        skip: () => void
+        /** The surface painted its first frame — reveal the OS window now. */
+        ready: () => void
+        onSkip: (callback: () => void) => () => void
+        onClosed: (callback: () => void) => () => void
+      }
+      // In-chat onboarding assembly: grow the main window outward by per-edge
+      // pixel deltas so the chat pane keeps its exact screen rect while the
+      // app assembles around it.
+      chatOnboarding?: {
+        grow: (request: {
+          bottom: number
+          left: number
+          /** Floor for the resulting CSS-pixel viewport width, for layouts that
+           *  need one (a docked sidebar). Clamped to the display. */
+          minWidth?: number
+          right: number
+          top: number
+        }) => void
+        /** The film has revealed the app. Animate the visible window down to
+         *  the solo-chat size as the guided chat starts. */
+        soloBoot?: () => void
+      }
       // HUD mode: the chrome-free floating chat. A FULL app renderer with its
       // own gateway (like an instance window), sized and skinned as a floating
       // bar — so it mounts the real composer rather than a lookalike. Main
@@ -101,12 +148,15 @@ declare global {
           clientPlacement: boolean
           controlDrag: boolean
           nativeDrag: boolean
+          solid: boolean
           workspaceTransfer: boolean
         }
         open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void
-        moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
+        beginMove: () => void
+        endMove: () => void
+        moveBy: (delta: { width: number; height: number }) => void
         setWorkspaceTransfer?: (transferring: boolean) => void
         setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
         resetLayout: () => Promise<{ ok: boolean }>
@@ -169,6 +219,9 @@ declare global {
         ) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         setLastUsed?: (id: string) => Promise<{ ok: boolean; registry: DesktopConnectionsRegistry }>
         test: (id: string) => Promise<DesktopConnectionTestResult>
+        // Drain/update/restore one Desktop-managed SSH install. External URL
+        // and cloud sources are refused without touching their processes.
+        updateManaged?: (id: string) => Promise<DesktopManagedConnectionUpdateResult>
         // Fan out `hermes update` to every eligible registered connection;
         // cloud entries are skipped (platform-managed), each row independent.
         // excludeIds skips connections the caller updates through another
@@ -180,13 +233,15 @@ declare global {
         // materially edited so the renderer can dispose (and re-dial) the
         // secondary gateways scoped to it. Optional: older Electron mains
         // don't emit it.
-        onChanged?: (callback: (payload: { connectionId: string; reason: 'removed' | 'updated' }) => void) => () => void
+        onChanged?: (
+          callback: (payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) => void
+        ) => () => void
       }
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
-      oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
       cloud: {
@@ -198,6 +253,9 @@ declare global {
       }
       profile: {
         get: () => Promise<DesktopActiveProfile>
+        // Persists the profile used on the next Desktop launch without
+        // interrupting the live gateway workspace switch.
+        remember: (name: string | null) => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
         // backend under the new HERMES_HOME (reloads the window). Pass null to
         // clear the preference.
@@ -244,6 +302,7 @@ declare global {
         connectionId?: null | string
         path: string
         profile?: null | string
+        sessionId?: string
         suggestedName?: string
       }) => Promise<{
         canceled?: boolean
@@ -267,7 +326,13 @@ declare global {
       onContextMenuSpellcheck?: (
         callback: (payload: { misspelledWord: string; suggestions: string[] }) => void
       ) => () => void
-      saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
+      saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string, name?: string) => Promise<string>
+      /** Crop the in-app browser guest. `rect` is CSS pixels in the page viewport. */
+      capturePreview?: (payload: {
+        rect?: { height: number; width: number; x: number; y: number }
+        viewport?: { height: number; width: number }
+        webContentsId: number
+      }) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
@@ -284,11 +349,30 @@ declare global {
       glassSupported?: boolean
       /** Main-process fact: this OS can do any translucency at all (not Linux). */
       translucencySupported?: boolean
+      /** Launch flag: the app was started with --local, enabling the
+       *  local-models GUI surfaces. Absent/false = every local surface hides. */
+      localModelsEnabled?: boolean
+      /** Launch flag: the Nous free tier is on for this launch
+       *  (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only fact the
+       *  main process also stamps onto every backend it spawns. */
+      guestOnboardingEnabled?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      /** One-shot loopback callback listener for MCP OAuth against remote
+       *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
+       *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
+       *  await the provider redirect, relay code/state via oauth.callback. */
+      mcpOauth?: {
+        listen: () => Promise<{ id: string; redirectUri: string }>
+        wait: (
+          id: string,
+          timeoutMs?: number
+        ) => Promise<{ code: null | string; error: null | string; state: null | string }>
+        cancel: (id: string) => Promise<boolean>
+      }
       openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       /** A site's icon as a data URL, or '' when it has none we can read.
@@ -328,11 +412,8 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
       logsRoot?: () => Promise<string>
-      // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
-      // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
-      // so one agent-plugin package can ship a desktop UI half. Optional:
-      // older Electron shells predate it — the scanner then skips this root.
-      agentPluginsRoot?: () => Promise<string>
+      /** Re-copy unified packages' desktop halves into the app-level root; returns touched paths. */
+      reconcileDesktopPlugins?: () => Promise<string[]>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
@@ -403,6 +484,7 @@ declare global {
         ) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
+        attach: (id: string) => Promise<boolean>
         /** Best-effort current working directory of the live PTY child (POSIX
          *  only; null on Windows or when unavailable). Used to reopen a tab
          *  where the user last `cd`'d. */
@@ -463,14 +545,20 @@ declare global {
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
+      recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
       repairBootstrap: () => Promise<{ ok: boolean }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      /** Host facts for the guided first run. Optional: an older preload (a
+       *  mid-upgrade managed install) simply doesn't answer. */
+      getMachineProfile?: () => Promise<DesktopMachineProfile>
+      /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
+      relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
-        check: () => Promise<DesktopUpdateStatus>
+        check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
@@ -548,6 +636,29 @@ export interface DesktopVersionInfo {
   bundleOutOfSync?: boolean
   /** Commits under apps/desktop/ the running bundle is missing (null unknown). */
   bundleCommitsBehind?: null | number
+  /** True when the bundle on disk is newer than the running process — a plain
+   *  app restart (no rebuild, no installer) is enough to load it. */
+  bundleSwapPending?: boolean
+}
+
+export interface DesktopMachineProfile {
+  /** Days since the OS created this user account; null when unknowable. */
+  ageDays: null | number
+  arch: string
+  /** The OS display language (`app.getLocale()`, e.g. "ja", "pt-BR"); '' when
+   *  unknowable. A first-run DEFAULT for the UI language, never a lock — the
+   *  user's saved `display.language` always wins, and the picker still rules. */
+  locale: string
+  /** Hardware's self-reported model (`NVIDIA_DGX_Spark`); '' when unavailable. */
+  model: string
+  /** An NVIDIA GPU is present, by PCI vendor id. */
+  nvidia: boolean
+  platform: string
+  release: string
+  /** OS login name ('' when unknowable) — a first-name SUGGESTION for the
+   *  guided chat, never a default. The renderer blocklists handles that are
+   *  not a name before offering it. */
+  username: string
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
@@ -805,6 +916,7 @@ export interface DesktopConnectionConfigInput {
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
+  cloudName?: string
   sshHost?: string
   sshUser?: string
   sshPort?: number | null
@@ -942,6 +1054,37 @@ export interface DesktopConnectionUpdateResult {
   reason?: string
   detail?: string
   error?: string
+}
+
+export type DesktopManagedConnectionUpdateOutcome =
+  'updated' | 'update-failed' | 'restore-failed' | 'update-and-restore-failed' | 'refused'
+
+export interface DesktopManagedUpdateReceipt {
+  correlationId: string
+  // Additive receipt outcomes remain forward-compatible with newer updater
+  // kernels instead of making an older renderer reject their proof.
+  outcome: string
+  startedAt?: string
+  finishedAt?: string
+  preSha?: string
+  postSha?: string
+  preVersion?: string
+  postVersion?: string
+  stopReason?: string
+}
+
+export interface DesktopManagedConnectionUpdateResult {
+  connectionId: string
+  correlationId: string
+  ok: boolean
+  updateOk: boolean
+  restoreOk: boolean
+  outcome: DesktopManagedConnectionUpdateOutcome
+  exitCode: number | null
+  receipt: DesktopManagedUpdateReceipt | null
+  scopes: Array<{ profile: string; restored: boolean; error?: string }>
+  error?: string
+  message?: string
 }
 
 export interface DesktopSshResolveResult {
@@ -1147,23 +1290,11 @@ export interface HermesApiRequest {
   // through the owning connection, not the local profile pool. Omit / '' to
   // keep the legacy profile-routed path; explicit 'local' forces this device.
   connectionId?: string | null
-}
-
-export interface HermesNotification {
-  title?: string
-  body?: string
-  silent?: boolean
-  kind?: string
-  sessionId?: string
-  /** Dedupe discriminator for session-less notifications (e.g. plugin id). */
-  tag?: string
-  /** Absolute icon path for Electron `Notification`. */
-  icon?: string
-  /** Resolved hash-router path opened on body click (plugin / deeplink-compatible). */
-  activate?: string
-  /** Renderer handle for onActivate / onAction callbacks. */
-  notifyId?: string
-  actions?: { id: string; text: string; activate?: string }[]
+  // Passive background read that must never cold-start a pooled backend (#103375).
+  // When true and the target profile has no warm pool entry, the main process
+  // fails fast without spawning a child or consuming a pool slot, so background
+  // tile reconciles cannot starve interactive opens.
+  passive?: boolean
 }
 
 export interface HermesPreviewTarget {

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { isSessionGone, latchSessionGone, resetBackgroundPollingGuard } from './session-gone-latch'
+
 // Regression coverage for the #89206 wake-failure class: session-scoped RPCs
 // routed to a backend that does not own the session's profile. Three layers:
 //   1. The registry publishes the ACTIVE route's profile ($activeGatewayRoute)
@@ -78,6 +80,7 @@ const {
 } = await import('./gateway')
 
 const { requestForSessionProfile, sessionRpcNeedsProfileRoute } = await import('./session-request-router')
+const { $connectionsRegistry } = await import('./connection-registry-state')
 
 function installDesktop(): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
@@ -103,6 +106,8 @@ function makePrimary() {
 beforeEach(() => {
   secondaryGateways.length = 0
   promptAckStatus = null
+  $connectionsRegistry.set(null)
+  resetBackgroundPollingGuard()
   configureGatewayRegistry({ onEvent: vi.fn() })
   closeSecondaryGateways()
 })
@@ -110,6 +115,7 @@ beforeEach(() => {
 afterEach(() => {
   closeSecondaryGateways()
   vi.clearAllMocks()
+  resetBackgroundPollingGuard()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
@@ -177,6 +183,82 @@ describe('sessionRpcNeedsProfileRoute', () => {
 })
 
 describe('requestForSessionProfile', () => {
+  it('clears a dead-runtime latch only after a successful resume or activate', async () => {
+    const ambient = vi.fn(async () => ({ session_id: 'rt-rebound' }))
+
+    latchSessionGone('rt-rebound')
+    expect(isSessionGone('rt-rebound')).toBe(true)
+
+    await requestForSessionProfile(null, ambient as never, 'session.activate', { session_id: 'rt-rebound' })
+    expect(isSessionGone('rt-rebound')).toBe(false)
+
+    latchSessionGone('rt-rebound')
+    await expect(
+      requestForSessionProfile(
+        null,
+        vi.fn(async () => {
+          throw new Error('resume failed')
+        }) as never,
+        'session.resume',
+        { session_id: 'rt-rebound' }
+      )
+    ).rejects.toThrow('resume failed')
+    expect(isSessionGone('rt-rebound')).toBe(true)
+  })
+
+  it('clears a dead-runtime latch through the bare profile owner route', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    latchSessionGone('profile-rebound')
+
+    await requestForSessionProfile('loki', ambient as never, 'session.resume', {
+      session_id: 'profile-rebound'
+    })
+
+    expect(isSessionGone('profile-rebound')).toBe(false)
+  })
+
+  it('clears a dead-runtime latch through an explicit connection owner route', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    latchSessionGone('connection-rebound')
+
+    await requestForSessionProfile(
+      { connectionId: 'source-a', profile: 'default' },
+      ambient as never,
+      'session.activate',
+      { session_id: 'connection-rebound' }
+    )
+
+    expect(isSessionGone('connection-rebound')).toBe(false)
+  })
+
+  it('keeps routing a bare profile owner through its legacy profile pool when a connection registry exists', async () => {
+    // A profile pick on the primary or the explicit `local` source takes the
+    // legacy profile-only door (store/profile activateOnCurrentSource), so a
+    // session minted there is owned by that profile's pool socket in every
+    // topology — a registry does not turn the bare profile into a guess.
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    installDesktop()
+    $connectionsRegistry.set({ connections: [{ id: 'local' }] } as never)
+    const ambient = vi.fn(async () => ({ ambient: true }))
+
+    await expect(
+      requestForSessionProfile('loki', ambient as never, 'session.resume', { session_id: 'stored-a' })
+    ).resolves.toEqual({ method: 'session.resume', params: { session_id: 'stored-a' } })
+    expect(window.hermesDesktop!.getConnection).toHaveBeenCalledWith('loki')
+    expect(secondaryGateways).toHaveLength(1)
+    expect(primary.request).not.toHaveBeenCalled()
+    expect(ambient).not.toHaveBeenCalled()
+  })
+
   it('keeps concurrent same-name requests pinned while foreground activation changes', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
@@ -486,5 +568,19 @@ describe('requestForSessionProfile', () => {
     await requestForSessionProfile(null, ambient as never, 'session.usage', { session_id: 'rt-2' })
 
     expect(ambient).toHaveBeenCalledOnce()
+  })
+
+  it('preserves ambient request arity as optional controls are supplied', async () => {
+    const ambient = vi.fn(async () => ({ ambient: true }))
+    const params = { session_id: 'rt-3' }
+    const controller = new AbortController()
+
+    await requestForSessionProfile(null, ambient as never, 'session.usage', params)
+    await requestForSessionProfile(null, ambient as never, 'session.usage', params, 1_800_000)
+    await requestForSessionProfile(null, ambient as never, 'session.usage', params, undefined, controller.signal)
+
+    expect(ambient.mock.calls.map(args => args.length)).toEqual([2, 3, 4])
+    expect(ambient).toHaveBeenNthCalledWith(2, 'session.usage', params, 1_800_000)
+    expect(ambient).toHaveBeenNthCalledWith(3, 'session.usage', params, undefined, controller.signal)
   })
 })

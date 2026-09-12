@@ -1,13 +1,49 @@
 import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
 
-export interface SessionProfileRoute {
+import { resetBackgroundPollingGuardAfterRebind } from './session-gone-latch'
+
+/**
+ * The ONE authoritative exact owner of a session: the registry connection whose
+ * socket minted (or resumed) the runtime, plus the Desktop profile that selects
+ * that route. `targetProfile` is the backend profile the route serves when it
+ * differs from the Desktop-side name (remote overrides); `mode` is informative.
+ *
+ * Captured ONCE at the new-chat intent / send linearization point
+ * (store/profile resolveNewChatOwnerRoute) and carried through session.create,
+ * the owner hint, the optimistic row, the runtime binding, the foreground hold
+ * and every later session-scoped RPC. Never re-derived from ambient state after
+ * an asynchronous activation: connection/profile EQUALITY is not enough — the
+ * runtime lives on one concrete WebSocket, and only this route names the
+ * registry entry that holds it.
+ */
+export interface SessionOwnerRoute {
   connectionId: string
   mode?: 'local' | 'remote'
   profile: string
   targetProfile?: string
 }
 
-export type SessionOwnerScope = undefined | null | string | SessionProfileRoute
+/** @deprecated Alias kept for existing imports; new code names SessionOwnerRoute. */
+export type SessionProfileRoute = SessionOwnerRoute
+
+export type SessionOwnerScope = undefined | null | string | SessionOwnerRoute
+
+/** Exact owner reconstructed from a CONNECTION-TAGGED session row (the
+ *  Electron unified-list splice tags foreign registry rows; an optimistic row
+ *  carries the create route's connection; mergeSessionPage carries the tag
+ *  across refreshes). A row without a connection tag yields undefined — a bare
+ *  profile is not an exact owner. */
+export function sessionOwnerRouteFromRow(
+  row: { connection_id?: null | string; profile?: null | string } | null | undefined
+): SessionOwnerRoute | undefined {
+  const connectionId = String(row?.connection_id ?? '').trim()
+
+  if (!connectionId) {
+    return undefined
+  }
+
+  return { connectionId, profile: String(row?.profile ?? '').trim() || 'default' }
+}
 
 // ── Session-scoped RPC routing (the #89206 class) ───────────────────────────
 // A session-scoped RPC (session.resume / session.activate / session.usage /
@@ -29,8 +65,10 @@ export type SessionOwnerScope = undefined | null | string | SessionProfileRoute
 
 const normKey = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
 
-const isRoute = (owner: SessionOwnerScope): owner is SessionProfileRoute =>
+export const isSessionOwnerRoute = (owner: SessionOwnerScope): owner is SessionOwnerRoute =>
   Boolean(owner && typeof owner === 'object' && 'connectionId' in owner)
+
+const isRoute = isSessionOwnerRoute
 
 function routeParams(route: SessionProfileRoute, params: Record<string, unknown>): Record<string, unknown> {
   if (!route.targetProfile || !Object.prototype.hasOwnProperty.call(params, 'profile')) {
@@ -71,13 +109,14 @@ async function withRoutedTurnLease<T>(
   const sessionId = promptSessionId(method, params)
 
   if (!sessionId) {
-    return request()
+    return requestWithRebindGuard(method, params, request)
   }
 
   const release = await retainGatewayForSessionTurn(connectionId, profile, sessionId)
 
   try {
     const result = await request()
+    resetBackgroundPollingGuardAfterRebind(method, params, result)
 
     if (!turnKeepsRunning(result)) {
       release()
@@ -90,11 +129,24 @@ async function withRoutedTurnLease<T>(
   }
 }
 
+async function requestWithRebindGuard<T>(
+  method: string,
+  params: Record<string, unknown>,
+  request: () => Promise<T>
+): Promise<T> {
+  const result = await request()
+  resetBackgroundPollingGuardAfterRebind(method, params, result)
+
+  return result
+}
+
 /**
  * True when a session-scoped RPC must be pinned to `ownerProfile`'s own socket.
  *
  * A KNOWN owner (route or profile name) always needs its own socket: the
  * session belongs to that profile regardless of what the window is showing.
+ * A bare profile names the legacy profile door's pool socket in every
+ * topology (a pick on the primary / explicit `local` source dials it).
  * There is deliberately NO comparison against the active profile — "active" is
  * presentation state, never a routing authority. Only a null/empty owner (a
  * fresh draft with no session, or global chrome) routes ambient.
@@ -154,9 +206,15 @@ export function requestForSessionProfile<T>(
     // changes the observed call shape for the many callers that never asked
     // for a deadline (the plugin host bridge in contrib/wiring is the only one
     // that does).
-    return timeoutMs === undefined && signal === undefined
-      ? ambientRequest<T>(method, params)
-      : ambientRequest<T>(method, params, timeoutMs, signal)
+    if (signal !== undefined) {
+      return requestWithRebindGuard(method, params, () => ambientRequest<T>(method, params, timeoutMs, signal))
+    }
+
+    if (timeoutMs !== undefined) {
+      return requestWithRebindGuard(method, params, () => ambientRequest<T>(method, params, timeoutMs))
+    }
+
+    return requestWithRebindGuard(method, params, () => ambientRequest<T>(method, params))
   }
 
   const profile = normKey(ownerProfile)

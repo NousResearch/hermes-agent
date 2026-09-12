@@ -2,129 +2,93 @@
 
 import asyncio
 import ssl
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 
-def test_edge_connector_overrides_dependency_request_context(monkeypatch):
-    """The Hermes CA must win over edge-tts' explicit certifi context."""
-    from tools import tts_tool
-
-    hermes_context = ssl.create_default_context()
-    dependency_context = ssl.create_default_context()
-    monkeypatch.setattr(
-        "agent.ssl_verify.resolve_httpx_verify",
-        lambda: hermes_context,
-    )
-
-    async def check_connector():
-        connector = tts_tool._edge_tts_connector()
-        request = MagicMock()
-        request.is_ssl.return_value = True
-        request.ssl = dependency_context
-
-        try:
-            assert connector is not None
-            assert connector._get_ssl_context(request) is hermes_context
-        finally:
-            await connector.close_from_hermes()
-
-    asyncio.run(check_connector())
+def _fake_edge_tts():
+    communicate_context = MagicMock()
+    voices_context = MagicMock()
+    communicate = SimpleNamespace(_SSL_CTX=communicate_context)
+    voices = SimpleNamespace(_SSL_CTX=voices_context)
+    return SimpleNamespace(
+        communicate=communicate,
+        voices=voices,
+        Communicate=MagicMock(),
+    ), communicate_context, voices_context
 
 
-def test_edge_connector_preserves_dependency_default_without_custom_ca(monkeypatch):
-    """No custom trust setting should leave edge-tts' defaults untouched."""
-    from tools import tts_tool
+def test_edge_ssl_adds_custom_ca_to_both_dependency_contexts(monkeypatch, tmp_path):
+    from agent import ssl_verify
+    from tools import tts_tool_providers
 
-    monkeypatch.setattr("agent.ssl_verify.resolve_httpx_verify", lambda: True)
+    ca_bundle = tmp_path / "corporate-ca.pem"
+    ca_bundle.write_text("test certificate bundle", encoding="utf-8")
+    edge_tts, communicate_context, voices_context = _fake_edge_tts()
+    monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: str(ca_bundle))
 
-    assert tts_tool._edge_tts_connector() is None
+    tts_tool_providers._configure_edge_tts_ssl(edge_tts)
+
+    communicate_context.load_verify_locations.assert_called_once_with(cafile=str(ca_bundle))
+    voices_context.load_verify_locations.assert_called_once_with(cafile=str(ca_bundle))
 
 
-def test_generate_edge_tts_passes_custom_ca_connector(tmp_path):
-    """The synthesis path must give the enforcing connector to edge-tts."""
-    from tools.tts_tool import _generate_edge_tts
+def test_edge_ssl_preserves_dependency_defaults_without_custom_ca(monkeypatch):
+    from agent import ssl_verify
+    from tools import tts_tool_providers
 
-    connector = MagicMock()
-    connector.close_from_hermes = AsyncMock()
+    edge_tts, communicate_context, voices_context = _fake_edge_tts()
+    monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: None)
+
+    tts_tool_providers._configure_edge_tts_ssl(edge_tts)
+
+    communicate_context.load_verify_locations.assert_not_called()
+    voices_context.load_verify_locations.assert_not_called()
+
+
+def test_edge_ssl_fails_before_mutation_when_dependency_context_is_missing(
+    monkeypatch, tmp_path
+):
+    from agent import ssl_verify
+    from tools import tts_tool_providers
+
+    ca_bundle = tmp_path / "corporate-ca.pem"
+    ca_bundle.write_text("test certificate bundle", encoding="utf-8")
+    edge_tts, communicate_context, _ = _fake_edge_tts()
+    edge_tts.voices = SimpleNamespace()
+    monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: str(ca_bundle))
+
+    with pytest.raises(RuntimeError, match="voices SSL context"):
+        tts_tool_providers._configure_edge_tts_ssl(edge_tts)
+
+    communicate_context.load_verify_locations.assert_not_called()
+
+
+def test_pinned_edge_tts_exposes_verified_module_contexts():
+    import edge_tts
+
+    assert isinstance(edge_tts.communicate._SSL_CTX, ssl.SSLContext)
+    assert isinstance(edge_tts.voices._SSL_CTX, ssl.SSLContext)
+
+
+def test_generate_edge_tts_configures_ssl_before_synthesis(tmp_path, monkeypatch):
+    from tools import tts_tool, tts_tool_providers
+
     communicate = MagicMock()
     communicate.save = AsyncMock()
     edge_tts = MagicMock()
     edge_tts.Communicate.return_value = communicate
-
-    with patch("tools.tts_tool._import_edge_tts", return_value=edge_tts), patch(
-        "tools.tts_tool._edge_tts_connector", return_value=connector
-    ):
-        asyncio.run(_generate_edge_tts("Hello", str(tmp_path / "out.mp3"), {}))
-
-    assert edge_tts.Communicate.call_args.kwargs["connector"] is connector
-    connector.close_from_hermes.assert_awaited_once_with()
-
-
-def test_generate_edge_tts_keeps_connector_across_owned_chunk_sessions(
-    tmp_path, monkeypatch
-):
-    """Per-chunk sessions must not close the shared custom-CA connector."""
-    import aiohttp
-
-    from tools import tts_tool
-
-    hermes_context = ssl.create_default_context()
-    connectors = []
-    chunk_connector_states = []
-
-    monkeypatch.setattr(
-        "agent.ssl_verify.resolve_httpx_verify",
-        lambda: hermes_context,
-    )
-    original_connector_factory = tts_tool._edge_tts_connector
-
-    def capture_connector():
-        connector = original_connector_factory()
-        connectors.append(connector)
-        return connector
-
-    class ChunkingCommunicate:
-        def __init__(self, text, **kwargs):
-            self.connector = kwargs["connector"]
-
-        async def save(self, output_path):
-            for _ in range(2):
-                chunk_connector_states.append(self.connector.closed)
-                async with aiohttp.ClientSession(connector=self.connector):
-                    pass
-            Path(output_path).write_bytes(b"audio")
-
-    edge_tts = MagicMock(Communicate=ChunkingCommunicate)
-    monkeypatch.setattr(tts_tool, "_edge_tts_connector", capture_connector)
+    configure = MagicMock()
     monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: edge_tts)
+    monkeypatch.setattr(tts_tool_providers, "_configure_edge_tts_ssl", configure)
 
     output_path = tmp_path / "out.mp3"
-    asyncio.run(tts_tool._generate_edge_tts("long text", str(output_path), {}))
+    asyncio.run(
+        tts_tool_providers._generate_edge_tts("Hello", str(output_path), {})
+    )
 
-    assert chunk_connector_states == [False, False]
-    assert connectors[0].closed
-
-
-def test_generate_edge_tts_closes_connector_when_save_fails(tmp_path, monkeypatch):
-    """Hermes must release the custom connector on synthesis failures."""
-    from tools import tts_tool
-
-    connector = MagicMock()
-    connector.close_from_hermes = AsyncMock()
-    communicate = MagicMock()
-    communicate.save = AsyncMock(side_effect=RuntimeError("synthesis failed"))
-    edge_tts = MagicMock()
-    edge_tts.Communicate.return_value = communicate
-
-    monkeypatch.setattr(tts_tool, "_edge_tts_connector", lambda: connector)
-    monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: edge_tts)
-
-    with pytest.raises(RuntimeError, match="synthesis failed"):
-        asyncio.run(
-            tts_tool._generate_edge_tts("Hello", str(tmp_path / "out.mp3"), {})
-        )
-
-    connector.close_from_hermes.assert_awaited_once_with()
+    configure.assert_called_once_with(edge_tts)
+    edge_tts.Communicate.assert_called_once()
+    communicate.save.assert_awaited_once_with(str(output_path))

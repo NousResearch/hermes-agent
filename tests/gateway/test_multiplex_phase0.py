@@ -67,6 +67,36 @@ class TestSessionKeyNamespacedWhenOn:
 class TestMultiplexConfigFlag:
     """gateway.multiplex_profiles defaults off and round-trips."""
 
+    def test_cron_shared_adapter_owner_is_the_launch_profile(self, monkeypatch, tmp_path):
+        """A ``--profile rex`` multiplexer owns ``runner.adapters``; its ticker must name rex (not the
+        literal ``default``) as the shared-adapter owner or rex's own jobs fall to the fail-closed map."""
+        import asyncio
+        from types import SimpleNamespace
+        from gateway import run as run_mod
+        from cron.scheduler_provider import InProcessCronScheduler
+
+        captured = {}
+
+        class _Ticker(InProcessCronScheduler):
+            def start(self, stop_event, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: _Ticker())
+        monkeypatch.setattr(run_mod, "_cron_tick_profile_homes", lambda cfg: [("rex", tmp_path)])
+        monkeypatch.setattr(run_mod, "_start_gateway_housekeeping", lambda *a, **k: None)
+        runner = SimpleNamespace(
+            config=GatewayConfig(multiplex_profiles=True), adapters={}, _profile_adapters={},
+            _primary_profile_name="rex", _draining=False, _external_drain_active=False)
+
+        async def _go():
+            return run_mod._start_gateway_start_cron_and_housekeeping(runner)
+
+        cron_stop, _provider, cron_thread, hk = asyncio.run(_go())
+        cron_stop.set()
+        cron_thread.join(timeout=5)
+        hk.join(timeout=5)
+        assert captured["default_profile"] == "rex"
+
     def test_default_is_false(self):
         assert GatewayConfig().multiplex_profiles is False
 
@@ -172,3 +202,27 @@ class TestSessionStoreUnmultiplexedRecovery:
         assert recovered.session_id == "sess-coder"
         assert recovered.session_key == "agent:main:telegram:dm:99"
         assert store._db.reopened == ["sess-coder"]
+
+    @pytest.mark.parametrize(
+        ("recovered_key", "adopted"),
+        [
+            ("agent:coder:telegram:dm:99", False),  # sibling namespace → fail closed
+            ("agent:main:telegram:dm:99:v1", True),  # same namespace → adoptable
+        ],
+        ids=["sibling-profile", "same-profile"],
+    )
+    def test_flag_on_fences_recovery_by_requested_namespace(
+        self, tmp_path, recovered_key, adopted
+    ):
+        """#74285: under multiplexing the guard compares the recovered row's
+        ``agent:<ns>:`` against the REQUESTED key, never the active profile."""
+        row = {"id": "sess", "started_at": 1700000000, "session_key": recovered_key}
+        store = self._store_with_row(tmp_path, row, multiplex_profiles=True)
+        store._db_pinned = store._db
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="coder"):
+            recovered = store._recover_session_from_db(
+                session_key="agent:main:telegram:dm:99",
+                source=_src(chat_id="99", chat_type="dm"),
+                now=datetime.fromtimestamp(1700000001),
+            )
+        assert (recovered is not None) is adopted

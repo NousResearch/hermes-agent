@@ -2861,7 +2861,11 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     messages = _drop_results_without_ids(messages)
     messages = _pair_tool_calls_positionally(messages)
     messages = _dedupe_tool_call_ids(messages)
-    return _realign_tool_result_names(messages)
+    messages = _realign_tool_result_names(messages)
+    # Keep executable and signed replay fields exact on the disposable copy.
+    from agent.provider_redaction import redact_provider_message_values
+
+    return redact_provider_message_values(messages)
 
 
 _ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")

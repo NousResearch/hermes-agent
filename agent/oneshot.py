@@ -109,7 +109,10 @@ def run_oneshot(
         timeout=timeout,
         main_runtime=main_runtime,
     )
-    return _strip_code_fence((extract_content_or_reasoning(response) or "").strip())
+    from agent.provider_redaction import redact_known_secret_values
+
+    text = redact_known_secret_values(extract_content_or_reasoning(response) or "")
+    return redact_known_secret_values(_strip_code_fence(text.strip()))
 
 
 def _strip_code_fence(text: str) -> str:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import json
 import logging
 import math
@@ -1369,6 +1370,15 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     """
     from agent.opencode_affinity import merge_opencode_session_headers
 
+    from agent.message_sanitization import _sanitize_structure_non_ascii
+    from agent.provider_redaction import redact_provider_message_values
+
+    # Normalize a disposable copy before matching: ASCII fallback and prior
+    # turn merges can create a secret that did not exist in separate fragments.
+    if getattr(agent, "_force_ascii_payload", False):
+        api_messages = copy.deepcopy(api_messages)
+        _sanitize_structure_non_ascii(api_messages)
+    api_messages = redact_provider_message_values(api_messages)
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
     return merge_opencode_session_headers(
         kwargs,
@@ -2000,6 +2010,9 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
 
 def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
     from agent import relay_llm
+    from agent.provider_redaction import redact_provider_api_kwargs
+
+    request = redact_provider_api_kwargs(request)
     return relay_llm.execute_current(
         request, callback,
         name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),

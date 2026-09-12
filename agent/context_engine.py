@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
+from agent.provider_redaction import redact_known_secret_values
 
 
 MEMORY_CONTEXT_MAX_CHARS = 6_000
@@ -24,6 +25,7 @@ _MEMORY_CONTEXT_TRUNCATION_MARKER = "\n...[memory provider context truncated]...
 def sanitize_memory_context(memory_context: str) -> str:
     """Prepare provider context for a context-engine/LLM egress boundary."""
     sanitized = redact_sensitive_text(memory_context.strip(), force=True, redact_url_credentials=True)
+    sanitized = redact_known_secret_values(sanitized, force=True)
     if len(sanitized) <= MEMORY_CONTEXT_MAX_CHARS:
         return sanitized
     return sanitized[:_MEMORY_CONTEXT_HEAD_CHARS] + _MEMORY_CONTEXT_TRUNCATION_MARKER + sanitized[-_MEMORY_CONTEXT_TAIL_CHARS:]

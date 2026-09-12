@@ -5,6 +5,7 @@ is called, cannot fail), then an **upgrade** from one small-model call (cheap ti
 JSON-constrained). Storage enforces provenance ``derived < llm < user``: stage 2 only replaces stage 1
 and neither replaces a name the user typed."""
 
+import contextvars
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ from typing import Any, Callable, Optional
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
+from agent.provider_redaction import redact_known_secret_values
 
 logger = logging.getLogger(__name__)
 
@@ -160,12 +162,14 @@ def is_titleable_user_message(user_message: str) -> bool:
 
 def derive_title(user_message: str) -> Optional[str]:
     """Instant title: first meaningful line trimmed to a word boundary. No model, never fails."""
+    user_message = redact_known_secret_values(user_message)
     line = " ".join(_first_line(_summarize_user_message(user_message)).split())
+    line = redact_known_secret_values(line)
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
         space = cut.rfind(" ")
         line = (cut[:space] if space > MAX_DERIVED_TITLE_CHARS // 2 else cut).rstrip(" ,.;:—-") + "…"
-    return line or None
+    return redact_known_secret_values(line) or None
 
 
 def _strip_title_prefix(text: str) -> str:
@@ -206,10 +210,12 @@ def _extract_title_text(content: str) -> str:
 
 def _clean_title(text: str) -> Optional[str]:
     """Normalize a model-produced title, or None when nothing usable remains."""
-    title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
+    text = redact_known_secret_values(text or "")
+    title = _strip_title_prefix(" ".join(text.split()).strip("\"'").strip()).rstrip(".!,;:")
+    title = redact_known_secret_values(title)
     if len(title) > 80:
         title = title[:77].rstrip() + "..."
-    return title or None
+    return redact_known_secret_values(title) or None
 
 
 def _safe_callback(callback: Optional[Callable], args: tuple, log_fmt: str, label: str) -> None:
@@ -252,7 +258,9 @@ def generate_title(
             return None
     except Exception:  # fail open: a broken validator must not disable titling
         logger.debug("Title runtime validator raised; proceeding", exc_info=True)
-    user_snippet = _summarize_user_message(user_message)[:MAX_TITLE_INPUT_CHARS]
+    user_snippet = redact_known_secret_values(
+        _summarize_user_message(redact_known_secret_values(user_message))
+    )[:MAX_TITLE_INPUT_CHARS]
     if not user_snippet.strip():
         return None
     language = _title_language()
@@ -437,9 +445,10 @@ def maybe_auto_title(
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
     apply_instant_title(session_db, session_id, user_message, title_callback)
+    request_context = contextvars.copy_context()
     threading.Thread(
-        target=auto_title_session,
-        args=(session_db, session_id, user_message),
+        target=request_context.run,
+        args=(auto_title_session, session_db, session_id, user_message),
         kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator),
         daemon=True,
         name="auto-title",

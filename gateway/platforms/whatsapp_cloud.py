@@ -18,12 +18,26 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 import shutil
 import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+def _env_flag_on(name: str) -> bool:
+    """True when env var is set to a truthy value (1/true/yes/on)."""
+    val = os.getenv(name, "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+def _env_float(name: str, default: float) -> float:
+    """Parse an env float, falling back to ``default`` on missing/invalid."""
+    try:
+        val = float(os.getenv(name, "").strip())
+        return val if val > 0 else default
+    except (TypeError, ValueError):
+        return default
 
 try:
     from aiohttp import web
@@ -155,8 +169,6 @@ def check_whatsapp_cloud_requirements() -> bool:
 class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     """Outbound: Graph ``/<api_version>/<phone_id>/messages``; inbound: aiohttp webhook
     server. The mixin comes first so its ``format_message`` overrides the base one."""
-    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
-    serves_profile_prefix: bool = True
 
     splits_long_messages = True  # send() chunks via truncate_message()
 
@@ -272,15 +284,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_verify)
         app.router.add_post(self._webhook_path, self._handle_webhook)
-        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
-        from gateway.platforms.shared_ingress import bind_listener
-        self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, self._webhook_path)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        await web.TCPSite(self._runner, self._webhook_host, self._webhook_port).start()
         self._mark_connected()
-        if self._runner is not None:
-            logger.info(
-                "[whatsapp_cloud] Listening on %s:%d%s (Graph %s, phone_id=%s)",
-                self._webhook_host, self._webhook_port, self._webhook_path, self._api_version, self._phone_number_id,
-            )
+        logger.info(
+            "[whatsapp_cloud] Listening on %s:%d%s (Graph %s, phone_id=%s)",
+            self._webhook_host, self._webhook_port, self._webhook_path, self._api_version, self._phone_number_id,
+        )
         if not self._verify_token:
             logger.warning("[whatsapp_cloud] WHATSAPP_CLOUD_VERIFY_TOKEN is not set — the GET subscription handshake will fail until it is.")
         if not self._app_secret:
@@ -348,12 +359,40 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             payload["context"] = {"message_id": reply_to}
         return payload
 
+    async def _length_proportional_delay(self, content: str) -> None:
+        """Human-pacing delay scaled to reply length: short = fast, long = takes longer.
+
+        Modeled on ~200 chars/min human typing for the body, plus a small reaction
+        floor and randomness. Capped so very long messages don't stall the chat.
+        Returns immediately when the flag is off (callers gate on it first).
+        """
+        try:
+            n = len(content or "")
+            # Body typing rate (chars/sec) + reaction floor, both env-tunable:
+            # HERMES_WA_PACE_RATE_CS (default 6), HERMES_WA_PACE_FLOOR_S (default 1.0),
+            # HERMES_WA_PACE_MAX_S (default 25.0).
+            rate = _env_float("HERMES_WA_PACE_RATE_CS", 6.0)
+            floor = _env_float("HERMES_WA_PACE_FLOOR_S", 1.0)
+            cap = _env_float("HERMES_WA_PACE_MAX_S", 25.0)
+            delay = floor + (n / rate) + random.uniform(0.4, 1.0)
+            delay = min(delay, cap)  # hard cap so long pasted replies don't stall
+            logger.debug("[whatsapp_cloud] human-pace delay %.1fs for %d chars", delay, n)
+            await asyncio.sleep(delay)
+        except Exception as e:
+            logger.debug("[whatsapp_cloud] human-pace delay skipped: %s", e)
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send a text message via Graph API. ``chat_id`` is the recipient's ``wa_id``."""
+        """Send a text message via Graph API. ``chat_id`` is the recipient's ``wa_id``.
+
+        When HERMES_WA_LENGTH_DELAY_ENABLED=1, sleeps a length-proportional human-pacing
+        delay before sending (short replies fast, long replies take longer), so replies
+        don't feel like an instant bot. Gated to WhatsApp Cloud only."""
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+        if _env_flag_on("HERMES_WA_LENGTH_DELAY_ENABLED"):
+            await self._length_proportional_delay(content)
         formatted = self.format_message(content)
         last_message_id: Optional[str] = None
         for idx, chunk in enumerate(self.truncate_message(formatted, self._outgoing_chunk_limit())):

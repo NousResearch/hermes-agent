@@ -8,6 +8,73 @@ from agent import auxiliary_client, image_routing, model_metadata
 from hermes_cli import models_local
 
 
+def test_custom_provider_api_key_route_match():
+    from hermes_cli.config_providers import get_custom_provider_api_key
+    route_key = "probe" + "-route-" + "credential"
+    entry = {"name": "llamacpp-keyed", "base_url": "http://127.0.0.1:8107/v1", "api_key": route_key}
+    assert get_custom_provider_api_key("http://127.0.0.1:8107/v1", [entry]) == route_key
+    assert get_custom_provider_api_key("http://127.0.0.1:9999/v1", [entry]) == ""
+    assert get_custom_provider_api_key("http://127.0.0.1:8107/v1", []) == ""
+
+
+def test_custom_provider_api_key_key_env_hint(monkeypatch):
+    from hermes_cli.config_providers import get_custom_provider_api_key
+    env_key = "probe" + "-env-" + "credential"
+    monkeypatch.setenv("HERMES_TEST_PROBE_KEY", env_key)
+    entry = {"name": "llamacpp-env", "base_url": "http://127.0.0.1:8108/v1", "key_env": "HERMES_TEST_PROBE_KEY"}
+    assert get_custom_provider_api_key("http://127.0.0.1:8108/v1", [entry]) == env_key
+
+
+def test_context_length_probe_forwards_custom_provider_key():
+    """An empty api_key reaching the custom-endpoint probe is backfilled from the
+    route-matching entry — a keyed local server must not be sprayed with 401s (#105379)."""
+    route_key = "probe" + "-route-" + "credential"
+    entry = {"name": "llamacpp-keyed", "base_url": "http://127.0.0.1:8107/v1", "api_key": route_key}
+    seen = {}
+
+    def fake_resolve(model, base_url, api_key=""):
+        seen["api_key"] = api_key
+        return 8192
+
+    with patch.object(model_metadata, "_resolve_endpoint_context_length", side_effect=fake_resolve):
+        ctx = model_metadata.get_model_context_length(
+            "fixture-keyed-model", base_url="http://127.0.0.1:8107/v1",
+            provider="custom", custom_providers=[entry])
+    assert ctx == 8192
+    assert seen["api_key"] == route_key
+
+
+def test_context_length_probe_keeps_empty_key_without_route_match():
+    seen = {}
+
+    def fake_resolve(model, base_url, api_key=""):
+        seen["api_key"] = api_key
+        return 4096
+
+    entry = {"name": "other-route", "base_url": "http://127.0.0.1:9999/v1", "api_key": "probe" + "-other-" + "credential"}
+    with patch.object(model_metadata, "_resolve_endpoint_context_length", side_effect=fake_resolve):
+        model_metadata.get_model_context_length(
+            "fixture-unkeyed-model", base_url="http://127.0.0.1:8107/v1",
+            provider="custom", custom_providers=[entry])
+    assert seen["api_key"] == ""
+
+
+def test_explicit_api_key_wins_over_custom_provider_entry():
+    explicit_key = "probe" + "-explicit-" + "credential"
+    seen = {}
+
+    def fake_resolve(model, base_url, api_key=""):
+        seen["api_key"] = api_key
+        return 2048
+
+    entry = {"name": "llamacpp-keyed", "base_url": "http://127.0.0.1:8107/v1", "api_key": "probe" + "-route-" + "credential"}
+    with patch.object(model_metadata, "_resolve_endpoint_context_length", side_effect=fake_resolve):
+        model_metadata.get_model_context_length(
+            "fixture-explicit-model", base_url="http://127.0.0.1:8107/v1",
+            api_key=explicit_key, provider="custom", custom_providers=[entry])
+    assert seen["api_key"] == explicit_key
+
+
 @pytest.mark.parametrize("credential,expected", [(lambda: "minted", "minted"), ("static", "static")])
 def test_capability_paths_share_concrete_bearer(credential, expected):
     auxiliary_client.set_runtime_main("custom", "fixture", api_key=credential)

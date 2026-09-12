@@ -567,6 +567,9 @@ class GatewayInboundMixin:
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
+        if self._agent_has_pending_delivery(running_agent):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return
         if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
             try:
                 steered = bool(running_agent.steer(self._steer_text_with_origin(steer_text, event)))
@@ -583,6 +586,9 @@ class GatewayInboundMixin:
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
         from gateway.run import _build_media_placeholder
+        if self._agent_has_pending_delivery(running_agent):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True

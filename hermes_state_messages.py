@@ -260,7 +260,7 @@ class SessionMessagesMixin:
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
-            _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
+            self._encode_content(msg.get("api_content")) if isinstance(msg.get("api_content"), (str, list)) else None, _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
 
     @staticmethod
@@ -282,7 +282,7 @@ class SessionMessagesMixin:
         reasoning_content: str = None, reasoning_details: Any = None, codex_reasoning_items: Any = None,
         codex_message_items: Any = None, platform_message_id: str = None, observed: bool = False,
         effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
-        api_content: Optional[str] = None, display_kind: Optional[str] = None,
+        api_content: Optional[Any] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> int:
         """Append one message; returns the row id and bumps the session counters. ``platform_message_id``:
@@ -299,11 +299,57 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            self._consume_pending_deliveries(conn, session_id, [msg])
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def append_pending_delivery(self, session_id: str, content: str, *, source: str) -> int:
+        """Durable reference, not an active user turn. Admission coalesces it with a real input.
+
+        Inactive, non-compacted rows survive active flushes without entering compression or
+        changing the model's cached prefix. The source is producer metadata, never inferred
+        from a user-supplied text label.
+        """
+        def _do(conn):
+            self._check_transcript_write_guards(conn, session_id, None)
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            params = self._message_row_params(conversation_id, "user", {
+                "content": content, "display_kind": "pending_delivery",
+                "display_metadata": {"source": source, "delivery_session_id": session_id},
+            }, None, time.time(), keep_reasoning=False)
+            row_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            conn.execute("UPDATE messages SET active = 0 WHERE id = ?", (row_id,))
+            return row_id
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def pending_deliveries(self, session_id: str, *, limit: int = 16) -> List[Dict[str, Any]]:
+        """Bounded references under the existing compression-aware conversation lease key.
+
+        An explicit fork/reset has its own key; compression keeps the old one. Inactive
+        delivery rows need neither copying nor transcript repair when the active tip rotates.
+        """
+        with self._read_ctx() as conn:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            return [dict(row) for row in conn.execute(
+                """SELECT id, substr(content, 1, 32000) AS content, length(content) AS size
+                FROM messages WHERE session_id = ? AND display_kind = 'pending_delivery'
+                AND active = 0 ORDER BY id LIMIT ?""", (conversation_id, limit)).fetchall()]
+
+    def _consume_pending_deliveries(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Acknowledge only with the user carrier's successful commit; failed flushes retry."""
+        for message in messages:
+            metadata = self._decode_display_metadata(message.get("display_metadata")) or {}
+            ids = metadata.get("pending_delivery_ids") if message.get("role") == "user" else None
+            if not isinstance(ids, list) or not ids or not all(type(i) is int for i in ids):
+                continue
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            conn.execute(
+                f"""UPDATE messages SET display_kind = 'consumed_delivery'
+                WHERE session_id = ? AND display_kind = 'pending_delivery'
+                AND active = 0 AND id IN ({_placeholders(ids)})""", (conversation_id, *ids))
 
     def append_delegation_delivery(self, session_id: str, content: str, metadata: Dict[str, Any]) -> int:
         """Record a detached API result once, between client turns, including replay after rotation.
@@ -490,6 +536,7 @@ class SessionMessagesMixin:
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
+        self._consume_pending_deliveries(conn, session_id, messages)
         return inserted, tool_calls_total
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
@@ -632,7 +679,7 @@ class SessionMessagesMixin:
             self._message_columns_cache = [r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()]
         return self._message_columns_cache
 
-    def set_latest_user_api_content(self, session_id: str, content: Any, api_content: str) -> int:
+    def set_latest_user_api_content(self, session_id: str, content: Any, api_content: Any) -> int:
         """Backfill the ``api_content`` sidecar onto the newest ACTIVE user row (0/1 rows). Preflight compaction
         inserts that row BEFORE the sidecar exists and the later persist identity-skips compacted dicts;
         without this a reload reopens the prompt-cache divergence. ``content`` match guards a racing rewrite.
@@ -653,10 +700,10 @@ class SessionMessagesMixin:
             "UPDATE messages SET api_content = ? WHERE id = (SELECT id FROM messages "
             "WHERE session_id = ? AND role = 'user' AND active = 1 ORDER BY id DESC LIMIT 1"
             ") AND content IS ?",
-            (_scrub_surrogates(api_content), session_id, self._encode_content(content)))
+            (self._encode_content(api_content), session_id, self._encode_content(content)))
 
     def set_message_api_content(
-        self, session_id: str, row_id: int, content: Any, api_content: str
+        self, session_id: str, row_id: int, content: Any, api_content: Any
     ) -> int:
         """Backfill the ``api_content`` sidecar onto ONE known durable row.
 
@@ -680,7 +727,7 @@ class SessionMessagesMixin:
         return self._write_rowcount(
             "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
             "AND role = 'user' AND active = 1 AND content IS ?",
-            (_scrub_surrogates(api_content), row_id, session_id, self._encode_content(content)))
+            (self._encode_content(api_content), row_id, session_id, self._encode_content(content)))
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
@@ -961,7 +1008,8 @@ class SessionMessagesMixin:
             # the ENTIRE transcript on flush.
             if include_row_ids and row["id"] is not None:
                 msg["_row_id"] = row["id"]
-            msg.update((col, row[col]) for col in ("api_content", "display_kind") if row[col])
+            msg.update((col, self._decode_content(row[col]) if col == "api_content" else row[col])
+                       for col in ("api_content", "display_kind") if row[col])
             if row["display_metadata"] and (decoded := self._decode_display_metadata(row["display_metadata"])) is not None:
                 msg["display_metadata"] = decoded
             if include_summary_markers and row["_compressed_summary"]:

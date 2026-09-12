@@ -2156,7 +2156,10 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     """Count image-like content parts in a message; return their token cost."""
     if not isinstance(msg, dict):
         return 0
-    content = msg.get("content")
+    from agent.turn_context import extract_api_content_sidecar
+
+    sidecar = extract_api_content_sidecar(msg)
+    content = sidecar if isinstance(sidecar, (str, list)) and sidecar and msg.get("role") in ("user", "assistant") else msg.get("content")
     count = _count_parts(content, {"image", "image_url", "input_image"})
     count += _count_parts(msg.get("_anthropic_content_blocks"), {"image"})
     # Multimodal tool results that haven't been converted yet.
@@ -2180,8 +2183,7 @@ def strip_opaque_replay_items(items: Any) -> Any:
 def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
-      only a non-empty STRING sidecar on a user/assistant row displaces content; substituting any
-      other shape would UNDERcount — the dangerous direction.
+      a non-empty text or content-part sidecar on a user/assistant row displaces content.
     * Base64 images become a placeholder; ``_count_image_tokens`` charges them flat.
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
       ``reasoning_content``); counting both inflated estimates up to +53%.
@@ -2189,8 +2191,12 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
       ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
       checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
       prices them, and the usage anchor carries that price forward."""
-    sidecar = msg.get("api_content")
-    sidecar_wins = isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant")
+    from agent.turn_context import extract_api_content_sidecar
+
+    sidecar = extract_api_content_sidecar(msg)
+    sidecar_wins = isinstance(sidecar, (str, list)) and bool(sidecar) and msg.get("role") in ("user", "assistant")
+    if sidecar_wins:
+        msg = {**msg, "content": sidecar}
     _rc = msg.get("reasoning_content")
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: Dict[str, Any] = {}
@@ -2198,9 +2204,6 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
             continue
         if k == "api_content":
-            if sidecar_wins:
-                shadow["content"] = v
-        elif k == "content" and sidecar_wins:
             continue
         elif k == "content" and isinstance(v, list):
             shadow[k] = [

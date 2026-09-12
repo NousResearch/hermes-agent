@@ -70,7 +70,8 @@ def _override_replaces_content(msg: Dict, content: Any, override: Any) -> bool:
     return (
         override is not None
         and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
-        and (not isinstance(content, list) or isinstance(override, list))
+        and (not isinstance(content, list) or isinstance(override, list)
+             or (msg.get("display_metadata") or {}).get("pending_delivery_ids"))
     )
 
 
@@ -81,7 +82,10 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
     matches the row the flush wrote."""
     override = getattr(agent, "_persist_user_message_override", None)
     if _override_replaces_content(msg, content, override):
-        if api_content is None and isinstance(content, str) and content != override:
+        if api_content is None and content != override and (
+            isinstance(content, str)
+            or (isinstance(content, list) and (msg.get("display_metadata") or {}).get("pending_delivery_ids"))
+        ):
             api_content = content
         content = override
     return content, api_content
@@ -153,7 +157,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     role = msg.get("role", "unknown")
     content = msg.get("content")
     # api_content sidecar: exact bytes sent to the API when they differ from clean content (replay parity).
-    api_content = msg.get("api_content") if isinstance(msg.get("api_content"), str) else None
+    api_content = msg.get("api_content") if isinstance(msg.get("api_content"), (str, list)) else None
     timestamp = msg.get("timestamp")
     if is_current_turn_user and role == "user":
         content, api_content = durable_user_row_content(agent, msg, content, api_content)

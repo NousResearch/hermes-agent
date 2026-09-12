@@ -94,11 +94,12 @@ def compose_user_api_content(
     return content + "\n\n" + "\n\n".join(injections)
 
 
-def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
+def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[Any]:
     """Pop the ``api_content`` sidecar and substitute it into ``content`` (keeps the
     prompt-cache prefix byte-stable). Returns the popped sidecar, or ``None``."""
-    sidecar = api_msg.pop("api_content", None)
-    if isinstance(sidecar, str) and sidecar and api_msg.get("role") in ("user", "assistant"):
+    sidecar = extract_api_content_sidecar(api_msg)
+    api_msg.pop("api_content", None)
+    if isinstance(sidecar, (str, list)) and sidecar and api_msg.get("role") in ("user", "assistant"):
         api_msg["content"] = sidecar
     return sidecar
 
@@ -109,10 +110,12 @@ def drop_stale_api_content(msg: Dict[str, Any]) -> None:
     msg.pop("api_content", None)
 
 
-def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
-    """Extract the ``api_content`` sidecar; ``None`` when absent/non-string."""
+def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[Any]:
+    """Extract the ``api_content`` sidecar; ``None`` when absent or not text/content parts."""
     v = msg.get("api_content")
-    return v if isinstance(v, str) else None
+    if isinstance(v, str) or (isinstance(v, list) and all(isinstance(part, dict) for part in v)):
+        return v
+    return None
 
 
 def _pop_turn_note(agent: Any, attr: str) -> str:
@@ -1057,14 +1060,15 @@ def build_api_messages(
         # it from EVERY outgoing copy. display_* is display-only timeline metadata
         # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
         # from _rows_to_conversation and only chat-completions strips underscore keys.
-        _api_content = api_msg.pop("api_content", None)
+        _api_content = extract_api_content_sidecar(api_msg)
+        api_msg.pop("api_content", None)
         for key in ("display_kind", "display_metadata", "_row_id"):
             api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
         if idx == current_turn_user_idx and msg.get("role") == "user":
-            if isinstance(_api_content, str) and _api_content:
+            if isinstance(_api_content, (str, list)) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
                 # and every pass this turn sends identical bytes.
                 api_msg["content"] = _api_content
@@ -1076,7 +1080,7 @@ def build_api_messages(
                 if _composed is not None:
                     api_msg["content"] = _composed
         elif (
-            isinstance(_api_content, str) and _api_content
+            isinstance(_api_content, (str, list)) and _api_content
             and msg.get("role") in ("user", "assistant")
         ):
             # Historical row: replay the exact bytes sent live so the prompt-cache

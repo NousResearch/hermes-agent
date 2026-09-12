@@ -491,6 +491,8 @@ class GatewayBusySessionMixin:
         if demoted_for_compression:
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
         steered = redirected = False
+        if self._agent_has_pending_delivery(running_agent):
+            effective_mode = "queue"
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
@@ -523,6 +525,23 @@ class GatewayBusySessionMixin:
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
             demoted_for_compression=demoted_for_compression, steered=steered, redirected=redirected,
         )
+
+    @staticmethod
+    def _agent_has_pending_delivery(running_agent) -> bool:
+        """A brief delivered after admission belongs on the next real user turn.
+
+        Use the agent's owning DB/session, not ambient profile state or a text-label scan.
+        A failed read queues safely; turn admission will fail closed if storage stays broken.
+        """
+        db = getattr(running_agent, "_session_db", None)
+        sid = getattr(running_agent, "session_id", None)
+        if not sid or not callable(getattr(type(db), "pending_deliveries", None)):
+            return False
+        try:
+            return bool(db.pending_deliveries(sid, limit=1))
+        except Exception:
+            logger.warning("Cannot check pending delivery context for %s; queueing follow-up", sid, exc_info=True)
+            return True
 
     @staticmethod
     def _demote_interrupt(session_key: str, why: str) -> str:
@@ -934,6 +953,8 @@ class GatewayBusySessionMixin:
                 ), adapter)
             return reply
 
+        if self._agent_has_pending_delivery(running_agent):
+            return _queue_fallback("Delivery context arrived — /steer queued for the next turn.")
         if running_agent is _AGENT_PENDING_SENTINEL:
             return _queue_fallback("Agent still starting — /steer queued for the next turn.")
         if not running_agent or not hasattr(running_agent, "steer"):

@@ -27,7 +27,8 @@ Hardening invariants — each guards a real failure; don't weaken without answer
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
   or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
-  briefs are labelled user turns appended at a turn boundary, preserving role alternation.
+  briefs are inactive pending references attached to the next admitted user input. Busy
+  follow-ups queue until that boundary; acknowledgment commits with the user carrier.
 - The cron ticker runs in the desktop-spawned backend when `HERMES_DESKTOP=1` — that env var means
   "spawned by the app", not "a GUI is watching" (root: capability is a property of the session).
 - Background `delegate_task` is process-local; work that must survive restarts is a cron job or a

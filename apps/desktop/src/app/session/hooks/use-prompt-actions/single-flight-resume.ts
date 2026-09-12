@@ -1,5 +1,7 @@
+import { type ProfileScope, profileScopeKey } from '@/api/client'
+
 /**
- * Single-flight guard for `session.resume`, keyed by STORED session id.
+ * Single-flight guard for `session.resume`, keyed by owner scope + STORED id.
  *
  * After sleep/wake or a reconnect, many independent surfaces discover the same
  * dead runtime at once — submit recovery, slash/rewind recovery, tile resumes,
@@ -13,29 +15,49 @@
  * `session_id`); joiners receive whatever the winning call returns.
  */
 
-const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
+interface SessionResumeFlight {
+  includesMessages: boolean
+  promise: Promise<unknown>
+}
 
-export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
-  const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
+const _inFlightResumeByStoredSessionId = new Map<string, SessionResumeFlight>()
 
-  if (existing) {
-    return existing as Promise<T>
+export function singleFlightSessionResume<T>(
+  storedSessionId: string,
+  run: () => Promise<T>,
+  options?: { requiresMessages?: boolean; scope?: ProfileScope }
+): Promise<T> {
+  const flightKey = JSON.stringify([profileScopeKey(options?.scope), storedSessionId])
+  const existing = _inFlightResumeByStoredSessionId.get(flightKey)
+
+  if (existing && (!options?.requiresMessages || existing.includesMessages)) {
+    return existing.promise as Promise<T>
   }
 
   // Promise.resolve().then(run) tolerates run() being synchronous, returning a
   // bare value, or throwing synchronously (test doubles and legacy callers do
   // all three) — a raw run().finally() would crash on a non-promise return.
-  const flight = Promise.resolve()
+  // A message-bearing caller cannot join an omitted-message flight. Queue one
+  // follow-up behind it instead: this preserves same-session ordering while
+  // still letting all later callers join the stronger queued snapshot.
+  const ready = existing ? existing.promise.then(() => undefined, () => undefined) : Promise.resolve()
+
+  const promise = ready
     .then(run)
     .finally(() => {
-      if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
-        _inFlightResumeByStoredSessionId.delete(storedSessionId)
+      if (_inFlightResumeByStoredSessionId.get(flightKey) === flight) {
+        _inFlightResumeByStoredSessionId.delete(flightKey)
       }
     })
 
-  _inFlightResumeByStoredSessionId.set(storedSessionId, flight)
+  const flight: SessionResumeFlight = {
+    includesMessages: options?.requiresMessages === true,
+    promise
+  }
 
-  return flight
+  _inFlightResumeByStoredSessionId.set(flightKey, flight)
+
+  return promise
 }
 
 /**

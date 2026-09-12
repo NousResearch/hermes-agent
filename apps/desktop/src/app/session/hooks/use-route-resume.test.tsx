@@ -21,10 +21,20 @@ interface HarnessProps {
   freshDraftReady: boolean
   gatewayState: string
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>
+  resumeSession: (
+    sessionId: string,
+    focus: boolean,
+    ownerRoute?: SessionProfileRoute,
+    options?: { authoritativeSnapshot?: boolean }
+  ) => Promise<unknown>
   resumeFailedSessionId?: null | string
   resumeExhaustedSessionId?: null | string
-  sessionResumeRequest?: null | { ownerRoute?: SessionProfileRoute; sequence: number; sessionId: string }
+  sessionResumeRequest?: null | {
+    authoritativeSnapshot?: boolean
+    ownerRoute?: SessionProfileRoute
+    sequence: number
+    sessionId: string
+  }
   routedSessionId: null | string
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
@@ -138,6 +148,36 @@ describe('useRouteResume', () => {
     rerender(<RouteResumeHarness {...props} sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }} />)
 
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('forwards an authoritative snapshot request and its exact owner to resumeSession', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const ownerRoute = { connectionId: 'remote-a', profile: 'desktop', targetProfile: 'backend' }
+    const activeSessionIdRef = { current: 'runtime-1' }
+    const selectedStoredSessionIdRef = { current: 'session-1' }
+
+    render(
+      <RouteResumeHarness
+        activeSessionId="runtime-1"
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={{ current: false }}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/session-1"
+        resumeSession={resumeSession}
+        routedSessionId="session-1"
+        runtimeIdByStoredSessionIdRef={{ current: new Map([['session-1', 'runtime-1']]) }}
+        selectedStoredSessionId="session-1"
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        sessionResumeRequest={{ authoritativeSnapshot: true, ownerRoute, sequence: 1, sessionId: 'session-1' }}
+        startFreshSessionDraft={vi.fn()}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true, ownerRoute, {
+      authoritativeSnapshot: true
+    })
   })
 
   it('self-heals a stranded routed session (null selected/active, same pathname, not a fresh draft)', () => {

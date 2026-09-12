@@ -54,6 +54,42 @@ describe('singleFlightSessionResume', () => {
     expect(requestGateway).toHaveBeenCalledTimes(2)
   })
 
+  it('does not coalesce the same stored id across backend owners', async () => {
+    let release!: () => void
+    const pending = new Promise<void>(resolve => (release = resolve))
+
+    const runA = vi.fn(async () => {
+      await pending
+
+      return { session_id: 'runtime-a' }
+    })
+
+    const runB = vi.fn(async () => {
+      await pending
+
+      return { session_id: 'runtime-b' }
+    })
+
+    const a = singleFlightSessionResume('stored-shared', runA, {
+      scope: { connectionId: 'backend-a', profile: 'default' }
+    })
+
+    const b = singleFlightSessionResume('stored-shared', runB, {
+      scope: { connectionId: 'backend-b', profile: 'default' }
+    })
+
+    await vi.waitFor(() => {
+      expect(runA).toHaveBeenCalledTimes(1)
+      expect(runB).toHaveBeenCalledTimes(1)
+    })
+    release()
+
+    await expect(Promise.all([a, b])).resolves.toEqual([
+      { session_id: 'runtime-a' },
+      { session_id: 'runtime-b' }
+    ])
+  })
+
   it('a rejected flight is not cached: the next caller retries', async () => {
     const run = vi
       .fn<() => Promise<{ session_id: string }>>()

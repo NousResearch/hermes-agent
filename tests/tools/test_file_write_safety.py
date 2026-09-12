@@ -232,6 +232,11 @@ class TestSafeRootDenialMessageIntegration:
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
 
+    def test_windows_separators_are_compared_as_posix_paths(self):
+        from tools.file_tools_write_guards import _sensitive_path_match_form
+        assert _sensitive_path_match_form(r"\private\etc\hosts", windows=True) == "/private/etc/hosts"
+        assert _sensitive_path_match_form(r"C:\etc\hosts", windows=True) == "C:/etc/hosts"
+
     def test_etc_hosts_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is not None

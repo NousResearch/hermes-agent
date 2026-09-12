@@ -294,6 +294,42 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
     return [{"role": "user", "content": digest}] + keep
 
 
+# Shared environment-probe contract for memory, skill, and combined reviews.
+# Prompt text only: verify uncertain file/path/symbol/skill/env claims with the
+# already-whitelisted read-only tools before those claims become durable writes.
+# Fail-open — a missing/erroring/timed-out probe does not refuse the write.
+_PROBE_BLOCK = (
+    "Environment probe (read-only, before you commit a write):\n"
+    "Before writing a claim about a file, path, code symbol, skill content, or environment "
+    "fact that the transcript did not conclusively establish, verify it against the live "
+    "environment. Use only the already-whitelisted read-only tools: read_file, search_files, "
+    "and skill_view.\n"
+    "  • read_file — open the path or file you are about to name and confirm it is there "
+    "and matches the claim.\n"
+    "  • search_files — locate a symbol, filename, or pattern when you are not sure of "
+    "the exact path.\n"
+    "  • skill_view — re-read skill or support-file content before asserting what it says.\n"
+    "Do not use terminal, execute_code, or write tools to probe. Those are not the "
+    "verification path for this review.\n"
+    "If the transcript already conclusively established the fact — a tool result in this "
+    "conversation already showed the path, symbol, or skill text — no probe is required.\n"
+    "User persona, preference, and how-to-behave facts are not environment claims. Do not "
+    "probe those; save them as you do today.\n"
+    "A passing task outcome does not validate every intermediate assumption. If an "
+    "assumption would become durable memory or skill text and the transcript did not "
+    "prove it, probe it too.\n"
+    "If a probe contradicts the candidate: narrow the write to what was verified, or skip "
+    "that candidate. Do not persist the contradicted claim.\n"
+    "When an existing memory or skill entry you are about to extend references a path or "
+    "symbol, spot-check it still exists. If it does not, fix the reference or flag "
+    "staleness instead of extending a dead pointer.\n"
+    "If a probe tool is missing, errors, or times out, keep today's write-or-skip "
+    "behavior. Do not refuse a write solely because a probe could not run.\n"
+    "'Nothing to save' remains valid when nothing durable is worth keeping.\n"
+    "Creating a new skill or a new support file is not blanket-blocked. Probe only "
+    "uncertain environment claims inside that write, not the act of creating it.\n\n"
+)
+
 # Review prompts. AIAgent exposes them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) so
 # per-agent overrides work; the text lives here.
 _MEMORY_REVIEW_PROMPT = (
@@ -302,7 +338,7 @@ _MEMORY_REVIEW_PROMPT = (
     "1. Has the user revealed things about themselves — their persona, desires, preferences, or "
     "personal details worth remembering?\n"
     "2. Has the user expressed expectations about how you should behave, their work style, or ways "
-    "they want you to operate?\n\n"
+    "they want you to operate?\n\n" + _PROBE_BLOCK +
     "If something stands out, save it using the memory tool. If nothing is worth saving, just say "
     "'Nothing to save.' and stop."
 )
@@ -372,7 +408,7 @@ _SKILL_REVIEW_PROMPT = (
     "Target shape of the library: CLASS-LEVEL skills, each with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth. Not a flat list of narrow one-session skills, and "
     "not an umbrella hoarding a references/ file per session. This shapes HOW you update, not "
-    "WHETHER you update.\n\n" + _LESSON_LAYER_BLOCK +
+    "WHETHER you update.\n\n" + _LESSON_LAYER_BLOCK + _PROBE_BLOCK +
     "Signals to look for (any one of these warrants action):\n"
     "  • User corrected your style, tone, format, legibility, or verbosity. Frustration signals "
     "like 'stop doing X', 'this is too verbose', 'don't format like this', 'why are you "
@@ -461,7 +497,7 @@ _COMBINED_REVIEW_PROMPT = (
     "outcome.\n\n"
     "Target shape of the skill library: CLASS-LEVEL skills with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth — not narrow one-session skills, and not an umbrella "
-    "hoarding a references/ file per session.\n\n" + _LESSON_LAYER_BLOCK +
+    "hoarding a references/ file per session.\n\n" + _LESSON_LAYER_BLOCK + _PROBE_BLOCK +
     "Signals that warrant a skill update (any one is enough):\n"
     "  • User corrected your style, tone, format, legibility, verbosity, or approach. Frustration "
     "is a FIRST-CLASS skill signal, not just a memory signal. 'stop doing X', 'don't format like "

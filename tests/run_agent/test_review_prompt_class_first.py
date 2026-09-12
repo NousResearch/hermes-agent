@@ -216,3 +216,64 @@ def test_curator_prompt_consolidates_by_distilling():
     lower = CURATOR_REVIEW_PROMPT.lower()
     assert "distill" in lower, "curator must distill absorbed content, not file it"
     assert "verbatim" in lower and "per-incident" in lower, "curator must not copy siblings verbatim into references/"
+
+
+# ---------------------------------------------------------------------------
+# Environment probe — issue #107914. Uncertain file/path/symbol/skill/env
+# claims must be checked with the already-whitelisted read-only tools before
+# they become durable memory or skill text. Prompt text only; fail-open.
+# ---------------------------------------------------------------------------
+
+
+def _assert_environment_probe_guidance(prompt: str, label: str) -> None:
+    lower = prompt.lower()
+    assert "read_file" in prompt, f"{label}: must name read_file"
+    assert "search_files" in prompt, f"{label}: must name search_files"
+    assert "skill_view" in prompt, f"{label}: must name skill_view"
+    assert "probe" in lower or "verify" in lower, f"{label}: must tell reviewer to probe/verify"
+    assert "contradict" in lower, f"{label}: must say what to do when a probe contradicts"
+    assert "narrow" in lower or "skip" in lower, f"{label}: contradict → narrow or skip"
+    assert "stale" in lower or "still exist" in lower, f"{label}: must spot-check existing refs for staleness"
+
+
+def _assert_environment_probe_fail_open(prompt: str, label: str) -> None:
+    """Probe guidance must not send the reviewer to terminal / execute_code / write tools."""
+    lower = prompt.lower()
+    for phrase in (
+        "use terminal to probe",
+        "use execute_code to probe",
+        "probe with terminal",
+        "probe with execute_code",
+        "verify with terminal",
+        "verify with execute_code",
+        "use write_file to probe",
+        "use skill_manage to probe",
+    ):
+        assert phrase not in lower, f"{label}: must not instruct probing via '{phrase}'"
+    assert "do not use terminal" in lower or "not use terminal" in lower, (
+        f"{label}: must not tell the reviewer to probe with terminal"
+    )
+    assert "execute_code" in prompt, (
+        f"{label}: must name execute_code as a tool not to probe with"
+    )
+    assert "write tool" in lower, (
+        f"{label}: must not tell the reviewer to probe with write tools"
+    )
+
+
+def test_memory_review_prompt_teaches_environment_probe():
+    _assert_environment_probe_guidance(AIAgent._MEMORY_REVIEW_PROMPT, "_MEMORY_REVIEW_PROMPT")
+
+
+def test_skill_review_prompt_teaches_environment_probe():
+    _assert_environment_probe_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+
+
+def test_combined_review_prompt_teaches_environment_probe():
+    _assert_environment_probe_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+
+
+def test_review_prompts_environment_probe_fail_open():
+    _assert_environment_probe_fail_open(AIAgent._MEMORY_REVIEW_PROMPT, "_MEMORY_REVIEW_PROMPT")
+    _assert_environment_probe_fail_open(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+    _assert_environment_probe_fail_open(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")

@@ -12,8 +12,14 @@
 
 import { useStore } from '@nanostores/react'
 
-import { findGroup } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree, revealTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
+import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import {
+  $activeTreeGroup,
+  $layoutTree,
+  noteActiveTreeGroup,
+  revealTreePane,
+  treePanesWithPrefix
+} from '@/components/pane-shell/tree/store'
 import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { ToolIcon } from '@/components/ui/tool-icon'
@@ -206,11 +212,25 @@ export function watchPreviewTiles(): void {
   // un-minimize, un-hide, activate in its zone. Both stores, because re-opening
   // the already-active tab changes only `$previewTabs` (fresh tab object), while
   // switching tabs changes only the active id.
+  //
+  // Also mark that zone as the interacted tree group. Without this, a split
+  // layout leaves `$activeTreeGroup` on a sibling file preview; `follow` then
+  // runs on the layout commit from reveal and clobbers `$rightRailActiveTabId`
+  // back to the file while Browser still shows the URL (read_preview desync).
   const reveal = () => {
     const tabId = $rightRailActiveTabId.get()
 
-    if (tabId && targetFor(tabId)) {
-      revealTreePane(`${PREVIEW_TILE_PREFIX}:${tabId}`)
+    if (!tabId || !targetFor(tabId)) {
+      return
+    }
+
+    const paneId = `${PREVIEW_TILE_PREFIX}:${tabId}`
+    revealTreePane(paneId)
+
+    const tree = $layoutTree.get()
+    const group = tree ? findGroupOfPane(tree, paneId) : null
+    if (group) {
+      noteActiveTreeGroup(group.id)
     }
   }
 

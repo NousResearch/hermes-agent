@@ -9,7 +9,10 @@ edits to the agent process cwd, e.g. the main repo during a worktree session).
 import os
 import posixpath
 import sys
+import logging
 from pathlib import Path, PurePosixPath
+
+logger = logging.getLogger("tools.file_tools")
 
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
@@ -121,12 +124,23 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     (TUI/Desktop/ACP); (3) a sentinel-free absolute ``$TERMINAL_CWD``.
     """
     try:
-        from tools.terminal_tool import get_session_cwd
+        from tools.terminal_tool import _current_session_key, get_session_cwd
 
         recorded = get_session_cwd(task_id)
+        if not recorded and task_id != "default":
+            current_session = _current_session_key()
+            if current_session:
+                recorded = get_session_cwd(current_session)
     except Exception:
         recorded = None
-    return recorded or _registered_task_cwd_override(task_id) or _configured_terminal_cwd()
+        logger.debug("session cwd inheritance unavailable", exc_info=True)
+    try:
+        from agent.runtime_cwd import resolve_kanban_worker_cwd
+
+        worker_cwd = resolve_kanban_worker_cwd(recorded)
+    except Exception:
+        worker_cwd = None
+    return worker_cwd or recorded or _registered_task_cwd_override(task_id) or _configured_terminal_cwd()
 
 
 def _host_text(text: str, container_paths: bool) -> str:

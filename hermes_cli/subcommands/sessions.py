@@ -111,6 +111,11 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Also delete archived sessions (excluded by default)")
     _flag(sessions_prune, "--include-pinned",
         help="Also delete pinned sessions (excluded by default — pin is a keep flag)")
+    sessions_prune.add_argument(
+        "--selection-file",
+        type=Path,
+        help="Delete exactly the physical session IDs in a hermes-session-plan/v2 file",
+    )
     _flag(sessions_prune, "--never-active",
         help="Instead of ended sessions, delete keyed gateway rows that were "
             "opened and never used (no messages, tokens, tool calls or title) "

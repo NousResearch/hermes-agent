@@ -1525,11 +1525,13 @@ DEFAULT_CONFIG = {
     },
     # Approvals for dangerous commands.
     # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)
-    # cron_mode / single_query_mode / unattended_mode: deny | approve — what to do when a
-    #   cron job, a -q session (HERMES_INTERACTIVE=1 but nobody to answer), or an unattended
-    #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
-    #   deny blocks instantly so the agent finds another way instead of waiting out the
-    #   timeout and failing closed.
+    # cron_mode / single_query_mode / unattended_mode / kanban_mode: deny | approve — what
+    #   to do when a cron job, a -q session (HERMES_INTERACTIVE=1 but nobody to answer),
+    #   an unattended platform (webhook, msgraph_webhook, api_server; no /approve channel),
+    #   or a kanban dispatcher worker hits one. deny blocks instantly so the agent finds
+    #   another way instead of waiting out the timeout and failing closed. Kanban workers
+    #   also spawn with -q; kanban_mode wins over single_query_mode when kanban markers
+    #   are present.
     # timeout: seconds before an unanswered prompt fails closed (CLI and gateway). 60s
     #   proved too tight for Telegram/Discord push notifications, hence 300.
     "approvals": {
@@ -1551,6 +1553,7 @@ DEFAULT_CONFIG = {
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
+        "kanban_mode": "deny",
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",

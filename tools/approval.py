@@ -23,8 +23,9 @@ from utils import env_var_enabled, is_truthy_value
 from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
-    _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
-    _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
+    _is_gateway_approval_context, _is_interactive_cli, _is_kanban_approval_context,
+    _is_single_query_approval_context, _is_unattended_platform_approval_context,
+    _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
     _tirith_fail_open, get_current_session_key,
 )
 from tools.approval_detection import (
@@ -481,7 +482,7 @@ def _pending_result(spec, session_key: str, *, command: str, description: str,
 @dataclass(frozen=True)
 class _Unattended:
     """One non-interactive context and the text every gate uses to explain it."""
-    name: str       # "single_query" | "cron" | "unattended"
+    name: str       # "kanban" | "single_query" | "cron" | "unattended"
     cfg_key: str    # approvals.<cfg_key>: approve|deny
     clause: str     # "why nobody can approve" (lower-case sentence fragment)
     scope: str      # "in cron jobs" — completes "To allow ... {scope}"
@@ -501,6 +502,11 @@ class _Unattended:
                 f"instead, or set approvals.{self.cfg_key}: approve only if {self.trust}.")
 
 
+_KANBAN_CTX = _Unattended(
+    "kanban", "kanban_mode",
+    "kanban workers run without a user present to approve it",
+    "in kanban workers", "this kanban worker is intentionally trusted",
+)
 _SINGLE_QUERY_CTX = _Unattended(
     "single_query", "single_query_mode",
     "single-query mode (-q) runs without a user present to approve it",
@@ -513,11 +519,15 @@ _CRON_CTX = _Unattended(
 
 
 def _unattended_contexts() -> list[_Unattended]:
-    """Active unattended contexts in evaluation order: single-query first (``hermes chat -q``
-    exports HERMES_INTERACTIVE=1 but nobody answers); cron beats a platform marker because
-    cron binds the platform for delivery routing only."""
+    """Active unattended contexts in evaluation order: kanban first when marked
+    (dispatcher also sets ``-q``, so kanban must win over single-query);
+    otherwise single-query (``hermes chat -q`` exports HERMES_INTERACTIVE=1 but
+    nobody answers); cron beats a platform marker because cron binds the
+    platform for delivery routing only."""
     contexts = []
-    if _is_single_query_approval_context():
+    if _is_kanban_approval_context():
+        contexts.append(_KANBAN_CTX)
+    elif _is_single_query_approval_context():
         contexts.append(_SINGLE_QUERY_CTX)
     if _is_cron_approval_context():
         contexts.append(_CRON_CTX)
@@ -817,12 +827,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 
 def _presence(approval_callback=None) -> tuple:
     """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context. Single-query
-    (-q) exports HERMES_INTERACTIVE=1 but nobody answers prompts, and HERMES_EXEC_ASK has no
-    human either — both are cleared so single_query_mode actually takes effect."""
+    (-q) and kanban workers export HERMES_INTERACTIVE=1 but nobody answers prompts, and
+    HERMES_EXEC_ASK has no human either — those flags are cleared so the unattended
+    mode actually takes effect."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context():
+    if _is_single_query_approval_context() or _is_kanban_approval_context():
         is_cli = is_gateway = is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
@@ -858,6 +869,8 @@ def _run_approval_gate(
         deny_messages = {
             "single_query": single_query_deny_message, "cron": cron_deny_message,
             "unattended": unattended_deny_message,
+            # No kanban_deny_message kwarg; empty falls through to _KANBAN_CTX.block_message.
+            "kanban": "",
         }
         for ctx in _unattended_contexts():
             if ctx.mode() == "deny":

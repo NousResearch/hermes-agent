@@ -201,6 +201,9 @@ _SPECS = [
              help="Initial card status. Use 'blocked' for cards "
                   "that require immediate human ops (R3 gate) "
                   "to skip the brief running-to-blocked transition."),
+        _arg("--role", dest="workflow_role", choices=sorted(kb.VALID_WORKFLOW_ROLES),
+             help="Workflow role: ordinary (default), implementation, review, or finalize. "
+                  "Marks separate-card Impulse graphs; topology never infers this."),
         _json_flag(help="Emit JSON output"),
     ], help="Create a new task"),
     _cmd("swarm", [

@@ -92,6 +92,10 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+# Explicit card roles for separate-card review graphs. ``ordinary`` is the
+# default; topology must never infer the others.
+VALID_WORKFLOW_ROLES = frozenset({"ordinary", "implementation", "review", "finalize"})
+
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
@@ -111,6 +115,21 @@ def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
         return value
     allowed = ", ".join(("none", *VALID_REASONING_EFFORTS))
     raise ValueError(f"reasoning_effort must be one of {allowed}, got {effort!r}")
+
+
+def normalize_workflow_role(role: Optional[str]) -> Optional[str]:
+    """``VALID_WORKFLOW_ROLES``, case-insensitive; empty/None = ordinary (NULL-like).
+
+    A typo'd role must not silently become ordinary.
+    """
+    value = str(role or "").strip().lower()
+    if not value:
+        return None
+    if value not in VALID_WORKFLOW_ROLES:
+        raise ValueError(
+            f"workflow_role must be one of {sorted(VALID_WORKFLOW_ROLES)}, got {role!r}"
+        )
+    return value
 
 
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
@@ -700,6 +719,7 @@ class Task:
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
+    workflow_role: str = "ordinary"
     skills: Optional[list] = None            # None = defaults only; [] = explicitly none
     model_override: Optional[str] = None
     provider_override: Optional[str] = None  # provider ``model_override`` belongs to
@@ -732,6 +752,7 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            workflow_role=normalize_workflow_role(g("workflow_role")) or "ordinary",
         )
 
 
@@ -941,7 +962,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit workflow role for separate-card Impulse graphs.
+    -- ordinary (default) | implementation | review | finalize. Topology may
+    -- validate an explicit role but must never establish it alone.
+    workflow_role        TEXT NOT NULL DEFAULT 'ordinary'
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1232,6 +1257,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    workflow_role: Optional[str] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1245,6 +1271,7 @@ def create_task(
     dependency edges; an explicit ``session_id`` still wins.
     ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
     in the active profile's projects.db — see ``_resolve_project_link``.
+    ``workflow_role``: ordinary (default) | implementation | review | finalize.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
@@ -1254,6 +1281,7 @@ def create_task(
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    workflow_role = normalize_workflow_role(workflow_role) or "ordinary"
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1331,8 +1359,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        workflow_role
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1342,6 +1371,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        workflow_role,
                     ),
                 )
                 for pid in parents:
@@ -1364,6 +1394,7 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "workflow_role": workflow_role,
                     },
                 )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
@@ -3109,13 +3140,18 @@ def _nonblank_str(value: Any) -> Optional[str]:
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
-    """Close an active reviewer run (claimed from ``review``) and hand the task
-    back to the implementer from the latest ``review_requested`` event, parent
-    gating reapplied. Returns ``(ok, implementer | reason)``."""
+    """Close an active reviewer run and route changes back to the implementer.
+
+    Same-card reviews (claimed from ``review``) hand the task back to the
+    implementer from the latest ``review_requested`` event. A separate review
+    child claimed from ``ready`` reopens its implementation parent instead.
+    Returns ``(ok, implementer | reason)``.
+    """
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
 
+    terminations: list[tuple[Optional[int], Optional[str]]] = []
     with write_txn(conn):
         task_row = conn.execute(
             "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?", (task_id,),
@@ -3131,48 +3167,60 @@ def request_changes(
         claimed_event = _latest_event(conn, task_id, "claimed", current_run_id)
         claimed_payload = _json_dict(_row_get(claimed_event, "payload"))
         if claimed_payload.get("source_status") != "review":
-            return False, "active run was not claimed from review"
+            from hermes_cli.kanban_db_review import apply_review_child_changes
 
-        requested_event = _latest_event(conn, task_id, "review_requested")
-        if requested_event is None:
-            return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
-        if implementer is None:
-            return False, "review handoff has no valid implementer provenance"
-        reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+            reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
+            ok, detail, terminations = apply_review_child_changes(
+                conn, task_id, reason=reason, current_run_id=int(current_run_id),
+                reviewer=reviewer,
+            )
+            if not ok:
+                return False, detail
+            implementer = detail
+        else:
+            requested_event = _latest_event(conn, task_id, "review_requested")
+            if requested_event is None:
+                return False, "no prior review_requested event"
+            implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+            if implementer is None:
+                return False, "review handoff has no valid implementer provenance"
+            reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
 
-        new_status = _landing_status_after_parents(conn, task_id)
-        # consecutive_failures deliberately PRESERVED: a review transition is
-        # not evidence the pathology cleared; only complete_task resets it.
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status = ?,
-                   assignee = COALESCE(?, assignee),
-                   claim_lock = NULL,
-                   claim_expires = NULL,
-                   worker_pid = NULL
-             WHERE id = ? AND status = 'running' AND current_run_id = ?
-            """,
-            (new_status, implementer, task_id, int(current_run_id)),
-        )
-        if cur.rowcount != 1:
-            return False, "task changed during review handoff"
-        run_id = _end_run(
-            conn, task_id, outcome="changes_requested", status=new_status, summary=reason,
-        )
-        _append_event(
-            conn,
-            task_id,
-            "changes_requested",
-            {
-                "reason": reason,
-                "implementer": implementer,
-                "reviewer": reviewer,
-                "status": new_status,
-            },
-            run_id=run_id,
-        )
+            new_status = _landing_status_after_parents(conn, task_id)
+            # consecutive_failures deliberately PRESERVED: a review transition is
+            # not evidence the pathology cleared; only complete_task resets it.
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = ?,
+                       assignee = COALESCE(?, assignee),
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ? AND status = 'running' AND current_run_id = ?
+                """,
+                (new_status, implementer, task_id, int(current_run_id)),
+            )
+            if cur.rowcount != 1:
+                return False, "task changed during review handoff"
+            run_id = _end_run(
+                conn, task_id, outcome="changes_requested", status=new_status, summary=reason,
+            )
+            _append_event(
+                conn,
+                task_id,
+                "changes_requested",
+                {
+                    "reason": reason,
+                    "implementer": implementer,
+                    "reviewer": reviewer,
+                    "status": new_status,
+                },
+                run_id=run_id,
+            )
+            terminations = []
+    for pid, claim_lock in terminations:
+        _terminate_reclaimed_worker(pid, claim_lock)
     return True, implementer
 
 

@@ -24,6 +24,7 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
+from hermes_cli.kanban_db_review import is_review_or_finalize_workflow_card
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
@@ -296,6 +297,13 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
     )
 
 
+def decompose_eligible(conn, task: kb.Task) -> bool:
+    """Triage ideas may fan out; review/finalize workflow cards must not."""
+    if task.status != "triage":
+        return False
+    return not is_review_or_finalize_workflow_card(conn, task.id)
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -308,6 +316,11 @@ def decompose_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+    with kbc.connect_closing() as conn:
+        if not decompose_eligible(conn, task):
+            return DecomposeOutcome(
+                task_id, False, "review/finalize workflow cards cannot be decomposed",
+            )
 
     routing = _load_routing()
     raw, reason = _call_aux(
@@ -333,10 +346,10 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column that may be decomposed."""
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        return [row.id for row in rows if decompose_eligible(conn, row)]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

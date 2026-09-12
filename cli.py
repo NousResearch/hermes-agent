@@ -3088,6 +3088,14 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     missing_display,
                     ", ".join(loaded_skills),
                 )
+                # The logger writes to the log file, so without this the dropped name vanishes
+                # silently for a `-q`/`-Q` user. stderr keeps stdout machine-readable for
+                # `$(hermes chat -q ...)`.
+                print(
+                    f"Unknown skill(s) requested, skipping: {missing_display}. "
+                    f"Continuing with: {', '.join(loaded_skills)}. "
+                    "List available skills with `hermes skills list`.",
+                    file=sys.stderr, flush=True)
             else:
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:

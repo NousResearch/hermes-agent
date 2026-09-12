@@ -46,8 +46,13 @@ def _normalize_skills(skills: object = None) -> list[str]:
     return list(dict.fromkeys(_normalize_toolsets(skills) or []))
 
 
-def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
-    """Load requested skills using the same partial-success contract as CLI chat."""
+def _build_preloaded_skills_prompt(skills: object = None, notices: list | None = None) -> str | None:
+    """Load requested skills using the same partial-success contract as CLI chat.
+
+    A partially-unknown list is reported through *notices* instead of ``logging``: the ``-z`` run
+    disables stdlib logging and redirects stderr to /dev/null while the agent is built, so a log
+    record would never reach the user and the dropped name would vanish silently.
+    """
     parsed_skills = _normalize_skills(skills)
     if not parsed_skills:
         return None
@@ -59,12 +64,11 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
         missing_display = ", ".join(missing_skills)
         if not loaded_skills:
             raise ValueError(f"Unknown skill(s): {missing_display}")
-        logging.warning(
-            "Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
-            "List available skills with `hermes skills list`.",
-            missing_display,
-            ", ".join(loaded_skills),
-        )
+        if notices is not None:
+            notices.append(
+                f"hermes -z: ignoring unknown --skills entries: {missing_display}. "
+                f"Continuing with: {', '.join(loaded_skills)}. "
+                "List available skills with `hermes skills list`.\n")
     return skills_prompt or None
 
 
@@ -214,6 +218,7 @@ def run_oneshot(
     response: Optional[str] = None
     result: dict = {}
     failure: BaseException | None = None
+    notices: list[str] = []
     with open(os.devnull, "w", encoding="utf-8") as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
         try:
             response, result = _run_agent(
@@ -225,12 +230,20 @@ def run_oneshot(
                 skills=skills,
                 resume=resume,
                 reasoning=reasoning,
+                notices=notices,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
             # KeyboardInterrupt, SystemExit, ...) so it reaches the real stderr instead of dying
             # silently past the redirect — the worst failure mode in cron / SSH / subprocess use.
             failure = exc
+
+    # Preload notices are collected inside the redirect (where logging and stderr are both
+    # swallowed) and replayed here so a dropped --skills entry can never vanish silently.
+    for notice in notices:
+        real_stderr.write(notice)
+    if notices:
+        real_stderr.flush()
 
     if failure is not None:
         # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.
@@ -416,6 +429,7 @@ def _run_agent(
     skills: object = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    notices: list | None = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -466,7 +480,7 @@ def _run_agent(
 
     ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
 
-    skills_prompt = _build_preloaded_skills_prompt(skills)
+    skills_prompt = _build_preloaded_skills_prompt(skills, notices=notices)
 
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.

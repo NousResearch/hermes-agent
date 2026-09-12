@@ -109,3 +109,38 @@ export function parseCompare(payload: unknown): { behind: number; commits: Compa
 
   return { behind: ahead, commits }
 }
+
+export interface GitHubTokenSources {
+  /** Environment to read PAT vars from; injected so tests never touch the real one. */
+  env?: NodeJS.ProcessEnv
+  /** Resolves a token via the gh CLI; injected so tests never spawn a process. */
+  ghAuthToken?: () => Promise<string | null>
+}
+
+/**
+ * Resolve a GitHub API token for passive update checks, mirroring the skills
+ * hub's priority order: GITHUB_TOKEN / GH_TOKEN, then `gh auth token`, then
+ * anonymous. Anonymous requests share one 60 req/hr per-IP bucket, which shared
+ * and datacenter egress IPs exhaust constantly, so every check behind them 403s
+ * (#108804); an authenticated check gets the per-user 5,000 req/hr budget. A
+ * token must never surface in logs or error copy: failure to resolve one simply
+ * means the request goes out anonymous, exactly as before.
+ */
+export async function resolveGitHubApiToken({
+  env = process.env,
+  ghAuthToken
+}: GitHubTokenSources = {}): Promise<string | null> {
+  const pat = (env.GITHUB_TOKEN || env.GH_TOKEN || '').trim()
+
+  if (pat) {
+    return pat
+  }
+
+  try {
+    const fromGh = ((await ghAuthToken?.()) ?? '').trim()
+
+    return fromGh || null
+  } catch {
+    return null
+  }
+}

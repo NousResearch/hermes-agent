@@ -394,7 +394,14 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import {
+  branchTipApiUrl,
+  cacheIsFresh,
+  compareApiUrl,
+  githubRepoSlug,
+  parseCompare,
+  resolveGitHubApiToken
+} from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -3383,13 +3390,41 @@ function describeUpdateCheckFailure(error) {
   return `api.github.com: ${error?.message || String(error)}`
 }
 
-function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+// `gh auth token` is the second credential source for passive update checks
+// (PAT env vars first, resolved in update-api-check.ts). Authenticated checks
+// get the per-user 5,000 req/hr budget instead of the shared 60 req/hr
+// anonymous bucket that shared/datacenter egress IPs exhaust constantly
+// (#108804). gh missing, logged out, or hung simply resolves null and the
+// request goes out anonymous, as before. The token stays off stderr and is
+// never logged.
+function ghAuthToken(): Promise<string | null> {
+  return new Promise(resolve => {
+    const child = spawn('gh', ['auth', 'token'], {
+      ...hiddenWindowsChildOptions(),
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000
+    })
+
+    let stdout = ''
+    child.stdout.on('data', chunk => {
+      stdout += chunk
+    })
+    child.once('error', () => resolve(null))
+    child.once('close', code => resolve(code === 0 && stdout.trim() ? stdout.trim() : null))
+  })
+}
+
+async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  const token = await resolveGitHubApiToken({ ghAuthToken })
+
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
       {
         headers: {
           Accept: accept,
+          ...(token ? { Authorization: `token ${token}` } : {}),
           // GitHub requires a UA on api.github.com; requests without one 403.
           'User-Agent': 'hermes-desktop-update-check'
         },

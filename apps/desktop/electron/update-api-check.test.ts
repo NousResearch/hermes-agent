@@ -18,6 +18,7 @@ import {
   cacheIsFresh,
   githubRepoSlug,
   parseCompare,
+  resolveGitHubApiToken,
   UPDATE_CHECK_FAILURE_TTL_MS,
   UPDATE_CHECK_TTL_MS
 } from './update-api-check'
@@ -77,5 +78,31 @@ test('compare payload maps to the behind count and a newest-first commit list; m
   assert.equal(
     branchTipApiUrl('nousresearch/hermes-agent', 'bb/gui'),
     'https://api.github.com/repos/nousresearch/hermes-agent/commits/bb%2Fgui'
+  )
+})
+
+test('token resolution: PAT env first, gh CLI second, anonymous on any failure', async () => {
+  // A PAT in the environment wins over gh, and is trimmed rather than sent raw.
+  assert.equal(
+    await resolveGitHubApiToken({ env: { GITHUB_TOKEN: ' ghp_pat ' }, ghAuthToken: async () => 'ghp_cli' }),
+    'ghp_pat'
+  )
+  // GH_TOKEN is the documented alias.
+  assert.equal(await resolveGitHubApiToken({ env: { GH_TOKEN: 'ghp_alias' } }), 'ghp_alias')
+
+  // Whitespace-only vars fall through to gh instead of sending a junk header.
+  assert.equal(
+    await resolveGitHubApiToken({ env: { GITHUB_TOKEN: '   ' }, ghAuthToken: async () => ' ghp_cli ' }),
+    'ghp_cli'
+  )
+
+  // No credentials anywhere (gh missing, logged out, or hung) resolves null:
+  // the request goes out anonymous — the pre-fix behavior, never an error the
+  // update check has to handle (#108804).
+  assert.equal(await resolveGitHubApiToken({ env: {}, ghAuthToken: async () => null }), null)
+  assert.equal(await resolveGitHubApiToken({ env: {} }), null)
+  assert.equal(
+    await resolveGitHubApiToken({ env: {}, ghAuthToken: async () => { throw new Error('ENOENT') } }),
+    null
   )
 })

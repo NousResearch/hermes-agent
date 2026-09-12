@@ -180,9 +180,15 @@ class OAuthCredential:
     def from_token_response(
         cls, body: dict[str, Any], *, now: float, client_id: str, token_endpoint: str,
         scope: str = "write", token_type: str = "Bearer", what: str = "grant",
+        fallback_refresh_token: str | None = None,
     ) -> "OAuthCredential":
-        """Build a credential from an OAuth token response; ``expires_in`` is relative to ``now``."""
-        access, refresh = body.get("access_token"), body.get("refresh_token")
+        """Build a credential from an OAuth token response; ``expires_in`` is relative to ``now``.
+
+        RFC 6749 §6: a refresh response may omit ``refresh_token`` when the AS doesn't rotate it —
+        ``fallback_refresh_token`` (the prior grant's) carries it forward. Leave unset for a fresh
+        grant (``install_grant``), where a missing refresh_token is a genuine error, not omission.
+        """
+        access, refresh = body.get("access_token"), body.get("refresh_token") or fallback_refresh_token
         if not is_oauth_access_token(access) or not refresh:
             raise ValueError(f"{what} missing access_token/refresh_token")
         return cls(access, str(refresh), now + _num(body.get("expires_in", 0), int), client_id, token_endpoint,
@@ -234,6 +240,7 @@ def _exchange_refresh_token(
     return OAuthCredential.from_token_response(
         body, now=now, client_id=cred.client_id, token_endpoint=cred.token_endpoint,
         scope=cred.scope, token_type=cred.token_type, what="refresh response",
+        fallback_refresh_token=cred.refresh_token,
     )
 
 def _exchange_with_retry(cred: OAuthCredential, *, now: float) -> OAuthCredential:

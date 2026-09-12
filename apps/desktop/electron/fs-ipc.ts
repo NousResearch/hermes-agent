@@ -68,8 +68,9 @@ export function registerFsIpc({
     }
 
     try {
-      await fs.promises.mkdir(dir, { recursive: true })
-      const error = await shell.openPath(path.normalize(dir))
+      const resolved = resolveRequestedPathForIpc(expandUserPath(dir), { purpose: 'Open directory' })
+      await fs.promises.mkdir(resolved, { recursive: true })
+      const error = await shell.openPath(path.normalize(resolved))
 
       return error ? { ok: false, error } : { ok: true }
     } catch (error) {

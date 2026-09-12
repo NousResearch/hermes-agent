@@ -1955,23 +1955,16 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
 
 
 def _native_service_homes() -> set[Path]:
-    """Homes that own the bare native gateway service name in this process."""
-    from hermes_constants import _get_platform_default_hermes_home
-    from pathlib import Path as _Path
+    """Homes whose service name is the bare ``hermes-gateway``: this process's native default and, under
+    sudo, the invoking user's. Under sudo the process default is ``/root/.hermes`` but
+    ``_sync_hermes_home_from_systemd_unit()`` rewrites HERMES_HOME mid-command to the unit's home — the
+    invoking user's ``~/.hermes`` — which would otherwise hash and target a unit that does not exist."""
+    from hermes_constants import _get_platform_default_hermes_home, sudo_invoker_default_home
 
     homes = {_get_platform_default_hermes_home().resolve()}
-    if getattr(os, "geteuid", lambda: -1)() != 0:
-        return homes
-
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if not sudo_user or sudo_user == "root":
-        return homes
-    try:
-        import pwd
-
-        homes.add((_Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes").resolve())
-    except (ImportError, KeyError, AttributeError, TypeError):
-        pass
+    sudo_home = sudo_invoker_default_home()
+    if sudo_home is not None:
+        homes.add(sudo_home.resolve())
     return homes
 
 

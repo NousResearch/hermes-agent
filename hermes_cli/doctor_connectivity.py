@@ -183,12 +183,28 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
         base, url, headers = _apikey_request(key, base_env, default_url)
         r = httpx.get(url, headers=headers, timeout=10)
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
-            r = httpx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
+            url = "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+            r = httpx.get(url, headers=headers, timeout=10)
     except Exception as e:
         return _row(pname, "warn", f"({e})", label=label)
     if r.status_code == 401:
         return _row(pname, "fail", "(invalid API key)", [f"Check {env_vars[0]} in .env"], label=label)
-    return _row(pname, "ok", label=label) if r.status_code == 200 else _row(pname, "warn", f"(HTTP {r.status_code})", label=label)
+    if r.status_code != 200:
+        return _row(pname, "warn", f"(HTTP {r.status_code})", label=label)
+    # Some providers serve GET /models with 200 without checking the key.
+    # A second request with credentials stripped distinguishes that from a verified key.
+    if not url:
+        return _row(pname, "ok", label=label)
+    try:
+        import httpx
+        baseline_headers = {k: v for k, v in headers.items() if k.lower() not in ("authorization", "x-goog-api-key")}
+        baseline = httpx.get(url, headers=baseline_headers, timeout=10)
+    except Exception:
+        return _row(pname, "ok", label=label)
+    if baseline.status_code == 200:
+        return _row(pname, "warn", "(endpoint does not authenticate /models — key not verified)",
+                    [f"{pname}: /models does not authenticate — API key not verified"], label=label)
+    return _row(pname, "ok", label=label)
 
 
 def _apikey_request(key: str, base_env, default_url) -> tuple:

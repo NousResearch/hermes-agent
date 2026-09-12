@@ -174,7 +174,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
+    BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, cache_image_from_url, cache_audio_from_url,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
@@ -227,7 +227,8 @@ _BRIDGE_PASSTHROUGH_ENV = (
 )
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
-_NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
+_WA_VIDEO_EXTS = {".mp4", ".webm", ".mov", ".mkv"}
+_NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER, "gif": MessageType.PHOTO}
 # Inbound mediaType substring → kind; ptt = WhatsApp voice note, so "ptt" must precede "audio".
 _MEDIA_NEEDLES = (("image", MessageType.PHOTO), ("video", MessageType.VIDEO), ("ptt", MessageType.VOICE), ("audio", MessageType.AUDIO))
 # MessageType → (bridge label, default mime); documents take their mime from SUPPORTED_DOCUMENT_TYPES instead.
@@ -759,10 +760,27 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         accepted: list[tuple] = []  # (url_or_path, mime)
         label, default_mime = _MEDIA_INFO.get(msg_type, (None, ""))
         bridge_mime = str(data.get("mime") or "").strip()
+        # Animated GIFs arrive as videoMessage with gifPlayback=true and the
+        # bridge reports mediaType 'gif' (#80063).
+        is_gif = str(data.get("mediaType", "") or "") == "gif"
+        gif_video_container = is_gif and bridge_mime.lower().startswith("video/")
+        if is_gif and msg_type == MessageType.PHOTO and not gif_video_container:
+            default_mime = "image/gif"
         for url in data.get("mediaUrls", []):
             mime = bridge_mime or (SUPPORTED_DOCUMENT_TYPES.get(Path(url).suffix.lower(), "application/octet-stream") if msg_type == MessageType.DOCUMENT else default_mime)
+            # Baileys reports gifPlayback video messages as ``gif`` but the
+            # downloaded bytes are normally an MP4 (mime ``video/mp4``). Do not
+            # send those bytes through the image cache or give them a
+            # misleading ``.gif`` extension. The bridge normally supplies a
+            # local path; if a producer supplies a remote video URL, preserve
+            # that truthful URL and MIME instead of pretending it is an image.
+            if gif_video_container and url.startswith(("http://", "https://")):
+                accepted.append((url, bridge_mime))
+                print(f"[{self.name}] Keeping GIF video container URL: {url}", flush=True)
+                continue
             if url.startswith(("http://", "https://")) and msg_type in {MessageType.PHOTO, MessageType.VOICE, MessageType.AUDIO}:
-                cacher, ext = (cache_image_from_url, ".jpg") if msg_type == MessageType.PHOTO else (cache_audio_from_url, ".ogg")
+                ext = ".gif" if is_gif and msg_type == MessageType.PHOTO and not gif_video_container else (".jpg" if msg_type == MessageType.PHOTO else ".ogg")
+                cacher = cache_image_from_url if msg_type == MessageType.PHOTO else cache_audio_from_url
                 try:
                     url = await cacher(url, ext=ext)
                     print(f"[{self.name}] Cached user {label}: {url}", flush=True)
@@ -771,7 +789,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 accepted.append((url, mime))
             elif label is not None and os.path.isabs(url):
                 if _is_allowed_bridge_path(url):
-                    accepted.append((url, mime))
+                    # For GIF local paths without a bridge mime, infer from the
+                    # file extension using the shared video-container MIME map.
+                    if is_gif and not bridge_mime:
+                        suffix = Path(url).suffix.lower()
+                        local_mime = SUPPORTED_VIDEO_TYPES[suffix] if suffix in _WA_VIDEO_EXTS else "image/gif"
+                    else:
+                        local_mime = mime
+                    accepted.append((url, local_mime))
                     print(f"[{self.name}] Using bridge-cached {label}: {url}", flush=True)
                 else:
                     print(f"[{self.name}] Rejected bridge {label} path outside cache dir: {url}", flush=True)

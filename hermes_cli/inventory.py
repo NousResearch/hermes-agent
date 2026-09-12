@@ -167,6 +167,13 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
     for row in rows:
         if row.get("is_user_defined") or not is_routing_aggregator(row.get("slug", "")):
             continue
+        # The row that is currently active is not an "aggregator duplicate" of anything: the user is
+        # already running on it. Stripping its models because a user-defined provider happens to serve
+        # the same id makes the picker misreport the active backend — the configured model vanishes
+        # from the very row the session is using (e.g. openrouter's deepseek/deepseek-v4.1-flash while
+        # a custom provider also lists it), and the model cannot be re-selected from the picker.
+        if row.get("is_current"):
+            continue
         # Only strip overlaps from TRUE routing aggregators (OpenRouter, custom:* proxies). Flat-namespace
         # resellers (opencode-go / opencode-zen) serve every listed model as a first-party model, so their
         # rows must keep models that a user's proxy happens to share a name with — otherwise a subscription

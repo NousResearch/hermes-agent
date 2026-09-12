@@ -1208,10 +1208,13 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
 
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]], *, channel_prompt: Optional[str] = None,
-    inject_timestamps: bool = False) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    inject_timestamps: bool = False, inject_observed_context: bool = True,
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
-    Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
+    Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in.
+    With ``inject_observed_context=False`` observed rows are still withheld from replay (they stay stored
+    transcript rows, never model input) but no observed-context block is returned for the addressed turn."""
     from hermes_time import get_timezone as _get_msg_tz
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
@@ -1231,9 +1234,10 @@ def _build_gateway_agent_history(
 
         content = msg.get("content")
         if separate_observed_context and msg.get("observed") and role == "user" and content:
-            if inject_timestamps and isinstance(content, str):
-                content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-            observed_group_context.append(str(content).strip())
+            if inject_observed_context:
+                if inject_timestamps and isinstance(content, str):
+                    content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
+                observed_group_context.append(str(content).strip())
             continue
 
         # Rich tool_calls/tool-result rows pass through intact so the API sees valid assistant→tool sequences.

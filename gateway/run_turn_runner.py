@@ -35,6 +35,28 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _telegram_inject_observed_group_context_enabled(user_config: Optional[dict]) -> bool:
+    """Resolve ``telegram.inject_observed_group_context`` from this turn's profile config.
+
+    Config-only by design: under ``gateway.multiplex_profiles`` a process-global env value would pin
+    the launch profile's setting for every routed profile, so the value is read from the active
+    profile's own config. The telegram section is located the way the gateway locates it for every
+    other platform setting, and the key may sit on the section or in its ``extra`` block.
+    """
+    if not isinstance(user_config, dict):
+        return True
+    from gateway.config_loader import platform_section
+    gateway_cfg = user_config.get("gateway")
+    gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
+    section, _ = platform_section(user_config, "telegram", gateway_platforms)
+    if not isinstance(section, dict):
+        return True
+    for block in (section, section.get("extra")):
+        if isinstance(block, dict) and "inject_observed_group_context" in block:
+            return is_truthy_value(block["inject_observed_group_context"], default=True)
+    return True
+
+
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -1393,7 +1415,10 @@ class TurnRunner:
         # sequences. Telegram observed=True rows are withheld from replayable history and attached to
         # the current addressed message as API-only context.
         agent_history, observed_group_context = _build_gateway_agent_history(
-            ctx.history, channel_prompt=ctx.channel_prompt, inject_timestamps=_message_timestamps_enabled(ctx.user_config),
+            ctx.history,
+            channel_prompt=ctx.channel_prompt,
+            inject_timestamps=_message_timestamps_enabled(ctx.user_config),
+            inject_observed_context=_telegram_inject_observed_group_context_enabled(ctx.user_config),
         )
         # FTS write-corruption guard: if persistence failed silently the reloaded transcript is stale
         # while the SAME cached agent still holds the live conversation (same-session amnesia). Only

@@ -45,6 +45,8 @@ interface EndpointForm {
   makeDefault: boolean
   model: string
   name: string
+  /** Masked preview of the key on file for a saved endpoint; null when none is saved. */
+  savedKeyPreview: null | string
 }
 
 // Same choices as `hermes model`'s custom-provider setup; '' = runtime auto-detect.
@@ -64,7 +66,8 @@ const EMPTY_FORM: EndpointForm = {
   id: '',
   makeDefault: true,
   model: '',
-  name: ''
+  name: '',
+  savedKeyPreview: null
 }
 
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
@@ -77,8 +80,22 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
     id: endpoint.id,
     makeDefault: Boolean(endpoint.is_current),
     model: endpoint.model,
-    name: endpoint.name
+    name: endpoint.name,
+    savedKeyPreview: endpoint.has_api_key ? (endpoint.api_key_preview ?? 'API key set') : null
   }
+}
+
+/** Placeholder for the API Key field. The field is always blank for a saved
+ *  endpoint (the key lives in .env, never round-trips to the UI), so the
+ *  placeholder is the only place that says whether a key is on file. */
+function apiKeyPlaceholder(form: EndpointForm): string {
+  if (!form.id) {
+    return 'Optional'
+  }
+
+  return form.savedKeyPreview
+    ? `Leave blank to keep the saved key (${form.savedKeyPreview})`
+    : 'No key saved for this endpoint (optional)'
 }
 
 function toPayload(
@@ -375,7 +392,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     </div>
                     <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
                       <span>{endpoint.model}</span>
-                      {endpoint.has_api_key && <span>{endpoint.api_key_preview ?? ce.apiKeySet}</span>}
+                      {endpoint.api_key_preview ? (
+                        <span>{endpoint.api_key_preview}</span>
+                      ) : (
+                        endpoint.has_api_key && <span>{ce.apiKeySet}</span>
+                      )}
                     </div>
                   </button>
                   <div className="flex items-center gap-2 sm:justify-end">
@@ -474,7 +495,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               {ce.fields.apiKey}
               <Input
                 onChange={event => setForm(current => ({ ...current, apiKey: event.target.value }))}
-                placeholder={form.id ? ce.fields.apiKeyNewPlaceholder : ce.fields.apiKeyPlaceholder}
+                placeholder={apiKeyPlaceholder(form)}
                 type="password"
                 value={form.apiKey}
               />

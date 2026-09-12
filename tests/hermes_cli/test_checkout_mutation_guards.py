@@ -18,7 +18,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import hermes_cli.main as main_mod
-from hermes_cli import update_cmd
 from hermes_cli import _early_recovery as er
 
 CHECKOUT_ROOT = Path(er.__file__).resolve().parent.parent
@@ -38,36 +37,6 @@ class TestPredicate:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         assert er._pytest_owns_live_checkout(CHECKOUT_ROOT) is False
         assert main_mod._pytest_owns_live_checkout(CHECKOUT_ROOT) is False
-
-
-class TestMarkerWrites:
-    def test_refuses_breadcrumb_at_live_repo_root(self):
-        target = CHECKOUT_ROOT / ".lazy-refresh-incomplete"
-        # The marker may legitimately pre-exist: upstream currently TRACKS a
-        # littered copy in git (the exact pollution this guard prevents), so
-        # the contract is content-unchanged, not never-exists.
-        before = target.read_text(encoding="utf-8") if target.exists() else None
-        try:
-            update_cmd._write_marker_file(target, label="lazy-refresh-incomplete")
-            after = (
-                target.read_text(encoding="utf-8") if target.exists() else None
-            )
-            assert after == before, (
-                "marker breadcrumb written into the LIVE checkout from a test"
-            )
-        finally:
-            # If the guard is broken (RED state), restore the pre-test state —
-            # leaving pollution behind is exactly the bug being pinned.
-            if before is None:
-                target.unlink(missing_ok=True)
-            else:
-                target.write_text(before, encoding="utf-8")
-
-    def test_still_writes_sandboxed(self, tmp_path):
-        target = tmp_path / ".lazy-refresh-incomplete"
-        update_cmd._write_marker_file(target, label="lazy-refresh-incomplete")
-        assert target.exists()
-        assert "pid=" in target.read_text(encoding="utf-8")
 
 
 class TestEarlyRecovery:

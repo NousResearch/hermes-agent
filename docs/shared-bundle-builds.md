@@ -33,6 +33,19 @@ select an agent payload.
 
 ## Build and packaging entrypoints
 
+Source updates and source UI launches use the same dependency provider and
+product builders. `hermes_cli/source_build.py` selects the workspace union,
+prepares it once, then invokes the shared recipes. An update builds TUI and
+web, plus the local desktop app when one was present before the update.
+Desktop packaging still belongs to the local desktop adapter.
+
+The current-checkout retry, pulled-checkout, and ZIP update paths all use
+`update_cmd_maint._prepare_updated_checkout`: one PM dependency sync, then a
+fresh process on the selected interpreter for the frontend builds. Build
+failure aborts completion; an existing stale product is not a successful
+update. There is no updater-specific npm cache, fallback install, extra
+refresh, or memory-provider reinstall. PM owns the complete Python union.
+
 Build a desktop distribution from a checkout at its release tag. Use its
 PM-prepared Python 3.14. The driver delegates Python dependency preparation to PM:
 

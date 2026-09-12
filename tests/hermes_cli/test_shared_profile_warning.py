@@ -130,16 +130,12 @@ def test_cli_entrypoint_registers_and_warns_once_for_live_shared_home(homes, tmp
             assert shared_profile_warning(project_root=stable)
             # A CLI record must not make a terminal process an update-owned backend.
             import hermes_constants
-            from hermes_cli.update_cmd_windows import _ledger_manual_serve_holders, _ledger_reapable_backend_pids
             from hermes_cli.update_inventory import UpdatePlan, _collect_ledger_runtimes
 
             with monkeypatch.context() as patcher:
                 patcher.setattr(hermes_constants, "PROJECT_ROOT", canary, raising=False)
                 assert own == process_identity.ledger_entries(verified_only=True)
-                matches = [(child.pid, "python", own[0]["argv"])]
                 assert own[0]["purpose"] not in process_identity.REAPABLE_PURPOSES
-                assert _ledger_manual_serve_holders(matches) == []
-                assert _ledger_reapable_backend_pids(matches) == []
                 plan = UpdatePlan()
                 _collect_ledger_runtimes(plan, set())
                 assert plan.runtimes == []

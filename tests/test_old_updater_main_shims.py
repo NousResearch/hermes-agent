@@ -1,5 +1,9 @@
 """Historical main imports must not restart pre-PM updater work after a swap."""
 
+import builtins
+from copy import deepcopy
+import importlib
+import io
 import os
 from pathlib import Path
 import socket
@@ -18,7 +22,7 @@ def inert_main(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("historical main shim attempted updater work")
 
-    for name in ("sync_venv", "ensure_environment", "build_environment"):
+    for name in ("ensure", "sync_venv", "ensure_environment", "build_environment", "ensure_python_tool"):
         monkeypatch.setattr(pm, name, forbidden)
     for name in ("Popen", "run"):
         monkeypatch.setattr(subprocess, name, forbidden)
@@ -63,6 +67,47 @@ def test_historical_main_data_and_skipped_probes_preserve_caller_shapes(inert_ma
     assert env == {"VIRTUAL_ENV": str(tmp_path)}
 
 
+@pytest.mark.parametrize(
+    "name,args,kwargs",
+    [
+        ("_capture_active_lazy_features", (), {}),
+        ("_refresh_active_lazy_features", (), {}),
+        ("_refresh_active_lazy_features", (["browser"],), {}),
+        ("_refresh_active_lazy_features", (["uv", "pip"],),
+         {"env": {"VIRTUAL_ENV": "venv"}, "features": ["browser"]}),
+        ("_refresh_active_memory_provider_dependencies", (), {}),
+        ("_npm_lockfile_changed", (Path("checkout"),), {}),
+        ("_write_update_incomplete_marker", (), {}),
+        ("_reload_updated_runtime_modules", (), {}),
+    ],
+)
+def test_historical_main_lazy_dependency_hooks_stop_without_work(
+    name, args, kwargs, inert_main, monkeypatch, capsys,
+):
+    main, forbidden = inert_main
+    before_args = deepcopy((args, kwargs))
+    before_env = dict(os.environ)
+    with monkeypatch.context() as guard:
+        # Exercise PEP 562 even if an earlier test already cached this export.
+        # The temporary slot also makes monkeypatch restore an absent attribute.
+        guard.setitem(main.__dict__, name, None)
+        guard.delitem(main.__dict__, name)
+        guard.setattr(importlib, "reload", forbidden)
+        guard.setattr(builtins, "open", forbidden)
+        guard.setattr(io, "open", forbidden)
+        for _ in range(2):  # both the cold lookup and cached historical caller
+            with pytest.raises(SystemExit) as exc:
+                try:
+                    getattr(main, name)(*args, **kwargs)
+                except Exception:
+                    forbidden()
+                forbidden()
+            assert exc.value.code == 0
+            assert "run `hermes` again" in capsys.readouterr().err.lower()
+    assert (args, kwargs) == before_args
+    assert dict(os.environ) == before_env
+
+
 def test_historical_main_entrypoints_stop_before_install_or_success_fallback(
     inert_main, tmp_path, capsys,
 ):
@@ -104,7 +149,7 @@ def test_historical_main_entrypoints_stop_before_install_or_success_fallback(
             # Returning also lets old callers claim completion or try a fallback.
             forbidden()
         assert exc.value.code == 0, name
-        assert "relaunch" in capsys.readouterr().err.lower(), name
+        assert "run `hermes` again" in capsys.readouterr().err.lower(), name
     assert cmd == ["uv", "pip", "install", "-e", "."]
     assert env == {"VIRTUAL_ENV": str(tmp_path)}
     assert failed == []

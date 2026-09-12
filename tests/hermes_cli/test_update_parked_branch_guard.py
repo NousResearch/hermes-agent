@@ -270,7 +270,7 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    monkeypatch.setattr(hermes_main, "_capture_active_lazy_features", lambda: [])
+
 
 
 def test_update_skips_and_warns_on_dirty_parked_branch(
@@ -318,11 +318,10 @@ def test_update_switches_unmerged_parked_branch_with_kept_notice(
     class _StopFlow(Exception):
         pass
 
-    # Retired self-lock guard replaced by the first post-pull dependency phase as the
-    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
+    # Stop at product preparation, after the real Git update but before any build.
     monkeypatch.setattr(
         update_cmd,
-        "_sync_python_dependencies_after_pull",
+        "_prepare_updated_checkout",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -374,11 +373,10 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     class _StopFlow(Exception):
         pass
 
-    # Retired self-lock guard replaced by the first post-pull dependency phase as the
-    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
+    # Stop at product preparation, after the real Git update but before any build.
     monkeypatch.setattr(
         update_cmd,
-        "_sync_python_dependencies_after_pull",
+        "_prepare_updated_checkout",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -431,11 +429,10 @@ def test_switch_branch_flag_overrides_in_place_strategy(
     class _StopFlow(Exception):
         pass
 
-    # Retired self-lock guard replaced by the first post-pull dependency phase as the
-    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
+    # Stop at product preparation, after the real Git update but before any build.
     monkeypatch.setattr(
         update_cmd,
-        "_sync_python_dependencies_after_pull",
+        "_prepare_updated_checkout",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(
@@ -483,11 +480,10 @@ def test_unmerged_branch_still_updates_in_place_without_the_flag(
     class _StopFlow(Exception):
         pass
 
-    # Retired self-lock guard replaced by the first post-pull dependency phase as the
-    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
+    # Stop at product preparation, after the real Git update but before any build.
     monkeypatch.setattr(
         update_cmd,
-        "_sync_python_dependencies_after_pull",
+        "_prepare_updated_checkout",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(
@@ -514,16 +510,14 @@ def test_update_auto_switches_clean_merged_parked_branch(
     say so, and STAY on main afterwards (sabotage-proven: reverting the
     guard re-parks the checkout and this test fails on the branch assert)."""
     _patch_update_flow(monkeypatch, repo_pair)
-    # Stop the flow right after the pull/branch logic: the dependency
-    # install phase begins with _sync_python_dependencies_after_pull.
+    # Stop right after the pull/branch logic, before product preparation.
     class _StopFlow(Exception):
         pass
 
-    # Retired self-lock guard replaced by the first post-pull dependency phase as the
-    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
+    # Stop at product preparation, after the real Git update but before any build.
     monkeypatch.setattr(
         update_cmd,
-        "_sync_python_dependencies_after_pull",
+        "_prepare_updated_checkout",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
@@ -602,11 +596,10 @@ def test_update_on_main_fast_path_unchanged(repo_pair, monkeypatch, capsys):
     class _StopFlow(Exception):
         pass
 
-    # Retired self-lock guard replaced by the first post-pull dependency phase as the
-    # flow-stop sentinel (pm-clean-audit-49945b1402 item 9).
+    # Stop at product preparation, after the real Git update but before any build.
     monkeypatch.setattr(
         update_cmd,
-        "_sync_python_dependencies_after_pull",
+        "_prepare_updated_checkout",
         lambda *a, **k: (_ for _ in ()).throw(_StopFlow()),
     )
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)

@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_maint as update_cmd_maint
-import hermes_cli.update_cmd_deps as update_cmd_deps
 
 
 def test_runtime_status_probes_running_venv_outside_checkout(tmp_path, monkeypatch):
@@ -50,10 +49,8 @@ def test_summary_withholds_success_when_sqlite_remediation_failed(capsys, monkey
         lambda _version: "✓ Update complete! (v0.20.5)",
     )
 
-    complete = update_cmd._print_update_summary(
-        node_failures=[],
-        desktop_build_ok=True,
-        pre_update_version="0.20.4",
+    complete = update_cmd_maint._print_verified_update_completion(
+        update_cmd_maint._update_complete_message("0.20.4"),
     )
 
     out = capsys.readouterr().out
@@ -86,22 +83,19 @@ def test_current_checkout_completion_is_verified_before_success(capsys, monkeypa
 
 
 def test_current_checkout_repair_returns_verified_completion_result(monkeypatch):
-    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd_deps, "_update_node_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd._m(), "_build_web_ui", lambda _path: None)
+    monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd, "_check_and_apply_config_migration", lambda **k: None)
     monkeypatch.setattr(
         update_cmd,
-        "_rebuild_desktop_after_update",
-        lambda _dir, **_kwargs: True,
+        "_print_verified_update_completion",
+        lambda _message: False,
     )
-    monkeypatch.setattr(
-        update_cmd_deps,
-        "_rebuild_desktop_after_update",
-        lambda _dir, **_kwargs: True,
-    )
-
-    complete = update_cmd._repair_node_deps_on_current_checkout(
-        lambda _message: False
+    complete = update_cmd._repair_current_checkout(
+        assume_yes=True,
+        gateway_mode=False,
+        pre_update_snapshot_id=None,
+        had_desktop_app_before_update=False,
+        upstream_checked=True,
     )
 
     assert complete is False

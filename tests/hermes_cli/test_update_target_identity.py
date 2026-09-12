@@ -11,7 +11,7 @@ import urllib.request
 
 import pytest
 
-from hermes_cli import main as cli_main, update_cmd, update_cmd_zip, update_receipt
+from hermes_cli import main as cli_main, update_cmd, update_cmd_maint, update_receipt
 
 
 class DependencyBoundary(Exception):
@@ -57,7 +57,6 @@ def update_tree(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli_main, 'PROJECT_ROOT', clone)
     monkeypatch.setattr(update_receipt, '_code_identity', lambda **_: {'commit': base})
-    monkeypatch.setattr(cli_main, '_capture_active_lazy_features', lambda: [])
     monkeypatch.setattr(cli_main, '_run_pre_update_backup', lambda *_: None)
     monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update', lambda: None)
     resumed = []
@@ -71,8 +70,8 @@ def update_tree(tmp_path, monkeypatch):
     def stop_at_dependencies(*_args, **_kwargs):
         raise DependencyBoundary()
 
-    monkeypatch.setattr(update_cmd, '_sync_python_dependencies_after_pull', stop_at_dependencies)
-    monkeypatch.setattr(update_cmd_zip, '_reinstall_python_deps_after_zip', stop_at_dependencies)
+    monkeypatch.setattr(update_cmd, '_prepare_updated_checkout', stop_at_dependencies)
+    monkeypatch.setattr(update_cmd_maint, '_prepare_updated_checkout', stop_at_dependencies)
     repaired = []
     monkeypatch.setattr(update_cmd, '_repair_current_checkout', lambda **_: repaired.append(True) or True)
     monkeypatch.setattr(update_cmd, '_apply_pending_fleet_restart_catchup', lambda: None)

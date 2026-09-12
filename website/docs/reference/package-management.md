@@ -39,6 +39,13 @@ entry shims stop the old updater cleanly and ask for a relaunch instead of invok
 PM or falling back to pip. Completion belongs to the new launcher, not that mixed
 old-code/new-files process.
 
+Current source updates use one PM sync for the recorded extras and enabled
+plugins, then build frontend products in a fresh process on the selected
+Python. A retry on an already-current checkout follows the same path.
+Dependency or build failures stop completion; the updater does not retry
+through pip, reinstall providers separately, or create incomplete markers.
+Use `hermes pm repair` for damaged dependency files.
+
 ## Source installs and packaged builds
 
 Source installers provision the required tools plus Python. They select the

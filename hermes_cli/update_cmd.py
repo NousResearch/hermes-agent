@@ -29,18 +29,16 @@ from hermes_cli.update_abort_recovery import (  # noqa: F401
     _serve_unit_recovery_available, _surviving_pre_update_serve_runtimes,
     _warn_stale_serve_runtimes)
 from hermes_cli.update_cmd_windows import (  # noqa: F401
-    _HOLDER_VALUE_FLAGS_FALLBACK, _clear_windows_venv_holders_or_exit,
+    _HOLDER_VALUE_FLAGS_FALLBACK,
     _cold_start_windows_gateway_after_update, _desktop_owns_gateway_lifecycle,
-    _detect_venv_python_processes, _format_venv_python_holders_message,
-    _handoff_reapable_backend_pids, _hermes_holder_subcommand, _holder_value_flags,
-    _holder_value_flags_cache, _ledger_manual_serve_holders, _ledger_reapable_backend_pids,
-    _leftover_pausable_gateway_pids, _looks_like_desktop_control_plane,
-    _orphaned_desktop_backend_pids, _pause_windows_gateways_for_update,
+    _detect_venv_python_processes, _hermes_holder_subcommand, _holder_value_flags,
+    _holder_value_flags_cache, _looks_like_desktop_control_plane,
+    _pause_windows_gateways_for_update,
     _refresh_bootstrap_cache_scripts, _refresh_windows_gateway_launchers,
-    _refuse_gateway_ancestor_tree_kill, _relaunch_stopped_serves,
+    _refuse_gateway_ancestor_tree_kill,
     _restore_windows_gateway_service, _resume_windows_gateways_after_update,
     _resume_windows_gateways_and_merge_outcome, _self_and_non_gateway_ancestor_pids,
-    _serve_relaunch_commands, _start_windows_gateway_service, _stop_process_trees,
+    _start_windows_gateway_service,
     _stop_windows_gateway_service, _venv_launcher_ancestors,
     _wait_for_windows_update_gateway_exit, _write_update_planned_stop_marker)
 from hermes_cli.update_cmd_fleet import (  # noqa: F401
@@ -74,21 +72,16 @@ from hermes_cli.update_cmd_stash import (  # noqa: F401
 from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
     _print_items, _reload_config_modules, _run_config_check_fresh, _run_migrate_config_fresh)
-from hermes_cli.update_cmd_deps import (  # noqa: F401
-    _INSTALL_DEFINING_FILES, _UPDATE_CRITICAL_MODULES,
-    _capture_active_lazy_features,
-    _critical_module_import_failures,
-    _desktop_app_present,
-    _editable_install_is_current,
-    _npm_bin_exists,
-    _npm_lockfile_changed, _npm_manifest_paths, _npm_manifests_digest, _path_uid,
-    _rebuild_desktop_after_update, _record_npm_lockfile_hash, _refresh_active_lazy_features,
-    _refresh_active_memory_provider_dependencies, _refuse_update_if_venv_foreign_owned,
-    _repair_node_deps_on_current_checkout,
-    _sync_python_dependencies_after_pull, _update_node_dependencies,
-    _validate_critical_modules_import,
-    _venv_core_imports_healthy, _venv_foreign_owned_paths, _web_build_toolchain_ready,
-    _web_toolchain_roots)
+from hermes_cli.update_cmd_validation import (  # historical updater imports
+    _UPDATE_CRITICAL_MODULES, _critical_module_import_failures,
+    _validate_critical_modules_import)
+from hermes_cli.old_updater_deps import (  # historical updater imports only
+    _capture_active_lazy_features, _npm_lockfile_changed, _path_uid,
+    _rebuild_desktop_after_update, _refresh_active_lazy_features,
+    _refresh_active_memory_provider_dependencies, _update_node_dependencies,
+    _handoff_reapable_backend_pids, _ledger_manual_serve_holders, _ledger_reapable_backend_pids,
+    _leftover_pausable_gateway_pids, _orphaned_desktop_backend_pids,
+    _relaunch_stopped_serves, _stop_process_trees)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
@@ -101,11 +94,12 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _STALE_PURGE_PREFIXES,
-    _STALE_PURGE_PROTECTED, _UPDATE_RUNTIME_RELOAD_MODULES, _clear_stale_sqlite_sidecars,
+    _STALE_PURGE_PROTECTED, _clear_stale_sqlite_sidecars,
     _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
     _print_fts_optimize_available_notice, _print_update_completion, _print_update_summary,
+    _prepare_updated_checkout,
     _print_verified_update_completion, _purge_stale_hermes_modules, _read_project_version,
     _reload_process_scan_modules, _reload_updated_runtime_modules,
     _resolve_pre_update_backup_mode, _restore_state_db_from_snapshot,
@@ -473,112 +467,23 @@ def _invalidate_update_cache():
             pass
 
 
-def _write_marker_file(path: Path, *, label: str) -> None:
-    """Drop an update-recovery breadcrumb. Never raises."""
-    if _m()._pytest_owns_live_checkout(path.parent):
-        logger.debug("Skipping %s marker under pytest (live checkout)", label)
-        return
-    try:
-        path.write_text(
-            f"started={_time.time()}\npid={os.getpid()}\n", encoding="utf-8"
-        )
-    except OSError as exc:
-        logger.debug("Could not write %s marker: %s", label, exc)
-
 
 def _write_update_incomplete_marker() -> None:
-    """Drop the interrupted core-install breadcrumb. Never raises."""
-    _write_marker_file(_m()._update_marker_path(), label="update-incomplete")
+    # Historical updater hook. PM's successful facts determine completion.
+    stop_for_relaunch()
 
 
 def _write_lazy_refresh_incomplete_marker() -> None:
-    """Drop the interrupted lazy-refresh breadcrumb. Never raises."""
-    _write_marker_file(_m()._lazy_refresh_marker_path(), label="lazy-refresh-incomplete")
+    # Historical updater hook. There is no separate lazy-refresh transaction.
+    stop_for_relaunch()
 
-
-def _format_concurrent_instances_message(
-    matches: list[tuple[int, str]], scripts_dir: Path
-) -> str:
-    """Build a human-readable explanation + remediation hint for the user."""
-    shim = scripts_dir / "hermes.exe"
-    lines = ["✗ Another hermes.exe is running:"]
-    for pid, name in matches:
-        lines.append(f"    PID {pid}  {name}")
-    lines.append("")
-    lines.append(f"  Updating now would fail to overwrite {shim} because")
-    lines.append("  Windows blocks REPLACE on a running executable.")
-    lines.append("")
-    lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
-    lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
-    lines.append("")
-    if matches:
-        pid_args = " ".join(f"/PID {pid}" for pid, _ in matches)
-        lines.append("  If you've already closed everything and these PIDs are")
-        lines.append("  stale, terminate them directly, then retry the update:")
-        lines.append(f"      taskkill {pid_args} /F")
-        lines.append("")
-    lines.append("  Override with `hermes update --force` if you've already")
-    lines.append("  confirmed those processes will not write to the venv.")
-    return "\n".join(lines)
-
-
-def _classify_concurrent_instance(pid: int) -> str:
-    """Return ``"gateway"`` when ``pid``'s command line is a gateway runtime.
-
-    Delegates to ``_is_pausable_gateway`` — the same canonical
-    ``gateway run`` matcher (``gateway.status.looks_like_gateway_command_line``,
-    shlex-tokenized, profile-selector aware) used by the Desktop preflight
-    exemption and the venv-holder guard fallback — so a PID classified as
-    ``"gateway"`` here is exactly the set the pause/kill+restart machinery
-    downstream will stop. That symmetry is what lets the pre-update
-    concurrent gate skip the abort for gateway-only matches: the gateway is
-    going to be stopped by ``_pause_windows_gateways_for_update()`` moments
-    later anyway, so refusing the update just to make the user kill it
-    manually is friction without benefit.
-
-    Returns ``"non-gateway"`` when the cmdline doesn't match, and
-    ``"unknown"`` when psutil can't read it (process gone, access denied,
-    psutil missing). The gate treats ``"unknown"`` as non-gateway — we'd
-    rather block an update we could have completed than proceed against a
-    process we couldn't positively identify as a gateway.
-    """
-    try:
-        import psutil  # noqa: PLC0415
-    except Exception:
-        return "unknown"
-
-    try:
-        proc = psutil.Process(int(pid))
-        cmdline_list = proc.cmdline()
-    except Exception:
-        return "unknown"
-
-    from hermes_cli._scan_venv_blockers import _is_pausable_gateway  # noqa: PLC0415
-
-    cmdline = " ".join(cmdline_list or [])
-    if _is_pausable_gateway(cmdline):
-        return "gateway"
-    return "non-gateway"
 
 
 def _filter_non_gateway_concurrent_instances(
     matches: list[tuple[int, str]],
 ) -> list[tuple[int, str]]:
-    """Return only the concurrent-instance matches that are NOT the gateway.
-
-    Used by the pre-update concurrent gate to decide whether to abort
-    ``hermes update``. If every concurrent instance is a gateway, the pause
-    machinery (``_pause_windows_gateways_for_update``) and the post-update
-    kill+restart block handle it — the update proceeds. If anything else (a
-    TUI shell, a Hermes Desktop backend child, an unrelated ``hermes`` REPL)
-    is in the list, the gate still aborts with the existing message, since
-    those have no pause machinery downstream.
-    """
-    non_gateway: list[tuple[int, str]] = []
-    for pid, name in matches:
-        if _classify_concurrent_instance(pid) != "gateway":
-            non_gateway.append((pid, name))
-    return non_gateway
+    # Historical updater hook; PM never replaces a running venv's executables.
+    stop_for_relaunch()
 
 
 def _log_only_write(text: str) -> None:
@@ -912,80 +817,18 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
     print(f"  Run '{recommended_update_command()}' to install.")
 
 
-def _repair_venv_on_current_checkout(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, desktop_dir,
-    had_desktop_app_before_update, active_lazy_features,
-    _windows_gateway_resume) -> bool:
-    """Stage a replacement dependency environment; keep the marker on failure."""
-    _write_update_incomplete_marker()
-    import pm
-
-    try:
-        # A matching stamp cannot certify missing files. Restore the recorded
-        # graph first, then refresh it against the current checkout's inputs.
-        pm.sync_venv(repair=True)
-        pm.sync_venv(["all"] + list(active_lazy_features or []), explicit=True)
-    except (pm.InstallError, OSError, ValueError) as _sync_err:
-        print(f"  ✗ {_sync_err}")
-        return False
-    healthy_after, detail_after = _venv_core_imports_healthy()
-    if not healthy_after:
-        print(f"⚠ Venv still unhealthy after repair: {detail_after}")
-        print("  Close all Hermes windows/gateways and re-run: hermes update")
-        return False
-    _m()._clear_update_incomplete_marker()
-    print("✓ Dependencies repaired!")
-    # Check for config migrations (#91360).
+def _repair_current_checkout(
+    *, assume_yes, gateway_mode, pre_update_snapshot_id,
+    had_desktop_app_before_update, upstream_checked) -> bool:
+    """A retry completes the same products as a newly pulled checkout."""
+    _prepare_updated_checkout(
+        _m().PROJECT_ROOT, desktop=had_desktop_app_before_update)
     _check_and_apply_config_migration(
         assume_yes=assume_yes, gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id)
-    # The Windows hand-off child lands here after doing the sync its parent could not, and
-    # the commits-pulled rebuild is never reached — rebuild the Desktop app here or it
-    # silently stays on the old build (#97343).
-    if _rebuild_desktop_after_update(
-            desktop_dir, had_desktop_app_before_update=had_desktop_app_before_update):
-        return _print_verified_update_completion("✓ Update complete!")
-    _print_update_completion(
-        "⚠ Update partially complete — the desktop app was not rebuilt and is still on the previous build.")
-    return False
-
-
-def _repair_current_checkout(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, desktop_dir,
-    had_desktop_app_before_update, active_lazy_features,
-    upstream_checked, _windows_gateway_resume) -> bool:
-    """Already-up-to-date path: keep the managed runtime current, repair a broken venv.
-    Returns whether the checkout can be reported complete."""
-    # A current checkout does NOT imply a healthy install: a previous dependency sync may
-    # have failed partway (classic on Windows: a running gateway/desktop backend keeps .pyd
-    # locked and the installer dies with access-denied, stranding the venv between
-    # versions). Probe the venv's core imports and repair if broken — otherwise "Already up
-    # to date!" gaslights the user while their install stays bricked.
-    healthy, detail = _venv_core_imports_healthy()
-    # The Windows shim hand-off spawns this child precisely to run a sync its parent could
-    # not. The parent already pulled, so the checkout is current BY DESIGN and venv health
-    # is not the question — the pending sync is.
-    handed_off_sync = os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1"
-    if handed_off_sync:
-        print("→ Finishing the dependency install handed off by hermes.exe...")
-    elif not healthy:
-        print("⚠ Checkout is current, but the venv is unhealthy:")
-        print(f"  {detail}")
-        print("→ Repairing Python dependencies...")
-    if handed_off_sync or not healthy:
-        return _repair_venv_on_current_checkout(
-            assume_yes=assume_yes, gateway_mode=gateway_mode,
-            pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
-            had_desktop_app_before_update=had_desktop_app_before_update,
-            active_lazy_features=active_lazy_features,
-            _windows_gateway_resume=_windows_gateway_resume)
-    return _repair_node_deps_on_current_checkout(
-        _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
-        pre_update_snapshot_id=pre_update_snapshot_id,
-        completion_message=(
-            "✓ Already up to date!" if upstream_checked
-            else "✓ Up to date with your fork (official repo not checked)."),
-        had_desktop_app_before_update=had_desktop_app_before_update)
+    return _print_verified_update_completion(
+        "✓ Already up to date!" if upstream_checked
+        else "✓ Up to date with your fork (official repo not checked).")
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:
@@ -1264,7 +1107,6 @@ def _prepare_checkout_for_update(
 class _UpdateOptions:
     """Resolved ``hermes update`` inputs (flags, config, pre-update snapshots)."""
 
-    active_lazy_features: object
     pre_update_version: object
     gw_input_fn: object
     assume_yes: bool
@@ -1275,9 +1117,6 @@ class _UpdateOptions:
 
 def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     """Snapshot pre-update state and resolve the flags/config ``_cmd_update_impl`` runs on."""
-    # Snapshot before a managed-runtime refresh can replace site-packages, while the old
-    # environment can still prove which optional backends were active.
-    active_lazy_features = _m()._capture_active_lazy_features()
 
     # Captured before any pull so the completion line can report the transition.
     # Snapshot the pre-update version before files are replaced so the completion line can report the
@@ -1305,16 +1144,13 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
             _mode = str(_updates_config().get("non_interactive_local_changes", "stash")).lower()
             discard_local_changes = _mode == "discard"
     return _UpdateOptions(
-        active_lazy_features=active_lazy_features,
         pre_update_version=pre_update_version,
         gw_input_fn=gw_input_fn, assume_yes=assume_yes, keep_stash=keep_stash,
         switch_branch=switch_branch, discard_local_changes=discard_local_changes)
 
 
 def _begin_update_receipt_and_plan(args):
-    """Open the receipt, snapshot the fleet, refuse on Windows shim holders. Returns the
-    pre-update plan (None if the probe failed); ``sys.exit(2)`` when a non-gateway hermes.exe
-    holds the venv shim."""
+    """Open the receipt and snapshot the fleet before changing the checkout."""
     # Structured receipt: record what this run discovers/does/skips so silent failures are diagnosable.
     with _best_effort('Update receipt unavailable: %s'):
         # See #74973, #81193, #85753, #88848, #91277.
@@ -1338,23 +1174,6 @@ def _begin_update_receipt_and_plan(args):
             _profiles = ", ".join(sorted({r.profile for r in _pre_update_plan.runtimes}))
             print(f"→ Fleet: {_n} running service(s) across profiles: {_profiles}")
 
-    # Windows: another hermes.exe holding the venv shim means WinError 32 spam and a
-    # deferred-rename leftover or silent ZIP fallback. Positively identified gateways are
-    # paused/restarted by the update instead; anything else still aborts.
-    # Continuing would result in a string of WinError 32 warnings and then either a deferred-rename leftover
-    # or a failed git-pull fast path that silently falls back to the slower ZIP route. See issue #26670.
-    # Exception (#37039): when every concurrent instance is a gateway runtime, the pause machinery a few
-    # lines below (``_pause_windows_gateways_for_update``) stops it before any file mutation, and the
-    # post-update restart phase brings it back. Aborting just to make the user run the same kill manually is
-    # friction without benefit. Anything not positively identified as a gateway (TUI shell, Desktop backend
-    # child, unreadable cmdline) still aborts exactly as before.
-    if _m()._is_windows() and not getattr(args, "force", False):
-        scripts_dir = _m()._venv_scripts_dir()
-        concurrent = _m()._detect_concurrent_hermes_instances(scripts_dir) if scripts_dir is not None else []
-        non_gateway = _m()._filter_non_gateway_concurrent_instances(concurrent) if concurrent else []
-        if non_gateway:
-            print(_format_concurrent_instances_message(non_gateway, scripts_dir))
-            sys.exit(2)
     return _pre_update_plan
 
 
@@ -1447,12 +1266,14 @@ def _handle_update_called_process_error(
         print(f"⚠ {stage}: {e}")
         print("→ Falling back to ZIP download...")
         print()
-        desktop_build_ok = _update_via_zip(
+        update_complete = _update_via_zip(
             args, had_desktop_app_before_update=had_desktop_app_before_update,
             target_sha=target_sha,
             **({"target_repository": target_repository} if target_repository else {}))
         if gateway_mode:
-            _write_gateway_update_exit_code(desktop_build_ok)
+            _write_gateway_update_exit_code(update_complete)
+        if not update_complete:
+            sys.exit(1)
     else:
         print(f"✗ {stage}: {e}")
         _print_called_process_error_tail(e)
@@ -1478,8 +1299,8 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, assume_yes: bool, gateway_mode: bool,
-    gw_input_fn, pre_update_snapshot_id, desktop_dir, had_desktop_app_before_update: bool,
-    active_lazy_features, _windows_gateway_resume) -> None:
+    gw_input_fn, pre_update_snapshot_id, had_desktop_app_before_update: bool,
+    _windows_gateway_resume) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     _invalidate_update_cache()
@@ -1503,11 +1324,9 @@ def _finish_already_up_to_date(
 
     current_checkout_complete = _repair_current_checkout(
         assume_yes=assume_yes, gateway_mode=gateway_mode,
-        pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
+        pre_update_snapshot_id=pre_update_snapshot_id,
         had_desktop_app_before_update=had_desktop_app_before_update,
-        active_lazy_features=active_lazy_features,
-        upstream_checked=_plan.upstream_checked,
-        _windows_gateway_resume=_windows_gateway_resume)
+        upstream_checked=_plan.upstream_checked)
     _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
     # A prior pull may still owe the fleet a restart; catch up here too, BEFORE the exit
     # gate so a partial outcome can't strand the fleet on stale code.
@@ -1545,15 +1364,7 @@ def _apply_pulled_update(
         _m()._sync_with_upstream_if_needed(
             git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
 
-    # .[all], falling back to base + extras individually so one broken extra doesn't strip
-    # the rest; the ownership preflight refuses first on foreign-owned (sudo-pip) venv files.
-    # PM dep phase (update_cmd_deps owner): ``pm.sync_venv(["all"], explicit=True)`` — no
-    # pip/lazy_deps fallback — plus the node/web/desktop surfaces it owns, so the orchestrator
-    # consumes its outcome instead of recomputing it.
-    node_failures, desktop_build_ok = _sync_python_dependencies_after_pull(
-        git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
-        _windows_gateway_resume=_windows_gateway_resume, desktop_dir=desktop_dir,
-        had_desktop_app_before_update=had_desktop_app_before_update)
+    _prepare_updated_checkout(_m().PROJECT_ROOT, desktop=had_desktop_app_before_update)
 
     print()
     print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
@@ -1562,7 +1373,6 @@ def _apply_pulled_update(
         assume_yes=opts.assume_yes, gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
         had_desktop_app_before_update=had_desktop_app_before_update,
-        node_failures=node_failures, desktop_build_ok=desktop_build_ok,
         pre_update_version=opts.pre_update_version)
 
     # Exit code *before* the restart: under --gateway this process lives in the gateway's
@@ -1575,13 +1385,11 @@ def _apply_pulled_update(
     _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
     _verify_fleet_after_update(
         _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
-        node_failures=node_failures, update_complete=update_complete)
+        update_complete=update_complete)
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
-    """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
-    ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
-    on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
+    """Apply the update; the command boundary owns errors, receipts and stdio."""
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
@@ -1602,14 +1410,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
 
-    # Any venv python still running (typically the Desktop `hermes serve` backend) keeps .pyd
-    # locked and would corrupt the sync; refuse rather than race (the app respawns a killed
-    # backend). NOT bypassed by --force (desktop updater, shim guard only); --force-venv is.
-    if _m()._is_windows() and not getattr(args, "force_venv", False):
-        _clear_windows_venv_holders_or_exit(args, gateway_mode, _windows_gateway_resume)
 
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-    had_desktop_app_before_update = _desktop_app_present(desktop_dir)
+    had_desktop_app_before_update = (
+        _m()._desktop_packaged_executable(desktop_dir) is not None
+        or _m()._desktop_dist_exists(desktop_dir))
 
     use_zip_update, git_cmd, is_fork = _prepare_git_command()
 
@@ -1643,14 +1448,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     if use_zip_update:
         try:
-            desktop_build_ok = _update_via_zip(
+            update_complete = _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update,
                 target_sha=release_sha,
                 **({"target_repository": target_repository} if target_repository else {}))
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         if gateway_mode:
-            _write_gateway_update_exit_code(desktop_build_ok)
+            _write_gateway_update_exit_code(update_complete)
+        if not update_complete:
+            sys.exit(1)
         return
 
     try:
@@ -1708,9 +1515,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, assume_yes=assume_yes,
                 gateway_mode=gateway_mode, gw_input_fn=gw_input_fn,
-                pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
+                pre_update_snapshot_id=pre_update_snapshot_id,
                 had_desktop_app_before_update=had_desktop_app_before_update,
-                active_lazy_features=opts.active_lazy_features,
                 _windows_gateway_resume=_windows_gateway_resume)
             return
 

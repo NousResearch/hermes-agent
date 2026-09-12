@@ -1,5 +1,8 @@
 """The post-swap import boundary must never revive retired installers."""
 
+import builtins
+from copy import deepcopy
+import io
 import importlib
 import importlib.util
 import os
@@ -20,7 +23,7 @@ def no_external_work(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("old-updater shim attempted external work")
 
-    for name in ("sync_venv", "ensure_environment", "build_environment"):
+    for name in ("ensure", "sync_venv", "ensure_environment", "build_environment", "ensure_python_tool"):
         monkeypatch.setattr(pm, name, forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(os, "system", forbidden)
@@ -53,7 +56,7 @@ def test_retired_managed_uv_stops_before_fallback(name, args, kwargs, no_externa
         getattr(module, name)(*args, **kwargs)
     assert exc.value.code == 0
     output = capsys.readouterr()
-    assert "relaunch" in (output.out + output.err).lower()
+    assert "run `hermes` again" in (output.out + output.err).lower()
     assert dict(os.environ) == before_env
     assert set(Path(os.environ["HERMES_HOME"]).rglob("*")) == before_home
 
@@ -70,7 +73,7 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, no_external_wo
         # A falsy result is NOT inert: old callers install through pip instead.
         subprocess.run([uv, "pip", "install"] if uv else [sys.executable, "-m", "pip", "install"])
     assert exc.value.code == 0
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()
 
 
 @pytest.mark.parametrize(
@@ -90,8 +93,61 @@ def test_other_dependency_entrypoints_stop_cleanly(module, name, args, kwargs, n
         shim = getattr(importlib.import_module(module), name)
         shim(*args, **kwargs)
     assert exc.value.code == 0
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()
     assert set(Path(os.environ["HERMES_HOME"]).rglob("*")) == before_home
+
+
+@pytest.mark.parametrize(
+    "module,name,args,kwargs",
+    [
+        ("update_cmd", "_capture_active_lazy_features", (), {}),
+        ("update_cmd", "_refresh_active_lazy_features", (), {}),
+        ("update_cmd", "_refresh_active_lazy_features", (["browser"],), {}),
+        ("update_cmd", "_refresh_active_lazy_features", (["uv", "pip"],),
+         {"env": {"VIRTUAL_ENV": "venv"}, "features": ["browser"]}),
+        ("update_cmd", "_refresh_active_memory_provider_dependencies", (), {}),
+        ("update_cmd", "_npm_lockfile_changed", (Path("checkout"),), {}),
+        ("update_cmd", "_update_node_dependencies", (), {}),
+        ("update_cmd", "_rebuild_desktop_after_update", (Path("desktop"),),
+         {"had_desktop_app_before_update": True}),
+        ("update_cmd", "_rebuild_desktop_after_update", (Path("desktop"),),
+         {"had_desktop_app_before_update": False}),
+        ("update_cmd", "_path_uid", (Path("venv"),), {}),
+        ("update_cmd", "_write_update_incomplete_marker", (), {}),
+        ("update_cmd", "_write_lazy_refresh_incomplete_marker", (), {}),
+        ("update_cmd", "_reload_updated_runtime_modules", (), {}),
+        ("update_cmd_maint", "_reload_updated_runtime_modules", (), {}),
+    ],
+)
+def test_retired_dependency_hooks_stop_before_fallback_or_completion(
+    module, name, args, kwargs, no_external_work, monkeypatch, capsys,
+):
+    # Resolve real exports, including imports moved out of update_cmd_deps.
+    shim = getattr(importlib.import_module(f"hermes_cli.{module}"), name)
+    before_args = deepcopy((args, kwargs))
+    before_env = dict(os.environ)
+    before_modules = dict(sys.modules)
+    with monkeypatch.context() as guard:
+        for attr in ("write_text", "write_bytes", "touch", "rename", "replace", "unlink", "mkdir"):
+            guard.setattr(Path, attr, no_external_work)
+        for attr in ("rename", "replace", "unlink", "mkdir"):
+            guard.setattr(os, attr, no_external_work)
+        guard.setattr(importlib, "reload", no_external_work)
+        guard.setattr(builtins, "open", no_external_work)
+        guard.setattr(io, "open", no_external_work)
+        with pytest.raises(SystemExit) as exc:
+            try:
+                shim(*args, **kwargs)
+            except Exception:
+                # Old dependency callers retry on ordinary exceptions. Returning
+                # either false or true can install again or report false success.
+                no_external_work()
+            no_external_work()
+        assert exc.value.code == 0
+        assert "run `hermes` again" in capsys.readouterr().err.lower()
+    assert (args, kwargs) == before_args
+    assert dict(os.environ) == before_env
+    assert all(sys.modules.get(name) is module for name, module in before_modules.items())
 
 
 def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
@@ -135,7 +191,7 @@ def test_old_android_updater_stops_before_download(old_updater, no_external_work
     with pytest.raises(SystemExit) as exc:
         old_updater._install_psutil_android_compat(["uv", "pip"])
     assert exc.value.code == 0
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()
 
 
 def test_old_updater_retains_its_code_but_loads_new_managed_uv(old_updater, no_external_work, capsys, tmp_path):
@@ -166,7 +222,7 @@ def test_old_updater_retains_its_code_but_loads_new_managed_uv(old_updater, no_e
         )
     assert exc.value.code == 0
     assert prefix == ["ownership", "self-lock", "old-marker"]
-    assert "relaunch" in capsys.readouterr().err.lower()
+    assert "run `hermes` again" in capsys.readouterr().err.lower()
     assert set(tmp_path.rglob("*")) == before
 
 

@@ -5,8 +5,7 @@ Chat tab died with a 502 / "[session ended]". Root cause: the image installs
 only a subset of the npm monorepo workspaces (root/web/ui-tui, never apps/*),
 so the actualized node_modules permanently disagrees with the canonical
 package-lock.json. Without HERMES_TUI_DIR set, ``_make_tui_argv`` falls
-through to ``_tui_need_npm_install`` (which returns True forever) and tries a
-runtime ``npm install`` that can never converge and races itself across
+through to source dependency preparation, racing itself across
 concurrent /api/pty connections → ENOTEMPTY.
 
 The fix is ``ENV HERMES_TUI_DIR=/opt/hermes/ui-tui`` in the Dockerfile, which
@@ -58,12 +57,11 @@ def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> Non
     py = (
         "import json\n"
         "from pathlib import Path\n"
-        "from hermes_cli.main_tui_launch import _tui_need_npm_install, _find_bundled_tui, _make_tui_argv\n"
+        "from hermes_cli.main_tui_launch import _make_tui_argv\n"
         "ui = Path('/opt/hermes/ui-tui')\n"
         "argv, cwd = _make_tui_argv(ui, tui_dev=False)\n"
         "out = {\n"
         "  'dist_entry_exists': (ui / 'dist' / 'entry.js').is_file(),\n"
-        "  'need_npm_install': _tui_need_npm_install(ui),\n"
         "  'argv': argv,\n"
         "  'uses_prebuilt': ('dist/entry.js' in ' '.join(argv)) and ('npm' not in argv[0].lower()),\n"
         "}\n"

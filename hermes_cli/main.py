@@ -2320,15 +2320,27 @@ def cmd_update(args):
     # = not SystemExit-shaped, so real exceptions keep their traceback.
     _update_handoff_exit_code: int | None = None
     from hermes_cli.update_cmd import _cmd_update_impl
+    from pm import InstallError
 
     try:
         _cmd_update_impl(args, gateway_mode=gateway_mode)
+    except (InstallError, OSError, subprocess.SubprocessError) as exc:
+        print(f"✗ Update failed: {exc}")
+        _finalize_update_receipt(1, f"{type(exc).__name__}: {exc}")
+        if gateway_mode:
+            from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
+            _write_gateway_update_exit_code(False)
+        _update_handoff_exit_code = 1
+        raise SystemExit(1) from exc
     except SystemExit as _update_exit:
         # Receipt boundary: the impl has many early sys.exit paths that never
         # reach an inner finalize. Persist any still-open receipt with the real
         # exit code (no-op if already finalized), then let the exit proceed.
         _code = _update_exit.code if isinstance(_update_exit.code, int) else 1
         _finalize_update_receipt(_code, f"sys.exit({_code})")
+        if gateway_mode and _code:
+            from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
+            _write_gateway_update_exit_code(False)
         _update_handoff_exit_code = (
             _update_exit.code if isinstance(_update_exit.code, int) else 0
         )

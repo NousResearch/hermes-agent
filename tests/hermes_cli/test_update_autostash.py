@@ -30,6 +30,7 @@ def _patch_gateway_discovery(monkeypatch):
     monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
     monkeypatch.setattr(hermes_main, "_resume_windows_gateways_after_update", lambda *a: None)
     monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **kw: None)
     monkeypatch.setattr("hermes_cli.update_cmd_maint._run_post_update_maintenance", lambda *a, **k: None)
     with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
          patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
@@ -54,7 +55,7 @@ def _patch_gateway_discovery(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Update uses .[all] with fallback to .
+# Update orchestration fixtures
 # ---------------------------------------------------------------------------
 
 def _setup_update_mocks(monkeypatch, tmp_path):
@@ -67,41 +68,12 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
     monkeypatch.setattr(hermes_config, "check_config_version", lambda **_kwargs: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
-    monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
 
 
 
 
-def test_refresh_active_memory_provider_dependencies_reinstalls_active_provider(monkeypatch):
-    """#53272/#70636: update must re-run the active provider's dep install."""
-    recorded = []
-
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"memory": {"provider": "mem0"}},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.memory_setup._install_dependencies",
-        lambda provider_name, force=False: recorded.append((provider_name, force)),
-    )
-
-    hermes_main._refresh_active_memory_provider_dependencies()
-
-    assert recorded == [("mem0", True)]
 
 
-
-
-def test_reload_updated_runtime_modules_restores_new_hermes_constants_symbol(monkeypatch):
-    """A pre-pull module object missing a new helper is repaired by reload."""
-    import hermes_constants
-
-    monkeypatch.delattr(hermes_constants, "apply_subprocess_home_env", raising=False)
-    assert not hasattr(hermes_constants, "apply_subprocess_home_env")
-
-    hermes_main._reload_updated_runtime_modules()
-
-    assert callable(hermes_constants.apply_subprocess_home_env)
 
 
 
@@ -736,7 +708,6 @@ def test_restore_rejects_invalid_python_and_keeps_clean_updated_tree(
     """A cleanly-applied stash must not be allowed to brick every agent turn."""
     import subprocess
     from hermes_cli import update_cmd
-    import hermes_cli.update_cmd_deps as update_cmd_deps
 
     def git(*args, check=True):
         return subprocess.run(
@@ -760,7 +731,6 @@ def test_restore_rejects_invalid_python_and_keeps_clean_updated_tree(
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
     assert stash_ref
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ())
-    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ())
 
     with pytest.raises(SystemExit) as exc_info:
         hermes_main._restore_stashed_changes(
@@ -783,7 +753,6 @@ def test_restore_rejects_new_import_time_failure_and_preserves_stash(
     """A valid-Python stash must not introduce a critical import failure."""
     import subprocess
     from hermes_cli import update_cmd
-    import hermes_cli.update_cmd_deps as update_cmd_deps
 
     def git(*args, check=True):
         return subprocess.run(
@@ -806,7 +775,6 @@ def test_restore_rejects_new_import_time_failure_and_preserves_stash(
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
     assert stash_ref
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
-    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
     with pytest.raises(SystemExit) as exc_info:
         hermes_main._restore_stashed_changes(
@@ -827,7 +795,6 @@ def test_restore_allows_preexisting_import_time_failure(monkeypatch, tmp_path):
     """A restore may proceed when it does not worsen an environment failure."""
     import subprocess
     from hermes_cli import update_cmd
-    import hermes_cli.update_cmd_deps as update_cmd_deps
 
     def git(*args, check=True):
         return subprocess.run(
@@ -853,7 +820,6 @@ def test_restore_allows_preexisting_import_time_failure(monkeypatch, tmp_path):
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
     assert stash_ref
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
-    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
     assert hermes_main._restore_stashed_changes(
         ["git"], tmp_path, stash_ref, prompt_user=False
@@ -868,7 +834,6 @@ def test_restore_rejects_later_failure_masked_by_preexisting_failure(
     """Every critical module must be compared, not only the first failure."""
     import subprocess
     from hermes_cli import update_cmd
-    import hermes_cli.update_cmd_deps as update_cmd_deps
 
     def git(*args, check=True):
         return subprocess.run(
@@ -894,7 +859,6 @@ def test_restore_rejects_later_failure_masked_by_preexisting_failure(
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
     assert stash_ref
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("first", "second"))
-    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("first", "second"))
 
     with pytest.raises(SystemExit) as exc_info:
         hermes_main._restore_stashed_changes(
@@ -917,7 +881,6 @@ def test_restore_rejects_system_exit_masked_by_preexisting_failure(
     """A terminating import must be compared instead of hiding the marker."""
     import subprocess
     from hermes_cli import update_cmd
-    import hermes_cli.update_cmd_deps as update_cmd_deps
 
     def git(*args, check=True):
         return subprocess.run(
@@ -943,7 +906,6 @@ def test_restore_rejects_system_exit_masked_by_preexisting_failure(
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
     assert stash_ref
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("first", "second"))
-    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("first", "second"))
 
     with pytest.raises(SystemExit) as exc_info:
         hermes_main._restore_stashed_changes(
@@ -964,7 +926,6 @@ def test_restore_rejects_probe_termination(monkeypatch, tmp_path, capsys):
     """A stash cannot bypass import validation by terminating the probe."""
     import subprocess
     from hermes_cli import update_cmd
-    import hermes_cli.update_cmd_deps as update_cmd_deps
 
     def git(*args, check=True):
         return subprocess.run(
@@ -987,7 +948,6 @@ def test_restore_rejects_probe_termination(monkeypatch, tmp_path, capsys):
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
     assert stash_ref
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
-    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 
     with pytest.raises(SystemExit) as exc_info:
         hermes_main._restore_stashed_changes(
@@ -1051,7 +1011,6 @@ def test_restore_rejects_unknown_restored_python_paths(
     import subprocess
     from hermes_cli import update_cmd
     import hermes_cli.update_cmd_stash as update_cmd_stash
-    import hermes_cli.update_cmd_deps as update_cmd_deps
 
     def git(*args, check=True):
         return subprocess.run(
@@ -1073,7 +1032,6 @@ def test_restore_rejects_unknown_restored_python_paths(
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
     assert stash_ref
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ())
-    monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ())
     monkeypatch.setattr(update_cmd, "_restored_python_paths", lambda *_args: None)
     monkeypatch.setattr(update_cmd_stash, "_restored_python_paths", lambda *_args: None)
 

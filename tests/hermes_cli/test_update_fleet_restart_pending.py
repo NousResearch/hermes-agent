@@ -26,7 +26,6 @@ import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_fleet as update_cmd_fleet
-import hermes_cli.update_cmd_deps as update_cmd_deps
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
 
@@ -83,7 +82,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """Patch ``_cmd_update_impl`` helpers. Mirrors test_update_head_moved_gate."""
     monkeypatch.setattr(hermes_main.subprocess, "run", run_side_effect)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr("pm.sync_venv", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
@@ -117,8 +116,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
-    monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
     # _install_hangup_protection wraps sys.stdout in a mirror stream that
     # survives the test and breaks later capsys captures — no-op it.
     monkeypatch.setattr(
@@ -139,12 +136,8 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         "hermes_cli.update_cmd._reload_config_modules",
         lambda *a, **k: None,
     )
-    # Upstream refactor: _clear_update_incomplete_marker now lives in
-    # main_install_repair; no-op it there too (kept from upstream side).
-    monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
-    # Upstream refactor: _finish_dashboard_update_cleanup moved back under
-    # update_cmd (was reached via hermes_main on our branch).
-    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: None,
     )
     # The startup version-info probe runs git rev-parse HEAD (and the
     # result is cached per-process, so whether it runs depends on test
@@ -154,13 +147,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         "hermes_cli.version_info.get_version_info",
         lambda *a, **k: SimpleNamespace(),
     )
-    monkeypatch.setattr(hermes_main, "_build_web_ui", lambda *a, **k: None)
-    monkeypatch.setattr(main_web_build, "_build_web_ui", lambda *a, **k: None)
-    monkeypatch.setattr(
-        update_cmd, "_venv_core_imports_healthy", lambda: (True, "")
-    )
-    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd_deps, "_update_node_dependencies", lambda: [])
     monkeypatch.setattr(update_cmd, "_purge_stale_hermes_modules", lambda: None)
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 

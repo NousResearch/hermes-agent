@@ -13,12 +13,11 @@ from unittest.mock import MagicMock, patch
 from hermes_cli import update_cmd
 
 
-def test_repair_node_deps_runs_config_migration_on_version_bump(capsys):
-    """When on-disk config version is behind, _repair_node_deps_on_current_checkout
-    must run _check_and_apply_config_migration and migrate the config."""
-    completion = MagicMock()
+def test_current_checkout_runs_config_migration_on_version_bump(capsys):
+    """A retry migrates old config after preparing the updated checkout."""
+    completion = MagicMock(return_value=True)
     with (
-        patch.object(update_cmd, "_update_node_dependencies", return_value=[]),
+        patch.object(update_cmd, "_prepare_updated_checkout") as prepare,
         patch.object(update_cmd, "_m") as m,
         patch.object(update_cmd, "_reload_config_modules"),
         patch.object(update_cmd, "_run_config_check_fresh", return_value=(37, 38)),
@@ -29,11 +28,15 @@ def test_repair_node_deps_runs_config_migration_on_version_bump(capsys):
             "_run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": ["migrated to v38"], "warnings": []},
         ) as mock_migrate,
-        patch.object(update_cmd, "_rebuild_desktop_after_update", return_value=True),
+        patch.object(update_cmd, "_print_verified_update_completion", completion),
     ):
-        update_cmd._repair_node_deps_on_current_checkout(completion)
+        complete = update_cmd._repair_current_checkout(
+            assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+            had_desktop_app_before_update=False, upstream_checked=True,
+        )
 
-    m.return_value._build_web_ui.assert_called_once()
+    assert complete is True
+    prepare.assert_called_once_with(m.return_value.PROJECT_ROOT, desktop=False)
     mock_migrate.assert_called_once_with(interactive=False, quiet=True)
     completion.assert_called_once_with("✓ Already up to date!")
     out = capsys.readouterr().out
@@ -42,22 +45,26 @@ def test_repair_node_deps_runs_config_migration_on_version_bump(capsys):
     assert "Config format updated" in out
 
 
-def test_repair_node_deps_up_to_date_config(capsys):
+def test_current_checkout_up_to_date_config(capsys):
     """When config is already up to date, it reports up to date without error."""
-    completion = MagicMock()
+    completion = MagicMock(return_value=True)
     with (
-        patch.object(update_cmd, "_update_node_dependencies", return_value=[]),
+        patch.object(update_cmd, "_prepare_updated_checkout") as prepare,
         patch.object(update_cmd, "_m") as m,
         patch.object(update_cmd, "_reload_config_modules"),
         patch.object(update_cmd, "_run_config_check_fresh", return_value=(38, 38)),
         patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
         patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
         patch.object(update_cmd, "_run_migrate_config_fresh") as mock_migrate,
-        patch.object(update_cmd, "_rebuild_desktop_after_update", return_value=True),
+        patch.object(update_cmd, "_print_verified_update_completion", completion),
     ):
-        update_cmd._repair_node_deps_on_current_checkout(completion)
+        complete = update_cmd._repair_current_checkout(
+            assume_yes=True, gateway_mode=False, pre_update_snapshot_id=None,
+            had_desktop_app_before_update=False, upstream_checked=True,
+        )
 
-    m.return_value._build_web_ui.assert_called_once()
+    assert complete is True
+    prepare.assert_called_once_with(m.return_value.PROJECT_ROOT, desktop=False)
     mock_migrate.assert_not_called()
     completion.assert_called_once_with("✓ Already up to date!")
     out = capsys.readouterr().out

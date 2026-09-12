@@ -23,7 +23,20 @@ from hermes_cli.update_cmd_common import _best_effort
 logger = logging.getLogger("hermes_cli.update_cmd")
 
 
-_UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local", "pm.extras"
+def _prepare_updated_checkout(project_root: Path, *, desktop: bool) -> None:
+    """PM publishes dependencies before the shared builders consume the checkout."""
+    import pm
+
+    pm.sync_venv(explicit=True, project_root=project_root)
+    from hermes_cli.runtime_paths import activation_environment, selected_venv
+
+    # The updater still holds pre-pull imports. Build only in the newly selected Python.
+    command = [str(venv_python_path(selected_venv(project_root))),
+               "-m", "hermes_cli.source_build", "--source", str(project_root)]
+    if desktop:
+        command.append("--desktop")
+    subprocess.run(command, cwd=project_root, env=activation_environment(project_root), check=True)
+
 
 #: Package prefixes whose cached modules go stale when the checkout changes under this
 #: process; purged (not reloaded) so any LATER import chain resolves against fresh source.
@@ -95,15 +108,10 @@ def _purge_stale_hermes_modules() -> None:
 
 
 def _reload_updated_runtime_modules() -> None:
-    """Reload the modules used by lazy-backend refresh: the pre-pull process's cached modules
-    can expose old symbols despite new source on disk."""
-    from hermes_cli.update_cmd import _m
-    with _best_effort('Could not refresh update runtime modules: %s'):
-        _reload_modules(
-            _UPDATE_RUNTIME_RELOAD_MODULES,
-            modules=_m().sys.modules,
-            log=lambda name, exc: logger.debug("Could not reload updated module %s: %s", name, exc),
-        )
+    # Historical updater hook: dependency activation belongs to the next process.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 
 def _print_curator_first_run_notice() -> None:
@@ -290,7 +298,7 @@ def _reload_process_scan_modules() -> None:
     added would otherwise ImportError after the code update succeeded. Called from the cleanup
     entry point so every caller (git path, ZIP fallback) is covered.
 
-    ``_finish_dashboard_update_cleanup`` runs in the PRE-update Python process, but
+    ``_refresh_dashboard_after_update`` runs in the PRE-update Python process, but
     ``_scan_dashboard_processes`` does a function-level ``from hermes_cli._subprocess_compat import
     bounded_probe_run``. If the update added a new symbol to ``_subprocess_compat`` (as #87134 did with
     ``bounded_probe_run``), the cached OLD module object doesn't have it and the cleanup step crashes with
@@ -309,6 +317,13 @@ def _reload_process_scan_modules() -> None:
 def _finish_dashboard_update_cleanup(
     node_failures: list[str], already_restarted_units: "set[str] | None" = None
 ) -> None:
+    """Historical updater hook; do not continue a pre-PM update after the swap."""
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
+
+
+def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> None:
     """Refresh managed dashboards or stop stale manual ones after an update.
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
@@ -317,12 +332,6 @@ def _finish_dashboard_update_cleanup(
     See #83595.
     """
     from hermes_cli.update_cmd import _m, _reload_process_scan_modules
-    if node_failures:
-        print()
-        print("  ℹ Leaving running dashboard process(es) untouched because the")
-        print("    Node.js dependency refresh did not complete.")
-        return
-
     _reload_process_scan_modules()
 
     stop_result = _m()._kill_stale_dashboard_processes(
@@ -424,40 +433,10 @@ def _clear_stale_sqlite_sidecars(db_path: Path) -> None:
 
 
 def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_update_version: str | None) -> bool:
-    """Final banner. A failed Desktop rebuild is non-fatal but must not print ``✓ Update complete!``.
+    """Historical updater hook; old soft-build results cannot establish completion."""
+    from hermes_cli._old_updater import stop_for_relaunch
 
-    See #88251.
-    """
-    from hermes_cli.update_cmd import _post_update_sqlite_runtime_status, _update_complete_message
-    sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
-    if sqlite_info is None:
-        # Grace path: only a POSITIVE vulnerable probe demotes success to partial.
-        sqlite_runtime_ok = True
-    print()
-    if node_failures or not desktop_build_ok or not sqlite_runtime_ok:
-        parts = []
-        if node_failures:
-            parts.append(f"Node.js dependencies for {', '.join(node_failures)} did not refresh")
-        if not desktop_build_ok:
-            parts.append("the desktop app was not rebuilt and is still on the previous build")
-        if not sqlite_runtime_ok and sqlite_info is not None:
-            parts.append(_SQLITE_WAL_BUG_DETAIL.format(sqlite_info.sqlite_version_string))
-        print("⚠ Update partially complete — " + "; ".join(parts) + ".")
-        if node_failures:
-            print("  Code and Python deps are updated, but the dashboard/TUI may")
-            print("  be in a mixed state until the Node deps are rebuilt.")
-        if not desktop_build_ok:
-            print("  Run `hermes desktop` to retry the desktop rebuild.")
-        if not sqlite_runtime_ok:
-            print(
-                "  The Python runtime remediation did not complete. Run `hermes "
-                "update` again; if SQLite is unchanged, rebuild the Hermes venv "
-                "with a uv-managed Python, restart Hermes, then verify with "
-                "`hermes doctor`."
-            )
-    else:
-        _print_update_completion(_update_complete_message(pre_update_version))
-    return desktop_build_ok and sqlite_runtime_ok
+    stop_for_relaunch()
 
 
 def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
@@ -858,10 +837,7 @@ def _sweep_bytecode_after_update(branch: str) -> None:
     """Clear stale ``__pycache__`` (else gateway restart ImportErrors on names absent from old
     bytecode), re-stamp the fingerprint, refresh the bootstrap cache scripts."""
     from hermes_cli.update_cmd import _m
-    # The update process is still the old Python interpreter process. Run one final cache/module refresh
-    # immediately before lazy backend refresh, which imports newly-pulled modules that may depend on fresh
-    # symbols in hermes_constants or pm.extras. The dependency install above may also have regenerated
-    # bytecode from build-cache copies — this second sweep catches those stragglers (#60242, #65240).
+    # Timestamp-based .pyc validation can accept old bytecode after the source swap.
     removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
     if removed:
         print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
@@ -971,12 +947,13 @@ def _print_post_update_notices_and_self_heals() -> None:
 
 
 def _run_post_update_maintenance(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update, node_failures, desktop_build_ok,
+    *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
     pre_update_version,
 ) -> bool:
-    """Post-pull housekeeping: state.db restore, catalog/skills/profile syncs, config migration,
-    the update summary (verdict returned), and best-effort notices/self-heals. Every step is
-    isolated so none can fail the update."""
+    """Post-build housekeeping and completion, returning the SQLite runtime verdict.
+
+    Ancillary repairs and notices are best-effort; an unsafe runtime withholds success.
+    """
     from hermes_cli.update_cmd import _check_and_apply_config_migration, _m
     # macOS TCC: Desktop bundles are re-signed each update, so old grants can go stale
     # (toggle ON, yet macOS re-prompts with no Allow button). Tell users how to re-grant.
@@ -1023,9 +1000,8 @@ def _run_post_update_maintenance(
         assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id,
     )
 
-    update_complete = _print_update_summary(
-        node_failures=node_failures, desktop_build_ok=desktop_build_ok, pre_update_version=pre_update_version,
-    )
+    print()
+    update_complete = _print_verified_update_completion(_update_complete_message(pre_update_version))
 
     _print_post_update_notices_and_self_heals()
     return update_complete

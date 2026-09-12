@@ -236,20 +236,15 @@ class TestCmdGuiOnABundle:
             builds.append([str(c) for c in cmd])
             return subprocess.CompletedProcess(cmd, 0)
 
-        def record_npm_install(npm, root, **kw):
-            builds.append(["npm", "ci", str(root)])
-            return subprocess.CompletedProcess(["npm", "ci"], 0)
-
         def record_popen(argv, **kw):
             launches.append([str(a) for a in argv])
             return SimpleNamespace(pid=4242)
 
-        from hermes_cli import main_desktop, main_install_repair, main_web_build
+        from hermes_cli import main_desktop, source_build
         monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
-        monkeypatch.setattr(main_install_repair, "_resolve_node_runtime_npm", lambda: "/usr/bin/npm")
+        monkeypatch.setattr(source_build, "source_build_env", lambda env: dict(env))
         monkeypatch.setattr(main_desktop, "_desktop_build_needed", lambda *a, **k: True)
         monkeypatch.setattr(main_desktop, "_write_desktop_build_stamp", lambda *a, **k: None)
-        monkeypatch.setattr(main_web_build, "_run_npm_install_deterministic", record_npm_install)
         monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda *a, **k: [])
         monkeypatch.setattr(main_desktop, "_desktop_linux_sandbox_fixup", lambda *a, **k: launcher_ok)
         monkeypatch.setattr(main_desktop, "_desktop_linux_needs_no_sandbox", lambda: not launcher_ok)

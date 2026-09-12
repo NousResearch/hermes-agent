@@ -60,4 +60,11 @@ class TestBedrockContext1MBeta:
         )
         # Other common betas still present — no regression.
         assert "interleaved-thinking-2025-05-14" in beta_header
-        assert "fine-grained-tool-streaming-2025-05-14" in beta_header
+        # fine-grained-tool-streaming removed from common betas by #107830:
+        # it streams raw tool JSON without server-side repair, causing
+        # deterministic ValueError: expected value at line 1 column 11 on
+        # malformed deltas and permanent turn failure; server repair via
+        # non-streaming create() is the fallback. OpenRouter still adds it
+        # via agent_init._apply_openai_header_policy where buffering would
+        # otherwise time out.
+        assert "fine-grained-tool-streaming-2025-05-14" not in beta_header

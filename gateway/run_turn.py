@@ -255,6 +255,17 @@ class GatewayTurnMixin:
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
+    def _free_tier_refusal_for_source(self, source, session_key):
+        """Resolve the live session route before image/hygiene work or autonomous wakeups."""
+        from types import SimpleNamespace
+        from agent.free_tier import refusal
+        from hermes_cli.free_tier_usage import status
+        with self._profile_scope_for_source(source):
+            if not status()["capped"]:
+                return None
+            _, runtime = self._resolve_session_agent_runtime(source=source, session_key=session_key)
+            return refusal(SimpleNamespace(**runtime))
+
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""
         return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -1236,6 +1247,10 @@ class GatewayTurnMixin:
                 source=source, session_key=session_key,
                 user_config=hs.data if isinstance(hs.data, dict) else None,
             )
+            from agent.free_tier import refusal
+            from types import SimpleNamespace
+            if refusal(SimpleNamespace(**_hyg_runtime), history) is not None:
+                return history
             if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
                 await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
             elif _hyg_runtime.get("api_key"):
@@ -1671,6 +1686,8 @@ class GatewayTurnMixin:
         """Persist this turn to the transcript (session_meta on first turn, closed failed turn on
         transient failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
         cached agent's message count."""
+        if agent_result.get("refusal_reason") == "free_tier_limit":
+            return  # Admission never accepted this input; no fallback user/assistant rows.
         from gateway.run import _resolve_gateway_model
         ts = time.time()  # Unix epoch float — consistent with DB storage
         store = self.async_session_store
@@ -1971,6 +1988,15 @@ class GatewayTurnMixin:
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        blocked = await asyncio.to_thread(self._free_tier_refusal_for_source, source, _quick_key)
+        if blocked is not None:
+            event._agent_turn_result = blocked
+            await GatewayTurnMixin._run_agent_drain_pending(
+                self, blocked, self._adapter_for_source(source), source, _quick_key,
+            )
+            self._session_state(_quick_key).conversation.queued_events.insert(0, event)
+            return (blocked["final_response"] + "\n\nYour message is queued. After signing in or changing models, "
+                    "send a message to resume the queue. If you restart Hermes first, resend any unanswered messages.")
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         logger.info(
@@ -2027,6 +2053,10 @@ class GatewayTurnMixin:
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+            event._agent_turn_result = agent_result
+            if (agent_result.get("refusal_reason") == "free_tier_limit"
+                    and "queued_terminal_inbound_id" not in agent_result):
+                self._session_state(session_key).conversation.queued_events.insert(0, event)
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that
@@ -3363,6 +3393,21 @@ class GatewayTurnMixin:
         )
         pending_event = None
         pending = None
+        if result and (result.get("free_tier") or {}).get("capped"):
+            if adapter and session_key:
+                state = self._session_state(session_key).conversation
+                first = adapter._pending_messages.pop(session_key, None)
+                events = ([first] if first is not None else []) + state.queued_events
+                commands = [event for event in events if event.get_command()]
+                # Empty the adapter slot so its cleanup cannot auto-run user input.
+                # The existing FIFO rescue consumes overflow on the next user message.
+                state.queued_events = commands[1:] + [event for event in events if not event.get_command()]
+                if commands:
+                    adapter._pending_messages[session_key] = commands[0]
+                for key in ("interrupt_message", "pending_steer"):
+                    if result.get(key) and not first and not _is_control_interrupt_message(result[key]):
+                        state.queued_events.append(MessageEvent(text=result[key], source=source))
+            return None, None
         if result and adapter and session_key:
             pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
@@ -3578,6 +3623,11 @@ class GatewayTurnMixin:
             event_message_id=next_message_id, inbound_message_id=next_inbound_id,
             channel_prompt=next_channel_prompt, message_type=next_message_type,
         )
+        if (followup_result.get("refusal_reason") == "free_tier_limit"
+                and "queued_terminal_inbound_id" not in followup_result):
+            self._session_state(next_session_key).conversation.queued_events.insert(
+                0, pending_event if pending_event is not None else MessageEvent(text=pending, source=source),
+            )
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
         # the adapter brackets against the event that OPENED the chain. Without this the terminal

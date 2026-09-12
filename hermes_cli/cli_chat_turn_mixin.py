@@ -40,6 +40,8 @@ class CLIChatTurnMixin:
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
+        self._last_turn_result = None
+        self._turn_input = (message, list(images or []))
 
         if not self._ensure_runtime_credentials():
             return None
@@ -55,6 +57,12 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
+        from agent.free_tier import refusal
+        if (blocked := refusal(agent, self.conversation_history)) is not None:
+            self._last_turn_result = blocked
+            CLIChatTurnMixin._retain_refused_input(self)
+            _cprint(blocked["final_response"])
+            return blocked["final_response"]
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, SubagentNotification):
@@ -93,6 +101,33 @@ class CLIChatTurnMixin:
             return None
         finally:
             self._chat_release_turn_audio(turn)
+
+    def _retain_refused_input(self):
+        """Restore the unaccepted envelope ahead of later input in the paused FIFO."""
+        if getattr(self, "_pending_input", None) is None:
+            self._pending_input = queue.Queue()
+        pending = self._pending_input
+        with pending.not_empty:
+            pending.queue.appendleft(getattr(self, "_submitted_input", self._turn_input))
+            pending.unfinished_tasks += 1
+            pending.not_empty.notify()
+        self._voice_continuous = False
+
+    def _get_pending_input(self):
+        """While capped, leave envelopes in place and let only off-turn commands pass."""
+        from cli import _looks_like_slash_command
+        pending = self._pending_input
+        if not ((getattr(self, "_last_turn_result", None) or {}).get("free_tier") or {}).get("capped"):
+            return pending.get(timeout=0.1)
+        with pending.not_empty:
+            for index, value in enumerate(pending.queue):
+                text = value[0] if isinstance(value, tuple) else value
+                if isinstance(text, str) and _looks_like_slash_command(text):
+                    del pending.queue[index]
+                    pending.not_full.notify()
+                    return value
+            pending.not_empty.wait(timeout=0.1)
+        raise queue.Empty
 
     def _chat_release_turn_audio(self, turn):
         """Every exit path: stop the thinking sound, send the TTS sentinel, cut TTS only if abnormal."""
@@ -457,7 +492,14 @@ class CLIChatTurnMixin:
         sys.stdout.flush()
         time.sleep(0.15)
         if turn.result:
+            self._last_turn_result = turn.result
             self.conversation_history = turn.result.get("messages", self.conversation_history)
+            if turn.result.get("refusal_reason") == "free_tier_limit":
+                CLIChatTurnMixin._retain_refused_input(self)
+                if self.agent is not None:
+                    self.agent._pending_cli_user_message = None
+            if (turn.result.get("free_tier") or {}).get("capped"):
+                self._voice_continuous = False
         # Mid-turn auto-compression continues in a child session: sync so /status, /resume,
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)
@@ -601,6 +643,8 @@ class CLIChatTurnMixin:
             ChatConsole, _ACCENT, _RST, _cprint, _maybe_remap_for_light_mode, _post_stream_transform_output,
             _render_final_assistant_content,
         )
+        if turn.result and turn.result.get("response_previewed") and turn.result.get("free_tier_notice"):
+            _cprint(turn.result["free_tier_notice"])
         if response and not (turn.result and turn.result.get("response_previewed", False)):
             try:
                 from hermes_cli.skin_engine import get_active_skin
@@ -618,6 +662,9 @@ class CLIChatTurnMixin:
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
                 _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
+                suffix = _post_stream_transform_output(response, turn.result)
+                if suffix.strip():
+                    _cprint(suffix)
             elif already_streamed:
                 # _flush_stream() already closed the streamed box; a post-stream transform
                 # hook shows a suffix for append-only changes, else the full replacement.

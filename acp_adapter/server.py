@@ -333,7 +333,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         target_provider, new_model = self._resolve_model_selection(raw_model, current_provider or "openrouter")
         state.model = new_model
         endpoint: dict[str, Any] = {}
-        if keep_endpoint and not (current_provider and target_provider != current_provider):
+        from hermes_cli.anon_auth import route_is_welcome_host
+        if (keep_endpoint and not (current_provider and target_provider != current_provider)
+                and not route_is_welcome_host(getattr(state.agent, "base_url", None))):
             endpoint = {
                 "base_url": getattr(state.agent, "base_url", None), "api_mode": getattr(state.agent, "api_mode", None)
             }
@@ -527,13 +529,26 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         normalized_method = method_id.strip().lower()
         provider = detect_provider()
 
-        if normalized_method == TERMINAL_SETUP_AUTH_METHOD_ID:
-            # Terminal auth runs setup out-of-band; succeed only once credentials exist.
-            return AuthenticateResponse() if provider else None
-
-        if not provider or normalized_method != provider:
+        if not provider or normalized_method not in {TERMINAL_SETUP_AUTH_METHOD_ID, provider}:
             return None
+        # Setup changes the default route. Do not leave a live welcome agent pinned to it,
+        # or rebuild a running turn: defer that replacement until its next explicit prompt.
+        from hermes_cli.anon_auth import route_is_welcome_host
+        with self.session_manager._lock:
+            states = list(self.session_manager._sessions.values())
+        for state in states:
+            with state.runtime_lock:
+                if route_is_welcome_host(getattr(state.agent, "base_url", None)):
+                    state.refresh_runtime = True
+                    if not state.is_running:
+                        self._refresh_authenticated_runtime(state)
         return AuthenticateResponse()
+
+    def _refresh_authenticated_runtime(self, state: SessionState) -> None:
+        if state.refresh_runtime:
+            state.agent = self.session_manager._make_agent(session_id=state.session_id, cwd=state.cwd)
+            state.model = getattr(state.agent, "model", "") or ""
+            state.refresh_runtime = False
 
     # ---- Session management -------------------------------------------------
 
@@ -698,6 +713,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         runtime) or queue it. Returns the client message when absorbed, else None."""
         with state.runtime_lock:
             if not state.is_running:
+                self._refresh_authenticated_runtime(state)
                 state.is_running = True
                 state.current_prompt_text = user_text or "[Image attachment]"
                 return None
@@ -832,7 +848,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
-        return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
+        response = await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
+        if response.stop_reason == "refusal":
+            state.pending_prompt = list(prompt)
+        elif state.pending_prompt == prompt:
+            state.pending_prompt = None
+        return response
 
     def _wire_turn_callbacks(
         self, state: SessionState, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
@@ -878,9 +899,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         streamed_message: bool,
     ) -> PromptResponse:
         """Persist, emit provenance/final text, drain queued prompts, report usage."""
-        # Key presence, not truthiness: ``messages=[]`` is a legitimate cleared transcript (#10844);
-        # only a result without the key leaves the history untouched.
-        if "messages" in result and isinstance(result["messages"], list):
+        refused = result.get("failure_reason") == "free_tier_limit" or result.get("error") == "free_tier_limit"
+        # Key presence, not truthiness: ``messages=[]`` is a legitimate cleared transcript (#10844).
+        # A refused turn leaves the authoritative history untouched.
+        if not refused and "messages" in result and isinstance(result["messages"], list):
             state.history = result["messages"]
             self.session_manager.save_session(session_id)
 
@@ -903,21 +925,28 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         interrupted = bool(result.get("interrupted")) or cancelled
         suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
         # Send the final text unless already streamed — or if a plugin hook transformed it after.
-        if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
+        notice = result.get("free_tier_notice")
+        if streamed_message and notice and conn and not suppress:
+            # The answer is already on the append-only stream. Only append the notice.
+            await conn.session_update(session_id, acp.update_agent_message_text("\n\n" + notice))
+        elif final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
             await conn.session_update(session_id, acp.update_agent_message_text(final_response))
 
         # Go idle before draining so recursive prompt() calls can acquire the session.
         with state.runtime_lock:
             state.is_running = False
             state.current_prompt_text = ""
-        while True:
+        pause_queue = refused or result.get("failed") or (result.get("free_tier") or {}).get("capped")
+        while not pause_queue:
             with state.runtime_lock:
-                if not state.queued_prompts:
+                if state.pending_prompt or not state.queued_prompts:
                     break
                 next_prompt = state.queued_prompts.pop(0)
             if conn:
                 await conn.session_update(session_id, acp.update_user_message_text(next_prompt))
             await self.prompt(prompt=[TextContentBlock(type="text", text=next_prompt)], session_id=session_id)
+            # The recursive turn owns the remaining drain (and may have paused it).
+            break
 
         usage = None
         if any(result.get(k) is not None for k in ("prompt_tokens", "completion_tokens", "total_tokens")):
@@ -927,7 +956,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
         await self._send_usage_update(state)
-        return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
+        meta = None
+        if refused:
+            meta = {"code": "free_tier_limit", "completed": False, "failed": True,
+                    "retryable": False, "retryable_after_recovery": True}
+        return PromptResponse(stop_reason="refusal" if refused else "cancelled" if cancelled else "end_turn",
+                              usage=usage, field_meta=meta)
 
     # ---- Session settings (ACP protocol methods) -----------------------------
 

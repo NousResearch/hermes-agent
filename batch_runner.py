@@ -264,10 +264,21 @@ def _process_single_prompt(
         # task_id ensures each task gets its own isolated VM
         result = agent.run_conversation(prompt, task_id=task_id)
 
+        if result.get("failed") or result.get("error"):
+            failure = _failure_result(prompt_index, batch_num, result.get("error") or "Agent run failed")
+            failure.update({key: result[key] for key in (
+                "final_response", "failed", "completed", "partial", "api_calls", "failure_reason",
+                "code", "retryable", "retryable_after_recovery", "free_tier",
+            ) if key in result})
+            if result.get("failure_reason") == "free_tier_limit" or result.get("error") == "free_tier_limit":
+                failure.update(code="free_tier_limit", retryable=False, retryable_after_recovery=True)
+            return failure
+
         # Stats before conversion — keep the original evaluation order.
-        tool_stats = _extract_tool_stats(result["messages"])
-        reasoning_stats = _extract_reasoning_stats(result["messages"])
-        trajectory = agent._convert_to_trajectory_format(result["messages"], prompt, result["completed"])
+        messages = result.get("messages") or []
+        tool_stats = _extract_tool_stats(messages)
+        reasoning_stats = _extract_reasoning_stats(messages)
+        trajectory = agent._convert_to_trajectory_format(messages, prompt, result.get("completed", False))
 
         return {
             "success": True,
@@ -275,13 +286,11 @@ def _process_single_prompt(
             "trajectory": trajectory,
             "tool_stats": tool_stats,
             "reasoning_stats": reasoning_stats,
-            "completed": result["completed"],
-            # Sibling of the non-empty-response return below (#64686): the classifier's failure_reason must
-            # survive the empty-response normalization path too, or downstream consumers (TUI billing
-            # surface, transient-failure persistence) lose the structured reason exactly when the run
-            # produced no text.
+            "completed": result.get("completed", False),
             "partial": result.get("partial", False),
-            "api_calls": result["api_calls"],
+            "api_calls": result.get("api_calls", 0),
+            **{key: result[key] for key in ("final_response", "free_tier", "free_tier_notice",
+                                           "continuation_required") if key in result},
             "toolsets_used": selected_toolsets,
             "metadata": {"batch_num": batch_num, "timestamp": datetime.now().isoformat(), "model": config["model"]},
         }
@@ -319,9 +328,26 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
     batch_reasoning_stats = dict.fromkeys(_REASONING_KEYS, 0)
     completed_in_batch = []
     discarded_no_reasoning = 0
+    pending_prompts = []
+    processed = 0
 
-    for prompt_index, prompt_data in prompts_to_process:
+    for position, (prompt_index, prompt_data) in enumerate(prompts_to_process):
         result = _process_single_prompt(prompt_index, prompt_data, batch_num, config)
+        processed += 1
+        if result.get("failure_reason") == "free_tier_limit" or result.get("error") == "free_tier_limit":
+            # Not a trajectory/tombstone: resume must still see the original dataset rows.
+            # Stop this worker rather than automatically retrying a user-actionable gate.
+            pending = prompts_to_process[position:]
+            pending_prompts = [idx for idx, _ in pending]
+            for idx, data in pending:
+                _append_jsonl(output_dir / f"pending_{batch_num}.jsonl", {
+                    "prompt_index": idx, "prompt_data": data, "code": "free_tier_limit",
+                    "retryable": False, "retryable_after_recovery": True,
+                    "final_response": result.get("final_response", ""),
+                })
+            print(f"   {result.get('final_response') or 'Welcome allowance reached.'}")
+            print("   Pending prompts retained. Configure a provider, then explicitly resume this batch.")
+            break
 
         if result["success"] and result["trajectory"]:
             reasoning = result.get("reasoning_stats", {})
@@ -367,11 +393,12 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             print(f"   {status} Prompt {prompt_index} completed")
         else:
             print(f"   ❌ Prompt {prompt_index} failed (will retry on resume)")
-    print(f"✅ Batch {batch_num}: Completed ({len(prompts_to_process)} prompts processed)")
+    print(f"Batch {batch_num}: {processed} processed, {len(pending_prompts)} pending recovery")
 
     return {
         "batch_num": batch_num,
-        "processed": len(prompts_to_process),
+        "pending_prompts": pending_prompts,
+        "processed": processed,
         "skipped": len(batch_data) - len(prompts_to_process),
         "tool_stats": batch_tool_stats,
         "reasoning_stats": batch_reasoning_stats,
@@ -745,7 +772,10 @@ class BatchRunner:
         return kept, batch_files_found
 
     def _print_summary(self, results, total_tool_stats, total_reasoning_stats, kept, batch_files_found, start_time) -> None:
-        _banner("📊 BATCH PROCESSING COMPLETE")
+        pending = sum(len(r.get("pending_prompts", [])) for r in results)
+        _banner("📊 BATCH PENDING RECOVERY" if pending else "📊 BATCH PROCESSING COMPLETE")
+        if pending:
+            print(f"{pending} prompts retained. Configure a provider, then explicitly resume this batch.")
         print(f"✅ Prompts processed this run: {sum(r.get('processed', 0) for r in results)}")
         print(f"✅ Total trajectories in merged file: {kept}")
         print(f"✅ Total batch files merged: {batch_files_found}")
@@ -822,6 +852,7 @@ class BatchRunner:
             stats["success_rate"] = round(stats["success"] / total_calls * 100, 2) if total_calls > 0 else 0.0
             stats["failure_rate"] = round(stats["failure"] / total_calls * 100, 2) if total_calls > 0 else 0.0
         kept, batch_files_found = self._combine_batch_files()
+        pending = sorted({idx for r in results for idx in r.get("pending_prompts", [])})
         final_stats = {
             "run_name": self.run_name,
             "distribution": self.distribution,
@@ -835,7 +866,9 @@ class BatchRunner:
             # Snapshot CLI-level fields before mutation so a failed in-place swap rolls the whole CLI back
             # to the old working model (#50163).
             "model": self.model,
-            "completed_at": datetime.now().isoformat(),
+            "status": "pending_recovery" if pending else "completed",
+            "pending_prompts": pending,
+            "completed_at": None if pending else datetime.now().isoformat(),
             "duration_seconds": round(time.time() - start_time, 2),
             "tool_statistics": total_tool_stats,
             "reasoning_statistics": total_reasoning_stats,

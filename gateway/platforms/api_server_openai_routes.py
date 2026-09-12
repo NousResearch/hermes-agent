@@ -57,6 +57,41 @@ async def _iter_stream_items(stream_q, agent_task, response):
         last_activity = time.monotonic()
 
 
+def _continuation_refused(result: Any) -> bool:
+    return isinstance(result, dict) and any(result.get(key) == "free_tier_limit"
+                                           for key in ("failure_reason", "code", "error"))
+
+
+def _continuation_metadata(result: Any, pending_prompt=None) -> dict:
+    if not isinstance(result, dict):
+        return {}
+    meta = {key: result[key] for key in ("free_tier", "free_tier_notice", "continuation_required") if key in result}
+    if _continuation_refused(result):
+        meta.update(code="free_tier_limit", error_code="free_tier_limit", failure_reason="free_tier_limit", completed=False,
+                    failed=True, partial=False, api_calls=0, retryable=False, retryable_after_recovery=True,
+                    pending_prompt=result.get("pending_prompt", pending_prompt))
+    return meta
+
+
+def _continuation_error(result: Any, *, pending_prompt=None, headers=None):
+    if not _continuation_refused(result):
+        return None
+    return web.json_response({
+        "error": {"code": "free_tier_limit", "type": "permission_error",
+                  "message": result.get("final_response") or "Configure a provider to continue."},
+        "hermes": _continuation_metadata(result, pending_prompt)}, status=403, headers=headers)
+
+
+def _final_stream_delta(result: Any, streamed: str) -> str:
+    """Append-only streams need the display footer, not a replay of the full answer."""
+    if not isinstance(result, dict):
+        return ""
+    if not streamed:
+        return result.get("final_response") or ""
+    notice = result.get("free_tier_notice")
+    return "\n\n" + notice if notice and not streamed.endswith(notice) else ""
+
+
 def _result_flags(result: Any) -> tuple:
     """``(completed, partial, failed, error)`` from an agent result dict (defaults if not a dict)."""
     if not isinstance(result, dict):
@@ -166,6 +201,11 @@ class _ResponsesStream:
         if error is not None:
             env["error"] = {"message": error, "type": "server_error"}
         env["usage"] = self._api._responses_usage_payload(self.usage)
+        meta = _continuation_metadata(self.result, self.user_message)
+        if meta:
+            env["hermes"] = meta
+        if _continuation_refused(self.result) and "error" in env:
+            env["error"]["code"] = "free_tier_limit"
         return env
 
     def _history_with_user(self) -> List[Dict[str, Any]]:
@@ -178,7 +218,8 @@ class _ResponsesStream:
             "response": response_env,
             "conversation_history": self._history_with_user() if history is None else history,
             "instructions": self.instructions,
-            "session_id": session_id or self.session_id})
+            "session_id": session_id or self.session_id,
+            **({"pending_prompt": self.user_message} if _continuation_refused(self.result) else {})})
         if self.conversation:
             self.adapter._response_store.set_conversation(self.conversation, self.response_id)
 
@@ -311,12 +352,14 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
-            if agent_final and not self.final_text_parts:
-                await self.emit_text_delta(agent_final)
+            tail = _final_stream_delta(result, "".join(self.final_text_parts))
+            if tail:
+                await self.emit_text_delta(tail)
             if agent_final and not self.final_response_text:
                 self.final_response_text = agent_final
-            if isinstance(result, dict) and result.get("error") and not self.final_response_text:
-                self.agent_error = self._api._redact_api_error_text(result["error"])
+            if isinstance(result, dict) and (result.get("failed") or (result.get("error") and not self.final_response_text)):
+                self.agent_error = self._api._redact_api_error_text(
+                    result.get("final_response") if _continuation_refused(result) else result.get("error") or "Agent run failed")
         except Exception as e:  # noqa: BLE001
             logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
             self.agent_error = self._api._redact_api_error_text(e)
@@ -347,9 +390,12 @@ class _ResponsesStream:
     async def emit_failed(self) -> None:
         redact = self._api._redact_api_error_text
         env = self.terminal_envelope("failed", self._final_items(), error=redact(self.agent_error))
-        history = self._history_with_user()
-        history.append(
-            {"role": "assistant", "content": self.final_response_text or redact(self.agent_error)})
+        if _continuation_refused(self.result):
+            history = list(self.conversation_history)
+        else:
+            history = self._history_with_user()
+            history.append(
+                {"role": "assistant", "content": self.final_response_text or redact(self.agent_error)})
         self.persist_snapshot(env, history=history)
         self.terminal_snapshot_persisted = True
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
@@ -571,6 +617,9 @@ class OpenAICompatRoutesMixin:
         response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        refused = _continuation_error(result, pending_prompt=user_message, headers=response_headers)
+        if refused is not None:
+            return refused
         # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK
         # clients raise instead of rendering the failure string as message.content.
         if not final_response and (is_failed or is_partial):
@@ -596,6 +645,9 @@ class OpenAICompatRoutesMixin:
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
+        meta = _continuation_metadata(result)
+        if meta:
+            response_data.setdefault("hermes", {}).update(meta)
         return web.json_response(response_data, headers=response_headers)
 
     async def _run_idempotent(
@@ -658,6 +710,7 @@ class OpenAICompatRoutesMixin:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
                     "model": model,
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
+        streamed = []
         try:
             await response.write(_sse_frame(_chunk({"role": "assistant"})))
             async for delta in _iter_stream_items(stream_q, agent_task, response):
@@ -667,6 +720,8 @@ class OpenAICompatRoutesMixin:
                     # Custom event: tool lifecycle for frontends without markers in history.
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
                 else:
+                    if isinstance(delta, str):
+                        streamed.append(delta)
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
@@ -678,6 +733,9 @@ class OpenAICompatRoutesMixin:
             except Exception as exc:
                 agent_error = exc
                 logger.error("Agent task %s failed during SSE streaming: %s", completion_id, exc)
+            tail = _final_stream_delta(result, "".join(streamed))
+            if tail:
+                await response.write(_sse_frame(_chunk({"content": tail})))
             completed, is_partial, is_failed, err_msg = _result_flags(result)
             if agent_error is not None:
                 is_failed = True
@@ -691,6 +749,12 @@ class OpenAICompatRoutesMixin:
                         "type": type(agent_error).__name__ if agent_error else "agent_error"}
                 finish_chunk["hermes"] = _hermes_extras(
                     completed, is_partial, is_failed, err_msg, finish_reason)
+            meta = _continuation_metadata(result)
+            if meta:
+                finish_chunk.setdefault("hermes", {}).update(meta)
+            if _continuation_refused(result):
+                finish_chunk["error"] = {"code": "free_tier_limit", "type": "permission_error",
+                                         "message": result.get("final_response", "")}
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
@@ -899,6 +963,10 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
+        refused = _continuation_error(result, pending_prompt=user_message,
+                                     headers=self._session_headers(session_id, gateway_session_key))
+        if refused is not None:
+            return refused
         final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
@@ -920,6 +988,13 @@ class OpenAICompatRoutesMixin:
             "created_at": created_at, "model": body.get("model", self._model_name),
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
+        meta = _continuation_metadata(result)
+        if meta:
+            response_data["hermes"] = meta
+        if result.get("failed"):
+            response_data["status"] = "failed"
+            response_data["error"] = {"message": _redact_api_error_text(result.get("error") or "Agent run failed"),
+                                      "type": "server_error"}
         if store:
             self._response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,
@@ -966,6 +1041,8 @@ class OpenAICompatRoutesMixin:
         """
         from gateway.platforms.api_server import APIServerAdapter
         prior = list(conversation_history)
+        if _continuation_refused(result):
+            return prior
         current_user = {"role": "user", "content": user_message}
         agent_messages = result.get("messages") if isinstance(result, dict) else None
         if isinstance(agent_messages, list) and agent_messages:

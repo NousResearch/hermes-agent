@@ -267,14 +267,16 @@ class AuthorityConnection:
     async def submit(self, ref, params):
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
-        forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite'}
+        forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite',
+                                   'surface', 'voice_context', 'interrupted'}
         if forbidden:
             raise RuntimeStoreError('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
         if not isinstance(request_id, str) or not request_id:
             raise RuntimeStoreError('invalid_params')
         from gateway.session_finite import admit_finite
-        payload = {'text': params.get('text'), **admit_finite(params)}
+        from gateway.session_surface import submit_surface_fields
+        payload = {'text': params.get('text'), **admit_finite(params), **submit_surface_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
         receipt = await self.authority.submit(self.actor, Submission(request_id, ref, payload, 'queue'))
@@ -321,8 +323,12 @@ class AuthorityConnection:
             params["prompt_id"], {"answer": params["answer"]}, kind="clarify")
 
     async def close(self):
-        for subscription in self.subscriptions.values():
-            await self.authority.detach(self.actor, subscription)
+        # Deletion may already have evicted a subscribed session; its membership died
+        # with it, and one retired ID must not leave the others (or the transport) attached.
+        for session_id, subscription in list(self.subscriptions.items()):
+            live = self.authority.sessions.get(session_id)
+            if live is not None and subscription in live.subscribers:
+                await self.authority.detach(self.actor, subscription)
         from gateway.session_local_migration import unbind_native_transport
         unbind_native_transport(self.authority, self.actor)
         self.subscriptions.clear()

@@ -208,7 +208,16 @@ def _profile_create(args):
     print("\nNext steps:")
     print(f"  {name} setup              Configure API keys and model")
     print(f"  {name} chat               Start chatting")
-    print(f"  {name} gateway start      Start the messaging gateway")
+    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from hermes_cli.profiles import normalize_profile_name
+    served = recorded_served_profiles() if live_default_gateway_pid() is not None else None
+    if served is not None and normalize_profile_name(name) in {normalize_profile_name(p) for p in served}:
+        print("  (served now by the running multiplexed gateway — add its bot token and it connects)")
+    elif served is not None:
+        # The multiplexer did not pick the profile up (older gateway or the signal failed): a restart serves it.
+        print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
+    else:
+        print(f"  {name} gateway start      Start the messaging gateway")
     if clone or clone_all:
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")

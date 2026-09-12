@@ -68,6 +68,17 @@ def test_owner_from_another_home_or_malformed_id_is_refused_before_admission(tmp
     assert authority.calls == []
 
 
+def test_receipt_read_forwards_the_immutable_author(tmp_path, monkeypatch):
+    """F10: an authored admission is re-read with its stored author, so the authority sees the same payload."""
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
+    delivery_id = "d" * 32
+    author = {"kind": "user", "id": "u-1", "display": "Ann"}
+    queued = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id=delivery_id, author=author)
+    assert mailbox.read_delivery_result(tmp_path, delivery_id) == queued
+    assert [params.get("author") for _home, params in authority.calls] == [author, author]
+
+
 @pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
 def test_terminal_receipt_is_immutable(tmp_path, terminal_status):
     delivery_id = "c" * 32

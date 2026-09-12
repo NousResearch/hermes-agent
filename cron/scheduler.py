@@ -39,7 +39,7 @@ from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
-    _expand_env_vars, load_config, resolve_cron_model_drift_defaults)
+    _expand_env_vars, load_config, load_config_readonly, resolve_cron_model_drift_defaults)
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
@@ -1993,7 +1993,12 @@ def _prepare_job_prompt(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path, cancel_event=cancel_event)
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job,
+            script_path,
+            workdir=_resolve_job_workdir(job, job_id),
+            cancel_event=cancel_event,
+        )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
@@ -3103,12 +3108,13 @@ def _wait_for_external_cron_worker(
 
 
 def _launch_external_cron_worker(job: dict) -> bool:
-    """Launch *job* outside a managed gateway cgroup when required.
+    """Launch *job* outside the managed gateway process when required.
 
-    Returns ``False`` when the caller is not a managed systemd gateway and the
-    existing in-process path should be used.  In managed topology, failure to
-    establish the transient scope raises: falling back would recreate the
-    restart interruption this handoff exists to prevent.
+    Returns ``False`` outside a managed systemd gateway (in-process path).  In
+    managed topology the job always goes to an external worker with the #101940
+    ownership handoff: in a transient user scope, or — when no user D-Bus
+    session exists and ``cron.require_restart_safe_scope`` is false — as a
+    direct subprocess (process separation kept, cgroup isolation lost).
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -3138,12 +3144,19 @@ def _launch_external_cron_worker(job: dict) -> bool:
         systemd_user_bus_env,
     )
 
+    try:
+        require_restart_safe_scope = bool(
+            (load_config_readonly().get("cron") or {}).get("require_restart_safe_scope", False)
+        )
+    except Exception:
+        require_restart_safe_scope = False
     multiplex_active = is_multiplex_active()
-    scoped_command = restart_safe_gateway_child_argv(
+    dispatch = restart_safe_gateway_child_argv(
         command,
         unit_suffix=f"cron-{job_id}-exec-{execution_id}",
+        require_restart_safe_scope=require_restart_safe_scope,
     )
-    if scoped_command == command:
+    if dispatch.mode == "in_process":
         return False
 
     if mark_execution_handoff_pending(execution_id) is None:
@@ -3187,7 +3200,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(
-            scoped_command,
+            dispatch.argv,
             cwd=str(Path(__file__).resolve().parent.parent),
             env=worker_env,
             stdin=subprocess.DEVNULL,

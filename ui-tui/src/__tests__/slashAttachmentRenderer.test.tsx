@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -14,7 +14,7 @@ import { useSubmission } from '../app/useSubmission.js'
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 
-function mount(canonical = false) {
+function mount(canonical = false, extra: (method: string, params: any) => unknown = () => undefined) {
   const home = mkdtempSync(join(tmpdir(), 'ink-slash-attachment-'))
   vi.stubEnv('HERMES_HOME', home)
   resetUiState()
@@ -23,6 +23,10 @@ function mount(canonical = false) {
   const pending: Array<{ sid: string; finish: (path: string) => void }> = []
 
   const request = vi.fn((method: string, params: any) => {
+    const handled = extra(method, params)
+
+    if (handled !== undefined) { return Promise.resolve(handled) }
+
     if (method === 'prompt.submit' && canonical) { return Promise.resolve({ status: 'started' }) }
 
     if (method === 'image.attach' || method === 'clipboard.paste') {
@@ -58,7 +62,7 @@ function mount(canonical = false) {
     composer = useComposerState({ gw, submitRef, sys })
     submission = useSubmission({ gw, submitRef, slashRef, sys, composerActions: composer.actions,
       composerRefs: composer.refs, composerState: composer.state, appendMessage: vi.fn(), setLastUserMsg: vi.fn() })
-    slashRef.current = createSlashHandler({ gateway: { gw }, local: {}, transcript: { sys },
+    slashRef.current = createSlashHandler({ gateway: { gw }, local: {}, transcript: { sys, send: submission.send },
       composer: composer.actions, slashFlightRef } as any)
 
     return <Text>{composer.state.input}</Text>
@@ -121,10 +125,11 @@ it('slash attachment submission leaves a visible removable image in the cleared 
     try {
       await h.submit(command)
       expect(h.pending).toHaveLength(1)
-      expect(h.composer.state.input).toBe('')
+      // The composer clears only after the pending-input journal write settles (F36).
+      await vi.waitFor(() => expect(h.composer.state.input).toBe(''))
       h.pending[0]!.finish('/owned.png')
       await flush()
-      expect(h.composer.state.input).toContain('[[ Image 1 ]]')
+      await vi.waitFor(() => expect(h.composer.state.input).toContain('[[ Image 1 ]]'))
       expect(h.output).toContain('[[ Image 1 ]]')
       expect(h.composer.refs.tokensRef.current).toEqual([
         expect.objectContaining({ kind: 'image', path: '/owned.png' })
@@ -168,7 +173,7 @@ it('stale attachment cleanup uses its captured owner and preserves a concurrent 
             h.pending[1 - first]!.finish(first === 0 ? validPath : '/owned.png')
             await flush()
             const sid = getUiState().sid!
-            expect(h.composer.state.input).toBe('[[ Image 1 ]]')
+            await vi.waitFor(() => expect(h.composer.state.input).toBe('[[ Image 1 ]]'))
             expect(h.composer.refs.tokensRef.current).toEqual([
               expect.objectContaining({ kind: 'image', path: validPath })
             ])
@@ -186,4 +191,51 @@ it('stale attachment cleanup uses its captured owner and preserves a concurrent 
       }
     }
   }
+})
+
+it('a skill slash command keeps the staged image descriptors through the expanded skill send', async () => {
+  const skill = (method: string, params: any) => method === 'slash.exec'
+    ? { type: 'skill', name: 'review', message: `SKILL BODY\n\nUser request: ${params.command.replace(/^review\s*/, '')}`, display: `/${params.command}` }
+    : undefined
+  const h = mount(true, skill)
+  vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
+  const path = join(h.home, 'shot.png')
+  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64'))
+
+  try {
+    await h.submit(`/image ${path}`)
+    await vi.waitFor(() => expect(h.composer.state.input).toContain('[[ Image 1 ]]'))
+    const token = h.composer.refs.tokensRef.current[0]!
+    await h.submit('/review this screenshot [[ Image 1 ]]')
+    await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true))
+    const wire = h.request.mock.calls.find(([method]) => method === 'prompt.submit')![1]
+    expect(wire.attachments).toEqual([{ path: token.path, mime: 'image/png' }])
+    expect(wire.text).toContain('SKILL BODY')
+    expect(wire.text).not.toContain('[[ Image')
+    expect(h.composer.refs.tokensRef.current).toEqual([])
+  } finally { h.close() }
+})
+
+it('keeps the caption and its image token in the composer when the pending-input journal cannot be written', async () => {
+  const h = mount(true)
+  vi.stubEnv('HERMES_TUI_GATEWAY_URL', '')
+  const path = join(h.home, 'shot.png')
+  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nL8AAAAASUVORK5CYII=', 'base64'))
+  const journal = join(h.home, 'tui-pending-inputs')
+  mkdirSync(journal, { recursive: true })
+
+  try {
+    await h.submit(`/image ${path}`)
+    await vi.waitFor(() => expect(h.composer.state.input).toContain('[[ Image 1 ]]'))
+    chmodSync(journal, 0o500)
+    await h.submit('caption [[ Image 1 ]]')
+    expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(false)
+    expect(h.composer.state.input).toBe('caption [[ Image 1 ]]')
+    expect(h.composer.refs.tokensRef.current).toEqual([expect.objectContaining({ kind: 'image', mime: 'image/png' })])
+    expect(getUiState().status).toBe('input not saved')
+    chmodSync(journal, 0o700)
+    await h.submit('caption [[ Image 1 ]]')
+    await vi.waitFor(() => expect(h.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(true))
+    expect(h.request.mock.calls.find(([method]) => method === 'prompt.submit')![1].attachments).toHaveLength(1)
+  } finally { chmodSync(journal, 0o700); h.close() }
 })

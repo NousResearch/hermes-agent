@@ -114,3 +114,36 @@ test('acknowledging a turn lost across a restart presents the unknown row\'s own
   protocol.event({ type: 'session.info', session_id: 's', payload: { pending: [{ admission_id: 'next', status: 'started', execution_generation: 10, text: 'NEXT' }], execution_generation: 10 } })
   expect(() => protocol.prepare('prompt.resolve_unknown', { session_id: 's', admission_id: 'lost' })).toThrow('unknown')
 })
+
+test('the dedicated compress action becomes a fenced canonical mutation and settles with the resumed transcript', async () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 4, execution_generation: 9 })
+
+  const prepared = protocol.prepare('session.compress', { session_id: 's', focus_topic: 'billing' })
+  expect(prepared).toEqual({ session_id: 's', request_id: expect.any(String), expected_revision: 4, expected_generation: 9, operation: 'compress', payload: { focus: 'billing' } })
+  expect(protocol.prepare('session.compress', { session_id: 's' }).payload).toEqual({})
+  expect(protocol.wire('session.compress', prepared)).toBe('session.mutate')
+  expect(() => protocol.result('session.compress', prepared, { session_id: 'other', revision: 5, operation: 'compress' })).toThrow('destination')
+
+  const calls: Array<[string, Record<string, unknown>]> = []
+  const resumed = { session_id: 's', messages: [{ role: 'assistant', content: 'summary' }], info: { title: 'T' } }
+
+  const fakeRequest = async (method: string, params: Record<string, unknown>) => { calls.push([method, params]);
+
+ return resumed }
+
+  const receipt = protocol.result('session.compress', prepared, { session_id: 's', revision: 5, operation: 'compress', target_session_id: 's', message_count: 3 })
+  const settled = await protocol.settle('session.compress', prepared, receipt, fakeRequest)
+
+  expect(settled.messages).toEqual(resumed.messages)
+  expect(settled.info).toEqual(resumed.info)
+  expect(settled.host_ack.output).toContain('3')
+  expect(calls).toEqual([['session.resume', { session_id: 's' }]])
+  // Acknowledged: the next compress presents the refreshed revision under a new request id.
+  expect(protocol.prepare('session.compress', { session_id: 's', focus_topic: 'billing' })).toMatchObject({ expected_revision: 5 })
+  expect(protocol.prepare('session.compress', { session_id: 's', focus_topic: 'billing' }).request_id).not.toBe(prepared.request_id)
+
+  const untouched = { session_id: 's', ok: true }
+  expect(await protocol.settle('session.title', { session_id: 's' }, untouched, fakeRequest)).toBe(untouched)
+  expect(calls).toHaveLength(1)
+})

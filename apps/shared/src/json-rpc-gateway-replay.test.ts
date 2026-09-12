@@ -448,4 +448,41 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     expect(client.getSeqWatermarks()).toEqual({ s1: 3 })
     client.close()
   })
+
+  it('drops the watermark and signals a replay gap when the server cannot replay the window', async () => {
+    const client = makeClient()
+    const gaps: string[] = []
+    client.on('session.replay_gap', event => { gaps.push(String(event.session_id)) })
+    const first = client.connect('ws://x')
+    let sock = sockets[sockets.length - 1]
+    sock.open()
+    await first
+
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 'gone', seq: 7, replay_epoch: 'e1' } })
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 'fine', seq: 3, replay_epoch: 'f1' } })
+    expect(client.getSeqWatermarks()).toEqual({ gone: 7, fine: 3 })
+
+    client.invalidate('drop')
+    const second = client.connect('ws://x')
+    sock = sockets[sockets.length - 1]
+    sock.open()
+    await second
+
+    const requests = sock.sent.map(raw => JSON.parse(raw) as ReturnType<FakeWebSocket['lastRequest']>)
+    expect(requests.map(req => req.method)).toEqual(['session.events.since', 'session.events.since'])
+
+    for (const req of requests) {
+      const result = req.params.session_id === 'gone'
+        ? { events: [], latest_seq: 40, epoch: 'e2', replay_epoch: 'e2', truncated: true, snapshot_required: true, count: 0 }
+        : { events: [{ type: 'message.delta', session_id: 'fine', seq: 4 }], latest_seq: 4, epoch: 'f1', replay_epoch: 'f1', truncated: false, snapshot_required: false, count: 1 }
+
+      sock.serverFrame({ jsonrpc: '2.0', id: req.id, result })
+    }
+
+    await vi.waitFor(() => {
+      expect(client.getSeqWatermarks()).toEqual({ fine: 4 })
+    })
+    expect(gaps).toEqual(['gone'])
+    client.close()
+  })
 })

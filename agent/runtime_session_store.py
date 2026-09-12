@@ -305,6 +305,12 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self._session(session_id)
         self._apply('session.sidecars', {'patch': patch})
 
+    def update_session_tool_names(self, session_id, tool_names):
+        # The tools[] freeze pin: without it every fresh worker re-probes check_fns and a
+        # config flip between turns silently forks the cached prefix (in-process stays pinned).
+        self._session(session_id)
+        self._apply('session.tools', {'tool_names': None if tool_names is None else list(tool_names)})
+
     def finish(self):
         return self._apply('execution.finish', {})
 

@@ -1926,6 +1926,8 @@ export const ru = defineLocale({
     restartToApply: 'Это изменение вступит в силу после перезапуска шлюза.',
     setupSaved: name => `Настройка ${name} сохранена`,
     restartToReconnect: 'Новые учётные данные вступят в силу после перезапуска шлюза.',
+    appliedLive: 'Применено к работающему шлюзу.',
+    connectingLive: 'Работающий шлюз подключается с новыми учётными данными.',
     keyCleared: key => `${key} очищено`,
     setupUpdated: name => `Настройка ${name} обновлена.`,
     failedUpdate: name => `Не удалось обновить ${name}`,

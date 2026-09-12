@@ -647,6 +647,31 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
             "every profile under profiles/. Delete or archive a profile you do not want served."),
         extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
+    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
+    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
+    # defaults are rewritten; an explicit user value is preserved.
+    (44, _rewrite_stale_default(
+        section="curator", key="stale_after_days", old=30, new=14,
+        added="curator.stale_after_days=14 (was: 30)",
+        message="  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks.")),
+    (44, _rewrite_stale_default(
+        section="curator", key="archive_after_days", old=90, new=30,
+        added="curator.archive_after_days=30 (was: 90)",
+        message=(
+            "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to "
+            "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
+    # 44 → 45: cron.bot_chat_delivery_timeout_seconds is gone with the local `hermes chat`
+    # fallback lane it bounded. Bot Chat deliveries are admitted to the running gateway and
+    # settle on its durable receipt; there is no cron-side turn left to time out.
+    (45, functools.partial(
+        _rewrite_key, section="cron", key="bot_chat_delivery_timeout_seconds", new=None,
+        match=lambda _cur: True,
+        added="removed cron.bot_chat_delivery_timeout_seconds",
+        message=(
+            "  ✓ Removed cron.bot_chat_delivery_timeout_seconds — bot-chat deliveries are now "
+            "admitted to the target profile's running gateway and tracked by receipt, so cron no "
+            "longer runs (or times out) a Bot Chat turn of its own."),
+        extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
 )
 
 

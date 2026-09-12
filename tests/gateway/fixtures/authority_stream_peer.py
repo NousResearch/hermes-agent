@@ -225,7 +225,10 @@ async def probe(peer, target):
         assert [e['type'] for e in tools] == ['tool.start', 'tool.complete']
         assert all(e['payload']['tool_call_id'] == 'owned-tool' for e in tools)
         assert 'PRIVATE_REASONING_NOT_PUBLIC' not in json.dumps(events)
-        assert str(target) not in json.dumps(tools), 'tool args leaked into public stream'
+        # Tool arguments/results are transcript data every session:read viewer can resume, so the
+        # live frames carry them (ACP/Desktop parity); reasoning stays out of the stream above.
+        assert tools[0]['payload']['args'].get('command') and str(target) in tools[0]['payload']['args']['command']
+        assert isinstance(tools[1]['payload']['result'], str)
         assert adapter.sent, 'native delivery lane was lost'
         last = events[-1]['seq']
         # Same generation is still recorded after settlement; late callbacks must be inert.

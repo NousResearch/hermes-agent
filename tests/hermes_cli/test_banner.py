@@ -109,3 +109,29 @@ def test_empty_model_shows_the_free_tier_route_when_it_carries_inference(tmp_pat
 
     assert "welcome" in render(True) and "no model configured" not in render(True)
     assert "no model configured" in render(False)
+
+
+def test_build_welcome_banner_does_not_center_pad_hero_art():
+    """A braille hero relies on its own U+2800 padding for symmetry; Rich centering inserts
+    ASCII spaces around the left column and distorts the silhouette (#9879). The hero line
+    must start flush at the column start."""
+    import io
+    from types import SimpleNamespace
+    from tools import mcp_tool_discovery as _mcp_discovery
+
+    skin = SimpleNamespace(banner_hero="[green]\u2800X[/]", banner_logo="")
+    buf = io.StringIO()
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(banner, "get_latest_release_tag", return_value=None),
+        patch.object(_mcp_discovery, "get_mcp_status", return_value=[]),
+        patch.object(banner, "_active_skin", return_value=skin),
+    ):
+        console = Console(file=buf, force_terminal=False, color_system=None, width=80)
+        banner.build_welcome_banner(console=console, model="m", cwd="/tmp", tools=[],
+                                    get_toolset_for_tool=lambda _: None)
+
+    hero_line = next(line for line in buf.getvalue().splitlines() if "\u2800X" in line)
+    assert hero_line.startswith("\u2502  \u2800X"), repr(hero_line)

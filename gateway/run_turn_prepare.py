@@ -466,9 +466,7 @@ class GatewayTurnPrepareMixin:
             self._clear_session_env(_session_env_tokens)
             raise
         if _lease_token is not None:
-            _lease_state = self._session_state(_quick_key).turn
-            _lease_state.lease_token = _lease_token
-            _lease_state.lease_generation = run_generation
+            self._session_state(_quick_key).turn.lease_tokens[run_generation] = _lease_token
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when

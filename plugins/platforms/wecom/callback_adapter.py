@@ -81,6 +81,8 @@ def _ack():
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}
@@ -117,14 +119,16 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         if not check_wecom_callback_requirements():
             logger.warning("[WecomCallback] aiohttp/httpx not installed")
             return False
-        try:  # quick port-in-use check
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
-                sock.settimeout(1)
-                sock.connect(("127.0.0.1", self._port))
-            logger.error("[WecomCallback] Port %d already in use", self._port)
-            return False
-        except (ConnectionRefusedError, OSError):
-            pass
+        from gateway.platforms.shared_ingress import bind_listener, shared_ingress_profile
+        if not shared_ingress_profile(self):
+            try:  # quick port-in-use check
+                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+                    sock.settimeout(1)
+                    sock.connect(("127.0.0.1", self._port))
+                logger.error("[WecomCallback] Port %d already in use", self._port)
+                return False
+            except (ConnectionRefusedError, OSError):
+                pass
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
@@ -134,13 +138,12 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get(self._path, self._handle_verify)
             self._app.router.add_post(self._path, self._handle_callback)
-            self._runner = web.AppRunner(self._app)
-            await self._runner.setup()
-            self._site = web.TCPSite(self._runner, self._host, self._port)
-            await self._site.start()
+            # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<path>.
+            self._runner = await bind_listener(self, self._app, self._host, self._port, self._path)
             self._poll_task = asyncio.create_task(self._poll_loop())
             self._mark_connected()
-            logger.info("[WecomCallback] HTTP server listening on %s:%s%s", self._host, self._port, self._path)
+            if self._runner is not None:
+                logger.info("[WecomCallback] HTTP server listening on %s:%s%s", self._host, self._port, self._path)
             for app in self._apps:
                 try:
                     await self._refresh_access_token(app)

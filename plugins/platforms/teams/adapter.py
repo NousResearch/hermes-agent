@@ -341,6 +341,8 @@ def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
 
 class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
     splits_long_messages = True  # send() chunks via truncate_message()
@@ -401,15 +403,15 @@ class TeamsAdapter(BasePlatformAdapter):
 
             self._wire_plugin_handlers(self._app)
             await self._app.initialize()
-            self._runner = web.AppRunner(aiohttp_app)
-            await self._runner.setup()
-            site = web.TCPSite(self._runner, self._host, self._port)
-            await site.start()
+            # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/api/messages.
+            from gateway.platforms.shared_ingress import bind_listener
+            self._runner = await bind_listener(self, aiohttp_app, self._host, self._port, _WEBHOOK_PATH)
             self._running = True
             self._mark_connected()
-            logger.info(
-                "[teams] Webhook server listening on %s:%d%s",
-                self._host or "* (all interfaces, IPv4+IPv6)", self._port, _WEBHOOK_PATH)
+            if self._runner is not None:
+                logger.info(
+                    "[teams] Webhook server listening on %s:%d%s",
+                    self._host or "* (all interfaces, IPv4+IPv6)", self._port, _WEBHOOK_PATH)
             return True
         except Exception as e:
             self._set_fatal_error("CONNECT_FAILED", f"Teams connection failed: {e}", retryable=True)
@@ -490,7 +492,8 @@ class TeamsAdapter(BasePlatformAdapter):
             chat_type=_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm"),
             user_id=str(user_id),
             user_name=getattr(from_account, "name", None) or "",
-            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id)
+            guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
+            message_id=msg_id)
         media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)

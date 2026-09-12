@@ -35,6 +35,9 @@ function mutationSummary(operation: string, value: Record<string, unknown>): str
   return `${operation}: ok`
 }
 
+// Explicit desktop methods that travel as canonical `session.mutate`.
+const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.branch', 'session.compress'])
+
 export class CanonicalDesktopProtocol {
   private creates = new Map<string, string>()
   private revisions = new Map<string, number>()
@@ -56,9 +59,10 @@ export class CanonicalDesktopProtocol {
 
   // Wire method for a prepared request: composer metadata, branch and the
   // typed `/model <name>` / `/branch [title]` / `/compress [focus]` directives
-  // all travel as canonical `session.mutate`; everything else keeps its name.
+  // and the dedicated compress action all travel as canonical `session.mutate`;
+  // everything else keeps its name.
   wire(method: string, prepared: Record<string, unknown> = {}): string {
-    if (method === 'session.title' || method === 'session.archive' || method === 'session.branch') { return 'session.mutate' }
+    if (MUTATION_METHODS.has(method)) { return 'session.mutate' }
 
     return method === 'slash.exec' && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
@@ -88,7 +92,13 @@ export class CanonicalDesktopProtocol {
 
     if (field) { return this.retainedMutation(params.session_id, field === 'title' ? 'rename' : 'archive', { [field]: params[field] }, false) }
 
-    if (method === 'session.branch') { return this.retainedMutation(params.session_id, 'branch', {}, true) }
+    // Branch and compress fence the execution generation like the slash directives.
+    const fenced = ({
+      'session.branch': () => ({ operation: 'branch', payload: {} }),
+      'session.compress': () => ({ operation: 'compress', payload: params.focus_topic ? { focus: String(params.focus_topic) } : {} })
+    } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
+
+    if (fenced) { return this.retainedMutation(params.session_id, fenced.operation, fenced.payload, true) }
 
     if (method === 'slash.exec') {
       const directive = slashMutation(String(params.command ?? ''))
@@ -190,7 +200,7 @@ export class CanonicalDesktopProtocol {
       this.revisions.set(value.session_id, value.revision)
     }
 
-    if (method === 'session.title' || method === 'session.archive' || method === 'session.branch' || (method === 'slash.exec' && typeof params.operation === 'string')) {
+    if (MUTATION_METHODS.has(method) || (method === 'slash.exec' && typeof params.operation === 'string')) {
       if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
 
       for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
@@ -245,5 +255,15 @@ export class CanonicalDesktopProtocol {
     }
 
     return value
+  }
+
+  // The canonical compress receipt carries counts, not the retained transcript;
+  // the compress action repaints only from `messages`, so resume the session
+  // through the normal request path (which also re-primes revision/generation).
+  async settle(method: string, params: Record<string, unknown>, value: any, request: (method: string, params: Record<string, unknown>) => Promise<any>): Promise<any> {
+    if (method !== 'session.compress') { return value }
+    const resumed = await request('session.resume', { session_id: params.session_id })
+
+    return { ...value, messages: resumed.messages, info: resumed.info, host_ack: { output: `compressed context: ${value.message_count} messages retained` } }
   }
 }

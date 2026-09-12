@@ -10,7 +10,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 def check_local_input(authority, ref, row):
     payload = row['payload']
-    allowed = {'text', 'attachments_v1', 'finite'}
+    allowed = {'text', 'attachments_v1', 'finite', 'surface_v1'}
     if 'local_operator_v1' in payload:
         allowed.add('local_operator_v1')
         if payload['local_operator_v1'] != {

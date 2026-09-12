@@ -1,10 +1,12 @@
 """Immutable local-media references for owner-only native admission.
 
 The existing managed document cache supplies profile routing, delivery eligibility
-and upload limits. Its flat age-based cleanup skips this retained subdirectory.
-There is deliberately no GC until it can account for queued AND unknown rows.
+and upload limits. Its flat age-based cleanup skips this retained subdirectory:
+retained bytes are released per admission by ``release_admission_media`` once the
+row is terminal and no live (queued/started/unknown) row still references them.
 """
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
@@ -76,6 +78,9 @@ def capture_native_media(paths):
     from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
     references = []
     limit = max(0, get_inbound_media_max_bytes())
+    # ``gateway.max_inbound_media_bytes`` bounds the whole admission, not each file: with
+    # per-file caps alone ten attachments could commit ~1.25 GiB of retained bytes per turn.
+    total = 0
     for value in paths:
         path = Path(value)
         try:
@@ -95,7 +100,7 @@ def capture_native_media(paths):
                     while chunk := source.read(1024 * 1024):
                         size += len(chunk)
                         try:
-                            validate_inbound_media_size(size, max_bytes=limit)
+                            validate_inbound_media_size(total + size, max_bytes=limit)
                         except ValueError as exc:
                             raise RuntimeStoreError('invalid_params') from exc
                         digest.update(chunk)
@@ -116,9 +121,49 @@ def capture_native_media(paths):
                 for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
                     _sync_directory(directory)
                 references.append(reference)
+                total += size
             finally:
                 temporary.unlink(missing_ok=True)
     return references
+
+
+def admission_media_references(payload):
+    """Every retained ``native-inputs`` reference a committed payload owns."""
+    return list(payload.get('attachments_v1', {}).get('media', ())) + list(
+        payload.get('native_text_v1', {}).get('media', ()))
+
+
+def release_admission_media(db, admission_id):
+    """Delete retained bytes of a terminal admission unless a live row still shares them.
+
+    Terminal rows are exact-retry evidence by digest only; their bytes are not
+    replayed. Rows that are not terminal (queued, started, unknown) may still
+    execute, so any digest they reference stays on disk.
+    """
+    from hermes_state_runtime import get_session_admission
+    row = get_session_admission(db, admission_id=admission_id)
+    if row is None or row['status'] != 'terminal':
+        return 0
+    mine = admission_media_references(row['payload'])
+    if not mine:
+        return 0
+    root = _media_root()
+    with db._read_ctx() as conn:
+        live = conn.execute("SELECT payload_json FROM session_admissions WHERE status!='terminal'").fetchall()
+    held = {reference['sha256'] for saved in live
+            for reference in admission_media_references(json.loads(saved[0]))}
+    released = 0
+    for reference in mine:
+        path = Path(reference['path'])
+        if reference['sha256'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
+            continue
+        try:
+            path.unlink()
+            released += 1
+            path.parent.rmdir()
+        except OSError:
+            continue
+    return released
 
 
 def restore_native_media(references):

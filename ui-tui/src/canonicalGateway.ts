@@ -79,12 +79,16 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   const fields: Record<string, string | undefined> = {
     model: env.HERMES_MODEL, provider: env.HERMES_TUI_PROVIDER, cwd: env.HERMES_CWD,
     skills: env.HERMES_TUI_SKILLS, checkpoints: env.HERMES_TUI_CHECKPOINTS,
-    max_turns: env.HERMES_TUI_MAX_TURNS, accept_hooks: env.HERMES_ACCEPT_HOOKS
+    accept_hooks: env.HERMES_ACCEPT_HOOKS
   }
 
   const options: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value))
 
   if (env.HERMES_TUI_TOOLSETS) { options.toolsets = env.HERMES_TUI_TOOLSETS.split(',') }
+
+  // The launcher exports `--max-turns 5` as the string "5"; the policy
+  // requires an int, so the environment's text form is undone here.
+  if (env.HERMES_TUI_MAX_TURNS) { options.max_turns = Number(env.HERMES_TUI_MAX_TURNS) }
 
   return options
 }

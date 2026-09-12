@@ -1,7 +1,7 @@
 """Prepare and publish a local reset inside the mutation receipt transaction."""
 import json
 import uuid
-from datetime import datetime, timezone
+import time
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import advance_local_target, validate_local_lineage
@@ -21,7 +21,8 @@ def reset_in_transaction(db, conn, session_id, payload):
     policy = receipt['policy']
     from gateway.session import SessionEntry
     previous = SessionEntry.from_dict(receipt['entry'])
-    now = datetime.now(timezone.utc)
+    from gateway.session_lifecycle import _now
+    now = _now()
     child_id = uuid.uuid4().hex
     entry = SessionEntry(previous.session_key, child_id, now, now,
         origin=previous.origin, platform=previous.platform, chat_type=previous.chat_type,
@@ -30,7 +31,7 @@ def reset_in_transaction(db, conn, session_id, payload):
         child_session_id=child_id, source=policy['source'], model=policy['model'],
         model_config={'_reset_from': target}, system_prompt=None,
         cwd=policy['cwd'], profile_name=parent['profile_name'])
-    conn.execute("UPDATE sessions SET ended_at=?,end_reason='session_reset' WHERE id=?", (now.timestamp(), target))
+    conn.execute("UPDATE sessions SET ended_at=?,end_reason='session_reset' WHERE id=?", (time.time(), target))
     db._bump_conversation_generation(conn, target, 'session_reset')
     advance_local_target(conn, target, child_id, entry=entry.to_dict())
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))

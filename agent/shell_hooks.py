@@ -321,10 +321,13 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         return failed(next((msg for cls, msg in _POPEN_ERRORS if isinstance(exc, cls)), str(exc)))
     try:
         stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
-    except Exception as exc:
+    except BaseException as exc:
+        # BaseException: the hook leads its own process group, so Ctrl+C's SIGINT never reaches it — only we can.
         kill_process_tree(proc)  # the whole tree — forked helpers holding the pipes would stall the drain
         with suppress(Exception):
             proc.communicate(timeout=1)
+        if not isinstance(exc, Exception):
+            raise
         if not isinstance(exc, subprocess.TimeoutExpired):  # pragma: no cover — defensive
             return failed(str(exc))
         result.update(timed_out=True, elapsed_seconds=round(time.monotonic() - t0, 3))

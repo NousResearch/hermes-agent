@@ -2,6 +2,8 @@
 
 Identity and lineage remain owner-reserved. This is not arbitrary SessionDB RPC.
 """
+import json
+
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -34,4 +36,14 @@ def worker_sidecars(db, conn, session_id, payload):
         raise RuntimeStoreError('invalid_params')
     merged = db._merge_model_config_json(conn, session_id, payload['patch'], on_missing='raise')
     conn.execute('UPDATE sessions SET model_config=? WHERE id=?', (merged, session_id))
+    return {'value': None}
+
+
+def worker_tool_names(db, conn, session_id, payload):
+    names = payload.get('tool_names') if set(payload) == {'tool_names'} else False
+    if names is False or not (names is None or (isinstance(names, list) and len(names) <= 4096
+                                                and all(isinstance(n, str) and 0 < len(n) <= 256 for n in names))):
+        raise RuntimeStoreError('invalid_params')
+    conn.execute('UPDATE sessions SET tool_names=? WHERE id=?',
+                 (None if names is None else json.dumps(names), session_id))
     return {'value': None}

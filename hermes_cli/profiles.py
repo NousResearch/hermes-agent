@@ -868,7 +868,15 @@ def create_profile(
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
     # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
     _maybe_register_gateway_service(canon)
+    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
+    # rescans periodically, so a missed signal only delays serving).
+    _notify_multiplexer(canon)
     return profile_dir
+
+
+def _notify_multiplexer(canon: str) -> None:
+    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    notify_multiplexer_profiles_changed(canon)
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
@@ -1153,6 +1161,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
+    # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
+    # into the directory before we remove it.
+    _notify_multiplexer(canon)
 
     # Release this process's holographic memory-store connections into the profile. The
     # Desktop's main serve process opens memory_store.db for every profile and is

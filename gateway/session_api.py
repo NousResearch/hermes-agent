@@ -1,7 +1,6 @@
 """Server-only binding of API transcript identities to the existing TurnRunner."""
 import json
 import hashlib
-from datetime import datetime, timezone
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
@@ -40,7 +39,8 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
     source = SessionSource(platform=Platform.API_SERVER, chat_id=session_id,
                            user_id='api', chat_type='dm')
     route = authority.runner.session_store._generate_session_key(source)
-    now = datetime.now(timezone.utc)
+    from gateway.session_lifecycle import _now
+    now = _now()
     entry = SessionEntry(route, session_id, now, now, origin=source, platform=Platform.API_SERVER)
     receipt = {'profile_id': authority.profile_id, 'session_id': session_id,
                'route': route, 'entry': entry.to_dict()}

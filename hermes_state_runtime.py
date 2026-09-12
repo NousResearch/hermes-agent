@@ -53,6 +53,16 @@ def _admission(conn, admission_id):
     return row
 
 
+def _retire_admission_workers(conn, row, owner_epoch):
+    """Retire the worker rows this admission's generation owns on BOTH the logical
+    FIFO owner and its current physical transcript (reset/compression move the private
+    worker assignment to the child while target_session_id stays the logical ID)."""
+    lineage = json.loads(row['lineage_json'])
+    targets = list({row['target_session_id'], lineage[-1] if lineage else row['target_session_id']})
+    conn.execute(f"UPDATE worker_executions SET status='terminal' WHERE session_id IN ({','.join('?' * len(targets))}) "
+                 "AND generation=? AND owner_epoch=?", (*targets, row['generation'], owner_epoch))
+
+
 def _row(row):
     if row is None:
         return None
@@ -153,7 +163,7 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                 or type(generation) is not int or row['generation'] != generation
                 or session['runtime_generation'] != generation):
             raise RuntimeStoreError('stale_generation')
-        conn.execute("UPDATE worker_executions SET status='terminal' WHERE session_id=? AND generation=? AND owner_epoch=?", (row['target_session_id'], generation, epoch))
+        _retire_admission_workers(conn, row, epoch)
         if encoded is not None:
             from hermes_state_terminal import RESULT_PREFIX
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
@@ -354,7 +364,7 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
         row = _admission(conn, admission_id)
         if type(generation) is not int or row['status'] != 'unknown' or row['generation'] != generation:
             raise RuntimeStoreError('stale_generation')
-        conn.execute("UPDATE worker_executions SET status='terminal' WHERE session_id=? AND generation=? AND owner_epoch=?", (row['target_session_id'], generation, row['owner_epoch']))
+        _retire_admission_workers(conn, row, row['owner_epoch'])
         conn.execute("UPDATE session_admissions SET status='terminal',outcome='interrupted' WHERE admission_id=?", (admission_id,))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return _row(_admission(conn, admission_id))
@@ -564,7 +574,7 @@ def _worker_finish(db, conn, session_id, payload):
 def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
                             sequence, operation, payload):
     """One closed durable mutation and receipt; never call a self-committing API here."""
-    from hermes_state_worker_context import worker_context, worker_prompt, worker_sidecars
+    from hermes_state_worker_context import worker_context, worker_prompt, worker_sidecars, worker_tool_names
     from hermes_state_worker_compression import WORKER_COMPRESSION_HANDLERS, worker_receipt_assignment
     from hermes_state_worker_lifecycle import WORKER_LIFECYCLE_HANDLERS
     handlers = {
@@ -573,6 +583,7 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
         'session.context': worker_context,
         'session.prompt': worker_prompt,
         'session.sidecars': worker_sidecars,
+        'session.tools': worker_tool_names,
         'transcript.append': _worker_append,
         'execution.finish': _worker_finish,
         'usage.main': _worker_usage,

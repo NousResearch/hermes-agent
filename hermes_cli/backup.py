@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 # snapshots (see ``create_quick_snapshot``); defined here because the exclusion set needs it.
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
 
+# How to get back to an older snapshot, stated once: both warning sites below tell the user to
+# recover, and a message is only useful if the command it names can actually run. There is no
+# top-level ``hermes snapshot`` subcommand — listing and restoring are session-only surfaces
+# (``/snapshot`` is ``cli_only`` in ``hermes_cli/commands.py``) — so pointing at
+# ``hermes snapshot list`` sent users to ``invalid choice: 'snapshot'`` while their data was gone.
+_SNAPSHOT_RECOVERY_HINT = ("/snapshot list inside a Hermes session, then /snapshot restore <id> "
+                           "(take a fresh one: hermes backup --quick)")
+
 # Directory names to skip (matched against each path component). ``hermes-agent`` only matches at
 # the root (``_should_exclude``) so skill dirs like ``skills/.../hermes-agent/`` survive. The
 # dependency/cache entries matter: one plugin venv or pip/uv cache under HERMES_HOME walked
@@ -980,7 +988,7 @@ def run_import(args) -> None:
                 print(f"    {rel}: {before[0]} session(s) / {before[1]} message(s)"
                       f" -> {after[0]} / {after[1]}")
             print("    Anything recorded after the backup was taken is not in it. "
-                  "Recover from a newer backup or snapshot: hermes snapshot list")
+                  f"Recover from a newer backup or snapshot: {_SNAPSHOT_RECOVERY_HINT}")
         if skipped_runtime:
             _print_capped(f"\n  Preserved {len(skipped_runtime)} runtime state "
                           f"file(s) (kept this machine's, not the backup's):",
@@ -1184,7 +1192,7 @@ def _create_quick_snapshot_locked(
         # Surface on stdout: a log-and-continue made a missing state.db backup look like a
         # successful pre-update snapshot (#68474).
         print(f"  ⚠ CRITICAL: could not snapshot DB file(s): {', '.join(failed_dbs)}\n"
-              f"  ⚠ If sessions disappear after update, check {root} and run: hermes snapshot list")
+              f"  ⚠ If sessions disappear after update, check {root} and run: {_SNAPSHOT_RECOVERY_HINT}")
         logger.error("Quick snapshot failed to capture DB file(s): %s", ", ".join(failed_dbs))
     if not manifest:
         shutil.rmtree(staging_dir, ignore_errors=True)

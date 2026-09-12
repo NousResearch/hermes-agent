@@ -1279,6 +1279,26 @@ class TestSafeCopyDb:
 # Quick state snapshot tests
 # ---------------------------------------------------------------------------
 
+def _unrunnable_commands_in(text: str) -> set:
+    """Commands ``text`` tells the user to run that do not exist on this build.
+
+    A recovery hint is only worth printing if its command can run, so the two authorities are
+    checked directly: ``hermes <sub>`` against the real CLI tree, ``/slash`` against the session
+    command registry (aliases included).
+    """
+    import re
+
+    from hermes_cli.commands import COMMAND_REGISTRY
+    from hermes_cli.main import _build_cli_parser
+
+    _parser, subparsers = _build_cli_parser()
+    cli_commands = set(subparsers.choices)
+    session_commands = {c.name for c in COMMAND_REGISTRY} | {a for c in COMMAND_REGISTRY for a in c.aliases}
+    unrunnable = {m for m in re.findall(r"\bhermes\s+([a-z][a-z0-9-]*)", text) if m not in cli_commands}
+    unrunnable |= {m for m in re.findall(r"/([a-z][a-z0-9-]*)", text) if m not in session_commands}
+    return unrunnable
+
+
 class TestQuickSnapshot:
     @pytest.fixture
     def hermes_home(self, tmp_path):
@@ -1335,6 +1355,29 @@ class TestQuickSnapshot:
             data = json.loads(manifest.read_text(encoding="utf-8"))
             assert "state.db" not in data.get("files", {})
             assert "state.db" in data.get("failed_dbs", [])
+
+    def test_recovery_hint_names_only_commands_that_can_run(self):
+        """Both warning sites end in "recover ...: <hint>", and the hint must name a surface that
+        exists. It used to read "hermes snapshot list" — not a CLI subcommand, so the advice died
+        with ``invalid choice: 'snapshot'`` exactly when the user had lost data."""
+        from hermes_cli.backup import _SNAPSHOT_RECOVERY_HINT
+
+        assert _unrunnable_commands_in(_SNAPSHOT_RECOVERY_HINT) == set()
+        assert "hermes snapshot" not in _SNAPSHOT_RECOVERY_HINT
+
+    def test_failed_db_copy_hint_points_at_a_runnable_command(self, hermes_home, monkeypatch, capsys):
+        """The loud failure path (#68474) is the user's only pointer to a usable snapshot, so the
+        command it prints must exist. Extracts the guidance from real stdout rather than the
+        constant, so a stale inline string fails here too."""
+        import hermes_cli.backup as backup_mod
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", lambda src, dst: False)
+        backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+        out = capsys.readouterr().out
+
+        guidance = next(ln for ln in out.splitlines() if "and run:" in ln)
+        guidance = guidance.split("and run:", 1)[1]  # drop the directory path before it
+        assert _unrunnable_commands_in(guidance) == set()
 
     def test_restore_refused_db_is_not_counted(self, hermes_home, monkeypatch):
         """A refused live-safe restore (holder detected, backup leg failed) must

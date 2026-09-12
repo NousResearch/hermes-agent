@@ -5,10 +5,22 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from hermes_cli import kanban_completion_facts as facts
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_workspace as kbw
+
+
+@pytest.fixture
+def kanban_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    return home
 
 
 def _git(repo: Path, *args: str) -> str:

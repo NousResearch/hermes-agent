@@ -267,6 +267,19 @@ class ProviderProfile:
         """
         return None
 
+    def resolve_auxiliary_runtime(
+        self, *, main_runtime: dict[str, Any], task: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Optionally map a virtual provider to its acting auxiliary runtime.
+
+        Return ``None`` to retain normal main-provider/model routing. A mapping
+        must contain non-empty ``provider`` and ``model``; ``base_url``,
+        ``api_key`` and ``api_mode`` are optional. Omitted transport credentials
+        are resolved for the target provider, never inherited from the virtual
+        client. Explicit per-task auxiliary settings take precedence.
+        """
+        return None
+
     def fetch_models(
         self,
         *,

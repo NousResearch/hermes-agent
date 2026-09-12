@@ -4178,6 +4178,13 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
             logger.debug("Auxiliary task %s: preferring fast model %s over main model %s",
                          task, fast_model, main_model)
             main_model = fast_model
+    # External virtual providers own their acting auxiliary target through the
+    # same profile surface as client construction. Explicit task routes have
+    # already been handled before this main-runtime fallback.
+    from agent.auxiliary_provider_profile import profile_auxiliary_target
+    profile_target = profile_auxiliary_target(main_provider, runtime, task)
+    if profile_target is not None:
+        return profile_target
     # MoA virtual provider: the preset name is not a wire model; run aux on the aggregator and drop
     # the facade's "moa://local" base_url / placeholder key so it uses its own credentials.
     if main_provider == "moa":
@@ -5179,15 +5186,11 @@ def _vision_auto_route(
     async_mode: bool,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
-    main_provider = str(runtime.get("provider") or _read_main_provider())
-    main_model = str(runtime.get("model") or _read_main_model())
-    if main_provider.strip().lower() == "moa":
-        # MoA main_model is a preset NAME, not a wire model — unwrap to the preset's aggregator
-        # slot. The moa:// facade endpoint belongs to the virtual provider, not the real one.
-        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-        if _agg_provider and _agg_model:
-            main_provider, main_model = _agg_provider, _agg_model
-            runtime = dict(runtime, base_url="", api_key="", api_mode="")
+    # Vision and text side tasks share the same virtual-provider boundary. Resolve
+    # before vision capability checks, and never reuse the facade's credentials.
+    main_provider, main_model, route_base, route_key, route_mode = _main_route_target(runtime, "vision")
+    runtime = dict(runtime, provider=main_provider, model=main_model,
+                   base_url=route_base, api_key=route_key, api_mode=route_mode)
     if main_provider and main_provider not in {"auto", "", "moa"}:
         client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
         if client is not None:

@@ -485,7 +485,10 @@ export class VoiceLiveSession {
       track.enabled = !muted
     }
 
-    this.send({ event_id: this.nextEventId(muted ? 'mute' : 'unmute'), type: muted ? 'session.input_audio.mute' : 'session.input_audio.unmute' })
+    this.send({
+      event_id: this.nextEventId(muted ? 'mute' : 'unmute'),
+      type: muted ? 'session.input_audio.mute' : 'session.input_audio.unmute'
+    })
   }
 
   /** Graceful close: ask for `session.closed`, tear down after it (or a timeout). */

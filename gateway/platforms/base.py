@@ -1386,6 +1386,9 @@ _FENCED_CODE_RE = re.compile(r'```[^\n]*\n.*?```', re.DOTALL)
 _INLINE_CODE_RE = re.compile(r'`[^`\n]+`')
 
 
+_MARKDOWN_LINK_TARGET_RE = re.compile(r'!?\[[^\]\n]*\]\(([^)\n]+)\)')
+
+
 def _code_spans(content: str) -> list:
     """(start, end) spans of fenced code blocks and inline code in ``content``."""
     return [m.span() for rx in (_FENCED_CODE_RE, _INLINE_CODE_RE) for m in rx.finditer(content)]
@@ -2919,8 +2922,9 @@ class BasePlatformAdapter(ABC):
     def extract_local_files(content: str) -> Tuple[List[str], str]:
         """Bare local file paths (absolute, ``~/`` or drive-letter) with deliverable extensions ->
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
-        ignored); paths inside fenced or inline code are skipped so code samples are never
-        mutilated. Dispatch by type lives in ``gateway/run.py``."""
+        ignored); paths inside fenced or inline code or Markdown link targets are skipped so code
+        samples are never mutilated and clickable references like ``[a.md](/p/a.md:1)`` never become
+        implicit uploads. Dispatch by type lives in ``gateway/run.py``."""
         ext_part = '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS)
         # Lookbehind rejects URL/relative matches (https://…/img.png, ./foo.png).
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
@@ -2929,7 +2933,8 @@ class BasePlatformAdapter(ABC):
         path_re = re.compile(
             r'(?<![/:\w.])(?:~/|/|[A-Za-z]:[/\\])(?:[\w.\-]+[/\\])*[\w.\-]+\.(?:' + ext_part + r')\b',
             re.IGNORECASE)
-        code_spans = _code_spans(content)
+        # Markdown link targets are references, not attachment requests (only the target is protected).
+        code_spans = _code_spans(content) + [m.span(1) for m in _MARKDOWN_LINK_TARGET_RE.finditer(content)]
         unique: dict = {}  # expanded_path -> raw_match_text, deduped in discovery order
         for match in path_re.finditer(content):
             if any(s <= match.start() < e for s, e in code_spans):

@@ -136,9 +136,9 @@ _TOOL_STUBS = {
     "patch": ('path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
         '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}'),
-    "terminal": ("command: str, timeout: int = None, workdir: str = None",
-        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
-        '{"command": command, "timeout": timeout, "workdir": workdir}'),
+    "terminal": ("command: str, timeout: int = None, workdir: str = None, approval_purpose: str = None, approval_effect: str = None, approval_risk: str = None",
+        '"""Run a shell command (foreground only). Optional approval context is model-provided and unverified. Returns dict with "output" and "exit_code"."""',
+        '{"command": command, "timeout": timeout, "workdir": workdir, "approval_purpose": approval_purpose, "approval_effect": approval_effect, "approval_risk": approval_risk}'),
 }
 
 
@@ -805,8 +805,8 @@ _TOOL_DOC_LINES = [
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file."),
-    ("terminal", "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+    ("terminal", "  terminal(command: str, timeout=None, workdir=None, approval_purpose=None, approval_effect=None, approval_risk=None) -> dict\n"
+     "    Foreground only (no background/pty). Optional approval context is model-provided and unverified. Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
 

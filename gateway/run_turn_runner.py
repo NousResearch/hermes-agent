@@ -35,6 +35,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+class ApprovalDeliveryError(RuntimeError):
+    """No actionable approval prompt reached the user; fail the pending request."""
+
+
 class _ExecApprovalDeclined(RuntimeError):
     """The connector refused the approval card's destination.
 
@@ -1307,6 +1311,9 @@ class TurnRunner:
         # command string still leaks secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description", "dangerous command")
+        if not desc or not str(desc).strip():
+            raise ValueError("Approval description is empty")
+        desc = _redact_approval_command(desc)
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if getattr(type(adapter), "send_exec_approval", None) is not None:
@@ -1375,10 +1382,17 @@ class TurnRunner:
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
+            if fut is None:
+                raise ApprovalDeliveryError("Approval text-send: loop unavailable")
+            outcome = _approval_send_outcome(fut, timeout=15)
+        except ApprovalDeliveryError:
+            raise
         except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+            raise ApprovalDeliveryError("Failed to send approval request") from e
+        if outcome in {"failed", "declined"}:
+            raise ApprovalDeliveryError("Failed to send approval request")
+        # Ambiguous delivery keeps the pending request armed for a late reply;
+        # the decision wait still blocks on silence. Never send a duplicate.
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

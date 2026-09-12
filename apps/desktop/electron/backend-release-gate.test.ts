@@ -177,6 +177,43 @@ describe('waitForBackendRelease (#74805 first-attempt race)', () => {
     expect(clock.now()).toBeGreaterThanOrEqual((stragglerKilledAt ?? 0) + 2 * RELEASE_GATE_POLL_MS)
   })
 
+  it('collects a later-pass straggler before a previously busy gate can pass', async () => {
+    const clock = fakeClock()
+    let served = false
+    let killedAt: number | null = null
+
+    const deps = makeDeps({
+      now: clock.now,
+      sleep: clock.sleep,
+      collectStragglerPids: () => {
+        if (served || clock.now() < RELEASE_GATE_POLL_MS) {
+          return []
+        }
+
+        served = true
+
+        return [7777]
+      },
+      killProcessTree: pid => {
+        killedAt = clock.now()
+        deps.kills.push(pid)
+      },
+      isPidAlive: pid => {
+        if (pid === 4021) {
+          return clock.now() < RELEASE_GATE_POLL_MS
+        }
+
+        return pid === 7777 && killedAt !== null && clock.now() < killedAt + 2 * RELEASE_GATE_POLL_MS
+      }
+    })
+
+    const result = await waitForBackendRelease([4021], deps, 'later-pass')
+
+    expect(deps.kills).toEqual([7777])
+    expect(clock.now()).toBe(3 * RELEASE_GATE_POLL_MS)
+    expect(result).toEqual({ unlocked: true, lingeringPids: [] })
+  })
+
   it('ignores invalid PIDs in the seed and straggler sets', async () => {
     const deps = makeDeps({
       collectStragglerPids: () => [0, -4, NaN as unknown as number]

@@ -953,3 +953,29 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_archived_only_shows_the_archived_rows(adapter, session_db):
+    """``?archived_only=true`` lists what the default list hides.
+
+    ``archived`` is a client-facing flag: PATCH sets it, ``_session_response``
+    returns it, and the default list filters on it. Without a way to LIST the
+    archived rows a client can archive a chat and never see it again — no
+    "archive" or "trash" view is possible over this API. ``SessionDB`` already
+    takes ``archived_only``; this only exposes it.
+    """
+    session_db.create_session("kept", "api_server")
+    session_db.create_session("binned", "api_server")
+    session_db.set_session_archived("binned", True)
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/api/sessions?archived_only=true")
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+        assert [s["id"] for s in body["data"]] == ["binned"]
+        assert body["data"][0]["archived"] is True
+
+        resp = await cli.get("/api/sessions")
+        assert [s["id"] for s in (await resp.json())["data"]] == ["kept"]

@@ -48,3 +48,53 @@ def test_callback_failure_is_reported():
 
     result = json.loads(rw.read_window_below_tool(callback=_boom))
     assert "renderer went away" in result["error"]
+
+
+class TestAgentHost:
+    """The window is on the user's screen; computer_use drives the gateway's
+    host. On a remote backend those are different machines, and the answer is
+    where the agent finds out — the HUD note can only tell it to look."""
+
+    WINDOW = {"window": {"app": "Figma", "title": ""}, "platform": "darwin"}
+
+    def _read(self, **extra):
+        payload = {**self.WINDOW, **extra}
+
+        return json.loads(rw.read_window_below_tool(callback=lambda: json.dumps(payload)))
+
+    def test_local_session_says_nothing(self):
+        """The desktop app omits the flag when the agent is on this machine, so
+        the common case pays no tokens for a fact that is already true."""
+        assert self._read() == self.WINDOW
+
+    def test_remote_session_is_told_it_cannot_click_the_window(self):
+        note = self._read(agent_on_this_machine=False)["agent_host"]["note"]
+
+        assert "computer_use" in note
+        assert "cannot click" in note
+
+    def test_remote_session_names_the_machine_it_is_actually_on(self, monkeypatch):
+        monkeypatch.setattr(rw.socket, "gethostname", lambda: "remote-box")
+        agent_host = self._read(agent_on_this_machine=False)["agent_host"]
+
+        assert agent_host["same_machine"] is False
+        assert agent_host["name"] == "remote-box"
+        assert "on remote-box" in agent_host["note"]
+
+    def test_an_unresolvable_hostname_still_states_the_gap(self, monkeypatch):
+        def _boom():
+            raise OSError("no hostname")
+
+        monkeypatch.setattr(rw.socket, "gethostname", _boom)
+        agent_host = self._read(agent_on_this_machine=False)["agent_host"]
+
+        assert agent_host["name"] is None
+        assert "on another machine" in agent_host["note"]
+
+    def test_the_wire_flag_is_not_passed_through_to_the_model(self):
+        """Two ways to say the same thing invites the model to trust the terser
+        one and skip the note that tells it what to do instead."""
+        assert "agent_on_this_machine" not in self._read(agent_on_this_machine=False)
+
+    def test_an_older_desktop_that_never_sends_the_flag_is_unchanged(self):
+        assert self._read(agent_on_this_machine=True) == self.WINDOW

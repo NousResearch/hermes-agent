@@ -1,10 +1,13 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { getActionStatus, getComputerUseStatus, grantComputerUsePermissions } from '@/hermes'
+import { agentMachineLabel, isAgentOnAnotherMachine } from '@/lib/agent-locality'
 import { AlertTriangle, Check, ExternalLink, Loader2, RefreshCw, X } from '@/lib/icons'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { notify, notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import type { ComputerUseStatus } from '@/types/hermes'
 
 import { Pill } from './primitives'
@@ -30,6 +33,22 @@ function GrantIcon({ granted }: { granted: boolean | null }) {
   const Icon = granted === true ? Check : granted === false ? X : AlertTriangle
 
   return <Icon className="size-3" />
+}
+
+/**
+ * The card reports the readiness of whatever host the gateway runs on. On a
+ * remote backend that is not the computer the user is looking at, and every
+ * line below ("this machine", the TCC grants, driver health) is about the other
+ * one — so say which before any of it is read as a verdict on their own screen.
+ */
+function RemoteBackendNote({ machine }: { machine: string }) {
+  return (
+    <p className="px-1 text-[0.7rem] text-muted-foreground">
+      <AlertTriangle className="mr-1 inline size-3" />
+      Computer Use runs on {machine}, the machine Hermes is connected to — not on this computer. Everything below
+      describes that desktop; the agent cannot see or click your screen from there.
+    </p>
+  )
 }
 
 function PermissionRow({ granted, label, hint }: { granted: boolean | null; label: string; hint: string }) {
@@ -61,6 +80,9 @@ function PermissionRow({ granted, label, hint }: { granted: boolean | null; labe
  * below this card (the generic ToolsetConfigPanel).
  */
 export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) {
+  const connection = useStore($connection)
+  const remote = isAgentOnAnotherMachine(connection)
+  const machine = agentMachineLabel(connection)
   const [status, setStatus] = useState<ComputerUseStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [granting, setGranting] = useState(false)
@@ -148,18 +170,24 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   if (!status.platform_supported) {
     return (
-      <p className="px-1 text-xs text-muted-foreground">
-        Computer Use isn&apos;t supported on this platform ({status.platform}).
-      </p>
+      <div className="grid gap-2">
+        {remote && <RemoteBackendNote machine={machine} />}
+        <p className="px-1 text-xs text-muted-foreground">
+          Computer Use isn&apos;t supported on {remote ? machine : 'this machine'} ({status.platform}).
+        </p>
+      </div>
     )
   }
 
   if (!status.installed) {
     return (
-      <p className="px-1 text-xs text-muted-foreground">
-        Install the cua-driver backend below to drive this machine.
-        {status.can_grant && ' Then grant Accessibility and Screen Recording here.'}
-      </p>
+      <div className="grid gap-2">
+        {remote && <RemoteBackendNote machine={machine} />}
+        <p className="px-1 text-xs text-muted-foreground">
+          Install the cua-driver backend below to drive {remote ? machine : 'this machine'}.
+          {status.can_grant && ' Then grant Accessibility and Screen Recording here.'}
+        </p>
+      </div>
     )
   }
 
@@ -167,12 +195,13 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
 
   return (
     <div className="grid gap-2">
+      {remote && <RemoteBackendNote machine={machine} />}
       <div className="flex flex-wrap items-center justify-between gap-2 px-1">
         <div className="min-w-0">
           {status.can_grant ? (
             <p className="text-[0.72rem] text-muted-foreground">
               Grants attach to CuaDriver&apos;s own identity (com.trycua.driver), not Hermes — so the dialog is
-              attributed to the process that drives your Mac.
+              attributed to the process that drives {remote ? machine : 'your Mac'}.
             </p>
           ) : (
             <p className="text-[0.72rem] text-muted-foreground">{PLATFORM_NOTE[status.platform] ?? ''}</p>
@@ -225,7 +254,7 @@ export function ComputerUsePanel({ onConfiguredChange }: ComputerUsePanelProps) 
       {status.ready ? (
         <div className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
           <Check className="size-3.5" />
-          Computer Use is ready. Ask the agent to capture an app and click around.
+          Computer Use is ready{remote ? ` on ${machine}` : ''}. Ask the agent to capture an app and click around.
         </div>
       ) : (
         status.can_grant && (

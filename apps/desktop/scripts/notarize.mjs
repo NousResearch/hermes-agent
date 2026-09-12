@@ -53,6 +53,23 @@ export default async function notarize(context) {
   const { electronPlatformName, appOutDir, packager } = context
   if (electronPlatformName !== 'darwin') return
 
+  // Skip when code signing is disabled — stapler has nothing valid to staple
+  // and will fail with CloudKit "Record not found" (error 65). This happens on
+  // ad-hoc-signed local builds (CSC_IDENTITY_AUTO_DISCOVERY=false, no explicit
+  // identity) where BWS still re-injects APPLE_* vars, so the creds-present
+  // guard below is bypassed. Mirrors _force_adhoc_macos_signing in main.py.
+  const autoDiscoveryOff =
+    String(process.env.CSC_IDENTITY_AUTO_DISCOVERY || '').toLowerCase() === 'false'
+  const hasExplicitIdentity = Boolean(
+    process.env.CSC_LINK || process.env.CSC_NAME || process.env.APPLE_SIGNING_IDENTITY
+  )
+  if (autoDiscoveryOff && !hasExplicitIdentity) {
+    console.log(
+      'Skipping notarization: code signing disabled (CSC_IDENTITY_AUTO_DISCOVERY=false, no explicit identity)'
+    )
+    return
+  }
+
   const appName = packager.appInfo.productFilename
   const appPath = path.join(appOutDir, `${appName}.app`)
   if (!fs.existsSync(appPath)) {

@@ -33,6 +33,7 @@ Hermes agent bootstrap: `references/hermes-agent-install.md`.
 Fake lab topology: `references/topology.md`.
 Why these binds: `references/why.md`.
 Optional peer SOCKS egress: `references/peer-egress.md`.
+Shared browser and optional UA compatibility: `references/browser-user-agent.md`.
 
 ## When to Use
 

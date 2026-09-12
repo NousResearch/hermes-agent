@@ -174,6 +174,83 @@ def test_docker_config_migrate_restores_backups_after_failed_migration(
     assert list((tmp_path / "backups" / "config").glob(".env.pre-docker-migrate.*"))
 
 
+def test_docker_config_migrate_does_not_resurrect_a_deleted_env_on_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale pre-docker-migrate backup of .env from an earlier boot must not be used to
+    recreate .env on a failed-migration rollback once the user has since deleted it (e.g.
+    moved secrets to container env vars). Regression for the dropped is_file() guard in
+    _backup_existing: `backup_config(...) or next(iter(list_config_backups(...)), None)`
+    silently reused whatever snapshot existed, even for a file that no longer exists."""
+    module = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    original_config = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "telegram"}})
+    config_path.write_text(original_config, encoding="utf-8")
+    env_path.write_text("TELEGRAM_BOT_TOKEN=old-revoked-token\n", encoding="utf-8")
+
+    # Seed a stale backup, as if an earlier boot already ran the pre-migration snapshot step.
+    from hermes_cli.config_backups import backup_config
+
+    backup_config(env_path, "pre-docker-migrate")
+
+    # The user has since deleted .env.
+    env_path.unlink()
+
+    monkeypatch.setattr(module, "check_config_version", lambda: (12, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+
+    def _failing_migrate(*, interactive: bool, quiet: bool):
+        config_path.write_text("gateway: {}\n", encoding="utf-8")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(module, "migrate_config", _failing_migrate)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        module.main()
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+    assert not env_path.exists(), ".env must stay deleted, not be resurrected from a stale backup"
+
+
+def test_docker_config_migrate_does_not_reuse_stale_backup_for_emptied_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """backup_config() also skips (returns None) for a zero-byte file. The rollback fallback
+    must not then reuse an older, non-empty snapshot — that would silently refill an
+    intentionally emptied .env with old credentials."""
+    module = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    original_config = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "telegram"}})
+    config_path.write_text(original_config, encoding="utf-8")
+    env_path.write_text("TELEGRAM_BOT_TOKEN=old-revoked-token\n", encoding="utf-8")
+
+    from hermes_cli.config_backups import backup_config
+
+    backup_config(env_path, "pre-docker-migrate")
+
+    # .env is emptied (still exists, zero bytes) rather than deleted.
+    env_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(module, "check_config_version", lambda: (12, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+
+    def _failing_migrate(*, interactive: bool, quiet: bool):
+        config_path.write_text("gateway: {}\n", encoding="utf-8")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(module, "migrate_config", _failing_migrate)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        module.main()
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+    assert env_path.read_text(encoding="utf-8") == "", ".env must stay empty, not be refilled from a stale backup"
+
+
 def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

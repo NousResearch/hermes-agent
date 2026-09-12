@@ -2004,8 +2004,7 @@ export const ar = defineLocale({
       skills: 'المهارات',
       messaging: 'المراسلة',
       artifacts: 'العناصر',
-      cron: 'المهام المجدولة',
-      agents: 'الوكلاء'
+      cron: 'المهام المجدولة'
     },
     searchAria: 'البحث في الجلسات',
     searchPlaceholder: 'البحث في الجلسات...',

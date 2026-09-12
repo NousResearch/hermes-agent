@@ -82,6 +82,20 @@ test('notifyError posts the full error to desktop.log, not the summary', () => {
   }
 })
 
+test.each(['missing', 'closed'] as const)('notifyError still shows a toast when the log bridge is %s', (state: 'missing' | 'closed'): void => {
+  vi.stubGlobal('hermesDesktop', state === 'missing' ? undefined : {
+    logLine: (): never => { throw new Error('IPC channel closed') }
+  })
+
+  try {
+    const id: string = notifyError(new Error('database is locked'), 'Prompt failed')
+
+    expect($notifications.get()[0]).toMatchObject({ id, kind: 'error', message: 'database is locked' })
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
 test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', () => {
   notifyError(
     new Error(

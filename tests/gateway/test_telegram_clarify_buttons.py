@@ -23,7 +23,7 @@ if _repo not in sys.path:
 # Minimal Telegram mock so TelegramAdapter can be imported (mirrors
 # test_telegram_approval_buttons.py)
 # ---------------------------------------------------------------------------
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter, _ClarifyPrompt
 from gateway.config import PlatformConfig
 
 
@@ -58,6 +58,8 @@ class TestTelegramSendClarify:
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 100
+        mock_msg.chat_id = 12345
+        mock_msg.message_thread_id = None
         adapter._bot.send_message = AsyncMock(return_value=mock_msg)
 
         result = await adapter.send_clarify(
@@ -84,7 +86,10 @@ class TestTelegramSendClarify:
         # Mocked InlineKeyboardMarkup — just verify it was constructed
         # with rows.  We check state instead of poking the mock structure.
         assert "cid1" in adapter._clarify_state
-        assert adapter._clarify_state["cid1"] == "sk1"
+        # State carries the session key *and* the identity of the message that rendered the
+        # buttons, so a callback can be matched against it (#102957).
+        assert adapter._clarify_state["cid1"] == _ClarifyPrompt(
+            session_key="sk1", chat_id="12345", message_id="100", thread_id=None)
 
 
         # The button label should be short ("1"), not the long choice
@@ -128,12 +133,15 @@ class TestTelegramClarifyCallback:
         adapter = _make_adapter()
         # Pre-register a clarify entry so the callback can look up the choice text
         cm.register("cidA", "sk-cb", "Pick", ["red", "green", "blue"])
-        adapter._clarify_state["cidA"] = "sk-cb"
+        adapter._clarify_state["cidA"] = _ClarifyPrompt(
+            session_key="sk-cb", chat_id="12345", message_id="100", thread_id=None)
 
         query = AsyncMock()
         query.data = "cl:cidA:1"  # green
         query.message = MagicMock()
         query.message.chat_id = 12345
+        query.message.message_id = 100
+        query.message.message_thread_id = None
         query.message.text = "Pick"
         query.from_user = MagicMock()
         query.from_user.id = "777"
@@ -170,7 +178,8 @@ class TestTelegramClarifyCallback:
 
         adapter = _make_adapter()
         cm.register("cidC", "sk-auth", "Pick", ["a", "b"])
-        adapter._clarify_state["cidC"] = "sk-auth"
+        adapter._clarify_state["cidC"] = _ClarifyPrompt(
+            session_key="sk-auth", chat_id="12345", message_id="100", thread_id=None)
 
         # Hook up a runner that says NOT authorized
         class _DenyRunner:
@@ -207,7 +216,137 @@ class TestTelegramClarifyCallback:
         query.answer.assert_called_once()
         assert "not authorized" in query.answer.call_args[1]["text"].lower()
         # State preserved
-        assert adapter._clarify_state["cidC"] == "sk-auth"
+        assert adapter._clarify_state["cidC"].session_key == "sk-auth"
+
+
+# ===========================================================================
+# Prompt binding — a callback may only resolve the clarify it was rendered on
+# ===========================================================================
+
+class TestTelegramClarifyPromptBinding:
+    """#102957 — chat-level authorization cannot tell a deliberate tap from a callback
+    that arrived on some other message, so the clarify is bound to its prompt message."""
+
+    ASK_CHAT_ID = 12345
+    ASK_MESSAGE_ID = 100
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def _ask(self, adapter, clarify_id="cid-bind", session_key="sk-bind"):
+        """Register a pending clarify bound to (ASK_CHAT_ID, ASK_MESSAGE_ID)."""
+        from tools import clarify_gateway as cm
+        cm.register(clarify_id, session_key, "Recover the worker?", ["keep running", "stop the worker"])
+        adapter._clarify_state[clarify_id] = _ClarifyPrompt(
+            session_key=session_key, chat_id=str(self.ASK_CHAT_ID),
+            message_id=str(self.ASK_MESSAGE_ID), thread_id=None)
+
+    def _tap(self, chat_id, message_id, *, clarify_id="cid-bind", token="1"):
+        query = AsyncMock()
+        query.id = "cbq-1"
+        query.data = f"cl:{clarify_id}:{token}"
+        query.message = MagicMock()
+        query.message.chat_id = chat_id
+        query.message.message_id = message_id
+        query.message.message_thread_id = None
+        query.message.chat.type = "private"
+        query.message.text = "Recover the worker?"
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Owner"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+        return update, query
+
+    async def _deliver(self, adapter, update):
+        # The caller is allowed to answer prompts — authorization is not what is under test.
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_callback_from_another_message_does_not_resolve(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        self._ask(adapter)
+        update, query = self._tap(self.ASK_CHAT_ID, 999)
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-bind")
+        assert not entry.event.is_set()
+        assert entry.response is None
+        # The real prompt stays answerable.
+        assert "cid-bind" in adapter._clarify_state
+        query.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_callback_from_another_chat_does_not_resolve(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        self._ask(adapter)
+        update, query = self._tap(67890, 555)
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-bind")
+        assert not entry.event.is_set()
+        assert "cid-bind" in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_mismatched_callback_does_not_flip_to_text_capture(self):
+        """The "Other" branch mutates state too, so it fails closed on the same check."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        self._ask(adapter)
+        update, query = self._tap(self.ASK_CHAT_ID, 999, token="other")
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-bind")
+        assert entry.awaiting_text is False
+        assert "cid-bind" in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_genuine_tap_on_the_prompt_still_resolves(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        self._ask(adapter)
+        update, query = self._tap(self.ASK_CHAT_ID, self.ASK_MESSAGE_ID)
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-bind")
+        assert entry.event.is_set()
+        assert entry.response == "stop the worker"
+        assert "cid-bind" not in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_prompt_without_a_bound_message_stays_answerable(self):
+        """A send that reported no message id leaves nothing to match — resolve rather than
+        strand the prompt, since no caller-controlled input can reach that state."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        cm.register("cid-unbound", "sk-unbound", "Pick", ["a", "b"])
+        adapter._clarify_state["cid-unbound"] = _ClarifyPrompt(session_key="sk-unbound")
+        update, query = self._tap(self.ASK_CHAT_ID, self.ASK_MESSAGE_ID, clarify_id="cid-unbound", token="0")
+
+        await self._deliver(adapter, update)
+
+        with cm._lock:
+            entry = cm._entries.get("cid-unbound")
+        assert entry.event.is_set()
+        assert entry.response == "a"
 
 
 # ===========================================================================

@@ -2004,7 +2004,9 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
+def recompute_ready(
+    conn: sqlite3.Connection, failure_limit: int = None, *, include_blocked: bool = True,
+) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
@@ -2013,6 +2015,18 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
 
+    ``include_blocked=False`` keeps read-time dependency reconciliation for
+    ``todo`` tasks while deferring blocked-task recovery to an explicit
+    dispatcher or lifecycle path. The default (``True``) preserves the full
+    dispatcher behavior, including recovery of non-sticky circuit-breaker blocks.
+
+    Compatibility note: with ``include_blocked=False``, board read surfaces (CLI
+    ``list`` and agent ``kanban_list``) intentionally skip all blocked tasks,
+    including non-sticky circuit-breaker blocks below the failure limit. In
+    deployments operating without a continuous background dispatcher, transient
+    circuit-breaker blocks do not auto-recover on read and must be recovered via
+    the dispatcher or explicit lifecycle operations.
+
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
     explicit ``kanban_unblock`` (#28712).
     """
@@ -2020,11 +2034,13 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
     with write_txn(conn):
-        todo_rows = conn.execute(
+        candidate_statuses = ("todo", "blocked") if include_blocked else ("todo",)
+        placeholders = ",".join("?" for _ in candidate_statuses)
+        candidate_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
-            "FROM tasks WHERE status IN ('todo', 'blocked')"
+            f"FROM tasks WHERE status IN ({placeholders})", candidate_statuses,
         ).fetchall()
-        for row in todo_rows:
+        for row in candidate_rows:
             task_id = row["id"]
             cur_status = row["status"]
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):

@@ -871,6 +871,23 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
 
+`list` and the orchestrator `kanban_list` tool refresh dependency readiness for
+`todo` cards, but do not recover `blocked` cards. Blocked-task recovery remains
+owned by the dispatcher and explicit lifecycle operations, so inspecting the
+board cannot release a human-approval gate. The `promoted` value returned by
+`kanban_list` therefore counts only the `todo` cards refreshed by that query.
+
+**Compatibility trade-off (circuit-breaker recovery):** Default `recompute_ready`
+auto-recovers transient circuit-breaker blocks whose `consecutive_failures` is
+below the failure limit. Because `list` and `kanban_list` filter candidate
+recomputation strictly to `todo` tasks (`include_blocked=False`), board reads
+intentionally skip all blocked cards, including non-sticky circuit-breaker
+blocks. In deployments using `hermes kanban list` as a manual mini-dispatch
+without a running background dispatcher daemon, transient circuit-breaker blocks
+will not auto-recover on read; recovering those cards requires running the
+dispatcher (`hermes kanban dispatch`), a dispatcher tick, or an explicit
+lifecycle command (`hermes kanban retry`, `hermes kanban promote`, or unblock).
+
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 
 ### Concurrency, scheduling, and child promotion config

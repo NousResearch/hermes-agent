@@ -139,7 +139,8 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
-  it('publishes canonical readiness once, only after the creation contract arrives', async () => {
+  it('publishes canonical readiness once after discovery and arms the negotiated heartbeat', async () => {
+    vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
     const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
@@ -149,20 +150,27 @@ describe('GatewayClient websocket attach mode', () => {
     try {
       gw.start()
       gw.drain()
-      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(FakeWebSocket.instances).toHaveLength(1)
       const socket = FakeWebSocket.instances[0]!
       socket.open()
-      socket.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } }))
-      await vi.waitFor(() => expect(socket.sent).toHaveLength(1))
+      socket.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { heartbeat: true } } }))
+      await vi.advanceTimersByTimeAsync(0)
       expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(0)
       const request = JSON.parse(socket.sent[0]!)
       expect(request.method).toBe('runtime.describe')
       socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
         session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }
       } }))
-      await vi.waitFor(() => expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(socket.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
     } finally {
       gw.kill()
+      expect(vi.getTimerCount()).toBe(0)
+      vi.useRealTimers()
     }
   })
 

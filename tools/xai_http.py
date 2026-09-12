@@ -236,5 +236,9 @@ def resolve_xai_http_credentials(
         pass
 
     api_key = _resolve_explicit_xai_api_key()
-    base_url = str(get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
+    # Origin-pin the env override exactly like the prefer_api_key and OAuth branches:
+    # without this, a tampered XAI_BASE_URL env (non-*.x.ai or non-HTTPS) is returned
+    # verbatim and callers send the credential to that URL (bearer exfiltration).
+    base_url = auth_mod._xai_validate_inference_base_url(
+        _xai_base_url_override(), fallback=DEFAULT_XAI_BASE_URL)
     return {"provider": "xai", "api_key": api_key, "base_url": base_url}

@@ -184,3 +184,48 @@ def test_prefer_api_key_honors_profile_scope_only_key(tmp_path, monkeypatch):
         secret_scope.reset_secret_scope(token)
         secret_scope.set_multiplex_active(previous_multiplex)
         invalidate_env_cache()
+
+
+def test_api_key_fallback_branch_pins_base_url_origin(monkeypatch):
+    """The final API-key fallback branch (no OAuth pool) must origin-pin the
+    env override like the prefer_api_key and OAuth branches: a tampered
+    XAI_BASE_URL / HERMES_XAI_BASE_URL (foreign host or non-HTTPS) is rejected
+    in favor of the default so the credential is never sent elsewhere."""
+    from tools.xai_http import resolve_xai_http_credentials
+
+    monkeypatch.setattr(
+        "tools.xai_http.get_env_value",
+        lambda name, default=None: {
+            "XAI_API_KEY": "paid-key-x1",
+            "XAI_BASE_URL": "http://attacker.example/v1",
+        }.get(name, default),
+    )
+    # No usable OAuth pool: force the fallback branch.
+    import agent.credential_pool as credential_pool
+
+    class _DeadPool:
+        def select(self):
+            raise RuntimeError("no pool")
+
+        def try_refresh_matching(self, _hint):
+            raise RuntimeError("no pool")
+
+    monkeypatch.setattr(
+        credential_pool, "load_pool", lambda provider_id: _DeadPool()
+    )
+
+    creds = resolve_xai_http_credentials()
+    assert creds["provider"] == "xai"
+    assert creds["api_key"] == "paid-key-x1"
+    assert creds["base_url"] == "https://api.x.ai/v1"
+
+    # A legitimate *.x.ai HTTPS override is still honored.
+    monkeypatch.setattr(
+        "tools.xai_http.get_env_value",
+        lambda name, default=None: {
+            "XAI_API_KEY": "paid-key-x1",
+            "XAI_BASE_URL": "https://staging.x.ai/v1",
+        }.get(name, default),
+    )
+    creds = resolve_xai_http_credentials()
+    assert creds["base_url"] == "https://staging.x.ai/v1"

@@ -211,6 +211,29 @@ def _profile_author() -> str:
         return "user"
 
 
+def _cli_operator() -> str:
+    """Operator identity stamped on state-changing kanban events (#82689).
+
+    Format: ``cli:<user>@<host>`` — the OS user and host driving this
+    CLI/gateway-slash-command process. Best-effort on both parts so a
+    exotic platform can never break a mutating verb. The value rides the
+    ``assigned`` / ``claimed`` / ``completed`` event payloads additively;
+    post-incident forensics reads it straight off ``task_events``.
+    """
+    import getpass
+    import socket
+
+    try:
+        user = getpass.getuser() or "unknown"
+    except Exception:
+        user = "unknown"
+    try:
+        host = socket.gethostname() or "unknown"
+    except Exception:
+        host = "unknown"
+    return f"cli:{user}@{host}"
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
@@ -572,7 +595,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     with kbc.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+        ok = kb.assign_task(conn, args.task_id, profile, operator=_cli_operator())
     return _ok_or_err(ok, f"no such task: {args.task_id}",
                       f"Assigned {args.task_id} to {profile or '(unassigned)'}")
 
@@ -608,7 +631,7 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     reclaim = bool(getattr(args, "reclaim", False))
     with kbc.connect_closing() as conn:
-        ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))
+        ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None), operator=_cli_operator())
     return _ok_or_err(
         ok,
         f"cannot reassign {args.task_id} (unknown id, or still running — pass --reclaim to release first)",
@@ -712,7 +735,7 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl, operator=_cli_operator())
         if task is None:
             existing = kb.get_task(conn, args.task_id)
             if existing is None:
@@ -881,7 +904,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
             return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+                                    expected_run_id=_worker_run_id_for(tid), operator=_cli_operator())
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 

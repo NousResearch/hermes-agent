@@ -1548,7 +1548,13 @@ def _dispatch_lane_task(
         _count_spawn(assignee)
         return True
     claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    # Operator attribution (issue #82689): the dispatcher is the actor
+    # on auto-spawn claims — stamp it so post-incident forensics can
+    # tell dispatcher-driven claims from manual ``hermes kanban claim``.
+    claimed = claim(
+        conn, task_id, ttl_seconds=ttl_seconds,
+        operator=f"dispatcher:{_kb._claimer_id()}",
+    )
     if claimed is None:
         return False
     try:

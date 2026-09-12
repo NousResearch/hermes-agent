@@ -161,6 +161,24 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
 
 
+def _worker_operator() -> str:
+    """Operator identity for state-changing events this process writes (#82689).
+
+    Spawned workers carry ``HERMES_PROFILE``; the ``host:pid`` suffix
+    disambiguates concurrent workers for the same profile. Rides the
+    ``completed`` event payload additively (``worker:<profile>@<host:pid>``).
+    """
+    import socket
+
+    try:
+        host = socket.gethostname() or "unknown"
+    except Exception:
+        host = "unknown"
+    who = f"{host}:{os.getpid()}"
+    profile = (os.environ.get("HERMES_PROFILE") or "").strip()
+    return f"worker:{profile}@{who}" if profile else f"worker:{who}"
+
+
 def _enforce_worker_task_ownership(tid: str) -> None:
     """A dispatcher-spawned worker may only mutate its own HERMES_KANBAN_TASK; a
     prompt-injected ``task_id`` must not corrupt sibling/cross-tenant runs.
@@ -565,7 +583,8 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                operator=_worker_operator())
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the

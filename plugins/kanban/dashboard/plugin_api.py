@@ -10,11 +10,15 @@ dispatcher's write txns); it carries its credential in the query string (browser
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import logging
+import os
 import re
+import socket
 import sqlite3
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
@@ -506,6 +510,12 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Opt-in confirmation probe (#82689): with ``dry_run=true`` and an
+    # ``assignee`` field, nothing is mutated — the handler returns what
+    # WOULD happen (target profile exists, task state, current claim,
+    # whether assignment starts execution immediately) so the UI can ask
+    # before applying. Default false keeps today's behavior byte-for-byte.
+    dry_run: bool = False
 
 
 class BulkTaskBody(BaseModel):
@@ -549,7 +559,9 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
 # detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
-    "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
+    "done": lambda conn, tid, p: kanban_db.complete_task(
+        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata,
+        operator=_dashboard_operator()),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(
@@ -607,7 +619,8 @@ def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_d
         with _map_errors(400, _StatusRejected):
             ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
         if s == "review" and ok and review_assignee_deferred and not payload.assignee:
-            ok = kanban_db.assign_task(conn, task_id, None)
+            ok = kanban_db.assign_task(
+                conn, task_id, None, operator=_dashboard_operator())
     if ok:
         return
     blockers = _parents_blocking_ready(conn, task_id) if s == "ready" else []
@@ -639,6 +652,150 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
         conn, task_id, [f for f in ("title", "body") if getattr(payload, f) is not None], board=board)
 
 
+# ---------------------------------------------------------------------------
+# Operator attribution + assign dry-run probe (issue #82689)
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_OPERATOR: Optional[str] = None
+
+
+def _dashboard_operator() -> str:
+    """Operator identity stamped on mutating kanban events from this dashboard.
+
+    Format: ``dashboard:<session>`` where <session> is a short hash of the
+    dashboard server's ephemeral session token — all REST writes from one
+    dashboard process share that token, so it IS the session identity. The
+    token is hashed, never logged raw: it grants full dashboard access and
+    must not leak into the audit log. When plugin_api runs outside the
+    dashboard server process (tests, direct ASGI mounts) there is no token
+    to hash, so identity falls back to the serving process's ``host:pid``.
+    A token-derived identity is cached per-process because the token is fixed
+    for the server's lifetime.  The fallback is deliberately not cached: this
+    module can be imported before ``web_server`` creates ``_SESSION_TOKEN``,
+    and freezing a ``host:pid`` fallback would misattribute every later call
+    once a real token exists (#82689 follow-up, credit @benperry6).
+    """
+    global _DASHBOARD_OPERATOR
+    if _DASHBOARD_OPERATOR:
+        return _DASHBOARD_OPERATOR
+
+    token: Optional[str] = None
+    ws_mod = sys.modules.get("hermes_cli.web_server")
+    if ws_mod is not None:
+        token = getattr(ws_mod, "_SESSION_TOKEN", None) or None
+    if token:
+        session = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:12]
+        operator = f"dashboard:{session}"
+        _DASHBOARD_OPERATOR = operator
+        return operator
+
+    try:
+        host = socket.gethostname() or "unknown"
+    except Exception:
+        host = "unknown"
+    return f"dashboard:{host}:{os.getpid()}"
+
+
+def _profile_exists(name: Optional[str]) -> Optional[bool]:
+    """Whether ``name`` resolves to a real Hermes profile. ``None`` when no
+    profile was requested (unassign). Best-effort: an import failure must
+    never break the probe."""
+    if not name:
+        return None
+    try:
+        from hermes_cli.profiles import profile_exists
+
+        return bool(profile_exists(name))
+    except Exception:
+        return None
+
+
+def _assign_probe(
+    conn,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    reclaim_first: bool = False,
+) -> dict:
+    """Read-only dry-run probe for an assign/reassign (#82689).
+
+    Returns what WOULD happen without touching any row, so the UI can ask
+    for confirmation before applying an assign that starts execution
+    immediately (unassigned cards are never dispatched — assigning one is
+    the moment work begins).
+    """
+    row = conn.execute(
+        "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+
+    probe: dict[str, Any] = {
+        "task_id": task_id,
+        "task_exists": row is not None,
+        "current_status": row["status"] if row else None,
+        "current_assignee": row["assignee"] if row else None,
+        "claim_locked": bool(row and row["claim_lock"]),
+        "running": bool(
+            row and row["claim_lock"] is not None and row["status"] == "running"
+        ),
+        "target_profile": profile,
+        "target_profile_exists": _profile_exists(profile),
+        "would_reclaim": False,
+        "would_refuse": False,
+        "parents_satisfied": True,
+        "dispatchable_after_assign": False,
+        "warnings": [],
+    }
+
+    if row is None:
+        probe["would_refuse"] = True
+        probe["warnings"].append(f"no such task: {task_id}")
+        return probe
+
+    running = probe["running"]
+    if running:
+        # Mirrors assign_task's guard: refuses while claimed+running.
+        if reclaim_first:
+            probe["would_reclaim"] = True
+            probe["warnings"].append(
+                "the active worker claim would be released before reassigning"
+            )
+        else:
+            probe["would_refuse"] = True
+            probe["warnings"].append(
+                "task is currently running — assignment would be refused "
+                "(pass reclaim_first to release the claim)"
+            )
+
+    # Parent invariant from claim_task: a ready task with undone parents is
+    # demoted back to todo instead of being claimed.
+    if profile is not None:
+        undone = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        probe["parents_satisfied"] = undone is None
+
+    effective_status = "ready" if (
+        not running or reclaim_first
+    ) else probe["current_status"]
+    probe["dispatchable_after_assign"] = bool(
+        not probe["would_refuse"]
+        and effective_status == "ready"
+        and profile is not None
+        and probe["target_profile_exists"]
+        and probe["parents_satisfied"]
+    )
+    if probe["dispatchable_after_assign"]:
+        probe["warnings"].append(
+            "assignment starts execution immediately: the dispatcher will "
+            "claim this task and spawn the assigned profile on its next tick"
+        )
+    return probe
+
+
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn):
@@ -646,9 +803,30 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         # For a combined assignee+review patch, request_review must capture the
         # current implementer before the task is routed to the reviewer.
         review_assignee_deferred = payload.status == "review" and payload.assignee is not None
+        # --- dry-run probe (#82689) ---------------------------------------
+        # Confirmation is opt-in per request: only the assign path supports
+        # it, and nothing below runs when it fires.
+        if payload.dry_run:
+            if payload.assignee is None or payload.status is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "dry_run=true is only supported for a pure assignee "
+                        "patch (no status/other fields)"
+                    ),
+                )
+            probe = _assign_probe(conn, task_id, payload.assignee or None)
+            return {
+                "ok": bool(probe["task_exists"] and not probe["would_refuse"]),
+                "dry_run": True,
+                "task_id": task_id,
+                "probe": probe,
+            }
         if payload.assignee is not None and not review_assignee_deferred:
             with _map_errors(409, RuntimeError):
-                _require_ok(kanban_db.assign_task(conn, task_id, payload.assignee or None))
+                _require_ok(kanban_db.assign_task(
+                    conn, task_id, payload.assignee or None,
+                    operator=_dashboard_operator()))
         if payload.status is not None:
             _patch_status(conn, task_id, payload, review_assignee_deferred)
         for wanted, apply, _refused in _OVERRIDE_OPS:
@@ -785,8 +963,13 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
             entry.update(ok=False, error=f"transition to {s!r} refused")
     if payload.assignee is not None:
         try:
-            ok = (kanban_db.reassign_task(conn, tid, payload.assignee or None, reclaim_first=True) if payload.reclaim_first
-                  else kanban_db.assign_task(conn, tid, payload.assignee or None))
+            ok = (kanban_db.reassign_task(
+                      conn, tid, payload.assignee or None, reclaim_first=True,
+                      operator=_dashboard_operator())
+                  if payload.reclaim_first
+                  else kanban_db.assign_task(
+                      conn, tid, payload.assignee or None,
+                      operator=_dashboard_operator()))
             if not ok:
                 entry.update(ok=False, error="assign refused")
         except RuntimeError as e:
@@ -981,15 +1164,39 @@ class ReassignBody(BaseModel):
     profile: Optional[str] = None  # "" or None = unassign
     reclaim_first: bool = False
     reason: Optional[str] = None
+    # Opt-in confirmation probe (#82689): with dry_run=true nothing is
+    # mutated — the response reports what WOULD happen (task state, current
+    # claim, target profile existence, whether assignment starts execution
+    # immediately) so the UI can confirm before applying.
+    dry_run: bool = False
 
 
 @router.post("/tasks/{task_id}/reassign")
 def reassign_task_endpoint(task_id: str, payload: ReassignBody, board: Optional[str] = Query(None)):
     """Reassign to another profile, optionally reclaiming first
-    (``hermes kanban reassign <task_id> <profile> [--reclaim]``)."""
+    (``hermes kanban reassign <task_id> <profile> [--reclaim]``).
+
+    With ``dry_run=true`` the endpoint is a read-only probe: it returns
+    ``{ok, dry_run, task_id, probe}`` describing what the real call would
+    do — including whether the assign would be refused (running claim,
+    unknown task) and whether the dispatcher would pick the card up on its
+    next tick. The default (dry_run=false) behavior is unchanged.
+    """
     with _board_conn(board) as (board, conn):
+        if payload.dry_run:
+            probe = _assign_probe(
+                conn, task_id, payload.profile or None,
+                reclaim_first=bool(payload.reclaim_first),
+            )
+            return {
+                "ok": bool(probe["task_exists"] and not probe["would_refuse"]),
+                "dry_run": True,
+                "task_id": task_id,
+                "probe": probe,
+            }
         ok = kanban_db.reassign_task(
-            conn, task_id, payload.profile or None, reclaim_first=bool(payload.reclaim_first), reason=payload.reason)
+            conn, task_id, payload.profile or None, reclaim_first=bool(payload.reclaim_first), reason=payload.reason,
+            operator=_dashboard_operator())
         if not ok:
             raise _conflict(
                 f"cannot reassign {task_id}: unknown id, or still "

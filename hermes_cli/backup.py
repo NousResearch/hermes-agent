@@ -1126,13 +1126,18 @@ def _quick_snapshot_candidates(home: Path):
     regenerable per-board subtrees (workspaces, attachments) are skipped."""
     for rel in _QUICK_STATE_FILES:
         src = home / rel
-        if src.is_dir():
+        if src.is_dir() and not src.is_symlink():
             for sub in filter(Path.is_file, src.rglob("*")):
+                # Never follow symlinks out of the home tree: a link under
+                # kanban/boards or pairing/ would capture outside-HOME bytes
+                # (and shutil.copy2 follows them on copy too).
+                if sub.is_symlink():
+                    continue
                 sub_rel = sub.relative_to(home).as_posix()
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
                 yield sub, sub_rel, True
-        elif src.is_file():
+        elif src.is_file() and not src.is_symlink():
             yield src, rel, False
 
 
@@ -1288,6 +1293,13 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
     snap_res, home_res = snap_dir.resolve(), home.resolve()
     restored = 0
     for rel in meta.get("files", {}):
+        # Volatile runtime state (gateway PIDs/locks, process registry) is
+        # snapshotted for forensics but must never be restored over the live
+        # tree — same class ``hermes import`` already skips. Restoring it
+        # would clobber the running gateway's identity mid-flight.
+        if Path(rel).name in _IMPORT_SKIP_NAMES:
+            logger.debug("Skipping volatile runtime file on snapshot restore: %s", rel)
+            continue
         src = snap_dir / rel
         dst = home / rel
         if not (_is_within(src, snap_res) and _is_within(dst, home_res)):

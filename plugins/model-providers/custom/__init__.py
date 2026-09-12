@@ -36,6 +36,18 @@ class CustomProfile(ProviderProfile):
         top_level: dict[str, Any] = {}
         if ollama_num_ctx:
             extra_body["options"] = {"num_ctx": ollama_num_ctx}
+        # A configured provider-specific chat-template envelope is authoritative.
+        # Do not mix it with generic OpenAI/Ollama reasoning controls.
+        request_overrides = ctx.get("request_overrides")
+        override_body = (
+            request_overrides.get("extra_body", {})
+            if isinstance(request_overrides, dict)
+            else {}
+        )
+        if isinstance(override_body, dict) and isinstance(
+            override_body.get("chat_template_kwargs"), dict
+        ):
+            return extra_body, top_level
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
         # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->
         # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,

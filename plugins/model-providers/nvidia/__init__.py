@@ -1,14 +1,67 @@
 """NVIDIA NIM provider profile."""
 
+import logging
 from typing import Any
 
+from agent.nim_reasoning import (
+    is_glm5_nim_model,
+    is_nemotron_3_ultra_nim_model,
+    is_nim_thinking_model,
+    normalize_nim_reasoning_effort,
+)
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+logger = logging.getLogger(__name__)
 
 
 class NvidiaProviderProfile(ProviderProfile):
     """NVIDIA NIM accepts a stricter ToolMessage schema than most OpenAI-compatible APIs."""
 
+    def build_api_kwargs_extras(
+        self,
+        *,
+        reasoning_config: dict | None = None,
+        model: str | None = None,
+        **context: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not isinstance(reasoning_config, dict) or not is_nim_thinking_model(model):
+            return {}, {}
+
+        enabled = reasoning_config.get("enabled", True)
+        raw_effort, nim_effort = normalize_nim_reasoning_effort(reasoning_config.get("effort"))
+        if enabled is False or raw_effort == "none":
+            if is_glm5_nim_model(model):
+                template = {"enable_thinking": False, "clear_thinking": False}
+            elif is_nemotron_3_ultra_nim_model(model):
+                template = {"enable_thinking": False}
+            else:
+                template = {"thinking": False}
+            return {"chat_template_kwargs": template}, {}
+
+        if is_nemotron_3_ultra_nim_model(model):
+            template = {"enable_thinking": True}
+            if nim_effort in {"low", "medium"}:
+                template["medium_effort"] = True
+            return {"chat_template_kwargs": template}, {}
+
+        if raw_effort not in {"low", "medium", "high"}:
+            logger.info(
+                "NIM reasoning_effort: clamping %s → %s (NIM supports low/medium/high)",
+                raw_effort,
+                nim_effort,
+            )
+
+        if is_glm5_nim_model(model):
+            template = {
+                "enable_thinking": True,
+                "clear_thinking": False,
+                "reasoning_effort": nim_effort,
+            }
+        else:
+            template = {"thinking": True, "reasoning_effort": nim_effort}
+        return {"chat_template_kwargs": template}, {}
     @staticmethod
     def _needs_strip(msg: Any) -> bool:
         return isinstance(msg, dict) and msg.get("role") == "tool" and ("name" in msg or "tool_name" in msg)

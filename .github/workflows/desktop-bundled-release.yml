@@ -470,7 +470,7 @@ jobs:
           python -m scripts.ci.python_packages cmake==3.31.6
 
       - name: Build and package
-        shell: bash
+        shell: powershell
         timeout-minutes: 900
         env:
           HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
@@ -483,16 +483,16 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_TOKEN_CREDENTIALS: prod
         run: |
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then
-            python scripts/bundles/desktop.py --commit="$HERMES_BUILD_COMMIT" --variant=bundled
-          else
-            python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=bundled
-            # The official Store identity is stable-only. Canary must never
-            # replace it, even in a Store flight ring.
-            if [[ "$HERMES_PAYLOAD_TAG" != *-canary.* ]]; then
-              python scripts/bundles/desktop.py --tag="$HERMES_PAYLOAD_TAG" --variant=store
-            fi
-          fi
+          if ($env:HERMES_BUILD_COMMIT) {
+              python scripts/bundles/desktop.py --commit="$env:HERMES_BUILD_COMMIT" --variant=bundled
+          } else {
+              python scripts/bundles/desktop.py --tag="$env:HERMES_PAYLOAD_TAG" --variant=bundled
+              # The official Store identity is stable-only. Canary must never
+              # replace it, even in a Store flight ring.
+              if ($env:HERMES_PAYLOAD_TAG -notlike "*-canary.*") {
+                  python scripts/bundles/desktop.py --tag="$env:HERMES_PAYLOAD_TAG" --variant=store
+              }
+          }
 
       - name: Save warmed Python dependencies even after a packaging failure
         if: ${{ !cancelled() && steps.pm.outcome == 'success' }}
@@ -863,8 +863,8 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - { label: linux-x64 }    # runner: ubuntu-24.04
-          - { label: linux-arm64 }  # runner: ubuntu-24.04-arm
+          - { label: linux-x64 } # runner: ubuntu-24.04
+          - { label: linux-arm64 } # runner: ubuntu-24.04-arm
     steps:
       - name: Disabled
         shell: bash
@@ -1340,7 +1340,6 @@ jobs:
         # the bionic uv .deb beside python/node (no PATH install; the
         # payload env composition exposes it, desktop payload model).
         run: bash scripts/termux/build_uv.sh termux-build/payload
-
 
       - name: Stage the remaining CLI runtime tools
         shell: bash
@@ -1821,7 +1820,18 @@ jobs:
   stable-phase-result:
     name: Stable bundle phase completed
     if: always() && inputs.release-phase != ''
-    needs: [validate, build-win32, build-darwin, publish-win32-updater, termux-deb, candidate-manifest, stable-publish, stable-store, stable-promote]
+    needs:
+      [
+        validate,
+        build-win32,
+        build-darwin,
+        publish-win32-updater,
+        termux-deb,
+        candidate-manifest,
+        stable-publish,
+        stable-store,
+        stable-promote
+      ]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

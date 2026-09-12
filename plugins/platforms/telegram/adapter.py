@@ -1621,7 +1621,42 @@ class TelegramAdapter(BasePlatformAdapter):
             self._write_runtime_status_safe(
                 "connected", platform_state="connected", error_code=None, error_message=None,
             )
+            self._schedule_recovered_send_path_redelivery()
         self._send_path_degraded = False
+
+    def _schedule_recovered_send_path_redelivery(self) -> None:
+        """Replay this process's failed delivery obligations once polling recovers in place.
+
+        A final response rejected with ``send_path_degraded`` lands in the ledger as
+        ``state='failed'`` owned by the live gateway. The reconnect hook
+        (``_install_reconnected_adapter``) sweeps those rows, and ``_finalize_delivery_obligation``
+        compensates only when a replacement adapter took over — an in-place polling recovery is
+        neither, so the row would stay failed until restart even though the send path is
+        confirmed healthy seconds later. Reuse the runner's profile-scoped sweep: its atomic
+        claiming keeps a concurrent redelivery (flood timer, reconnect race) idempotent.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        redeliver = getattr(runner, "_redeliver_failed_obligations_for_platform", None)
+        if not callable(redeliver):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop to schedule on (direct sync callers/tests); runtime paths always have one
+
+        async def _redeliver_recovered() -> None:
+            with contextlib.suppress(Exception):
+                result = redeliver(
+                    self.platform, profile=getattr(self, "_owner_profile", None)
+                )
+                if inspect.isawaitable(result):
+                    await result
+
+        task = asyncio.ensure_future(_redeliver_recovered())
+        tracked = getattr(self, "_background_tasks", None)
+        if tracked is not None:
+            tracked.add(task)
+            task.add_done_callback(tracked.discard)
 
     def _observe_polling_request_result(self, request, generation, result):
         """Record getUpdates progress from an observed do_request result (purely observational: PTB still

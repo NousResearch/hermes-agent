@@ -7,6 +7,7 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 import logging
 import contextlib
 import argparse
+import json
 import os
 import re
 import shlex
@@ -45,6 +46,18 @@ def _desktop_stamp_path() -> Path:
     return get_hermes_home() / "desktop-build-stamp.json"
 
 
+# Mirrors apps/desktop/electron/main.ts INSTALL_STAMP_SCHEMA_VERSION.
+INSTALL_STAMP_SCHEMA_VERSION = 1
+_ALL_ZERO_COMMIT = re.compile(r"^0{7,40}$")
+_HEX_SHA = re.compile(r"^[0-9a-f]+$")
+
+
+def _packaged_resources_dir(exe: Path) -> Path:
+    """Electron resources dir next to the unpacked executable (macOS ``Resources``, else ``resources``)."""
+    # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
+    return exe.parent.parent / "Resources" if sys.platform == "darwin" else exe.parent / "resources"
+
+
 def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Path]:
     """The renderer ``dist`` a launch loads: ``apps/desktop/dist`` in source mode, else the
     ``app.asar.unpacked/dist`` copy (the only real directory, and the one an interrupted replace tears)."""
@@ -55,11 +68,60 @@ def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Pa
     if executable is None:
         return None
 
-    # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
-    resources = (
-        executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
-    )
-    return resources / "app.asar.unpacked" / "dist"
+    return _packaged_resources_dir(executable) / "app.asar.unpacked" / "dist"
+
+
+def _read_installed_install_stamp(resources: Path) -> Optional[dict]:
+    """Packaged ``resources/install-stamp.json``, or None when missing/unreadable (fail-open)."""
+    try:
+        data = json.loads((resources / "install-stamp.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _git_head_sha(project_root: Path) -> Optional[str]:
+    """Lowercase hex SHA from ``git -C project_root rev-parse HEAD``, or None (fail-open)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    head = (result.stdout or "").strip().lower()
+    if len(head) < 7 or not _HEX_SHA.fullmatch(head):
+        return None
+    return head
+
+
+def _installed_stamp_lags_head(stamp: dict, project_root: Path) -> bool:
+    """True when a real packaged install-stamp commit differs from HEAD (prefix-aware).
+
+    Fail-open on schema/commit/fallback/git problems — never force a rebuild from those.
+    """
+    try:
+        if stamp.get("schemaVersion") != INSTALL_STAMP_SCHEMA_VERSION:
+            return False
+        commit = stamp.get("commit")
+        if not isinstance(commit, str) or len(commit) < 7:
+            return False
+        installed = commit.strip().lower()
+        if stamp.get("source") == "fallback" or _ALL_ZERO_COMMIT.fullmatch(installed):
+            return False
+        if len(installed) < 7 or not _HEX_SHA.fullmatch(installed):
+            return False
+        head = _git_head_sha(project_root)
+        if not head:
+            return False
+        if installed == head or installed.startswith(head) or head.startswith(installed):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 # The module files the renderer fetches before any app code runs: Vite emits
@@ -108,6 +170,20 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     if dist_dir is not None and _renderer_bundle_torn(dist_dir):
         print(f"  ⚠ A previous update left the desktop bundle incomplete ({dist_dir}); rebuilding it")
         return True
+
+    # Packaged install-stamp vs HEAD: a failed stage-and-swap can leave the
+    # source-content stamp current while resources/install-stamp.json is old.
+    if not source_mode:
+        exe = _desktop_packaged_executable(desktop_dir)
+        if exe is not None:
+            stamp = _read_installed_install_stamp(_packaged_resources_dir(exe))
+            if stamp is not None and _installed_stamp_lags_head(stamp, project_root):
+                installed = str(stamp.get("commit") or "")
+                head = _git_head_sha(project_root) or ""
+                print(
+                    f"  ⚠ Installed desktop stamp ({installed[:8]}) lags HEAD ({head[:8]}); rebuild needed"
+                )
+                return True
 
     return not _stamp_is_current(
         _desktop_stamp_path(), lambda: _compute_desktop_content_hash(project_root), sourceMode=source_mode

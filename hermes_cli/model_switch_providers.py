@@ -648,7 +648,8 @@ class _PickerBuild:
     results: list = field(default_factory=list)
     seen_slugs: set = field(default_factory=set)  # lowercase-normalized to catch case variants
     # Effective base URLs of every built-in row: section 4 hides ``custom_providers`` duplicates.
-    builtin_endpoints: set = field(default_factory=set)
+    # normed URL → (builtin slug, env var if that URL came from an override, else "").
+    builtin_endpoints: dict[str, tuple[str, str]] = field(default_factory=dict)
     # (display_name, base_url) pairs from section 3 so section 4 skips overlapping rows.
     section3_pairs: set = field(default_factory=set)
 
@@ -670,10 +671,12 @@ class _PickerBuild:
         pcfg = PROVIDER_REGISTRY.get(slug)
         if not pcfg:
             return
-        url = os.environ.get(pcfg.base_url_env_var, "") if getattr(pcfg, "base_url_env_var", "") else ""
-        normed = _norm_url(url or getattr(pcfg, "inference_base_url", "") or "")
+        env_var = getattr(pcfg, "base_url_env_var", "") or ""
+        env_url = os.environ.get(env_var, "") if env_var else ""
+        normed = _norm_url(env_url or getattr(pcfg, "inference_base_url", "") or "")
         if normed:
-            self.builtin_endpoints.add(normed)
+            # First slug to claim a URL wins; later builtins sharing it still hide customs.
+            self.builtin_endpoints.setdefault(normed, (slug, env_var if env_url else ""))
 
     def add_builtin_row(
         self, slug: str, name: str, is_current: bool, model_ids: list, source: str, *, uncapped_ok: bool = True,
@@ -962,6 +965,23 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
         source="model-config", shown=_cap_models(models, b.max_models))
 
 
+def _log_custom_shadowed_by_builtin(grp: dict, shadow: tuple[str, str]) -> None:
+    """Explain a section-4 hide so env-overridden builtin URLs are discoverable (#107012)."""
+    builtin_slug, env_var = shadow
+    name = grp.get("name") or grp.get("slug") or "?"
+    slug = grp.get("slug") or name
+    if env_var:
+        logger.warning(
+            "Hiding custom provider %r (%s): endpoint matches built-in %r via %s",
+            name, slug, builtin_slug, env_var,
+        )
+    else:
+        logger.warning(
+            "Hiding custom provider %r (%s): endpoint matches built-in %r",
+            name, slug, builtin_slug,
+        )
+
+
 def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
     """Section 4: ``custom_providers:`` entries (one model each) grouped into one row per
     (endpoint, credential identity, api_mode, extra_headers, display prefix). Four "Ollama — X"
@@ -1020,6 +1040,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
         # A built-in row already represents this endpoint (e.g. "my-dashscope" vs the
         # alibaba-coding-plan row): keep the built-in, hide the shadow.
         if grp_url_norm and grp_url_norm in b.builtin_endpoints:
+            _log_custom_shadowed_by_builtin(grp, b.builtin_endpoints[grp_url_norm])
             continue
         is_current = b.endpoint_is_current(
             slug, {str(alias).lower() for alias in grp["aliases"]}, grp_url_norm,

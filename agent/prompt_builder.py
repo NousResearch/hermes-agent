@@ -196,7 +196,8 @@ def build_memory_guidance(
         "'Always respond concisely' ✗ (imperative phrasing gets re-read as "
         "a directive in later sessions and can override the user's current "
         "request). A fact stale within a week belongs in session history; "
-        "procedures and workflows belong in skills."
+        "procedures and workflows belong in skills. A ~3-step temporary "
+        "procedure may stay in memory until it earns a skill."
     )
 
 

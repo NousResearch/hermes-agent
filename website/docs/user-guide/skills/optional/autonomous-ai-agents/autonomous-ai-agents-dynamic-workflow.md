@@ -14,8 +14,8 @@ Plan-in-code fan-outs, adversarial verification, waves.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/autonomous-ai-agents/dynamic-workflow` |
+| Source | Optional — install with `hermes skills install official/autonomous-ai-agents/dynamic-workflow` |
+| Path | `optional-skills/autonomous-ai-agents/dynamic-workflow` |
 | Version | `2.0.0` |
 | Author | Teknium + Hermes Agent |
 | License | MIT |

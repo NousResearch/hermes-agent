@@ -173,7 +173,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-merge-reconciler',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
@@ -323,6 +322,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-honcho',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands',

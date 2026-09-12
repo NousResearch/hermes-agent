@@ -400,9 +400,24 @@ class TestEmailMultiImage:
             _run(adapter.send_multiple_images("user@example.com", images))
 
         mock_send.assert_called_once()
-        to_addr, body, file_paths = mock_send.call_args.args
+        to_addr, body, file_paths = mock_send.call_args.args[:3]
         assert to_addr == "user@example.com"
         assert len(file_paths) == 3
         assert "alt 0" in body
+
+    def test_forwards_thread_metadata_as_context_key(self, adapter, tmp_path):
+        """Subject isolation keys the SMTP helper by sender + thread_id."""
+        adapter._session_by_subject = True
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        with patch.object(
+            adapter, "_send_email_with_attachments", MagicMock(return_value="<msgid@x>")
+        ) as mock_send:
+            _run(adapter.send_multiple_images(
+                "user@example.com",
+                [(f"file://{p}", "alt")],
+                metadata={"thread_id": "Budget"},
+            ))
+        assert mock_send.call_args.args[3] == "user@example.com\0Budget"
 
 

@@ -1019,6 +1019,22 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     assert server._completion_cwd({}) == str(stale)
 
 
+def test_completion_cwd_cross_profile_placeholder_uses_profile_home(monkeypatch, tmp_path):
+    """A pooled backend must not leak the launch profile's workspace into another profile."""
+    profile_home = _write_profile_cfg(tmp_path / "home-beta", ".")
+    launch_workspace = tmp_path / "launch-repo"
+    launch_workspace.mkdir()
+    stale_env = tmp_path / "stale-env"
+    stale_env.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale_env))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_workspace)}})
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home if name else None)
+
+    assert server._completion_cwd({"profile": "beta"}) == str(profile_home)
+    assert server._completion_cwd({}) == str(launch_workspace)
+
+
 def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_path):
     """Dashboard /chat's launch-profile in-memory gateway must honor config.
 

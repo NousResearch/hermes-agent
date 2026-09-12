@@ -330,3 +330,15 @@ def test_docker_snap_compat_is_bridged_everywhere():
     assert "docker_snap_compat" in _gateway_env_map_keys()
     assert "docker_snap_compat" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_SNAP_COMPAT" in _terminal_tool_env_var_names()
+
+
+def test_docker_tmpfs_sizes_are_bridged_everywhere():
+    """``terminal.docker_workspace_tmpfs_size`` / ``docker_home_tmpfs_size`` cap the tmpfs
+    mounts of non-persistent sandboxes and must reach the container on every entry-point,
+    like docker_shm_size."""
+    for key in ("docker_workspace_tmpfs_size", "docker_home_tmpfs_size"):
+        assert key in _cli_env_map_keys()
+        assert key in _gateway_env_map_keys()
+        assert key in _save_config_env_sync_keys()
+    assert "TERMINAL_DOCKER_WORKSPACE_TMPFS_SIZE" in _terminal_tool_env_var_names()
+    assert "TERMINAL_DOCKER_HOME_TMPFS_SIZE" in _terminal_tool_env_var_names()

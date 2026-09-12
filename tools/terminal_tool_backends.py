@@ -39,7 +39,8 @@ _CONTAINER_KEYS = (
     ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""),
     ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
-    ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
+    ("docker_shm_size", "1g"), ("docker_workspace_tmpfs_size", "10g"), ("docker_home_tmpfs_size", "1g"),
+    ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True), ("docker_snap_compat", False),
 )
 _DOCKER_KWARGS = (
@@ -48,6 +49,8 @@ _DOCKER_KWARGS = (
     ("run_as_host_user", "docker_run_as_host_user", False), ("network", "docker_network", True),
     ("extra_args", "docker_extra_args", []), ("persist_across_processes", "docker_persist_across_processes", True),
     ("shared_container_key", "docker_shared_container_key", ""), ("shm_size", "docker_shm_size", "1g"),
+    ("workspace_tmpfs_size", "docker_workspace_tmpfs_size", "10g"),
+    ("home_tmpfs_size", "docker_home_tmpfs_size", "1g"),
     ("snap_compat", "docker_snap_compat", False),
 )
 

@@ -30,7 +30,7 @@ from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_cont
 from acp_adapter.events import (
     _build_plan_update_from_todo_result, make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
 )
-from acp_adapter.model_catalog import build_model_state, encode_model_choice
+from acp_adapter.model_catalog import MODEL_CONFIG_OPTION_ID, build_model_state, encode_model_choice, model_state_to_config_option
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
@@ -547,7 +547,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 return
 
     async def _session_response_fields(self, state: SessionState, replay_verb: str | None = None) -> dict[str, Any]:
-        """``models``/``modes``/``field_meta`` for session responses, after an optional history replay;
+        """``models`` (legacy) + ``config_options`` (v1.3.0) / ``modes`` / ``field_meta``
+        for session responses, after an optional history replay;
         schedules command advertisement + usage refresh.
 
         Per ACP spec, load/resume must stream history via ``session/update`` BEFORE responding
@@ -572,8 +573,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 )
         self._schedule_available_commands_update(state.session_id)
         self._schedule_soon(lambda: self._send_usage_update(state))
+        model_state = self._build_model_state(state)
+        model_option = model_state_to_config_option(model_state)
         return {
-            "models": self._build_model_state(state),
+            "models": model_state,
+            "config_options": [model_option] if model_option is not None else None,
             "modes": self._session_modes(state),
             "field_meta": self._provenance_meta(state.session_id, getattr(state.agent, "session_id", state.session_id)),
         }
@@ -635,8 +639,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Forked session %s -> %s", session_id, state.session_id)
         self._schedule_available_commands_update(state.session_id)
+        model_state = self._build_model_state(state)
+        model_option = model_state_to_config_option(model_state)
         return ForkSessionResponse(
-            session_id=state.session_id, models=self._build_model_state(state), modes=self._session_modes(state)
+            session_id=state.session_id, models=model_state,
+            config_options=[model_option] if model_option is not None else None,
+            modes=self._session_modes(state),
         )
 
     async def list_sessions(
@@ -958,11 +966,20 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     async def set_config_option(
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
-        """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
+        """Accept ACP config option updates; ``model`` switches the session model (v1.3.0
+        picker path, same switch as the legacy ``session/set_model``)."""
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
+
+        if str(config_id) == MODEL_CONFIG_OPTION_ID:
+            _old, requested_provider, resolved_model = self._switch_model(state, str(value), keep_endpoint=True)
+            logger.info(
+                "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
+            )
+            model_option = model_state_to_config_option(self._build_model_state(state))
+            return SetSessionConfigOptionResponse(config_options=[model_option] if model_option is not None else [])
 
         if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
             state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)

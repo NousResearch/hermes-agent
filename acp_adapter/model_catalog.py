@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Callable
 
-from acp.schema import ModelInfo, SessionModelState
+from acp.schema import ModelInfo, SessionConfigSelectOption, SessionConfigOptionSelect, SessionModelState
 
 logger = logging.getLogger("acp_adapter.server")
 
@@ -233,6 +233,26 @@ class _ModelCatalog:
                 is_current = named_slug == normalized_provider and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
                 self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
+
+
+# ``SessionConfigOptionSelect`` id under which the model selector is advertised via
+# ACP v1.3.0 ``configOptions`` (Zed 1.18+ renders the model picker from this).
+MODEL_CONFIG_OPTION_ID = "model"
+
+
+def model_state_to_config_option(state: SessionModelState | None) -> SessionConfigOptionSelect | None:
+    """v1.3.0 select option mirroring a legacy ``SessionModelState``; ``None`` when
+    there is nothing listable (caller then omits ``config_options``)."""
+    if state is None or not state.available_models:
+        return None
+    return SessionConfigOptionSelect(
+        id=MODEL_CONFIG_OPTION_ID, name="Model", category="model", type="select",
+        current_value=state.current_model_id or state.available_models[0].model_id,
+        options=[
+            SessionConfigSelectOption(value=item.model_id, name=item.name, description=item.description)
+            for item in state.available_models
+        ],
+    )
 
 
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:

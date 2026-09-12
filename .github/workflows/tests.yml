@@ -125,6 +125,57 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
+  wal-setconfig:
+    name: WAL settlement (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.12
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.12
+
+      - name: Install dependencies
+        # This focused SQLite witness does not exercise optional provider SDKs.
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.12 --extra dev
+
+      - name: Run setconfig failure and interrupted-capture regressions
+        env:
+          HERMES_TEST_FILE_RETRIES: "0"
+        run: |
+          scripts/run_tests.sh tests/hermes_state/test_deleted_wal_generation_guard.py \
+            -k setconfig_failure -m 'linux_only and not integration' \
+            -j 1 --file-timeout 120 --junitxml="$RUNNER_TEMP/wal-setconfig.xml"
+          .venv/bin/python - "$RUNNER_TEMP/wal-setconfig.xml" <<'PY'
+          import sqlite3
+          import sys
+          import xml.etree.ElementTree as ET
+
+          assert sys.version_info[:2] == (3, 12), sys.version
+          assert hasattr(sqlite3.Connection, "setconfig")
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          assert cases, "No WAL settlement regressions were collected"
+          for case in cases:
+              assert all(case.find(tag) is None for tag in ("skipped", "failure", "error")), (
+                  "Required WAL settlement regression did not pass", case.attrib
+              )
+          print(f"Verified {len(cases)} Python 3.12 WAL settlement regressions; none skipped")
+          PY
+
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15

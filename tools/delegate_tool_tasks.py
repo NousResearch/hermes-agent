@@ -107,16 +107,24 @@ def _normalize_task_list(
 def _coerce_task_schemas(
     task_list: List[Dict[str, Any]], output_schema: Optional[Dict[str, Any]]
 ) -> tuple[List[Optional[Dict[str, Any]]], Optional[str]]:
-    """Per-task coerced output schemas. A malformed output_schema fails the whole call before any child spawns;
-    schema-less tasks resolve to None and take no new code paths downstream."""
-    from tools.delegation_output_schema import coerce_output_schema
+    """Resolve raw or simplified per-task contracts before any child spawns.
+
+    Schema-less tasks resolve to None and take no new code paths downstream.
+    """
+    from tools.delegation_output_schema import coerce_output_contract
     task_schemas: List[Optional[Dict[str, Any]]] = []
     for i, task in enumerate(task_list):
         raw_schema = task.get("output_schema")
         if raw_schema is None and len(task_list) == 1 and output_schema is not None:
             raw_schema = output_schema
-        coerced_schema, schema_err = coerce_output_schema(raw_schema)
+        raw_fields = task.get("output_fields")
+        required_fields = task.get("required_output_fields")
+        coerced_schema, schema_err = coerce_output_contract(raw_schema, raw_fields, required_fields)
         if schema_err:
-            return [], f"Task {i} output_schema invalid: {schema_err}"
+            if raw_fields is not None or required_fields is not None:
+                label = "output_fields"
+            else:
+                label = "output_schema"
+            return [], f"Task {i} {label} invalid: {schema_err}"
         task_schemas.append(coerced_schema)
     return task_schemas, None

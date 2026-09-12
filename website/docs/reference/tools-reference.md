@@ -74,6 +74,25 @@ If the prompt times out part-way, answers the user already locked are kept: the 
 |------|-------------|----------------------|
 | `delegate_task` | Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its final summary returns to you. Provide 'goal' for a single task or 'tasks' for a parallel batch (limits and nesting rules… | — |
 
+### Structured child results
+
+For a common flat result contract, use `output_fields` inside a `tasks[]` item instead of writing a nested JSON Schema inline:
+
+```json
+{
+  "goal": "Review the change",
+  "output_fields": {
+    "summary": "string",
+    "changed_files": "string[]",
+    "verification": "string",
+    "blockers": "string[]"
+  },
+  "required_output_fields": ["summary", "verification"]
+}
+```
+
+Hermes compiles the shorthand into the same machine-validated output contract used by `output_schema`. Supported types are `string`, `integer`, `number`, `boolean`, and `object`, plus `[]` array forms. Use `output_schema` when you need nested constraints, enums, unions, or other full JSON Schema features. The two forms are mutually exclusive for one task.
+
 ## `feishu_doc` toolset
 
 Scoped to the Feishu document-comment intelligent-reply handler (`gateway/platforms/feishu_comment.py`). Not exposed on `hermes-cli` or the regular Feishu chat adapter.

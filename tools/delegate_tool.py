@@ -631,8 +631,24 @@ DELEGATE_TASK_SCHEMA = {
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
                             "child up front; parent validates with one bounded correction retry; result gains "
-                            "schema_valid, plus schema_errors on failure). Keep it forgiving — require only "
-                            "fields you will read.",
+                            "schema_valid, plus schema_errors on failure). This is the advanced escape hatch; for "
+                            "flat fields, prefer output_fields and required_output_fields. Keep it forgiving — "
+                            "require only fields you will read.",
+                        ),
+                        "output_fields": _p(
+                            "object",
+                            "Optional simple output contract: map field names to one of string, integer, number, "
+                            "boolean, object, or those types with [] for arrays. Hermes compiles it to JSON Schema. "
+                            "Use required_output_fields for fields that must be present. Mutually exclusive with "
+                            "output_schema.",
+                            minProperties=1,
+                            additionalProperties={"type": "string"},
+                        ),
+                        "required_output_fields": _p(
+                            "array",
+                            "Optional field names that must be present when output_fields is used; every name "
+                            "must be declared in output_fields.",
+                            items={"type": "string"},
                         ),
                         "group": _p(
                             "string",

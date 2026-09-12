@@ -1,6 +1,7 @@
-"""Structured-output schema helpers for delegate_task.
+"""Structured-output contract helpers for delegate_task.
 
-Optional per-task ``output_schema`` (a JSON Schema object): the child gets an
+Optional per-task ``output_schema`` (a JSON Schema object) and the simpler
+``output_fields`` shorthand both compile to one contract: the child gets an
 OUTPUT CONTRACT block appended to its context, the parent validates the final
 answer with jsonschema, and on failure sends exactly ONE bounded retry turn
 carrying the validation errors verbatim (more retries make frontier models
@@ -40,6 +41,79 @@ def coerce_output_schema(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[s
     except Exception as exc:
         return None, f"output_schema is not a valid JSON Schema: {exc}"
     return raw, None
+
+
+_SIMPLE_OUTPUT_TYPES = frozenset({"string", "integer", "number", "boolean", "object"})
+
+
+def _simple_field_schema(type_name: Any) -> Optional[Dict[str, Any]]:
+    """Return one JSON-Schema fragment for the deliberately small field vocabulary."""
+    if not isinstance(type_name, str):
+        return None
+    is_array = type_name.endswith("[]")
+    base_type = type_name[:-2] if is_array else type_name
+    if base_type not in _SIMPLE_OUTPUT_TYPES:
+        return None
+    if not is_array:
+        return {"type": base_type}
+    return {"type": "array", "items": {"type": base_type}}
+
+
+def compile_output_fields(
+    raw_fields: Any, required_fields: Any = None
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Compile the flat ``output_fields`` shorthand into the existing JSON-Schema contract.
+
+    The shorthand intentionally accepts only primitive types and their array forms. Keeping
+    this vocabulary closed prevents it from becoming a second, partial JSON-Schema language;
+    callers that need nested constraints can continue using ``output_schema``.
+    """
+    if raw_fields is None:
+        if required_fields is None:
+            return None, None
+        return None, "required_output_fields requires output_fields."
+    if not isinstance(raw_fields, dict):
+        return None, "output_fields must be an object mapping field names to type names."
+    if not raw_fields:
+        return None, "output_fields must declare at least one field."
+    if required_fields is None:
+        normalized_required: List[str] = []
+    elif not isinstance(required_fields, list):
+        return None, "required_output_fields must be an array of field names."
+    else:
+        normalized_required = []
+        for field_name in required_fields:
+            if not isinstance(field_name, str) or not field_name:
+                return None, "required_output_fields entries must be non-empty strings."
+            if field_name in normalized_required:
+                return None, f"required_output_fields contains duplicate field {field_name!r}."
+            normalized_required.append(field_name)
+
+    properties: Dict[str, Any] = {}
+    for field_name, type_name in raw_fields.items():
+        if not isinstance(field_name, str) or not field_name:
+            return None, "output_fields keys must be non-empty strings."
+        field_schema = _simple_field_schema(type_name)
+        if field_schema is None:
+            allowed = ", ".join(sorted(_SIMPLE_OUTPUT_TYPES)) + " and their [] forms"
+            return None, f"output_fields[{field_name!r}] must use one of {allowed}; got {type_name!r}."
+        properties[field_name] = field_schema
+
+    unknown_required = [field_name for field_name in normalized_required if field_name not in properties]
+    if unknown_required:
+        return None, f"required_output_fields contains undeclared field(s): {', '.join(unknown_required)}."
+    return {"type": "object", "properties": properties, "required": normalized_required}, None
+
+
+def coerce_output_contract(
+    raw_schema: Any, raw_fields: Any = None, required_fields: Any = None
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Resolve one task's raw or simplified contract without duplicating precedence rules."""
+    if raw_schema is not None and (raw_fields is not None or required_fields is not None):
+        return None, "output_schema and output_fields are mutually exclusive; provide only one."
+    if raw_fields is not None or required_fields is not None:
+        return compile_output_fields(raw_fields, required_fields)
+    return coerce_output_schema(raw_schema)
 
 
 def append_output_contract(context: Optional[str], schema: Dict[str, Any]) -> str:

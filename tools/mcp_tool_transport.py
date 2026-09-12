@@ -406,6 +406,11 @@ class MCPServerTransportMixin:
         # 2026-07-28 header routes the handshake-era ``initialize()`` onto the envelope ladder, which rejects it.
         if not any(key.lower() == "mcp-protocol-version" for key in headers):
             headers["mcp-protocol-version"] = _core.LATEST_HANDSHAKE_VERSION
+        # Sessionful Streamable HTTP servers (Obsidian Local REST API) reject initialize with 406
+        # unless Accept names both application/json and text/event-stream. User override wins;
+        # SSE keeps its existing header set.
+        if config.get("transport") != "sse" and not any(key.lower() == "accept" for key in headers):
+            headers["Accept"] = "application/json, text/event-stream"
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
                   self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))

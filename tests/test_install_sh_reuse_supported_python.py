@@ -45,6 +45,8 @@ def _run_prerequisites(tmp_path: Path, *, uv_find_script: str) -> subprocess.Com
 def test_supported_newer_python_is_reused_instead_of_downloading_311(tmp_path: Path) -> None:
     """3.11 absent, 3.13 present: the installer must take 3.13 and never call ``uv python install``."""
     result = _run_prerequisites(tmp_path, uv_find_script=(
-        f"  [ \"$3\" = 3.11 ] && exit 2\n  [ \"$3\" = '>=3.11,<3.14' ] && {{ echo {tmp_path}/bin/python3.13; exit 0; }}\n  exit 2\n"))
+        # The range probe must carry --system: with the install's own venv activated, a plain
+        # `uv python find` returns venv/bin/python3, which setup_venv then deletes.
+        f"  [ \"$3\" = 3.11 ] && exit 2\n  [ \"$3\" = --system ] && [ \"$4\" = '>=3.11,<3.14' ] && {{ echo {tmp_path}/bin/python3.13; exit 0; }}\n  exit 2\n"))
     assert "DOWNLOAD ATTEMPTED" not in result.stdout, result.stdout
     assert "Python found: Python 3.13.12" in result.stdout, result.stdout

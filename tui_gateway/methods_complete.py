@@ -281,9 +281,21 @@ def _session_agent(params: dict):
 def _(rid, params: dict) -> dict:
     from hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
-    # NOT clobber disk config (with_overrides is truthy-only).
+    # NOT clobber disk config (with_overrides is truthy-only). When dispatch froze
+    # a request-time runtime snapshot (#65388), that snapshot wins over the live
+    # agent — a switch queued ahead of this pool worker must not tear the identity
+    # this request reports.
+    runtime_snapshot = params.get(_MODEL_OPTIONS_RUNTIME_SNAPSHOT)  # injected by dispatch
+    if isinstance(runtime_snapshot, dict):
+        # A frozen snapshot replaces the live agent entirely — a switch queued
+        # ahead of this pool worker must not tear the identity this request reports.
+        ctx = _model_picker_context(None, runtime_snapshot=runtime_snapshot)
+    else:
+        # No snapshot (direct call / older dispatch): the live agent path,
+        # invoked exactly as before #65388 so existing callers and mocks keep working.
+        ctx = _model_picker_context(_session_agent(params))
     return _ok(rid, build_model_options_payload(
-        _model_picker_context(_session_agent(params)), explicit_only=bool(params.get("explicit_only")),
+        ctx, explicit_only=bool(params.get("explicit_only")),
         include_unconfigured=bool(params.get("include_unconfigured")), refresh=bool(params.get("refresh"))))
 
 

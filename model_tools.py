@@ -313,12 +313,13 @@ def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, 
 def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]], quiet_mode: bool) -> set:
     """Tool names requested by the toolset selection (before check_fn filtering)."""
     tools: set = set()
+    # Dispatcher-spawned kanban workers always get the lifecycle handoff
+    # tools, even when the assignee profile restricts its chat toolsets.
+    kanban_worker = (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
+                     and _is_dispatcher_owned_worker())
     if enabled_toolsets is not None:
         enabled = list(enabled_toolsets)
-        # Dispatcher-spawned kanban workers always get the lifecycle handoff
-        # tools, even when the assignee profile restricts its chat toolsets.
-        if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
-                and _is_dispatcher_owned_worker() and "kanban" not in enabled):
+        if kanban_worker and "kanban" not in enabled:
             enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
     else:
@@ -330,6 +331,13 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
+        # The same worker invariant applies here: a profile may disable
+        # `kanban` to hide board tools from its chat sessions, but stripping
+        # kanban_complete/kanban_block from a dispatcher-owned worker leaves it
+        # unable to ever close its task (the stop-guard nudges it until the
+        # iteration budget runs out). Chat sessions still honor the disable.
+        if kanban_worker and "kanban" in disabled_toolsets:
+            disabled_toolsets = [t for t in disabled_toolsets if t != "kanban"]
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
     return tools
 

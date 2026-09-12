@@ -381,6 +381,7 @@ export const en: Translations = {
       'composer.modelPicker': 'Open model picker',
       'composer.voice': 'Start / stop voice conversation',
       'view.toggleSidebar': 'Toggle sessions sidebar',
+      'view.cycleSidebarGrouping': 'Cycle session grouping',
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',

@@ -96,6 +96,7 @@ const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
 const SystemPage = lazy(() => import("@/pages/SystemPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
+const VioletCreations = lazy(() => import("@/violet/pages/VioletCreations"));
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -125,6 +126,10 @@ function RouteFallback({ label = "Loading…" }: { label?: string }) {
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
+}
+
+function CreationsRedirect() {
+  return <Navigate to="/creations/image" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -173,6 +178,8 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/creations": CreationsRedirect,
+  "/creations/:tab": VioletCreations,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -184,6 +191,7 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  { path: "/creations/image", label: "Criações", icon: Sparkles },
   {
     path: "/sessions",
     labelKey: "sessions",

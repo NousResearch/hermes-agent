@@ -919,6 +919,7 @@ DEFAULT_CONFIG = {
     },
 
     "dashboard": {
+        "creations": {"enabled": False, "anvil_url": "http://127.0.0.1:3000"},
         # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
         "theme": "default",
         # Process-isolation rollout controls. Read via the raw config loader, so tui_gateway.server

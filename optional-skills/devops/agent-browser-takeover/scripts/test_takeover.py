@@ -67,7 +67,21 @@ class TakeoverKitTests(unittest.TestCase):
     def test_install_usage(self):
         r = subprocess.run(["bash", str(INSTALL)], capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("usage:", r.stderr)
+        self.assertIn("check|vps|peer", r.stderr)
+
+    def test_check_mode_no_sudo(self):
+        env = os.environ.copy()
+        env["TAKEOVER_DEST"] = tempfile.mkdtemp(prefix="takeover-check-")
+        r = subprocess.run(
+            ["bash", str(INSTALL), "check"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        out = r.stdout + r.stderr
+        self.assertIn("MISSING=", out)
+        self.assertIn("READY=", out)
+        self.assertNotIn("apt-get", out)
 
     def test_shell_syntax(self):
         for script in (LAUNCHER, INSTALL, ROOT / "scripts" / "verify.sh"):
@@ -78,9 +92,11 @@ class TakeoverKitTests(unittest.TestCase):
         skill = (ROOT / "SKILL.md").read_text()
         self.assertIn("fresh-vps.md", skill)
         self.assertIn("peer-egress.md", skill)
+        self.assertIn("hermes-agent-install.md", skill)
         self.assertIn("install.sh", skill)
         self.assertTrue((ROOT / "references" / "fresh-vps.md").exists())
         self.assertTrue((ROOT / "references" / "peer-egress.md").exists())
+        self.assertTrue((ROOT / "references" / "hermes-agent-install.md").exists())
         self.assertTrue((ROOT / "scripts" / "camoufox_server.py").exists())
         self.assertTrue((ROOT / "templates" / "env.example").exists())
 

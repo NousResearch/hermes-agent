@@ -36,10 +36,14 @@ Leave `HERMES_BROWSER_PROXY` empty until the optional peer SOCKS is up
 
 ## 3. Install
 
+Agent-first: `"$SKILL_DIR/scripts/install.sh" check` (no sudo). Then:
+
 ```bash
 "$SKILL_DIR/scripts/install.sh" vps
 "$SKILL_DIR/scripts/verify.sh"
 ```
+
+If a Hermes agent is doing this, follow `hermes-agent-install.md`. Skill copy (`hermes skills install`) is not host install.
 
 `install.sh vps` will:
 

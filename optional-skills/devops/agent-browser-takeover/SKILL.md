@@ -1,14 +1,25 @@
 ---
 name: agent-browser-takeover
-description: Use when the owner must take over a headed agent browser over WireGuard noVNC, Grok Bot-style, including a from-scratch VPS install and optional egress through another WireGuard peer.
-version: 0.2.0
+description: Use when the owner must take over a headed agent browser over WireGuard noVNC, Grok Bot-style, including a Hermes-agent host bootstrap and optional egress through another WireGuard peer.
+version: 0.3.0
 author: TotalLag, Hermes Agent
 license: MIT
 platforms: [linux]
+required_commands: [Xvfb, x11vnc, websockify, python3]
 metadata:
   hermes:
     tags: [browser, vnc, novnc, wireguard, takeover, camoufox, socks]
     related_skills: []
+    requires_toolsets: [terminal]
+    config:
+      - key: takeover.bind_ip
+        description: VPS WireGuard IPv4 for noVNC. Never 0.0.0.0.
+        default: ""
+        prompt: WireGuard address to bind noVNC
+      - key: takeover.wg_iface
+        description: WireGuard interface that owns BIND_IP
+        default: wg0
+        prompt: WireGuard interface name
 ---
 
 # Agent browser takeover (WireGuard noVNC)
@@ -18,6 +29,7 @@ Give the human owner live view and control of the agent's headed browser, the wa
 This is a mirror of an existing Xvfb framebuffer. It is not a second browser and not a virtual desktop.
 
 From-scratch walkthrough: `references/fresh-vps.md`.
+Hermes agent bootstrap: `references/hermes-agent-install.md`.
 Optional peer SOCKS egress: `references/peer-egress.md`.
 
 ## When to Use
@@ -42,6 +54,20 @@ optional: browser HTTP(S) → socks5://PEER_WG_IP:1080  (other WG peer)
 
 `BIND_IP` is this VPS WireGuard address. `PEER_WG_IP` is the other peer. Neither is shipped in this tree.
 
+## Hermes agent install
+
+`hermes skills install official/devops/agent-browser-takeover` copies this skill only. It does **not** install Xvfb, noVNC, or Camoufox.
+
+When the user asks you to set this up:
+
+1. `skill_view` this skill. `$SKILL_DIR` is the directory it reports.
+2. `"$SKILL_DIR/scripts/install.sh" check` — no sudo. Read `MISSING=` / `READY=`.
+3. If `wg` or `bind_ip` is missing, stop. Do not invent a mesh. Ask for the wg0 IPv4 and write `~/.hermes/takeover/env`.
+4. If packages or Camoufox are missing, tell the user you need sudo once, then `"$SKILL_DIR/scripts/install.sh" vps`.
+5. `"$SKILL_DIR/scripts/verify.sh"` must pass before you hand out `http://$BIND_IP:6080/vnc.html`.
+
+Do not apt-get merely because the skill loaded. Full procedure: `references/hermes-agent-install.md`.
+
 ## Hard rules
 
 - Bind noVNC to `BIND_IP` only. Never `0.0.0.0`.
@@ -53,10 +79,12 @@ optional: browser HTTP(S) → socks5://PEER_WG_IP:1080  (other WG peer)
 
 ## From scratch (VPS)
 
+Human or agent, same commands. `$SKILL_DIR` after a hub install is `$HERMES_HOME/skills/devops/agent-browser-takeover`.
+
 ```bash
-SKILL_DIR=optional-skills/devops/agent-browser-takeover
+"$SKILL_DIR/scripts/install.sh" check
 mkdir -p ~/.hermes/takeover
-cp "$SKILL_DIR/templates/env.example" ~/.hermes/takeover/env
+cp -n "$SKILL_DIR/templates/env.example" ~/.hermes/takeover/env
 # set BIND_IP to `ip -4 -o addr show dev wg0`
 "$SKILL_DIR/scripts/install.sh" vps
 "$SKILL_DIR/scripts/verify.sh"
@@ -93,6 +121,7 @@ No host mesh IPs, cookie DBs, or live session URLs belong in this tree. Fill `~/
 ## Verification Checklist
 
 - [ ] `python3 "$SKILL_DIR/scripts/test_takeover.py"` passes
+- [ ] `install.sh check` runs without sudo
 - [ ] `BIND_IP=0.0.0.0` is rejected
 - [ ] `scripts/verify.sh` on a live box: RFB loopback, noVNC on `BIND_IP`, Camoufox `/json/version` 200
 - [ ] Hold process prints `HOLDING` and the VNC capture is not black

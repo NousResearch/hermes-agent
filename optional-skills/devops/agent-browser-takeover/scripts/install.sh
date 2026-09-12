@@ -1,6 +1,7 @@
 #!/bin/bash
 # From-scratch VPS (or peer SOCKS) install. Run as the agent user.
 # Usage:
+#   ./install.sh check   # no sudo: print what is missing (agent first step)
 #   ./install.sh vps     # this VPS: Camoufox + Xvfb + loopback VNC + wg noVNC
 #   ./install.sh peer    # other WireGuard host: SOCKS5 on PEER_WG_IP:1080
 set -euo pipefail
@@ -32,24 +33,86 @@ reject_public() {
   fi
 }
 
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+load_env_optional() {
+  local f="$DEST/env"
+  if [ -f "$f" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$f"
+    set +a
+  fi
+}
+
+check_host() {
+  load_env_optional
+  local missing=()
+  have_cmd xvfb-run || have_cmd Xvfb || missing+=(xvfb)
+  have_cmd x11vnc || missing+=(x11vnc)
+  have_cmd websockify || missing+=(websockify)
+  [ -d /usr/share/novnc ] || missing+=(novnc)
+  have_cmd python3 || missing+=(python3)
+  local iface="${WG_IFACE:-wg0}"
+  local wgip
+  wgip="$(ip -4 -o addr show dev "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1 || true)"
+  [ -n "$wgip" ] || missing+=(wg)
+  local bind="${BIND_IP:-$wgip}"
+  if [ -z "$bind" ] || [ "$bind" = "0.0.0.0" ] || [ "$bind" = "::" ]; then
+    missing+=(bind_ip)
+  fi
+  if [ ! -x "$DEST/venv/bin/python" ] || ! "$DEST/venv/bin/python" -c "import camoufox" 2>/dev/null; then
+    missing+=(camoufox)
+  fi
+  printf 'WG_IFACE=%s\n' "$iface"
+  printf 'BIND_IP=%s\n' "${bind:-}"
+  printf 'CAMOUFOX_VENV=%s\n' "$DEST/venv"
+  if [ "${#missing[@]}" -eq 0 ]; then
+    echo "MISSING="
+    echo "READY=yes"
+    return 0
+  fi
+  echo "MISSING=${missing[*]}"
+  echo "READY=no"
+  echo "NEXT=fill ~/.hermes/takeover/env BIND_IP if needed, then: $ROOT/scripts/install.sh vps  (sudo for apt)"
+  return 1
+}
+
 apt_vps() {
-  if ! command -v apt-get >/dev/null 2>&1; then
+  local need=()
+  have_cmd Xvfb || need+=(xvfb)
+  have_cmd x11vnc || need+=(x11vnc)
+  have_cmd websockify || need+=(websockify)
+  [ -d /usr/share/novnc ] || need+=(novnc)
+  have_cmd python3 || need+=(python3 python3-venv python3-pip)
+  have_cmd xdpyinfo || need+=(x11-utils)
+  if [ "${#need[@]}" -gt 0 ]; then
+    need+=(libgtk-3-0 libdbus-glib-1-2 libxt6)
+  fi
+  if [ "${#need[@]}" -eq 0 ]; then
+    echo "apt packages already present"
+    return 0
+  fi
+  if ! have_cmd apt-get; then
     echo "Need apt-get (Ubuntu/Debian VPS)." >&2
     exit 1
   fi
   sudo apt-get update
-  sudo apt-get install -y \
-    xvfb x11vnc websockify novnc python3 python3-venv python3-pip \
-    libgtk-3-0 libdbus-glib-1-2 libxt6 x11-utils
-  # libasound name differs across Ubuntu; ignore if missing
+  sudo apt-get install -y "${need[@]}"
   sudo apt-get install -y libasound2t64 2>/dev/null || sudo apt-get install -y libasound2 || true
 }
 
 venv_vps() {
   mkdir -p "$HOME/tmp" "$DEST"
-  python3 -m venv "$DEST/venv"
+  if [ ! -x "$DEST/venv/bin/python" ]; then
+    python3 -m venv "$DEST/venv"
+  fi
   "$DEST/venv/bin/pip" install -U pip
   "$DEST/venv/bin/pip" install -U 'camoufox[geoip]' playwright
+  if "$DEST/venv/bin/python" -m camoufox path >/dev/null 2>&1; then
+    echo "Camoufox browser already fetched"
+    return 0
+  fi
   TMPDIR="$HOME/tmp" "$DEST/venv/bin/python" -m camoufox fetch
 }
 
@@ -175,6 +238,9 @@ EOF
 }
 
 case "$MODE" in
+  check)
+    check_host
+    ;;
   vps)
     need_env
     reject_public "${BIND_IP:-}" BIND_IP
@@ -188,7 +254,7 @@ case "$MODE" in
     install_peer
     ;;
   *)
-    echo "usage: $0 vps|peer" >&2
+    echo "usage: $0 check|vps|peer" >&2
     exit 1
     ;;
 esac

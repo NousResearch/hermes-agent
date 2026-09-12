@@ -199,8 +199,12 @@ def start_flow(
             time.sleep(0.1)
         if not auth_url:
             raise TimeoutError("Timed out waiting for MCP authorization URL")
-    except Exception:
+    except TimeoutError:
         flow.mark_error("Timed out waiting for MCP authorization URL")
+        _shutdown_listener(rec)
+        raise
+    except Exception as exc:
+        flow.mark_error(str(exc) or "MCP OAuth flow failed before authorization")
         _shutdown_listener(rec)
         raise
     # ``flow`` mirrors the provider-OAuth discriminator: open a URL then poll (no user_code).

@@ -61,8 +61,30 @@ def _stdout(*argv: str) -> str:
     ).stdout
 
 
+def _sysconf_bytes(pages_name: str) -> int:
+    """``pages * page size`` via os.sysconf — in-process: no PATH, no fork, nothing to time out.
+    0 where the platform lacks the name. Apple's libc answers SC_PHYS_PAGES from hw.memsize, the
+    same figure the sysctl fallback below shells out for."""
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return 0
+    with suppress(OSError, ValueError):
+        pages, page = sysconf(pages_name), sysconf("SC_PAGE_SIZE")
+        if pages > 0 and page > 0:
+            return pages * page
+    return 0
+
+
 def _ram_bytes() -> tuple[int, int]:
-    """(total, available) physical memory, cross-platform stdlib."""
+    """(total, available) physical memory, cross-platform stdlib.
+
+    Total is read in-process first. On unified-memory machines the whole budget derives from it,
+    so a zero total does not degrade — every catalog row reads "too big for this machine" — and
+    it must not hinge on a child process: a spawn failure or an empty pipe under the packaged
+    desktop backend is a bad reading of the machine, not a small machine. Subprocesses remain as
+    the fallback and for the available figure; one that fails or hangs after the total was read
+    costs only the available figure.
+    """
     try:
         import ctypes
 
@@ -78,15 +100,17 @@ def _ram_bytes() -> tuple[int, int]:
         return stat.ullTotalPhys, stat.ullAvailPhys
     except (AttributeError, OSError):
         pass
+    total = _sysconf_bytes("SC_PHYS_PAGES")
     try:
         if sys.platform == "darwin":
             # macOS getconf has no _PHYS_PAGES/_AVPHYS_PAGES (exit 64) — the POSIX branch would
             # return (0, 0) and every model would read unavailable. sysctl is the platform truth.
-            total = int(_stdout("/usr/sbin/sysctl", "-n", "hw.memsize").strip() or 0)
+            if total <= 0:
+                total = int(_stdout("/usr/sbin/sysctl", "-n", "hw.memsize").strip() or 0)
             if total <= 0:
                 return 0, 0
             avail = total // 2  # conservative fallback
-            with suppress(OSError, ValueError):
+            with suppress(OSError, ValueError, subprocess.TimeoutExpired):
                 out = _stdout("/usr/bin/vm_stat")
                 page_m = re.search(r"page size of (\d+)", out)
                 page = int(page_m.group(1)) if page_m else 16384
@@ -99,14 +123,13 @@ def _ram_bytes() -> tuple[int, int]:
                     avail = pages * page
             return total, avail
         # POSIX
-        page = int(_stdout("getconf", "PAGE_SIZE") or 4096)
-        total = int(_stdout("getconf", "_PHYS_PAGES") or 0) * page
-        avail = total // 2  # conservative when _AVPHYS is unavailable
-        with suppress(OSError, ValueError):
-            avail = int(_stdout("getconf", "_AVPHYS_PAGES") or 0) * page or avail
-        return total, avail
-    except (OSError, ValueError):
-        return 0, 0
+        if total <= 0:
+            page = int(_stdout("getconf", "PAGE_SIZE") or 4096)
+            total = int(_stdout("getconf", "_PHYS_PAGES") or 0) * page
+        # SC_AVPHYS_PAGES is glibc's; elsewhere the name is unknown and half of total stands in.
+        return total, _sysconf_bytes("SC_AVPHYS_PAGES") or total // 2
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return (total, total // 2) if total > 0 else (0, 0)
 
 
 # nvidia-smi lives at a fixed path under the driver install; PATH presence varies by session type

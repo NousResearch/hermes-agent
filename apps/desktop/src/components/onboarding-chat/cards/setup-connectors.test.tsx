@@ -24,11 +24,13 @@ class CatalogGateway extends HermesGateway {
   }
 }
 
+const $storedId = atom<string | null>('guide')
+const $runtimeId = atom<string | null>('guide-runtime')
 const view: SessionView = {
   ...PRIMARY_SESSION_VIEW,
   kind: 'tile',
-  $storedId: atom('guide'),
-  $runtimeId: atom('guide-runtime')
+  $storedId,
+  $runtimeId
 }
 
 const submit = vi.fn()
@@ -36,6 +38,8 @@ let gateway: CatalogGateway
 let unsubscribe: () => void
 
 beforeEach(() => {
+  $storedId.set('guide')
+  $runtimeId.set('guide-runtime')
   gateway = new CatalogGateway()
   setPrimaryGateway(gateway, 'hermes-setup')
   setPrimaryGatewayConnectionId('remote')
@@ -49,6 +53,8 @@ afterEach(() => {
   setPrimaryGateway(null)
   forgetSessionOwnerHintsForSession('guide')
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
   setOnboardingAnswers({ connectors: [] })
 })
 
@@ -78,7 +84,7 @@ it('disables pending picks, routes the catalog to the guide owner, and commits e
     })
   )
 
-  expect(gateway.rpc.mock.calls[0]?.slice(0, 3)).toEqual(['connectors.list', { session_id: 'guide-runtime' }, 45000])
+  expect(gateway.rpc.mock.calls[0]?.slice(0, 3)).toEqual(['connectors.list', { session_id: 'guide-runtime' }, 15000])
   expect(screen.queryByRole('button', { name: 'Notion' })).toBeNull()
   expect(screen.queryByRole('button', { name: 'Stripe' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /Gmail$/ }))
@@ -91,6 +97,67 @@ it('disables pending picks, routes the catalog to the guide owner, and commits e
     target: 'tile:guide',
     surfaceId: 'guide-composer'
   })
+})
+
+it.each(['stored', 'runtime', 'both'])('allows continuing with a missing %s id and probes when it arrives', async missing => {
+  if (missing !== 'runtime') {
+    $storedId.set(null)
+  }
+  if (missing !== 'stored') {
+    $runtimeId.set(null)
+  }
+  const catalog = deferred<unknown>()
+  gateway.rpc.mockReturnValue(catalog.promise)
+  render(<SessionViewProvider value={view}><ConnectorsCard attrs={{}} locked={false} /></SessionViewProvider>)
+
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Continue' }).disabled).toBe(false)
+  expect(screen.getByText("Connections aren't reachable right now, so this can wait.")).toBeTruthy()
+  expect(gateway.rpc).not.toHaveBeenCalled()
+
+  await act(async () => {
+    $storedId.set('guide')
+    $runtimeId.set('guide-runtime')
+  })
+  expect(gateway.rpc).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Continue' }).disabled).toBe(true)
+  await act(async () => catalog.resolve({ available: true, connectors: [{ connector: 'gmail', enabled: true }] }))
+  expect(screen.getByRole('button', { name: /Gmail$/ })).toBeTruthy()
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Continue' }).disabled).toBe(false)
+})
+
+it('allows continuing when the real gateway request times out after 15 seconds', async () => {
+  vi.useFakeTimers()
+  const socket = new class extends EventTarget {
+    readyState = 1
+    send = vi.fn()
+    close() { this.dispatchEvent(new Event('close')) }
+  }()
+  vi.stubGlobal('WebSocket', Object.assign(vi.fn(function () { return socket }), { OPEN: 1 }))
+  const client = new HermesGateway()
+  const connected = client.connect('ws://catalog.example')
+  socket.dispatchEvent(new Event('open'))
+  await connected
+  setPrimaryGateway(client, 'hermes-setup')
+  setPrimaryGatewayConnectionId('remote')
+
+  await act(async () => {
+    render(
+      <SessionViewProvider value={view}>
+        <div data-composer-surface-id="guide-composer" data-composer-target="tile:guide">
+          <ConnectorsCard attrs={{}} locked={false} />
+        </div>
+      </SessionViewProvider>
+    )
+  })
+  expect(socket.send).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Continue' }).disabled).toBe(true)
+  await act(async () => vi.advanceTimersByTimeAsync(15000))
+  expect(screen.getByText("Connections aren't reachable right now, so this can wait.")).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+    text: '[setup] apps I use: none for now (connections unreachable)'
+  }))
+  client.close()
 })
 
 it('continues without stale picks when the gateway cannot supply any offered app', async () => {

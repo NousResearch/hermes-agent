@@ -30,11 +30,13 @@ export const CONNECTOR_LEAD_ORDER = [
 // carries them for the agent's sake; the first-run picker leaves them out.
 export const CONNECTOR_PICKER_HIDDEN = new Set(['discord', 'discordbot', 'microsoft_teams'])
 
-export function orderConnectorPicks<T extends { connector: string }>(rows: T[]): T[] {
+// A row the gateway marks `enabled: false` is a toolkit the deployment has
+// turned off; the agent cannot connect it, so the picker does not offer it.
+export function orderConnectorPicks<T extends { connector: string; enabled?: boolean }>(rows: T[]): T[] {
   const rank = new Map(CONNECTOR_LEAD_ORDER.map((slug, index) => [slug, index]))
 
   return rows
-    .filter(row => rank.has(row.connector) && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
+    .filter(row => rank.has(row.connector) && row.enabled !== false && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
     .sort((a, b) => {
       const ra = rank.get(a.connector) ?? Number.POSITIVE_INFINITY
       const rb = rank.get(b.connector) ?? Number.POSITIVE_INFINITY

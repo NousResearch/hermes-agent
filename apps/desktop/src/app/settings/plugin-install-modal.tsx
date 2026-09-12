@@ -17,7 +17,6 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
@@ -252,7 +251,7 @@ export function PluginInstallModal() {
           successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
 
           if (touched.length > 0) {
-            await discoverRuntimePlugins()
+            await import('@/contrib/runtime-loader').then(m => m.discoverRuntimePlugins())
           }
         } else {
           const installFn = window.hermesDesktop?.installDesktopPlugin
@@ -264,7 +263,7 @@ export function PluginInstallModal() {
 
             if (result.ok) {
               successes.push(m.desktopSuccess(result.pluginName ?? request.repo))
-              await discoverRuntimePlugins()
+              await import('@/contrib/runtime-loader').then(m => m.discoverRuntimePlugins())
             } else {
               errors.push(result.error || m.desktopFailed)
             }

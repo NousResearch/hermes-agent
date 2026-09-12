@@ -155,6 +155,77 @@ def test_racing_misses_verify_the_immutable_winner(tmp_path, upstream, r2_server
     assert all(p.read_bytes() == body for p in paths)
 
 
+def test_all_digests_start_together_and_seed_every_reference(tmp_path, upstream, r2_server, monkeypatch):
+    from collections import Counter
+    from pm.store import Store
+    from scripts.termux.stage_runtime_libs import download_path
+
+    server, root = upstream
+    bodies = {f"input-{i}": f"distinct pinned bytes {i}".encode() for i in range(9)}
+    pins = []
+    for name, body in bodies.items():
+        (root / f"{name}.deb").write_bytes(body)
+        digest = hashlib.sha256(body).hexdigest()
+        for kind, label in (("tool", name), ("library", name), ("library", f"{name}-alias")):
+            pins.append(inputs.InputPin(label, f"{server.url}/{name}.deb", digest, kind))
+
+    # Every unique input must reach the real HTTP path before any can finish.
+    barrier = threading.Barrier(len(bodies))
+    original = r2.signed_request
+    def together(method, url, **kwargs):
+        if method == "HEAD":
+            barrier.wait(timeout=10)
+        return original(method, url, **kwargs)
+    monkeypatch.setattr(r2, "signed_request", together)
+    store = Store(tmp_path / "tools")
+    payload = tmp_path / "payload"
+    assert inputs.stage_inputs(pins, archive=inputs.Archive(*r2.credentials()),
+                               store=store, payload=payload) == len(bodies)
+    puts = Counter(path for method, path, _ in r2_server.requests if method == "PUT")
+    assert len(puts) == len(bodies) and set(puts.values()) == {1}
+    for name, body in bodies.items():
+        digest = hashlib.sha256(body).hexdigest()
+        assert r2_server.store[object_key(digest)][0] == body
+        assert (store.entry(f"fetch-{digest}") / f"{name}.deb").read_bytes() == body
+        for label in (name, f"{name}-alias"):
+            assert download_path(payload, label).read_bytes() == body
+
+
+def test_parallel_readback_failure_reaches_cli_and_preserves_destination(tmp_path, upstream, r2_server, monkeypatch, capsys):
+    from pm import paths
+    from scripts.termux.stage_runtime_libs import download_path
+
+    server, root = upstream
+    packages, libs = {}, {}
+    for name in ("good", "bad"):
+        body = name.encode()
+        (root / f"{name}.deb").write_bytes(body)
+        row = {"url": f"{server.url}/{name}.deb", "sha256": hashlib.sha256(body).hexdigest()}
+        libs[name] = row
+        packages[name] = {"version": "1", "artifacts": {"any": row}}
+        r2_server.store[object_key(row["sha256"])] = (body if name == "good" else b"xxx", '"etag"')
+    repo = tmp_path / "repo"
+    write_pins(repo, packages, {"libs": libs})
+    monkeypatch.setattr(paths, "repo_root", lambda: repo)
+    payload = tmp_path / "payload"
+    preserved = download_path(payload, "bad")
+    preserved.parent.mkdir(parents=True)
+    preserved.write_bytes(b"existing destination")
+    barrier = threading.Barrier(len(libs))
+    original = r2.signed_request
+    def together(method, url, **kwargs):
+        if method == "HEAD":
+            barrier.wait(timeout=10)
+        return original(method, url, **kwargs)
+    monkeypatch.setattr(r2, "signed_request", together)
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        inputs.main(["--payload", str(payload), "--store", str(tmp_path / "tools")])
+    assert preserved.read_bytes() == b"existing destination"
+    assert not (tmp_path / "tools" / f"fetch-{libs['bad']['sha256']}").exists()
+    assert download_path(payload, "good").read_bytes() == b"good"
+    assert "Verified " not in capsys.readouterr().out
+
+
 def test_historical_recovery_keeps_the_original_digest(tmp_path, upstream, r2_server, monkeypatch):
     server, root = upstream
     body = (root / "lib.deb").read_bytes()

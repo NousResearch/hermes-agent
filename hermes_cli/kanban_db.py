@@ -1305,6 +1305,19 @@ def create_task(
         board_default = _board_meta_for(board).get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
+        else:
+            # A dir/worktree card with no anchor (no explicit path, no project
+            # repo, no board default_workdir) can never resolve its workspace at
+            # dispatch — it would park in `blocked` forever while its request
+            # looks "handled". Refuse at creation so the error surfaces to the
+            # caller (dashboard 400 / CLI / tool) instead of silently creating
+            # a black hole.
+            raise ValueError(
+                f"workspace_kind={workspace_kind!r} requires a resolvable workspace: "
+                f"pass an explicit workspace_path, a project with a repo, or set a "
+                f"default_workdir on board {board!r}. Got none of these, so the task "
+                f"could never resolve its workspace at dispatch."
+            )
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):

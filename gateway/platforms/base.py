@@ -3855,7 +3855,12 @@ class BasePlatformAdapter(ABC):
         a failing notice is logged, never raised). Returns the thread metadata used."""
         _thread_metadata = None
         try:
-            error_detail = str(e)[:300] if str(e) else "no details available"
+            protected = isinstance(getattr(event, "_clinical_delivery_trace", None), dict)
+            error_detail = (
+                type(e).__name__
+                if protected
+                else (str(e)[:300] if str(e) else "no details available")
+            )
             _thread_metadata = _thread_metadata_for_event(event)
             await self.send(
                 chat_id=event.source.chat_id,
@@ -4041,6 +4046,17 @@ class BasePlatformAdapter(ABC):
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            from agent.clinical_trace import delivery as record_clinical_delivery
+            if delivery_attempted:
+                clinical_outcome = "delivered" if delivery_succeeded else "failed"
+            elif not response:
+                clinical_outcome = "suppressed"
+            else:
+                clinical_outcome = "failed"
+            record_clinical_delivery(
+                getattr(event, "_clinical_delivery_trace", None),
+                outcome=clinical_outcome,
+            )
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
@@ -4059,14 +4075,28 @@ class BasePlatformAdapter(ABC):
                 self._spawn_drain_task(pending_event, session_key)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
+            from agent.clinical_trace import delivery as record_clinical_delivery
+            record_clinical_delivery(
+                getattr(event, "_clinical_delivery_trace", None), outcome="interrupted",
+            )
             expected = asyncio.current_task() in self._expected_cancelled_tasks
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
             raise
         except BaseException as e:
+            from agent.clinical_trace import delivery as record_clinical_delivery
+            clinical_trace = getattr(event, "_clinical_delivery_trace", None)
+            record_clinical_delivery(clinical_trace, outcome="failed")
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
-            logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+            if isinstance(clinical_trace, dict):
+                logger.error(
+                    "[%s] Error handling protected message (%s)",
+                    self.name,
+                    type(e).__name__,
+                )
+            else:
+                logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
             if isinstance(e, (SystemExit, KeyboardInterrupt)):

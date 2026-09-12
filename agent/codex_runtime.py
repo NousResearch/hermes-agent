@@ -352,6 +352,10 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     }
 
     def on_event(note: dict) -> None:
+        # Protected turns remain entirely private until the final delivery gate.
+        # Tool arguments and reasoning can be as clinically specific as answer text.
+        if getattr(agent, "_pre_delivery_gate_active", False) is True:
+            return
         handler = handlers.get(note.get("method") or "") if isinstance(note, dict) else None
         if handler is not None:
             params = note.get("params")
@@ -487,6 +491,86 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
             _consume_user_interrupt(agent), messages, api_calls=0, completed=False, error=str(exc),
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
         )
+
+    from agent.turn_finalizer import _prepare_output_for_delivery
+    from agent.turn_stop_gates import (
+        _build_pre_delivery_repair_directive,
+    )
+
+    retained_projection: list[dict[str, Any]] = []
+    repair_attempt = 0
+    api_calls = 1
+    delivery_certified = False
+    while not turn.interrupted and turn.error is None:
+        decision = _prepare_output_for_delivery(
+            agent,
+            turn.final_text,
+            logger,
+            platform=getattr(agent, "platform", "") or "",
+            effective_task_id=effective_task_id,
+            turn_id=getattr(turn, "turn_id", None),
+            original_user_message=original_user_message,
+            messages=messages,
+        )
+        projected_messages = list(getattr(turn, "projected_messages", None) or [])
+        submitted_user_text = getattr(turn, "submitted_user_text", None)
+        if (submitted_user_text and projected_messages
+                and projected_messages[0].get("role") == "user"
+                and projected_messages[0].get("content") == submitted_user_text):
+            projected_messages = projected_messages[1:]
+
+        if decision.action != "block":
+            turn.final_text = decision.response_text
+            if projected_messages and projected_messages[-1].get("role") == "assistant":
+                projected_messages[-1] = {
+                    **projected_messages[-1], "content": decision.response_text,
+                }
+            retained_projection.extend(projected_messages)
+            turn.projected_messages = retained_projection
+            release = getattr(agent, "_release_pre_delivery_text", None)
+            if callable(release) and getattr(agent, "_pre_delivery_gate_active", False) is True:
+                release(decision.response_text)
+            delivery_certified = True
+            break
+
+        blocked_text = turn.final_text
+        retained_projection.extend(
+            projected for projected in projected_messages
+            if not (
+                projected.get("role") == "assistant"
+                and projected.get("content") == blocked_text
+            )
+        )
+        repair_attempt += 1
+        agent._pre_delivery_repair_attempts = repair_attempt
+        from agent.clinical_trace import emit
+        emit(agent, "repair", outcome="block", repair_count=repair_attempt)
+        # Account for the provider turn, but never sync or persist its blocked answer.
+        agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
+        _record_codex_app_server_compaction(agent, turn)
+        _record_codex_app_server_usage(agent, turn, messages=messages)
+        directive = _build_pre_delivery_repair_directive(
+            attempt=repair_attempt,
+            reason=decision.reason,
+        )
+        try:
+            turn = agent._codex_session.run_turn(user_input=directive)
+            api_calls += 1
+        except Exception as exc:
+            logger.exception("codex app-server repair turn failed")
+            _close_codex_session(agent)
+            return _turn_result(
+                _consume_user_interrupt(agent), messages, api_calls=api_calls,
+                completed=False, error=str(exc), final_response=None,
+            )
+
+    if not delivery_certified:
+        # A repair turn may end through interruption, provider error, watchdog, or
+        # transport retirement. None of those outcomes certifies the candidate.
+        # Persist only the already-scrubbed projection and expose no final text.
+        turn.projected_messages = retained_projection
+        turn.final_text = None
+
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
     # Wedged client (deadline blown, watchdog tripped, OAuth refresh died, subprocess exited): retire it.
     if getattr(turn, "should_retire", False):
@@ -496,10 +580,13 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
+    from agent.clinical_trace import snapshot
+    delivery_trace = snapshot(agent)
     return _turn_result(
-        interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
+        interrupt, messages, api_calls=api_calls, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
         final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        **({"clinical_delivery_trace": delivery_trace} if delivery_trace is not None else {}),
         **usage_result,
     )
 

@@ -33,6 +33,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill",
     "_verification_stop_synthetic",  # verify-on-stop nudge; the assistant candidate itself is NOT synthetic
     "_pre_verify_synthetic",
+    "_pre_delivery_repair_synthetic",  # blocked candidate and private repair nudge
     "_kanban_stop_synthetic",  # kanban worker stop-guard
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
 )
@@ -389,7 +390,8 @@ class SessionPersistenceMixin:
         """Save conversation trajectory to JSONL file."""
         if not self.save_trajectories:
             return
-        trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
+        durable_messages = [msg for msg in messages if not _is_ephemeral_scaffolding(msg)]
+        trajectory = self._convert_to_trajectory_format(durable_messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
 
     _extract_api_error_context = _forward_static("agent.agent_runtime_helpers", "extract_api_error_context")

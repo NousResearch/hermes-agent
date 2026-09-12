@@ -388,9 +388,12 @@ class SessionManager:
             name for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+        from hermes_cli.tools_config import _get_platform_tools
+
+        acp_toolsets = sorted(_get_platform_tools(config, "acp"))
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
-            "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
+            "enabled_toolsets": _expand_acp_enabled_toolsets(acp_toolsets, mcp_server_names=configured_mcp_servers),
             "model": model or default_model,
         }
         try:

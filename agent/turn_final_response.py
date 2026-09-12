@@ -50,6 +50,7 @@ def finish_text_response(
     _preflight_compression_blocked: Any, codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
+    effective_task_id: str = "", turn_id: str = "", original_user_message: Any = None,
 ) -> FinalResponseVerdict:
     """Finish (or defer) a text-only assistant response in the original guard order. Every
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
@@ -216,12 +217,18 @@ def finish_text_response(
         conversation_history=conversation_history,
         pending_verification_response=_pending_verification_response,
         pending_verification_response_previewed=_pending_verification_response_previewed,
+        effective_task_id=effective_task_id, turn_id=turn_id,
+        original_user_message=original_user_message,
     )
     _pending_verification_response = _sg.pending_verification_response
     _pending_verification_response_previewed = _sg.pending_verification_response_previewed
     if _sg.continue_turn:
         final_response = None
         return _verdict("continue")
+    # Stop gates may replace or safely degrade the candidate. The message object is
+    # updated in place for persistence; the scalar must also be rebound so callers
+    # cannot return the pre-gate clinical text.
+    final_response = _sg.final_response
 
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps

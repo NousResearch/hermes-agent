@@ -1329,6 +1329,8 @@ class _LoopState:
     # is set ONLY if it becomes the final response (#65919).
     _pending_verification_response: Any = None
     _pending_verification_response_previewed: bool = False
+    # Number of private candidate regenerations requested by the pre-delivery policy gate.
+    _pre_delivery_repair_attempts: int = 0
     # MoA guidance retained across a pre-API compression, rebased next iteration (no second fan-out).
     pending_moa_prepared_request: Any = None
     # Per-iteration slots.
@@ -1482,6 +1484,34 @@ def _run_conversation_turn(
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
 
+    # Retain model output only for turns that a delivery policy marks as protected. Plugins that
+    # provide only the final gate keep the fail-closed legacy behavior; a scope probe may opt
+    # ordinary turns out so their normal streaming remains intact.
+    try:
+        from hermes_cli.plugins import has_hook, invoke_hook
+
+        if not has_hook("pre_delivery"):
+            _pre_delivery_gate_active = False
+        elif not has_hook("pre_delivery_scope"):
+            _pre_delivery_gate_active = True
+        else:
+            _scope_results = invoke_hook(
+                "pre_delivery_scope",
+                session_id=getattr(agent, "session_id", "") or "",
+                user_message=_ctx.original_user_message,
+                conversation_history=list(conversation_history),
+                platform=getattr(agent, "platform", "") or "",
+                turn_id=_ctx.effective_task_id,
+            )
+            _pre_delivery_gate_active = (
+                any(value is True for value in _scope_results)
+                if _scope_results and all(isinstance(value, bool) for value in _scope_results)
+                else True
+            )
+    except Exception:
+        logger.warning("pre_delivery scope lookup failed; retaining stream", exc_info=True)
+        _pre_delivery_gate_active = True
+
     # Per-turn agent state (the gateway caches agents across turns, so none of this may
     # leak into the next message): interim-commentary dedup spans the whole turn but not
     # the next; a SessionDB append failure (and its classified cause) halts only this turn;
@@ -1496,6 +1526,15 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    agent._pre_delivery_repair_attempts = 0
+    agent._pre_delivery_output_cache = None
+    agent._pre_delivery_gate_active = _pre_delivery_gate_active
+    from agent.clinical_trace import begin_trace
+    begin_trace(
+        agent,
+        protected=_pre_delivery_gate_active,
+        platform=getattr(agent, "platform", "") or "",
+    )
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

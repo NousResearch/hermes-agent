@@ -922,14 +922,16 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
     agent._touch_activity(f"executing tool: {function_name}")
     _set_worker_activity_callback(agent)
 
-    if agent.tool_progress_callback:
+    callbacks_enabled = not getattr(agent, "_pre_delivery_gate_active", False)
+    if callbacks_enabled and agent.tool_progress_callback:
         try:
             preview = _build_tool_preview(function_name, display_args)
         except Exception as callback_error:
             logging.debug("Tool progress callback error: %s", callback_error)
         else:
             _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args)
-    _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
+    if callbacks_enabled:
+        _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
 
     if not agent._checkpoint_mgr.enabled:
         return
@@ -945,6 +947,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
 
 def _emit_tool_complete_and_risk(agent, ref: _ToolCallRef, result, risk_metadata, blocked: bool) -> None:
     """Fire ``tool_complete_callback`` (unless blocked) then the ``tool.output_risk`` projection."""
+    if getattr(agent, "_pre_delivery_gate_active", False):
+        return
     if not blocked and agent.tool_complete_callback:
         try:
             display_args = _redact_tool_args_for_display(ref.name, ref.args) or ref.args
@@ -1054,7 +1058,11 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
 
 
 def _tool_progress_enabled(agent) -> bool:
-    return not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off"
+    return (
+        not agent.quiet_mode
+        and getattr(agent, "tool_progress_mode", "all") != "off"
+        and not getattr(agent, "_pre_delivery_gate_active", False)
+    )
 
 
 def _preview(text: str, limit: int) -> str:

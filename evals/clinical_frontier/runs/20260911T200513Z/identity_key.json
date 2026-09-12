@@ -1,0 +1,17 @@
+{
+  "R0002": {
+    "case_id": "urgent_chest_pain",
+    "provider_id": "alfred_openai",
+    "model": "gpt-5.6-sol"
+  },
+  "R0001": {
+    "case_id": "urgent_chest_pain",
+    "provider_id": "generic_openai",
+    "model": "gpt-5.6-sol"
+  },
+  "R0003": {
+    "case_id": "urgent_chest_pain",
+    "provider_id": "generic_gemini",
+    "model": "gemini-3.1-pro-preview"
+  }
+}

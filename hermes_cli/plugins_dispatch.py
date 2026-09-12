@@ -40,7 +40,8 @@ logger = logging.getLogger("hermes_cli.plugins")
 # gates/flushes.
 _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
-    "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
+    "pre_delivery", "pre_delivery_scope", "pre_llm_call", "post_llm_call", "pre_api_request",
+    "post_api_request", "api_request_error",
     "pre_verify", "on_session_start", "on_session_end",
 }
 
@@ -51,6 +52,11 @@ _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+PRE_DELIVERY_FAIL_CLOSED_MESSAGE = (
+    "No puedo entregar una respuesta clínica específica porque la evidencia de este turno "
+    "no pudo certificarse de forma completa."
+)
+_PRE_DELIVERY_ACTIONS = {"allow", "replace", "block"}
 
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
 SYSTEM_PROMPT_SECTION_POSITIONS = frozenset({"after_memory"})
@@ -180,22 +186,54 @@ class PluginDispatchMixin:
         results: List[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
-        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
+        fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS or hook_name == "pre_delivery"
         for cb in self._hooks.get(hook_name, []):
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                            message = (
+                                PRE_DELIVERY_FAIL_CLOSED_MESSAGE
+                                if hook_name == "pre_delivery"
+                                else _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+                            )
+                            result = {"action": "block", "message": message}
+                            if hook_name == "pre_delivery":
+                                result["reason"] = "timeout"
+                            results.append(result)
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
-                if ret is not None:
+                if hook_name == "pre_delivery":
+                    valid = isinstance(ret, dict) and ret.get("action") in _PRE_DELIVERY_ACTIONS
+                    if valid and ret.get("action") == "replace":
+                        valid = isinstance(ret.get("response_text"), str) and bool(ret["response_text"].strip())
+                    if valid and ret.get("action") == "block":
+                        valid = isinstance(ret.get("message"), str) and bool(ret["message"].strip())
+                    if valid:
+                        results.append(ret)
+                    else:
+                        results.append({
+                            "action": "block",
+                            "message": PRE_DELIVERY_FAIL_CLOSED_MESSAGE,
+                            "reason": "invalid_result",
+                        })
+                elif ret is not None:
                     results.append(ret)
             except Exception as exc:
                 logger.warning(
-                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+                    "Hook '%s' callback %s raised %s",
+                    hook_name,
+                    getattr(cb, "__name__", type(cb).__name__),
+                    type(exc).__name__,
+                )
+                if hook_name == "pre_delivery":
+                    results.append({
+                        "action": "block",
+                        "message": PRE_DELIVERY_FAIL_CLOSED_MESSAGE,
+                        "reason": "callback_error",
+                    })
         return results
 
     def _run_hook_callback_bounded(

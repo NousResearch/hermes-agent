@@ -53,7 +53,8 @@ from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
     SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
-    _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
+    _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PRE_DELIVERY_FAIL_CLOSED_MESSAGE, PluginDispatchMixin,
+    PluginSystemPromptSection,
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id,
 )
@@ -108,6 +109,14 @@ VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
+    # pre_delivery_scope: per-turn probe; callbacks return bool (True means retain streaming).
+    "pre_delivery_scope",
+    # pre_delivery: final, behavior-changing output gate. Every callback must return exactly one
+    # directive: {"action": "allow"}, {"action": "replace", "response_text": str}, or
+    # {"action": "block", "message": str, "reason"?: str}. Unlike observer hooks, timeout,
+    # exception, and malformed results fail closed. The agent may use a block directive to run a
+    # bounded evidence-repair loop before delivering the directive's specific degradation.
+    "pre_delivery",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",

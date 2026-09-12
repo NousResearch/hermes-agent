@@ -90,12 +90,36 @@ def _qualified_serve_skips(skip_units) -> list[dict]:
     return rows
 
 
+def _normalize_user_bus_env() -> None:
+    """Adopt ``XDG_RUNTIME_DIR``/``DBUS_SESSION_BUS_ADDRESS`` before spawning the recovery child (#107614).
+
+    Under a bus-less dispatcher (``sudo -u``, cron, an SSH automation wrapper) the inherited
+    environment has neither variable, so the child's every ``systemctl --user`` probe fails and a
+    healthy gateway reads ``relaunch_attempted`` — the false exit 1 of the same bug class #107477
+    fixed at the in-process listing helper. Normalization must run in this (pre-update) interpreter:
+    the child deliberately imports no gateway code, because importing the freshly pulled tree is
+    what aborted the phase in the first place. The helper fabricates nothing, so a genuinely
+    bus-less host stays fail-closed; a broken gateway module only costs the adoption, never the spawn.
+    """
+    try:
+        from hermes_cli.gateway import _ensure_user_systemd_env
+
+        _ensure_user_systemd_env()
+    except Exception as exc:
+        # Only the adoption is lost (never the spawn), but losing it silently restores the bug on
+        # a bus-less dispatcher, so the fallback must be visible at the operator level.
+        logger.warning(
+            "User-bus env normalization unavailable (%s); recovery child inherits the "
+            "environment as-is and may report relaunch_attempted on a healthy fleet", exc)
+
+
 def _run_fresh_recovery_process(
     profiles, candidates, *, gateway_mode: bool, recover_serve: bool, skip_units
 ) -> "subprocess.CompletedProcess | None":
     """Spawn ``hermes_cli.update_restart_recovery --stdin`` detached from this process; None when it
     could not run (no systemd-run in gateway mode, OSError, timeout) — the caller fails closed."""
     command = [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"]
+    _normalize_user_bus_env()
     env = os.environ.copy()
     env["HERMES_UPDATE_RESTART_RECOVERY"] = "1"
     for marker in ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE"):

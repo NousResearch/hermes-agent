@@ -36,10 +36,10 @@ def _reset_systemd_scope_cache():
     cache themselves."""
     import tools.process_registry as _pr
 
-    original = _pr._SYSTEMD_SCOPE_AVAILABLE
-    _pr._SYSTEMD_SCOPE_AVAILABLE = False
+    original = _pr._SYSTEMD_SCOPE_RESULT
+    _pr._SYSTEMD_SCOPE_RESULT = _pr._SystemdScopeResult(False, "", False, float("inf"))
     yield
-    _pr._SYSTEMD_SCOPE_AVAILABLE = original
+    _pr._SYSTEMD_SCOPE_RESULT = original
 
 
 def _make_session(
@@ -2359,7 +2359,7 @@ class TestSystemdCgroupIsolation:
         import tools.process_registry as pr
 
         # Reset the cache.
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
         probe_calls = []
 
         def fake_run(*args, **kwargs):
@@ -2408,7 +2408,7 @@ class TestSystemdCgroupIsolation:
 
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
         monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: runtime_dir)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
         derived = pr.systemd_user_bus_env(
@@ -2435,8 +2435,7 @@ class TestSystemdCgroupIsolation:
         """An absent ``/bin/true`` must not make a usable scope fail its probe."""
         import tools.process_registry as pr
 
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
         real_run = subprocess.run
         executed = []
 
@@ -2448,11 +2447,79 @@ class TestSystemdCgroupIsolation:
             executed.append(payload)
             return real_run(payload, **kwargs)
 
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        real_which = shutil.which
+        monkeypatch.setattr(
+            shutil, "which",
+            lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else real_which(name),
+        )
         monkeypatch.setattr("subprocess.run", systemd_run_on_nixos_shaped_root)
 
         assert pr._systemd_run_user_scope_available() is True
         assert len(executed) == 1, "payload must really run (exit 0) on the host, not just be spelled right"
+
+    @pytest.mark.linux_only
+    def test_probe_without_true_and_scope_cleanup_use_derived_bus_env(
+        self, tmp_path, monkeypatch
+    ):
+        """A minimal service PATH supports a real no-op and cleanup on its user bus."""
+        import socket
+        import tempfile
+
+        import tools.process_registry as pr
+
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
+        real_which = shutil.which
+        binaries = {"systemd-run": "/test/systemd-run", "systemctl": "/test/systemctl"}
+        monkeypatch.setattr(
+            shutil, "which", lambda name: binaries.get(name) or real_which(name)
+        )
+        assert shutil.which("true") is None
+        real_run = subprocess.run
+        calls = []
+        payload_results = []
+
+        def run_systemd_command(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if argv[0] == binaries["systemd-run"]:
+                payload = argv[argv.index("--") + 1:]
+                # Emulate a non-FHS host: no hardcoded /bin payload exists. Execute
+                # any resolved replacement with the sanitized PATH, so bare `true`
+                # also fails and only an absolute resolved executable is accepted.
+                if payload[0].startswith("/bin/"):
+                    return subprocess.CompletedProcess(
+                        argv, 127, stderr=f"{payload[0]}: No such file or directory".encode()
+                    )
+                result = real_run(payload, **kwargs)
+                payload_results.append(result)
+                return result
+            return subprocess.CompletedProcess(argv, 0, stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", run_systemd_command)
+        # AF_UNIX paths need a short directory, independent of pytest's long node ids.
+        with tempfile.TemporaryDirectory(prefix="hbus-", dir="/tmp") as directory:
+            runtime_dir = pr.Path(directory)
+            bus_path = runtime_dir / "bus"
+            with socket.socket(socket.AF_UNIX) as bus_socket:
+                bus_socket.bind(str(bus_path))
+                monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: runtime_dir)
+
+                assert pr._systemd_run_user_scope_available() is True
+                assert len(payload_results) == 1
+                assert payload_results[0].returncode == 0
+                unit = "hermes-worker-portable-probe.scope"
+                assert pr._stop_systemd_unit(unit) is True
+
+                assert len(calls) == 2
+                assert calls[1][0] == [binaries["systemctl"], "--user", "stop", unit]
+                for _, kwargs in calls:
+                    assert kwargs["env"]["PATH"] == str(tmp_path)
+                    assert kwargs["env"]["XDG_RUNTIME_DIR"] == str(runtime_dir)
+                    assert kwargs["env"]["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+                assert "XDG_RUNTIME_DIR" not in os.environ
+                assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
     @pytest.mark.linux_only
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
@@ -2463,7 +2530,7 @@ class TestSystemdCgroupIsolation:
         """
         import tools.process_registry as pr
 
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
         probe_started = threading.Event()
         release_probe = threading.Event()
         probe_calls = []
@@ -2506,8 +2573,7 @@ class TestSystemdCgroupIsolation:
     def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
         import tools.process_registry as pr
 
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0, raising=False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
         clock = [100.0]
         probe_results = [1, 0]
         probe_calls = []
@@ -2561,7 +2627,7 @@ class TestSystemdCgroupIsolation:
 
         monkeypatch.setattr(pr, "_IS_LINUX", False)
         monkeypatch.setattr(pr, "_IS_WINDOWS", False)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process", lambda: True
@@ -2604,7 +2670,7 @@ class TestSystemdCgroupIsolation:
         import tools.process_registry as pr
 
         monkeypatch.setattr(pr, "_IS_LINUX", False)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_RESULT", None)
         monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/systemd-run")
         probe_runs = []
         monkeypatch.setattr(

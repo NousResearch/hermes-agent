@@ -14,6 +14,7 @@ import shlex
 import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -87,9 +88,16 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 # active turn. We probe *once* whether ``systemd-run --user --scope`` is actually usable (the binary can
 # exist on the PATH while the user D-Bus session is unavailable — common for system services and
 # containers), and cache the result for the process lifetime. See #70716.
-_SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
+@dataclass(frozen=True)
+class _SystemdScopeResult:
+    available: bool
+    reason: str
+    bus_failure: bool
+    probed_at: float
+
+
+_SYSTEMD_SCOPE_RESULT: Optional[_SystemdScopeResult] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
-_SYSTEMD_SCOPE_PROBED_AT = 0.0
 _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
@@ -203,24 +211,29 @@ def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     return env
 
 
-def _systemd_scope_cached() -> Optional[bool]:
-    """Cached probe verdict, or None when a (re)probe is due. True is permanent; False
-    expires after ``_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS`` so a D-Bus blip isn't sticky."""
-    if _SYSTEMD_SCOPE_AVAILABLE is True:
-        return True
-    stale = time.monotonic() - _SYSTEMD_SCOPE_PROBED_AT >= _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
-    return None if _SYSTEMD_SCOPE_AVAILABLE is None or stale else False
+def _systemd_scope_cached() -> Optional[_SystemdScopeResult]:
+    """Successful snapshots are permanent; failures expire so bus blips can recover."""
+    result = _SYSTEMD_SCOPE_RESULT
+    if result is None or (
+        not result.available
+        and time.monotonic() - result.probed_at >= _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+    ):
+        return None
+    return result
 
 
 def _systemd_run_user_scope_available() -> bool:
-    """True if ``systemd-run --user --scope`` can create a cgroup.
+    return _systemd_run_user_scope_result().available
+
+
+def _systemd_run_user_scope_result() -> _SystemdScopeResult:
+    """One immutable verdict and diagnosis for ``systemd-run --user --scope``.
     ``shutil.which`` alone is insufficient: system services and containers may lack
     the user D-Bus bus even with the binary on PATH (every spawn would fail with
     ``Failed to connect to user bus``), so a cheap probe is run and cached.
 
-    Use ``/bin/sh -c 'exit 0'``: NixOS provides ``/bin/sh`` but not ``/bin/true``
-    (#105365), regardless of the gateway service's PATH."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    Resolve the no-op from the service PATH, without assuming an FHS layout."""
+    global _SYSTEMD_SCOPE_RESULT
     verdict = _systemd_scope_cached()
     if verdict is not None:
         return verdict
@@ -231,31 +244,52 @@ def _systemd_run_user_scope_available() -> bool:
         if verdict is not None:
             return verdict
         available = False
+        reason = "scope probe requires Linux"
+        bus_failure = False
         if _IS_LINUX:
             try:
                 import shutil
 
                 binary = shutil.which("systemd-run")
+                reason = "scope probe command systemd-run was not found on PATH"
                 if binary:
+                    true_binary = shutil.which("true")
+                    # The running interpreter is usable without a PATH lookup.
+                    # Isolated mode and no site initialization prevent startup hooks;
+                    # `pass` has no side effects and exits successfully, like true.
+                    payload = ([os.path.abspath(true_binary)] if true_binary else
+                               [os.path.abspath(sys.executable), "-I", "-S", "-c", "pass"])
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
                     result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
+                        _systemd_scope_argv(binary, probe_unit, *payload),
                         capture_output=True,
                         timeout=3,
                         env=systemd_user_bus_env(),
                     )
                     available = result.returncode == 0
                     if not available:
-                        logger.debug(
-                            "systemd-run --user --scope probe failed (rc=%s): %s",
-                            result.returncode, (result.stderr or b"").decode("utf-8", "replace").strip(),
+                        stderr = (result.stderr or b"").decode("utf-8", "replace").strip()
+                        reason = f"scope probe exited with status {result.returncode}"
+                        if stderr:
+                            reason += f": {stderr}"
+                        bus_failure = result.returncode not in (126, 127) and any(
+                            line.lower().startswith(("failed to connect to bus:",
+                                                     "failed to connect to user bus:"))
+                            for line in stderr.splitlines()
                         )
+            except OSError as exc:
+                reason = f"scope probe command execution failed ({type(exc).__name__}): {exc}"
             except Exception as exc:
-                logger.debug("systemd-run --user --scope probe error: %s", exc)
-        _SYSTEMD_SCOPE_AVAILABLE = available
-        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
-        return available
+                reason = f"scope probe failed ({type(exc).__name__}): {exc}"
+        if not available:
+            logger.debug("systemd-run --user --scope %s", reason)
+        result = _SystemdScopeResult(
+            available, "" if available else reason, bus_failure, time.monotonic()
+        )
+        # Publish once; callers retain this diagnosis even if another thread refreshes.
+        _SYSTEMD_SCOPE_RESULT = result
+        return result
 
 
 def _is_supervised_gateway_process() -> bool:
@@ -306,14 +340,21 @@ def restart_safe_gateway_child_argv(
         return command
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
         return command
-    if not _systemd_run_user_scope_available():
-        # Stored as the cron execution's error and shown on the job row: name the remedy.
-        raise RuntimeError(
+    result = _systemd_run_user_scope_result()
+    if not result.available:
+        # Stored on the cron job: preserve the cached cause, and only prescribe
+        # bus remediation when systemd actually reported a connection failure.
+        message = (
             "cannot create restart-safe systemd scope for gateway child: "
-            "systemd-run --user --scope is unavailable (usually no reachable user D-Bus session at "
-            f"/run/user/{os.getuid()}/bus). On a system-level service install, run "  # windows-footgun: ok — behind the _IS_LINUX return above
-            "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
+            "systemd-run --user --scope is unavailable: "
+            + (result.reason or "scope probe failed without a recorded cause")
         )
+        if result.bus_failure:
+            message += (
+                ". Check the gateway user's bus. On a system-level service install, run "
+                "`sudo loginctl enable-linger <gateway-user>` and restart the gateway."
+            )
+        raise RuntimeError(message)
     scoped = _build_systemd_scope_argv(command, unit_suffix=unit_suffix)
     if scoped == command:
         raise RuntimeError(

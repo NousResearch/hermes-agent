@@ -14,7 +14,7 @@ import time
 WORKTREE = os.environ["HERMES_WORKTREE"]
 sys.path.insert(0, WORKTREE)
 import tools.process_registry as pr  # noqa: E402
-pr._SYSTEMD_SCOPE_AVAILABLE = False
+pr._systemd_run_user_scope_available = lambda: False
 from tools.process_registry import process_registry  # noqa: E402
 import tools.async_delegation as ad  # noqa: E402
 from run_agent import AIAgent  # noqa: E402

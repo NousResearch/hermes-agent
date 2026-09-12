@@ -214,10 +214,13 @@ class MCPServerTransportMixin:
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no 'command' in config")
         command, safe_env = _config._resolve_stdio_command(command, _config._build_safe_env(config.get("env")))
+        workdir = config.get("cwd") or config.get("workdir")
+        if workdir:
+            workdir = os.path.expanduser(str(workdir))
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
         server_params = _core.StdioServerParameters(
-            command=command, args=args, env=safe_env or None, cwd=config.get("cwd"),
+            command=command, args=args, env=safe_env or None, cwd=workdir,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
             encoding_error_handler="replace")
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;

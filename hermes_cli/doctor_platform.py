@@ -427,6 +427,77 @@ def _check_required_packages(should_fix: bool, f: Finding) -> None:
                 _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", f.issues)
 
 
+_MCP_SDK_PROBE = (
+    "from mcp import ClientSession, StdioServerParameters; "
+    "from mcp.client.stdio import stdio_client"
+)
+
+
+def _mcp_sdk_available() -> bool:
+    """Verify the real runtime import contract in a clean interpreter: a broken, partial, or
+    incompatible top-level ``mcp`` package must not count as installed, and a fresh install
+    is visible without stale in-process import caches (mirrors tools/mcp_tool._ensure_mcp_sdk)."""
+    try:
+        result = subprocess.run([sys.executable, "-c", _MCP_SDK_PROBE],
+                                capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _mcp_install_cmd(executable: str = sys.executable) -> list[str] | None:
+    """Resolve an install command the current interpreter's owner actually accepts.
+
+    ``uv tool`` venvs ship without the ``pip`` module and Homebrew/system Pythons are
+    PEP 668 externally managed; prefer pip when this interpreter has it, else delegate
+    to ``uv pip --python`` so the owning package manager performs the write."""
+    try:
+        probe = subprocess.run([executable, "-m", "pip", "--version"],
+                               capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        probe = None
+    if probe is not None and probe.returncode == 0:
+        return [executable, "-m", "pip", "install", "hermes-agent[mcp]"]
+    uv = shutil.which("uv")
+    if uv:
+        return [uv, "pip", "install", "--python", executable, "hermes-agent[mcp]"]
+    return None
+
+
+@doctor_check()
+def _check_mcp_sdk(should_fix: bool, f: Finding) -> None:
+    """Fail (don't just warn) when the optional ``mcp`` SDK is missing — the stdio/http connect
+    error's recovery text (`tools/mcp_tool_transport.py`) sends users to ``doctor --fix``, which
+    must actually install the extra (#109026); base PyPI/pipx installs ship without it."""
+    if _mcp_sdk_available():
+        return check_ok("MCP Python SDK", "(optional, installed)")
+    check_fail("MCP Python SDK", "(optional, not installed)")
+    pip_cmd = f"{sys.executable} -m pip install 'hermes-agent[mcp]'"
+    if not should_fix:
+        f.issues.append(f"Install the MCP SDK: run `hermes doctor --fix`, or `{pip_cmd}`")
+        return
+    print("    → Installing: hermes-agent[mcp]…")
+    install_cmd = _mcp_install_cmd()
+    if install_cmd is None:
+        return _fail_and_issue(
+            "MCP SDK install needs pip or uv",
+            "(this interpreter has no pip module and uv is not on PATH)",
+            "Install the MCP SDK manually: uv tool install --upgrade --with 'hermes-agent[mcp]' hermes-agent",
+            f.manual_issues)
+    try:
+        result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=600)
+        failure = ("MCP SDK install failed", (result.stderr or result.stdout or "")[-500:]) if result.returncode != 0 else None
+    except Exception as exc:
+        failure = ("MCP SDK install could not run", str(exc))
+    if failure:
+        return _fail_and_issue(*failure, f"Install the MCP SDK manually: {pip_cmd}", f.manual_issues)
+    if _mcp_sdk_available():
+        check_ok("MCP Python SDK installed", "(restart the CLI if sessions already tried to connect)")
+    else:
+        _fail_and_issue("MCP Python SDK still missing after install", "(install may need a fresh interpreter)",
+                        f"Install the MCP SDK manually: {pip_cmd}", f.manual_issues)
+
+
 @doctor_check()
 def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_gateway_service_linger(f.issues)

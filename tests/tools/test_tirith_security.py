@@ -11,7 +11,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import tools.tirith_security as _tirith_mod
-from tools.tirith_security import check_command_security, ensure_installed
+from tools.tirith_security import (
+    _expand_leading_tilde_executable,
+    check_command_security,
+    ensure_installed,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -48,6 +52,35 @@ def _mock_run(returncode=0, stdout="", stderr=""):
 
 def _json_stdout(findings=None, summary=""):
     return json.dumps({"findings": findings or [], "summary": summary})
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("~/bin/tool --help", "/home/alice/bin/tool --help"),
+        ("  ~/bin/tool", "  /home/alice/bin/tool"),
+        ("~bob/bin/tool $(dynamic)", "/home/bob/bin/tool $(dynamic)"),
+        ("'~/bin/tool' --help", "'~/bin/tool' --help"),
+        (r"\~/bin/tool", r"\~/bin/tool"),
+        ("echo ~/bin/tool", "echo ~/bin/tool"),
+    ],
+)
+def test_expand_leading_tilde_executable_preserves_command_syntax(command, expected):
+    homes = {"~": "/home/alice", "~bob": "/home/bob"}
+    with patch("tools.tirith_security.os.path.expanduser", side_effect=lambda value: homes.get(value, value)):
+        assert _expand_leading_tilde_executable(command) == expected
+
+
+@patch("tools.tirith_security.subprocess.run")
+@patch("tools.tirith_security._load_security_config")
+def test_check_expands_tilde_executable_before_scanning(mock_cfg, mock_run):
+    mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                             "tirith_timeout": 5, "tirith_fail_open": True}
+    mock_run.return_value = _mock_run(0, _json_stdout())
+    with patch("tools.tirith_security.is_platform_supported", return_value=True), \
+         patch("tools.tirith_security.os.path.expanduser", return_value="/home/alice"):
+        check_command_security("~/bin/tool --help")
+    assert mock_run.call_args.args[0][-1] == "/home/alice/bin/tool --help"
 
 
 # ---------------------------------------------------------------------------

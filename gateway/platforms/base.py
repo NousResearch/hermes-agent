@@ -3525,6 +3525,11 @@ class BasePlatformAdapter(ABC):
         event._gateway_accepted = False
         if not self._message_handler:
             return
+        # Dispatch tasks can inherit another turn's bound identity. Clear it before
+        # topic recovery, lifecycle hooks, or background tasks can spawn subprocesses.
+        from gateway.session_context import reset_session_vars
+
+        reset_session_vars()
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
         expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()

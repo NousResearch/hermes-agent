@@ -2574,6 +2574,17 @@ def claim_job_for_fire(
         # stamping it would make completed_occurrence() skip that slot when it arrives.
         manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
         instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        # A scheduled tick only ever fires when now >= next_run_at
+        # (_evaluate_due_job returns False while the stored occurrence is still
+        # in the future), so a claim arriving BEFORE the stored next occurrence
+        # cannot be the tick that owns it — it is a manual / dashboard / webhook
+        # fire and must stay occurrence-free. Binding it would make run_one_job
+        # stamp that FUTURE instant completed in the ledger: later manual fires
+        # are then refused ("Job is already being fired by the scheduler") and
+        # the scheduled tick dedupe-skips its real delivery (2026-09-08 live:
+        # a manual run at 19:53 consumed the next day's 19:00 occurrence).
+        if instant is not None and datetime.fromisoformat(instant) > now:
+            instant = None
         if instant and completed_occurrence(job, instant):
             if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())

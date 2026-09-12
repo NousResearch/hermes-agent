@@ -248,8 +248,26 @@ backend rejects every `tool_choice` shape for hosted tools, so the request
 relies on instructions to steer the model. When the host model declines to
 invoke the tool, the call fails with `empty_response`. Whether the hosted
 image tool is reachable at all has also been reported to vary between
-accounts. If you need image generation to work deterministically, configure
-the **OpenAI** (API key), **FAL**, or **xAI** backend instead.
+accounts. The backend can also accept an image-model value without honoring
+that selection and return a successful image with a different or opaque tool
+model label, such as `gpt-image-2-codex`.
+
+Successful Codex tool results distinguish:
+
+- `model`: the configured catalog selection (for example `gpt-image-2-medium`), retained for compatibility.
+- `requested_model`: the image-tool model sent to Codex (`gpt-image-2` on this provider).
+- `reported_model`: the last nonempty image-generation model string observed in
+  `response.tools` in the successful attempt, or `null` if none was reported.
+  This is tool-configuration metadata, **not verified image-engine identity**;
+  even a label matching the request may merely echo its configuration.
+- `model_selection_verified`: `false`; `model_selection_note` explains the
+  uncertainty. Hermes does not infer a mapping from an opaque backend alias.
+
+Missing or different model metadata does not discard a usable final image,
+trigger another request, or switch providers.
+
+If you need image generation to work deterministically, configure the
+**OpenAI** (API key), **FAL**, or **xAI** backend instead.
 
 :::
 

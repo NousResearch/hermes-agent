@@ -1669,8 +1669,11 @@ def _(rid, params: dict, session: dict) -> dict:
     from hermes_cli.status_report import build_status_fields, status_lines
     key = session.get("session_key") or params.get("session_id") or ""
     mirror = _metadata_mirror(session)
+    # Under turn isolation the compute host owns the live route: a stale in-process agent object
+    # must not outrank the host's mirrored model/provider.
+    agent = None if session.get("_compute_host_active") else session.get("agent")
     fields = build_status_fields(
-        key, session.get("agent"), _status_row(session, params, key),
+        key, agent, _status_row(session, params, key),
         model=mirror.get("model"), provider=mirror.get("provider"),
         tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
     )

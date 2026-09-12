@@ -546,6 +546,48 @@ still executing remains visible to status polling, approval, stop control, and
 concurrency accounting until its executor work actually exits. A connected SSE
 subscriber continues draining normally.
 
+### POST /v1/runs/\{run_id\}/resolve-unknown
+
+After an authority-owner restart, a turn that was already claimed has an
+unknown execution outcome. Hermes pauses later work in that session rather than
+risk replaying the lost head. Read the exact `admission_id` and
+`execution_generation` from `GET /v1/runs/{run_id}`, then acknowledge that the
+lost execution will not finish:
+
+```json
+{
+  "admission_id": "adm_abc123",
+  "execution_generation": 7
+}
+```
+
+The request is authenticated and run-owner scoped like the other run controls;
+hosted-room callers need the existing `stop` grant. A successful response is the
+canonical terminal receipt (`outcome: "interrupted"`) plus `run_id`. It releases
+the FIFO once and schedules the queued follower without replaying the unknown
+head. Repeated resolution, a stale or non-integer generation, and a run that is
+not currently unknown return `409 stale_generation`; an admission ID that does
+not belong to the path run returns `409 not_found`. The body must contain exactly
+those two fields, or the server returns `409 invalid_params`.
+
+This recovery control is advertised as `features.run_unknown_resolution` and as
+the `run_unknown_resolution` endpoint only when the canonical session authority
+is active. Legacy API execution mode does not advertise it. Ordinary
+`POST /v1/runs/{run_id}/stop` deliberately remains separate and returns
+`409 unknown_execution` for an unknown admission.
+
+For admissions created by this version, the opaque run-owner scope is stored
+atomically with the canonical admission and retained for that admission's
+control/status lifetime, including terminal state. It is private server state,
+not a bearer credential, model input, or API response field. Non-keyed requests
+remain non-idempotent, so matching request bodies still create separate runs.
+Older non-keyed admissions have no persisted owner scope and continue to fail
+closed after an adapter restart; they cannot be safely backfilled. Older keyed
+runs continue to use the existing idempotency ledger. Explicit session
+retirement removes the canonical admission payload and its recoverable owner.
+The replay ledger and canonical admission are separate database transactions;
+this recovery control does not promise global exactly-once execution.
+
 ### POST /v1/runs/\{run_id\}/stop
 
 Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.

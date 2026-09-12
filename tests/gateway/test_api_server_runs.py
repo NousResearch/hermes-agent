@@ -2012,7 +2012,7 @@ class TestHostedRoomRuns:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method", "suffix"),
-        [("GET", ""), ("POST", "/stop")],
+        [("GET", ""), ("POST", "/stop"), ("POST", "/resolve-unknown")],
     )
     async def test_room_grant_cannot_access_ownerless_compat_run(
         self, auth_adapter, tmp_path, method, suffix

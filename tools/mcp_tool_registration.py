@@ -45,9 +45,25 @@ def _normalize_server_trust(value: Any) -> str:
 
 
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
-    """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable."""
+    """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable.
+
+    Both spellings are checked: MCP wire/JSON uses the camelCase ``readOnlyHint``,
+    while the MCP SDK 2.x annotation model exposes the snake_case
+    ``read_only_hint`` attribute. Checking only camelCase made every tool of an
+    SDK-2.x server look write-capable, so ``trust: untrusted`` gated read-only
+    tools too (homelab patch 2026-09-11).
+    """
     annotations = getattr(mcp_tool, "annotations", None)
-    hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else getattr(annotations, "readOnlyHint", None)
+    if annotations is None:
+        return False
+    if isinstance(annotations, dict):
+        hint = annotations.get("readOnlyHint")
+        if hint is None:
+            hint = annotations.get("read_only_hint")
+    else:
+        hint = getattr(annotations, "readOnlyHint", None)
+        if hint is None:
+            hint = getattr(annotations, "read_only_hint", None)
     return hint is True
 
 

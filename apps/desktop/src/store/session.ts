@@ -1371,6 +1371,25 @@ export const markComposerSelectionManual = (): void => {
   setCurrentModelSource('manual')
 }
 
+/**
+ * Remove the current connection/profile's composer pin without repainting the
+ * active runtime. A fresh draft can immediately reseed its atoms from the
+ * profile default; a live session keeps rendering the model it is running.
+ */
+export const clearComposerModelOverride = (): void => {
+  composerSelectionGeneration += 1
+
+  for (const baseKey of [COMPOSER_MODEL_KEY, COMPOSER_PROVIDER_KEY, COMPOSER_MODEL_SOURCE_KEY]) {
+    const key = composerSelectionKey(baseKey)
+
+    if (key !== null) {
+      persistString(key, null)
+    }
+  }
+
+  $currentModelSource.set('')
+}
+
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)

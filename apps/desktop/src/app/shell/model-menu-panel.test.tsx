@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import { $activeSessionId, $currentModel, $currentProvider, setCurrentModelSource } from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -57,6 +57,7 @@ beforeEach(() => {
   $activeSessionId.set('runtime-1')
   $currentModel.set('')
   $currentProvider.set('')
+  setCurrentModelSource('')
   $collapsedProviders.set([])
   getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
@@ -66,7 +67,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderPanel(onSelectModel = vi.fn()) {
+function renderPanel(onSelectModel = vi.fn(), onUseProfileDefault?: () => Promise<void> | void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   const requestGateway = vi.fn(async (method: string) => {
@@ -81,7 +82,11 @@ function renderPanel(onSelectModel = vi.fn()) {
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
-          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={requestGateway as never} />
+          <ModelMenuPanel
+            onSelectModel={onSelectModel}
+            onUseProfileDefault={onUseProfileDefault}
+            requestGateway={requestGateway as never}
+          />
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>
@@ -89,6 +94,27 @@ function renderPanel(onSelectModel = vi.fn()) {
 
   return { onSelectModel, content }
 }
+
+describe('ModelMenuPanel profile default action', () => {
+  it('shows the action for a manually selected composer model', async () => {
+    setCurrentModelSource('manual')
+    const useProfileDefault = vi.fn()
+    const { content } = renderPanel(vi.fn(), useProfileDefault)
+
+    const action = await content.findByRole('menuitem', { name: 'Use profile default' })
+    fireEvent.click(action)
+
+    expect(useProfileDefault).toHaveBeenCalledOnce()
+  })
+
+  it('hides the action when the composer already follows the profile default', async () => {
+    setCurrentModelSource('default')
+    const { content } = renderPanel(vi.fn(), vi.fn())
+
+    await content.findByText('Refresh models')
+    expect(content.queryByRole('menuitem', { name: 'Use profile default' })).toBeNull()
+  })
+})
 
 describe('ModelMenuPanel MoA presets', () => {
   it('selecting a MoA preset switches PERSISTENTLY via onSelectModel (not the one-shot dispatch)', async () => {

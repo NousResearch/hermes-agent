@@ -31,11 +31,14 @@ import {
   _resetSessionOwnerHintsForTests,
   applyConfiguredDefaultProjectDir,
   carryForwardFailedProfileSessions,
+  clearComposerModelOverride,
   commitWorkspaceCwdForSelectedSession,
   ensureDefaultWorkspaceCwd,
   forgetSessionOwnerHintsForConnection,
   forgetSessionOwnerHintsForSession,
+  getComposerSelectionGeneration,
   getConfiguredDefaultProjectDir,
+  getCurrentModelSource,
   getRememberedRoute,
   getRememberedSessionId,
   getRememberedWorkspaceCwd,
@@ -46,6 +49,7 @@ import {
   knownSessionOwner,
   knownSessionProfile,
   lineageAliases,
+  markComposerSelectionManual,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
@@ -152,6 +156,54 @@ describe('composer model persistence scope', () => {
     setComposerSelectionOwner('aibox', 'fred-work')
     expect($currentModel.get()).toBe('local/model')
     expect($currentProvider.get()).toBe('custom:local')
+  })
+
+  it('clears every persisted manual override without repainting the current model', () => {
+    setCurrentModel('manual-model')
+    setCurrentProvider('manual-provider')
+    markComposerSelectionManual()
+    const generation = getComposerSelectionGeneration()
+
+    clearComposerModelOverride()
+
+    expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.composer.provider')).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.composer.model-source')).toBeNull()
+    expect(getCurrentModelSource()).toBe('')
+    expect($currentModel.get()).toBe('manual-model')
+    expect($currentProvider.get()).toBe('manual-provider')
+    expect(getComposerSelectionGeneration()).toBe(generation + 1)
+  })
+
+  it('clears only the active connection and profile override', () => {
+    const remote = (profile: string) =>
+      ({ baseUrl: 'https://aibox.example', connectionId: 'aibox', mode: 'remote', profile }) as never
+
+    setConnection(remote('alpha'))
+    setCurrentModel('alpha-model')
+    setCurrentProvider('alpha-provider')
+    markComposerSelectionManual()
+
+    setConnection(remote('beta'))
+    setCurrentModel('beta-model')
+    setCurrentProvider('beta-provider')
+    markComposerSelectionManual()
+
+    setConnection(remote('alpha'))
+    clearComposerModelOverride()
+
+    for (const field of ['model', 'provider', 'model-source']) {
+      expect(window.localStorage.getItem(`hermes.desktop.composer.${field}.registry.aibox.alpha`)).toBeNull()
+    }
+
+    expect(window.localStorage.getItem('hermes.desktop.composer.model.registry.aibox.beta')).toBe('beta-model')
+    expect(window.localStorage.getItem('hermes.desktop.composer.provider.registry.aibox.beta')).toBe('beta-provider')
+    expect(window.localStorage.getItem('hermes.desktop.composer.model-source.registry.aibox.beta')).toBe('manual')
+
+    setConnection(remote('beta'))
+    expect($currentModel.get()).toBe('beta-model')
+    expect($currentProvider.get()).toBe('beta-provider')
+    expect(getCurrentModelSource()).toBe('manual')
   })
 })
 

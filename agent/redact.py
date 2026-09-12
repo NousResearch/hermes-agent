@@ -635,6 +635,10 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # (unterminated quote → shell EOF / SyntaxError).
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
 
+# Gate for _AUTH_HEADER_RE: the header-name substring in ANY casing. A mixed-case
+# name (aUtHoRiZaTiOn) contains neither the all-lower nor the all-upper run, so
+# plain substring checks would never reach the IGNORECASE regex (issue #108807).
+_AUTH_GATE_RE = re.compile(r"uthorization", re.IGNORECASE)
 
 # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. Start at an
 # identifier boundary, never inside a digit run (quadratic retries on dumps).
@@ -1585,7 +1589,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             return f"{m.group(1)}={m.group(2)}{m.group(3)}:***{m.group(2)}"
         text = _BASIC_PAIR_ASSIGN_RE.sub(_basic_pair, text)
 
-    if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
+    if _AUTH_GATE_RE.search(text):  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:

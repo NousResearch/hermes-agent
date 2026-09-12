@@ -12031,6 +12031,7 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
   const primary = backendConnectionState.invalidate()
 
   stopBackendChild(primary)
+  // Bounded: a backend that ignores SIGTERM must not wedge app quit (main's 7 s teardown budget).
   await waitForTeardown([localShutdown, waitForBackendExit(primary), stopAllPoolBackends()], 7_000)
 })
 

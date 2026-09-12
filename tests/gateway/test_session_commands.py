@@ -39,7 +39,7 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
     (skill / 'SKILL.md').write_text(
         '---\nname: probe-skill\ndescription: Disposable slash fixture\n---\n'
         '# Probe\nSLASH_SKILL_BODY: follow this owned fixture instruction.\n')
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1',
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url,

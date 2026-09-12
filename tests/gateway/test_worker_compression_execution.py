@@ -32,7 +32,7 @@ def test_ordinary_daemon_worker_compresses_without_canonical_sqlite_opens(tmp_pa
         'auxiliary': {'title_generation': {'enabled': False},
                       'compression': {'provider': 'custom', 'model': 'worker-model', 'base_url': url}},
         'platform_toolsets': {'cli': []}}))
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     async def create(desc, key):

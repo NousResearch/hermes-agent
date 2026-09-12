@@ -9,7 +9,7 @@ import pytest
 
 def _probe(tmp_path, source):
     root = Path(__file__).resolve().parents[2]
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env['PYTHONPATH'] = str(root)
     result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/local_automation_peer.py'),
         str(tmp_path), source], cwd=root, env=env, stdin=subprocess.DEVNULL,

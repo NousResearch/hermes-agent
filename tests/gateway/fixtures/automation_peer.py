@@ -102,7 +102,7 @@ async def probe(root, base, mode):
                 'approvals': {'mode': 'off'},
                 'auxiliary': {'title_generation': {'enabled': False}}}
             (home / 'config.yaml').write_text(json.dumps(cfg))
-            env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+            env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
             env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                 OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1',
                 GATEWAY_RELAY_URL=f'ws://127.0.0.1:{relay.sockets[0].getsockname()[1]}/relay',

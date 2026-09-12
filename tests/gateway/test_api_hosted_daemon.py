@@ -29,7 +29,7 @@ def test_hosted_grant_inference_survives_owner_restart(tmp_path):
            'auxiliary': {'title_generation': {'enabled': False}}, 'terminal': {'cwd': str(home)},
            'platform_toolsets': {'api_server': []}, 'approvals': {'mode': 'manual'}}
     (home / 'config.yaml').write_text(json.dumps(cfg))
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=base, API_SERVER_KEY='ordinary-daemon-owned-secret',
                API_SERVER_ENABLED='true', API_SERVER_PORT=str(port), PYTHONUNBUFFERED='1')

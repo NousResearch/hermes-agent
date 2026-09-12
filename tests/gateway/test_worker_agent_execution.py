@@ -56,7 +56,7 @@ def test_real_agent_worker_persists_context_usage_and_releases_lease(tmp_path, p
     (home / 'config.yaml').write_text(json.dumps({'gateway': {'multiplex_profiles': False},
         'model': {'provider': 'custom', 'default': 'worker-model', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': []}}))
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     async def create(desc):

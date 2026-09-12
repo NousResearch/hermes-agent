@@ -177,6 +177,105 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
+def test_failed_memory_approval_is_marked_and_skipped_by_approve_all(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore
+
+    store = MemoryStore(); store.load_from_disk()
+    assert store.add("memory", "alpha")["success"] is True
+    record = wa.stage_write(
+        wa.MEMORY,
+        {"action": "replace", "target": "memory", "old_text": "missing", "content": "replacement"},
+        summary="invalid replacement",
+        origin="foreground",
+    )
+
+    first = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
+    assert "Approved 0" in first
+    failed = wa.get_pending(wa.MEMORY, record["id"])
+    assert failed["status"] == "needs_review"
+    assert failed["failure_count"] == 1
+    assert "No entry matched" in failed["last_error"]
+
+    pending = handle_pending_subcommand(wa.MEMORY, ["pending"], memory_store=store)
+    assert "[needs_review]" in pending
+    assert "No entry matched" in pending
+
+    second = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
+    assert "Approved 0" in second
+    assert "Skipped 1" in second
+    assert wa.get_pending(wa.MEMORY, record["id"])["failure_count"] == 1
+
+
+def test_failed_memory_approval_can_be_retried_by_id_after_repair(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore
+
+    store = MemoryStore(); store.load_from_disk()
+    assert store.add("memory", "alpha")["success"] is True
+    record = wa.stage_write(
+        wa.MEMORY,
+        {"action": "replace", "target": "memory", "old_text": "missing anchor", "content": "replacement"},
+        summary="repairable replacement",
+        origin="foreground",
+    )
+
+    handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
+    assert wa.get_pending(wa.MEMORY, record["id"])["status"] == "needs_review"
+    assert store.add("memory", "missing anchor")["success"] is True
+
+    retry = handle_pending_subcommand(
+        wa.MEMORY, ["approve", record["id"]], memory_store=store
+    )
+    assert "Approved 1" in retry
+    assert wa.get_pending(wa.MEMORY, record["id"]) is None
+    assert "replacement" in store.memory_entries
+
+
+def test_pending_failure_transition_serializes_concurrent_approval(hermes_home):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+
+    from tools import write_approval as wa
+
+    record = wa.stage_write(
+        wa.MEMORY,
+        {"action": "replace", "target": "memory", "old_text": "missing", "content": "replacement"},
+        summary="concurrent invalid replacement",
+        origin="foreground",
+    )
+    started = Event()
+    release = Event()
+    calls = []
+    calls_lock = Lock()
+
+    def apply(_record):
+        with calls_lock:
+            calls.append(True)
+        started.set()
+        assert release.wait(timeout=5)
+        return False, "deterministic approval failure"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            wa.process_pending, wa.MEMORY, record["id"], apply, track_failure=True
+        )
+        assert started.wait(timeout=5)
+        second = executor.submit(
+            wa.process_pending, wa.MEMORY, record["id"], apply, track_failure=True
+        )
+        release.set()
+        outcomes = [first.result(timeout=2), second.result(timeout=2)]
+
+    assert len(calls) == 1
+    assert sorted(outcome["state"] for outcome in outcomes) == ["failed", "skipped"]
+    failed = wa.get_pending(wa.MEMORY, record["id"])
+    assert failed["status"] == wa.NEEDS_REVIEW
+    assert failed["failure_count"] == 1
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

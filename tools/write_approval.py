@@ -11,6 +11,7 @@ interactive CLI only) or **stages** the write under
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
 import logging
@@ -27,10 +28,22 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows uses msvcrt
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX uses fcntl
+    msvcrt = None
+
 # Subsystem identifiers
 MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
+PENDING = "pending"
+NEEDS_REVIEW = "needs_review"
+_MAX_FAILURE_ERROR_CHARS = 2000
 
 # Per-subsystem config key. Intentionally a single boolean with no "block all writes"
 # state — to disable a subsystem use its own enable flag (e.g. ``memory.memory_enabled``).
@@ -70,6 +83,49 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
+def _write_pending_record(path: Path, record: Dict[str, Any]) -> None:
+    """Atomically replace one pending record while its record lock is held."""
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+@contextlib.contextmanager
+def _pending_record_lock(subsystem: str, pending_id: str):
+    """Serialize approval, failure disposition, and rejection for one record."""
+    path = _pending_path(subsystem, pending_id)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if fcntl is None and msvcrt is None:
+        yield
+        return
+    with open(lock_path, "a+", encoding="utf-8") as fd:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            return
+
+        fd.seek(0, os.SEEK_END)
+        if fd.tell() == 0:
+            fd.write("0")
+            fd.flush()
+        fd.seek(0)
+        msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            fd.seek(0)
+            msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def pending_status(record: Dict[str, Any]) -> str:
+    """Return a pending record's lifecycle status, including legacy records."""
+    return record.get("status", PENDING)
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
     kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
@@ -79,14 +135,12 @@ def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin
     record = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
         "summary": (summary or "").strip(), "origin": origin or "foreground",
-        "created_at": time.time(), "payload": payload,
+        "created_at": time.time(), "payload": payload, "status": PENDING,
     }
     try:
         path = _pending_path(subsystem, pid)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        _write_pending_record(path, record)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
     return record
@@ -118,12 +172,90 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     """Delete a pending record. Returns True if it existed."""
     try:
         path = _pending_path(subsystem, pending_id)
-        if path.exists():
-            path.unlink()
-            return True
+        if not path.exists():
+            return False
+        with _pending_record_lock(subsystem, pending_id):
+            if path.exists():
+                path.unlink()
+                return True
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False
+
+
+def process_pending(
+    subsystem: str,
+    pending_id: str,
+    apply_fn,
+    *,
+    allow_needs_review: bool = False,
+    track_failure: bool = False,
+) -> Dict[str, Any]:
+    """Apply one record while serializing its state transition.
+
+    Legacy records without ``status`` are active. Memory failures are retained as
+    ``needs_review`` so bulk approval cannot replay the same deterministic failure;
+    an explicit approval by ID may retry that record after the underlying state is
+    repaired. The record lock covers apply plus discard/retention, preventing a
+    concurrent rejection or successful approval from being undone by a late write.
+    """
+    path = _pending_path(subsystem, pending_id)
+    if not path.exists():
+        return {"state": "missing"}
+    try:
+        with _pending_record_lock(subsystem, pending_id):
+            if not path.exists():
+                return {"state": "missing"}
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.warning("Unable to read pending %s/%s: %s", subsystem, pending_id, exc)
+                return {"state": "unreadable", "error": "pending record could not be read"}
+
+            status = pending_status(record)
+            if status != PENDING and not (allow_needs_review and status == NEEDS_REVIEW):
+                return {"state": "skipped", "record": record}
+
+            try:
+                ok, message = apply_fn(record)
+            except Exception as exc:  # pragma: no cover - apply helpers return errors
+                logger.error("Pending %s/%s application failed: %s", subsystem, pending_id, exc, exc_info=True)
+                ok, message = False, str(exc)
+            if ok:
+                try:
+                    path.unlink()
+                except Exception as exc:  # pragma: no cover - filesystem failure
+                    logger.error("Applied pending %s/%s but could not discard it: %s", subsystem, pending_id, exc,
+                                 exc_info=True)
+                    return {
+                        "state": "failed",
+                        "record": record,
+                        "error": "write applied, but its approval record could not be removed; it was not retried",
+                    }
+                return {"state": "applied", "record": record}
+
+            message = str(message or "approval failed")
+            if track_failure:
+                try:
+                    failure_count = int(record.get("failure_count", 0)) + 1
+                except (TypeError, ValueError):
+                    failure_count = 1
+                record = {
+                    **record,
+                    "status": NEEDS_REVIEW,
+                    "failure_count": failure_count,
+                    "last_error": message[:_MAX_FAILURE_ERROR_CHARS],
+                    "failed_at": time.time(),
+                }
+                try:
+                    _write_pending_record(path, record)
+                except Exception as exc:  # pragma: no cover - filesystem failure
+                    logger.error("Pending %s/%s failed and could not record disposition: %s", subsystem, pending_id,
+                                 exc, exc_info=True)
+            return {"state": "failed", "record": record, "error": message}
+    except Exception as exc:  # pragma: no cover - lock/filesystem failure
+        logger.error("Failed to process pending %s/%s: %s", subsystem, pending_id, exc, exc_info=True)
+        return {"state": "failed", "error": str(exc)}
 
 
 def pending_count(subsystem: str) -> int:

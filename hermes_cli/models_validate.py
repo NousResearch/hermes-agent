@@ -249,6 +249,13 @@ def _validate_ollama_native(req: _Request) -> Optional[dict[str, Any]]:
 def _validate_custom(req: _Request) -> dict[str, Any]:
     from hermes_cli import models as _m
 
+    # Mistral API /models endpoint is not reliably reachable. Trust the
+    # model name when the base URL's HOST is api.mistral.ai — host match,
+    # not substring, so a lookalike host or path segment doesn't bypass
+    # probing.
+    if req.base_url and base_url_host_matches(req.base_url, "api.mistral.ai"):
+        return _verdict(True, True, True, None)
+
     # Probe with the auth shape the api_mode expects.
     anthropic_style = req.api_mode == "anthropic_messages"
     probe_kwargs = {"api_mode": req.api_mode} if anthropic_style else {}

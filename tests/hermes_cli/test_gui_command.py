@@ -1398,7 +1398,10 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
 
     def flaky_rename(src, dst):
         calls["n"] += 1
-        if calls["n"] == 2:  # staged → live
+        # Retry logic now runs three attempts for the staged→live rename.
+        # n==1 is live→previous (succeeds), n==2,3,4 are three retries
+        # that all fail, then the loop raises and rolls back.
+        if calls["n"] in (2, 3, 4):  # staged → live (all attempts)
             raise OSError("EXDEV simulated")
         return real_rename(src, dst)
 

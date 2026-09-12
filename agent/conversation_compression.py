@@ -399,6 +399,10 @@ class CompressionCommitFence:
         self._last_progress = time.monotonic()
         self._progress_observed = False
         self._deadline: float | None = None
+        # The worker records a shared route-deadline unwind separately from an
+        # explicit stop or a safe no-op/defer. The host needs this signal when
+        # the Future completes just before its own wait observes the deadline.
+        self._worker_deadline_abort_observed = False
         self._retain_cancelled_lock_until_worker_done = False
         # Set once the active-row watermark is captured: later rows survive as tail, so hosts may keep admission.
         self._commit_watermark_fenced = False
@@ -410,6 +414,7 @@ class CompressionCommitFence:
         seconds = float(seconds)
         if seconds <= 0:
             raise ValueError("total compression ceiling must be positive")
+        self._worker_deadline_abort_observed = False
         self._deadline = time.monotonic() + seconds
 
     def touch_progress(self) -> None:
@@ -438,6 +443,15 @@ class CompressionCommitFence:
         waiting (see ``auxiliary_client.aux_stream_deadline``).
         """
         return self._deadline
+
+    def mark_worker_deadline_abort(self) -> None:
+        """Record that the worker, rather than an explicit stop, hit the deadline."""
+        self._worker_deadline_abort_observed = True
+
+    @property
+    def worker_deadline_abort_observed(self) -> bool:
+        """Whether the worker returned unchanged because its deadline expired."""
+        return self._worker_deadline_abort_observed
 
     def seconds_since_progress(self) -> float:
         """Seconds since the worker last reported forward progress."""
@@ -904,7 +918,17 @@ def _await_worker_within_budget(
         since_progress = fence.seconds_since_progress()
         wait_slice = min(max(idle - since_progress, 0.005), remaining_ceiling)
         try:
-            return True, future.result(timeout=wait_slice)
+            result = future.result(timeout=wait_slice)
+            if fence.worker_deadline_abort_observed:
+                # The host and worker share one deadline. A cooperative worker
+                # can finish milliseconds before Future.result() raises; route
+                # that scheduling outcome through the ordinary fallback path.
+                logger.info(
+                    "Context compression worker observed the route deadline before the host timeout; "
+                    "entering stall fallback"
+                )
+                return False, None
+            return True, result
         except concurrent.futures.TimeoutError:
             waited = time.monotonic() - wait_started
             since_progress = fence.seconds_since_progress()
@@ -3431,6 +3455,12 @@ def _run_summary_phase(
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
         )
     except AuxiliaryExplicitCancellation:
+        if (
+            commit_fence is not None
+            and commit_fence.deadline_exceeded
+            and not (hard_cancel_event is not None and hard_cancel_event.is_set())
+        ):
+            commit_fence.mark_worker_deadline_abort()
         try:
             attempt.restore_compressor(agent.context_compressor)
         except BaseException as _rollback_exc:
@@ -3451,7 +3481,13 @@ def _run_summary_phase(
         _stop_heartbeat("context compression cancelled")
         lease.release()
         _emit_aborted_attempt_telemetry(
-            agent, attempt.started_at, (STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "explicit_interrupt")
+            agent,
+            attempt.started_at,
+            (
+                "route_deadline"
+                if commit_fence is not None and commit_fence.worker_deadline_abort_observed
+                else (STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "explicit_interrupt")
+            ),
         )
         return _SummaryPhase(messages=messages, abort_prompt=_existing_system_prompt(agent, system_message))
     except BaseException as _compress_exc:

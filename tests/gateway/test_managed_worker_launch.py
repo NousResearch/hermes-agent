@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import threading
 
 import pytest
@@ -62,8 +63,29 @@ class Model(BaseHTTPRequestHandler):
             pass
 
 
+MCP_PEER = '''import json, os, sys
+for line in sys.stdin:
+    r = json.loads(line); method = r.get("method"); ident = r.get("id")
+    if ident is None: continue
+    if method == "initialize":
+        result = {"protocolVersion": r["params"]["protocolVersion"], "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "owned-peer", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "echo", "description": "owned echo",
+                             "inputSchema": {"type": "object", "properties": {}}}]}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": ident, "result": result}), flush=True)
+'''
+
+
+def _model_saw_tool(request, name):
+    """Direct definition or the tool_search deferred catalog (bridge description lists names)."""
+    return any(name in json.dumps(t) for t in request.get('tools') or [])
+
+
 @pytest.mark.linux_only
-@pytest.mark.parametrize('worker_action', ['detach', 'kill', 'controls', 'stop', 'history', 'background'])
+@pytest.mark.parametrize('worker_action', ['detach', 'kill', 'controls', 'stop', 'history', 'background', 'mcp'])
 def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path, worker_action):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -86,12 +108,18 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
     thread.start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
-    (home / 'config.yaml').write_text(json.dumps({
+    config = {
         'gateway': {'multiplex_profiles': False, 'managed_workers': True},
         'model': {'provider': 'custom', 'default': 'managed-model', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}},
         'approvals': {'mode': 'manual'},
-        'platform_toolsets': {'cli': ['terminal']}}))
+        'platform_toolsets': {'cli': ['terminal']}}
+    if worker_action == 'mcp':
+        # A configured stdio MCP server the owner discovered must reach the worker's model too (F25).
+        (home / 'peer.py').write_text(MCP_PEER)
+        config['mcp_servers'] = {'owned': {'command': sys.executable, 'args': [str(home / 'peer.py')]}}
+        config['platform_toolsets']['cli'] = ['terminal', 'owned']
+    (home / 'config.yaml').write_text(json.dumps(config))
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
     audit = tmp_path / 'sqlite-opens.jsonl'
     site = tmp_path / 'audit-site'
@@ -112,9 +140,10 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
     async def exercise(desc, owner):
         import psutil
         async with websocket(home, desc) as ws:
+            toolsets = ['terminal', 'clarify'] if peer.control_mode else ['terminal', 'owned'] if worker_action == 'mcp' else ['terminal']
             created = await rpc(ws, 'session.create', request_id='managed', source='cli', cwd=str(home),
                                 model='managed-model', provider='custom', base_url=url, api_key='loopback-only',
-                                toolsets=['terminal', 'clarify'] if peer.control_mode else ['terminal'], ignore_rules=True)
+                                toolsets=toolsets, ignore_rules=True)
             assert 'result' in created, created
             sid = created['result']['session_id']
             submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id='managed-input', text='DO_MANAGED_TOOL')
@@ -211,6 +240,8 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             assert any(role == 'tool' and 'MANAGED_TOOL_EFFECT' in content for role, content in rows), rows
         assert query('SELECT status FROM worker_executions WHERE session_id=?', (sid,)) == [('terminal',)]
         assert query('SELECT COUNT(*) FROM session_turn_leases') == [(0,)]
+        if worker_action == 'mcp':
+            assert all(_model_saw_tool(r, 'mcp__owned__echo') for r in peer.requests), [r.get('tools') for r in peer.requests]
         assert len(peer.requests) == (3 if peer.control_mode else 2), json.dumps([
             {'model': r.get('model'), 'roles': [m['role'] for m in r['messages']],
              'user': [str(m.get('content'))[:120] for m in r['messages'] if m['role'] == 'user']} for r in peer.requests])

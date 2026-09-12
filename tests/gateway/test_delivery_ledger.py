@@ -388,7 +388,11 @@ class TestGatewayRedeliverySweep:
         assert n == 1
         sent = adapter.send.call_args.kwargs
         assert sent["content"] == "the final answer"  # no marker
-        assert sent["metadata"] == {"thread_id": "171.001"}
+        assert sent["metadata"] == {
+            "_delivery_obligation_id": "ob-1",
+            "_turn_final": True,
+            "thread_id": "171.001",
+        }
         assert _row("ob-1")["state"] == "delivered"
         runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
             "agent:main:slack:channel:C1"

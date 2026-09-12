@@ -3828,8 +3828,18 @@ class BasePlatformAdapter(ABC):
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        send_metadata = dict(metadata or {})
+        # Generic adapter-only authority bit. The normal delivery ledger is the
+        # one place that knows this is the completed turn response; overwrite
+        # any caller-supplied value so inbound/platform metadata cannot spoof or
+        # suppress the fact. Adapters may consume it, but it is never model
+        # control or a platform API field.
+        send_metadata["_turn_final"] = True
+        if obligation_id is not None:
+            send_metadata["_delivery_obligation_id"] = obligation_id
         result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to,
+            metadata=send_metadata)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter

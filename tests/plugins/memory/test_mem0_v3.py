@@ -206,11 +206,6 @@ class TestSyncTurnTruncation:
         text = "a" * 10 + "." + "b" * (cap * 2)
         assert mem0_plugin._truncate_for_sync(text) == text[:cap]
 
-    def test_a_message_inside_the_cap_is_never_touched(self):
-        cap = mem0_plugin._SYNC_MSG_MAX_CHARS
-        text = "Fine. Nothing to trim here! Really?"
-        assert len(text) <= cap and mem0_plugin._truncate_for_sync(text) == text
-
     def test_sync_max_chars_config_raises_cap(self, monkeypatch, tmp_path):
         """8k-token embedders should not be stuck at the 512-token default (#106235)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -16538,7 +16538,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     build_payload.assert_called_once_with(
         picker_ctx,
         picker_hints=True,
-        max_models=50,
+        max_models=999,
     )
 
 

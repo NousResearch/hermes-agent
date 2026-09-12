@@ -242,7 +242,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
           <SelectTrigger className="h-8 rounded-md">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent searchable>
             <SelectItem value={NONE}>Inherit (launch profile)</SelectItem>
             {providers.map(p => (
               <SelectItem key={p.slug} value={p.slug}>
@@ -267,7 +267,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel = 'g
             <SelectTrigger className="h-8 rounded-md">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent searchable>
               {models.map(m => (
                 <SelectItem key={m} value={m}>
                   {m}

@@ -24,6 +24,7 @@ import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { usePickerFilterCapture } from '@/lib/picker-typeahead'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -133,6 +134,8 @@ export function ModelCatalogMenu({
   const copyPicker = t.modelPicker
   const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+  usePickerFilterCapture(true, searchRef, setSearch)
   const collapsedProviders = useStoreCollapsed()
   const defaultEffort = useDefaultEffort()
   // Which models the user curated in Edit Models. Read HERE rather than taken
@@ -405,6 +408,7 @@ export function ModelCatalogMenu({
     <>
       <DropdownMenuSearch
         aria-label={copy.search}
+        ref={searchRef}
         onKeyDown={event => {
           // Claim arrows and Enter from Radix so DOM focus stays in the input
           // and Enter commits the highlighted row without a DownArrow first.

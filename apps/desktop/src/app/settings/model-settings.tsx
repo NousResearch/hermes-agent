@@ -843,7 +843,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
             <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
               <SelectValue placeholder={m.provider} />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent searchable>
               {mainProviderOptions.map(provider => (
                 <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
                   {provider.name}
@@ -887,7 +887,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                 <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
                   <SelectValue placeholder={m.model} />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent searchable>
                   {withActive(selectedProviderModels, selectedModel).map(model => (
                     <SelectItem key={model} value={model}>
                       {model}
@@ -1041,7 +1041,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                           <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
                             <SelectValue placeholder={m.provider} />
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent searchable>
                             {providerOptions.map(provider => (
                               <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
                                 {provider.name}
@@ -1056,7 +1056,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                           <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
                             <SelectValue placeholder={m.model} />
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent searchable>
                             {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
                               <SelectItem key={model} value={model}>
                                 {model}
@@ -1109,7 +1109,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
                 <SelectValue placeholder="Preset" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent searchable>
                 {Object.keys(moa.presets).map(name => (
                   <SelectItem key={name} value={name}>
                     {name}
@@ -1233,7 +1233,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                       <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
                         <SelectValue placeholder={m.provider} />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent searchable>
                         {withActive(
                           moaSlotProviderOptions.map(p => p.slug || 'none'),
                           slot.provider
@@ -1262,7 +1262,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                       <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
                         <SelectValue placeholder={m.model} />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent searchable>
                         {withActive(modelsForProvider(slot.provider), slot.model).map(model => (
                           <SelectItem key={model} value={model}>
                             {model}
@@ -1323,7 +1323,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                     <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
                       <SelectValue placeholder={m.provider} />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent searchable>
                       {withActive(
                         moaSlotProviderOptions.map(p => p.slug || 'none'),
                         currentMoaPreset.aggregator.provider
@@ -1350,7 +1350,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                     <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
                       <SelectValue placeholder={m.model} />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent searchable>
                       {withActive(
                         modelsForProvider(currentMoaPreset.aggregator.provider),
                         currentMoaPreset.aggregator.model

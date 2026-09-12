@@ -133,7 +133,7 @@ def test_model_options_cold_pricing_fetch_runs_off_the_request_path(monkeypatch)
     )
     monkeypatch.setattr(inv, "_moa_provider_row", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(inv, "_apply_capabilities", lambda _rows: None)
-    monkeypatch.setattr(inv, "_apply_featured", lambda _rows: None)
+    monkeypatch.setattr(inv, "_apply_featured", lambda _rows, **_kwargs: None)
     monkeypatch.setattr(inv, "_pricing_prewarm_threads", {})
 
     try:

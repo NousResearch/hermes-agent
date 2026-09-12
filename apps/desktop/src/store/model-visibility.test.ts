@@ -268,6 +268,16 @@ describe('featured defaults', () => {
     expect(visible.has(modelVisibilityKey('ollama', 'qwen3:latest'))).toBe(true)
     expect(visible.has(modelVisibilityKey('ollama', 'llama3.2:latest'))).toBe(true)
   })
+
+  it('does not hide OpenRouter behind a featured shortlist', () => {
+    const models = Array.from({ length: 80 }, (_, i) => `vendor/model-${i}`)
+    const openrouter = featuredProvider('openrouter', models, models.slice(0, 3))
+
+    const visible = defaultVisibleKeys([openrouter])
+
+    expect(visible.size).toBe(80)
+    expect(visible.has(modelVisibilityKey('openrouter', 'vendor/model-79'))).toBe(true)
+  })
 })
 
 describe('setProviderVisibility', () => {

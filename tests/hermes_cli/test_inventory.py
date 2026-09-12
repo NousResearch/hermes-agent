@@ -683,5 +683,48 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
         inventory._apply_featured(rows)
 
 
+def test_openrouter_featured_is_curated_plus_current():
+    """A 5-per-lab dump of the live OpenRouter catalog flooded the Desktop chat
+    picker. Featured must stay the curated shortlist plus the active pick."""
+    from hermes_cli import inventory
+    from hermes_cli.models import OPENROUTER_MODELS
+
+    curated = [mid for mid, _ in OPENROUTER_MODELS]
+    current = "openai/gpt-5.6-luna-pro"
+    extra = [f"vendor/extra-{i}" for i in range(90)]
+    rows = [{
+        "slug": "openrouter",
+        "models": curated + extra + [current] if current not in curated else curated + extra,
+    }]
+
+    inventory._apply_featured(rows, current_model=current)
+
+    featured = rows[0]["featured_models"]
+    assert current in featured
+    assert all(mid in featured for mid in curated if mid in rows[0]["models"])
+    assert "vendor/extra-0" not in featured
+    assert len(featured) < 80
 
 
+def test_openrouter_capabilities_skip_non_featured_lookups():
+    from hermes_cli import inventory
+
+    featured = ["openai/gpt-5.6-luna-pro"]
+    models = featured + [f"vendor/extra-{i}" for i in range(90)]
+    rows = [{"slug": "openrouter", "models": models, "featured_models": featured}]
+
+    calls: list[tuple[str, str]] = []
+
+    class _Meta:
+        supports_reasoning = True
+
+    def _fake_caps(slug, model):
+        calls.append((slug, model))
+        return _Meta()
+
+    with patch("agent.models_dev.get_model_capabilities", side_effect=_fake_caps):
+        inventory._apply_capabilities(rows)
+
+    assert calls == [("openrouter", "openai/gpt-5.6-luna-pro")]
+    assert rows[0]["capabilities"]["vendor/extra-0"]["reasoning"] is True
+    assert rows[0]["capabilities"]["openai/gpt-5.6-luna-pro"]["reasoning"] is True

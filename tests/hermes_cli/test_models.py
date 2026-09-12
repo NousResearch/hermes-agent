@@ -108,6 +108,33 @@ class TestFetchOpenRouterModels:
         # Image-only model advertised supported_parameters WITHOUT tools → must be dropped.
         assert "google/gemini-3-pro-image-preview" not in ids
 
+    def test_includes_live_models_beyond_the_curated_shortlist(self, monkeypatch):
+        """The Settings/OpenRouter picker must list the live catalog, not only ~50 curated ids."""
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-opus-4.6","supported_parameters":["tools"]},'
+                    b'{"id":"vendor/only-on-openrouter","supported_parameters":["tools"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(_models_mod, "OPENROUTER_MODELS", [("anthropic/claude-opus-4.6", "")])
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[("anthropic/claude-opus-4.6", "")]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert [mid for mid, _ in models] == ["anthropic/claude-opus-4.6", "vendor/only-on-openrouter"]
+
 
 
 class TestOpenRouterToolSupportHelper:

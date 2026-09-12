@@ -25,7 +25,7 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
@@ -791,7 +791,9 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError:
             raise ValueError(
                 f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
-        run_at = _hermes_now() + timedelta(minutes=minutes)
+        now = _hermes_now()
+        # Durations measure elapsed time, not wall-clock hours across a DST transition.
+        run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
         return _interval_schedule(parse_duration(schedule))
@@ -1109,7 +1111,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         minutes = schedule.get("minutes")
         if minutes is None:
             return None
-        return (base_time + timedelta(minutes=minutes)).isoformat()
+        # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
+        next_run = base_time.astimezone(timezone.utc) + timedelta(minutes=minutes)
+        return next_run.astimezone(base_time.tzinfo).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")
         if not expr:

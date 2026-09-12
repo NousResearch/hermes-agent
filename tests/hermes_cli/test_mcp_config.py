@@ -65,7 +65,7 @@ def _seed_config(tmp_path: Path, mcp_servers: dict):
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
 
 
@@ -162,7 +162,7 @@ class TestMcpRemove:
         token_dir = tmp_path / "mcp-tokens"
         token_dir.mkdir()
         token_file = token_dir / "oauth-srv.json"
-        token_file.write_text("{}")
+        token_file.write_text("{}", encoding="utf-8")
 
         from hermes_cli.mcp_config import cmd_mcp_remove
 
@@ -771,7 +771,7 @@ class TestMcpLogin:
         def mock_probe(name, cfg, connect_timeout=30):
             seen["connect_timeout"] = connect_timeout
             token_dir.mkdir(exist_ok=True)
-            (token_dir / "realserver.json").write_text('{"access_token": "x"}')
+            (token_dir / "realserver.json").write_text('{"access_token": "x"}', encoding="utf-8")
             return [("a", "d"), ("b", "d"), ("c", "d")]
 
         monkeypatch.setattr(

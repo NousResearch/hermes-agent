@@ -1825,6 +1825,40 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     return final_response
 
 
+def _safe_lineage_title(session_db, job_id: str, base_title: str):
+    """Next free lineage title via ``get_next_title_in_lineage`` without letting a poisoned
+    bounded proxy (disabled / timed out) or a missing method escape — returns *base_title*
+    unchanged on any failure (#76914)."""
+    try:
+        return getattr(session_db, "get_next_title_in_lineage", lambda b: b)(base_title)
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug("Job '%s': lineage title probe failed: %s", job_id, e)
+        return base_title
+
+
+def _ended_session_via_retry(session_db, session_id: str, end_reason: str, job_id: str) -> bool:
+    """One bounded, direct (un-proxied) ``end_session`` attempt after the bounded proxy path
+    failed (#76914).
+
+    A transient system stall (load spike, fsync latency) can push the first finalization
+    write past the cleanup timeout; the bounded proxy then fail-fasts every later step, the
+    ``end_session`` raise is swallowed, and the ``ended_at`` tombstone never lands — a
+    *successful* job leaves a zombie row that prune/archive (pinned to ``ended_at IS NOT
+    NULL``) can never reach. The stall is transient by observation (same job self-recovers
+    on its next run), so one more bounded attempt on the raw store lands it; a genuinely
+    damaged store times out again and we are no worse than before. ``end_session`` is
+    first-reason-wins, so a racing abandoned first attempt cannot corrupt the reason.
+    """
+    def _direct_end() -> None:
+        session_db.end_session(session_id, end_reason)
+
+    ok = _run_cron_cleanup_with_timeout(
+        _direct_end, job_id=job_id, label="session finalization (end_session retry)")
+    if not ok:
+        logger.debug("Job '%s': end_session retry did not land", job_id)
+    return ok
+
+
 def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_session_id: str) -> None:
     """Title, classify, end and release the cron session after the agent turn has returned."""
     # Bound every DB op so storage failure cannot hold the dispatch guard.
@@ -1862,8 +1896,11 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
         # Never leave the session untitled.
         # Try the next free title in the lineage, then a bare id-stamped title. See #50535.
+        # The lineage probe runs on the possibly-poisoned bounded proxy — it may fail-fast
+        # (disabled) or time out; both must fall through to the bare id-stamped title, never
+        # escape this finally block (#76914: an escape skipped end_session + release entirely).
         for _fallback in (
-            getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(f"cron {job_id}"),
+            _safe_lineage_title(_session_db, job_id, f"cron {job_id}"),
             f"cron {job_id} {_final_cron_session_id[-6:]}"):
             try:
                 if _set_cron_session_title(_session_db, _final_cron_session_id, _fallback):
@@ -1903,10 +1940,16 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
         # SQLite handle (#94736). The reason is durably booked, so disarm only the
         # agent's redundant row-finalization; its resource teardown still runs in
         # _teardown_cron_agent.
-        if agent is not None:
-            agent._end_session_on_close = False
+        _ended = True
     except (Exception, KeyboardInterrupt) as e:
-        logger.debug("Job '%s': failed to end session: %s", job_id, e)
+        # #76914: the bounded proxy fail-fasts (or times out) after a transient stall —
+        # that swallow lost the ended_at tombstone for a *successful* job. Give the write
+        # one bounded direct attempt on the raw store before the handle is released.
+        _ended = _ended_session_via_retry(session_db, _final_cron_session_id, _end_reason, job_id)
+        if not _ended:
+            logger.debug("Job '%s': failed to end session: %s", job_id, e)
+    if _ended and agent is not None:
+        agent._end_session_on_close = False
     try:
         from hermes_state_registry import release_or_close
         release_or_close(_session_db)

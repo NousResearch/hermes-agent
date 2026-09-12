@@ -235,7 +235,7 @@ import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
 import { registerHudIpc } from './hud-ipc'
 import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
-import { snapHudBounds } from './hud-snap'
+import { dockHudToNearestEdge, snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
@@ -13987,14 +13987,15 @@ function applyHudSnapToPointer() {
     hudWindow.webContents.getZoomFactor(),
     workArea
   )
+  const docked = dockHudToNearestEdge(origin, { width: bounds.width, height: bounds.height }, workArea)
 
   // setBounds — NOT setPosition alone: on Windows, a transparent frameless
   // window silently grows ~1px per setPosition call (see move-by handler).
   // On native Wayland the compositor ignores the position half; the snap
   // shortcut is therefore a documented no-op there.
   hudWindow.setBounds({
-    x: origin.x,
-    y: origin.y,
+    x: docked.x,
+    y: docked.y,
     width: bounds.width,
     height: bounds.height
   })

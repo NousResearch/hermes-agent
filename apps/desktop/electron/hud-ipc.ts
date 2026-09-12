@@ -6,6 +6,7 @@ import { type BrowserWindow, ipcMain, screen } from 'electron'
 
 import { createHudDragSession } from './hud-drag'
 import { normalizeHudResizeBounds } from './hud-geometry'
+import { dockHudToNearestEdge } from './hud-snap'
 import { hudWindowingView, resolveHudWindowing } from './hud-windowing'
 import { hudFrostFor, type TranslucencyState } from './translucency'
 
@@ -197,6 +198,28 @@ export function registerHudIpc({
     }
 
     hudDrag.end()
+
+    if (!hudWindow || hudWindow.isDestroyed() || !hudWindowing().clientPlacement) {
+      return
+    }
+
+    const bounds = hudWindow.getBounds()
+    const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y })
+    const workArea = display?.workArea ?? bounds
+    const origin = dockHudToNearestEdge(
+      { x: bounds.x, y: bounds.y },
+      { width: bounds.width, height: bounds.height },
+      workArea
+    )
+
+    // setBounds — NOT setPosition: Windows transparent frameless windows grow
+    // ~1px per setPosition (see move-by). Keep the drag-end size pinned.
+    hudWindow.setBounds({
+      x: origin.x,
+      y: origin.y,
+      width: bounds.width,
+      height: bounds.height
+    })
   })
 
   ipcMain.on('hermes:hud:move-by', (event, delta) => {

@@ -56,6 +56,12 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
+    def test_disabled_tracker_never_injects_hints(self, project):
+        """A session that skips context files (cron without a workdir) must not have the same
+        files spliced into tool results, where they leak into exact-output deliveries (#9441)."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project), enabled=False)
+        assert tracker.check_tool_call("read_file", {"path": str(project / "frontend" / "index.ts")}) is None
+
     def test_no_duplicate_loading(self, project):
         """Same directory should not be loaded twice."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

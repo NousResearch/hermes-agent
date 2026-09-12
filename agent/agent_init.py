@@ -2108,7 +2108,8 @@ def _snapshot_primary_runtime(agent):
 
 def _init_usage_state(agent):
     from agent.runtime_cwd import scope_terminal_cwd
-    agent._subdirectory_hints = SubdirectoryHintTracker(working_dir=scope_terminal_cwd() or None)
+    agent._subdirectory_hints = SubdirectoryHintTracker(
+        working_dir=scope_terminal_cwd() or None, enabled=not agent.skip_context_files)
     _set_defaults(agent, _USAGE_STATE)
 
 

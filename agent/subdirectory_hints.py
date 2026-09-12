@@ -59,7 +59,11 @@ class SubdirectoryHintTracker:
     and append the returned text to the tool result.
     """
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(self, working_dir: Optional[str] = None, *, enabled: bool = True):
+        # ``enabled=False`` mirrors ``skip_context_files``: a session that opted out of
+        # AGENTS.md/CLAUDE.md injection at startup must not get the same files spliced into
+        # tool results later — cron jobs relaying exact stdout leaked them to chat (#9441).
+        self.enabled = enabled
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         # The working dir is pre-marked loaded (startup context handles it).
         self._loaded_dirs: Set[Path] = {self.working_dir}
@@ -73,6 +77,8 @@ class SubdirectoryHintTracker:
 
     def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
+        if not self.enabled:
+            return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None
 

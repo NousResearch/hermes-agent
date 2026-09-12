@@ -256,6 +256,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 import anyio
                 with anyio.CancelScope(shield=True):
                     await self.context.lock.acquire()
+            # Propagate close/transport failure to the shared provider's lock cleanup.
+            import anyio
+            with anyio.CancelScope(shield=True):
+                await inner.aclose()
         if retry_after_concurrent_auth:
             yield request
             self._persist_oauth_metadata_if_changed()

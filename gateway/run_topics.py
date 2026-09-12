@@ -636,6 +636,58 @@ class GatewayTopicThreadsMixin:
             if "already linked" in str(exc):
                 return already_linked
             raise
+        # Switch the lane's store entry now — deferring to the next inbound heal would let it
+        # mistake an explicit restore of the just-retired session for a stale binding
+        # (binding == the successor's prev_session_id) and repoint it at the reset successor,
+        # breaking the "Session restored" promise on the next prompt. If the switch fails,
+        # roll the binding and the route back and fail loudly: a committed restore over the
+        # old entry is exactly the inconsistent state the heal would then undo.
+        session_key = self._session_key_for_source(source)
+        prior_entry = None
+        try:
+            prior_entry = await self.async_session_store.lookup_by_session_key(session_key)
+        except Exception:
+            logger.debug("Failed to read prior topic route before restore switch", exc_info=True)
+        try:
+            await self.async_session_store.switch_session(session_key, session_id)
+        except Exception:
+            logger.warning("Failed to switch topic store to restored session", exc_info=True)
+            if prior_entry is not None:
+                # switch_session() can raise from _save() after _replace_route_locked already
+                # swapped the in-process entry (its database bookkeeping runs later, so it has
+                # not advanced here). Reinstall the captured snapshot verbatim — switching back
+                # by ID would build a fresh shell entry, losing counters, model overrides and
+                # the pending auto-reset metadata. Best effort — logged, never masks the
+                # failure response.
+                try:
+                    await asyncio.to_thread(
+                        self.session_store.restore_route_entry, session_key, prior_entry
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to restore prior topic route after restore failure", exc_info=True
+                    )
+            try:
+                if current_binding and current_binding.get("session_id"):
+                    await db.bind_telegram_topic(
+                        chat_id=str(source.chat_id), thread_id=str(source.thread_id),
+                        user_id=str(current_binding.get("user_id") or source.user_id or ""),
+                        session_key=str(current_binding.get("session_key") or session_key),
+                        session_id=str(current_binding["session_id"]),
+                        managed_mode=str(current_binding.get("managed_mode") or "auto"),
+                        profile_name=topic_profile,
+                    )
+                else:
+                    await db.delete_telegram_topic_binding(
+                        chat_id=str(source.chat_id), thread_id=str(source.thread_id),
+                        profile_name=topic_profile, disable_mode_when_last=False,
+                    )
+            except Exception:
+                logger.warning("Failed to roll back topic binding after restore failure", exc_info=True)
+            return (
+                "Session restore failed: the topic's session store could not be switched, so "
+                "the restore was rolled back. Resend /topic <id> to retry."
+            )
         title = await db.get_session_title(session_id) or session_id
         last_assistant = None
         with suppress(Exception):

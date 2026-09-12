@@ -245,7 +245,10 @@ class SessionTelegramTopicsMixin:
                     """, (str(session_id),))
         return dict(row) if row else None
 
-    def delete_telegram_topic_binding(self, *, chat_id: str, thread_id: str, profile_name: str = "default") -> int:
+    def delete_telegram_topic_binding(
+        self, *, chat_id: str, thread_id: str, profile_name: str = "default",
+        disable_mode_when_last: bool = True,
+    ) -> int:
         """Remove the binding row for one (chat, thread) pair. Called when the Bot API confirms
         a topic was deleted externally (``Thread not found`` after the same-thread retry
         failed); otherwise ``gateway.run._recover_telegram_topic_thread_id`` keeps
@@ -253,7 +256,9 @@ class SessionTelegramTopicsMixin:
         binding, ``telegram_dm_topic_mode`` is flipped to ``enabled = 0`` in the same
         transaction, or a user who disabled topics in the Telegram client (not via
         ``/topic off``) stays stuck. Returns the number of rows deleted; absent binding or
-        unmigrated tables are silent no-ops (never raise from a cleanup hot path).
+        unmigrated tables are silent no-ops (never raise from a cleanup hot path). Pass
+        ``disable_mode_when_last=False`` to remove the row without toggling the chat-wide
+        topic mode — rollback of a failed binding write, not a deleted-topic prune.
 
         Without this prune, the stale row keeps living in ``telegram_dm_topic_bindings`` and the recovery
         logic in ``gateway.run._recover_telegram_topic_thread_id`` cheerfully redirects future inbound
@@ -280,7 +285,7 @@ class SessionTelegramTopicsMixin:
                     SELECT 1 FROM telegram_dm_topic_bindings
                     WHERE profile_name = ? AND chat_id = ? LIMIT 1
                     """, (profile_name, chat_id)).fetchone()
-                if remaining is None:
+                if remaining is None and disable_mode_when_last:
                     conn.execute(
                         "UPDATE telegram_dm_topic_mode SET enabled = 0, updated_at = ? "
                         "WHERE profile_name = ? AND chat_id = ?",

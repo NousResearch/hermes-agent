@@ -450,6 +450,327 @@ async def test_new_inside_telegram_topic_rewrites_binding_to_new_session(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_auto_reset_repoints_topic_binding_instead_of_switching_back(tmp_path):
+    """Suspension auto-reset in a topic lane must rebind, not resurrect the predecessor.
+
+    Sibling of the /new rebind above: the resolve-time topic heal used to switch
+    the lane back to the bound (pre-reset) session even when the store had just
+    replaced it, which ended the fresh successor and dropped was_auto_reset /
+    prev_session_id — so the continuity note never fired and the reset was
+    silently undone. On an auto-reset successor the binding is repointed to the
+    new session instead, and the successor stays current.
+    """
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="old-topic-session",
+    )
+    session_db.create_session(
+        session_id="new-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    successor = SessionEntry(
+        session_key=topic_key,
+        session_id="new-topic-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+        was_auto_reset=True,
+        auto_reset_reason="suspended",
+        reset_had_activity=True,
+        prev_session_id="old-topic-session",
+    )
+    runner.session_store.get_or_create_session.side_effect = (
+        lambda source, **_kwargs: successor
+    )
+
+    resolved = await runner._hmwa_resolve_session(
+        _make_event("hello", thread_id="17585"), topic_source
+    )
+
+    assert resolved is not None
+    _, entry, _ = resolved
+    assert entry.session_id == "new-topic-session"
+    assert getattr(entry, "was_auto_reset", False) is True
+    runner.session_store.switch_session.assert_not_called()
+
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "new-topic-session"
+
+
+@pytest.mark.asyncio
+async def test_topic_binding_repoints_when_reset_flag_already_consumed(tmp_path):
+    """Typed /model as the first post-reset message consumes the auto-reset flag (#48031);
+    the topic heal must still recognize the replacement from prev_session_id metadata and
+    rebind, not switch back to the retired predecessor."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="old-topic-session",
+    )
+    session_db.create_session(
+        session_id="new-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    successor = SessionEntry(
+        session_key=topic_key,
+        session_id="new-topic-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+        was_auto_reset=False,  # consumed by the typed /model path (#48031)
+        prev_session_id="old-topic-session",
+    )
+    runner.session_store.get_or_create_session.side_effect = (
+        lambda source, **_kwargs: successor
+    )
+
+    resolved = await runner._hmwa_resolve_session(
+        _make_event("hello", thread_id="17585"), topic_source
+    )
+
+    assert resolved is not None
+    _, entry, _ = resolved
+    assert entry.session_id == "new-topic-session"
+    runner.session_store.switch_session.assert_not_called()
+
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "new-topic-session"
+
+
+@pytest.mark.asyncio
+async def test_restored_topic_binding_is_followed_not_overwritten(tmp_path):
+    """A pending auto-reset must not clobber a user's explicit /topic <id> restore.
+
+    When the auto-reset is first observed by an off-turn command, was_auto_reset is
+    still set; if the user then restores an older session into the topic, the heal
+    must follow the restored binding (switch), not repoint it at the reset successor.
+    """
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.create_session(
+        session_id="restored-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="restored-session",
+        managed_mode="restored",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    successor = SessionEntry(
+        session_key=topic_key,
+        session_id="new-topic-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+        was_auto_reset=True,  # off-turn command created it without consuming the flag
+        auto_reset_reason="suspended",
+        reset_had_activity=True,
+        prev_session_id="old-topic-session",
+    )
+    runner.session_store.get_or_create_session.side_effect = (
+        lambda source, **_kwargs: successor
+    )
+
+    resolved = await runner._hmwa_resolve_session(
+        _make_event("hello", thread_id="17585"), topic_source
+    )
+
+    assert resolved is not None
+    _, entry, _ = resolved
+    assert entry.session_id == "restored-session"
+    runner.session_store.switch_session.assert_called_once_with(
+        topic_key, "restored-session"
+    )
+
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "restored-session"
+
+
+@pytest.mark.asyncio
+async def test_restore_switches_store_immediately(tmp_path):
+    """`/topic <id>` must switch the lane's store entry at command time.
+
+    Restoring the session that was just auto-reset makes the binding equal the
+    successor's prev_session_id; if the switch were left to the next inbound
+    heal, the heal could mistake the explicit restore for a stale binding and
+    repoint it at the successor — the next prompt would stay in the new session
+    despite "Session restored". The command now switches immediately.
+    """
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+
+    runner = _make_runner(session_db=session_db)
+    event = _make_event("/topic old-topic-session", thread_id="17585")
+
+    response = await runner._restore_telegram_topic_session(event, "old-topic-session")
+
+    assert "Session restored" in response
+    runner.session_store.switch_session.assert_called_once_with(
+        topic_key, "old-topic-session"
+    )
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "old-topic-session"
+
+
+@pytest.mark.asyncio
+async def test_restore_failure_is_visible_and_rolls_back_binding(tmp_path):
+    """A failed store switch must not leave a committed restore binding behind.
+
+    Binding-then-switch with a suppressed switch error could leave the durable
+    binding on the restored session while the store kept the auto-reset
+    successor — the next heal would then treat the explicit restore as stale
+    and undo it. The command now rolls the binding back and reports failure.
+    """
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+
+    runner = _make_runner(session_db=session_db)
+    runner.session_store.lookup_by_session_key.return_value = None
+    runner.session_store.switch_session = MagicMock(
+        side_effect=RuntimeError("store unavailable")
+    )
+    event = _make_event("/topic old-topic-session", thread_id="17585")
+
+    response = await runner._restore_telegram_topic_session(event, "old-topic-session")
+
+    assert "Session restored" not in response
+    assert "restore failed" in response.lower()
+    assert runner.session_store.switch_session.call_count == 1  # no prior route to restore
+    runner.session_store.restore_route_entry.assert_not_called()
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is None  # no prior binding → rollback removed the row
+    # Rollback must not toggle the chat-wide topic mode (that is the deleted-topic prune path).
+    assert session_db.is_telegram_topic_mode_enabled(
+        chat_id="208214988", user_id="208214988"
+    )
+
+
+@pytest.mark.asyncio
+async def test_restore_failure_restores_previous_binding(tmp_path):
+    """When a prior binding existed, a failed restore puts it back verbatim."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="prev-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    session_db.create_session(
+        session_id="old-topic-session",
+        source="telegram",
+        user_id="208214988",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="prev-session",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    runner.session_store.lookup_by_session_key.return_value = SimpleNamespace(
+        session_id="prev-session"
+    )
+    runner.session_store.switch_session = MagicMock(
+        side_effect=[RuntimeError("store unavailable"), None]
+    )
+    event = _make_event("/topic old-topic-session", thread_id="17585")
+
+    response = await runner._restore_telegram_topic_session(event, "old-topic-session")
+
+    assert "restore failed" in response.lower()
+    runner.session_store.switch_session.assert_called_once_with(
+        topic_key, "old-topic-session"
+    )
+    # The snapshot — not another ID switch — goes back into the store.
+    prior = runner.session_store.lookup_by_session_key.return_value
+    runner.session_store.restore_route_entry.assert_called_once_with(topic_key, prior)
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "prev-session"
+
+
+@pytest.mark.asyncio
 async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypatch):
     """Stale topic bindings auto-heal to the compression child on next inbound.
 

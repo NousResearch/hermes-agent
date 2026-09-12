@@ -590,19 +590,54 @@ class SessionEntry:
         )
 
 
+# Sources with no durable human thread — inbound machine callers (api_server, webhook,
+# msgraph_webhook), system-generated event streams (Home Assistant state changes; ntfy
+# broadcast topics; the Raft wake bridge's content-free hints), and agent-peer transports
+# (the A2A task protocol's framed peer messages).  A continuity pointer here would aim the
+# agent at unrelated history and cost tokens for nothing, so they stay silent.  Everything
+# else is a real conversation that survives a session reset and benefits from the hint —
+# including callback transports that carry per-user DMs (WeCom) and dynamic plugin platforms
+# (Platform._missing_), which an allowlist would silently exclude.  Listed by platform VALUE
+# so dynamic platforms can be classified explicitly.
+_NON_HUMAN_SESSION_HINT_PLATFORMS = frozenset({
+    "a2a",
+    "api_server",
+    "homeassistant",
+    "msgraph_webhook",
+    "ntfy",
+    "raft",
+    "webhook",
+})
+
+
+def supports_human_session_hints(platform: Platform) -> bool:
+    """Whether a source represents a durable human conversation."""
+    return platform.value not in _NON_HUMAN_SESSION_HINT_PLATFORMS
+
+
 def build_channel_continuity_note(entry: "SessionEntry", source: SessionSource) -> Optional[str]:
-    """One-line continuity hint for long-lived Slack/Discord channels/threads.
+    """One-line continuity hint for long-lived human chat sessions.
 
     After an auto-reset the agent could bind a new request to an unrelated recent session; this
-    points it at the prior session in *this* channel (via ``session_search``). ``None`` unless the
-    platform is Slack/Discord, the auto-reset had real activity, and prev_session_id is set.
+    points it at the prior session in *this* conversation (via ``session_search``). ``None``
+    unless the source is a human chat surface (see the denylist above), the auto-reset had real
+    activity, and ``prev_session_id`` is set.  No LLM calls or extra lookups: the previous
+    session id is already known, and the agent pays retrieval cost only when the user actually
+    refers back.
     """
-    if source.platform not in (Platform.SLACK, Platform.DISCORD):
+    if not supports_human_session_hints(source.platform):
         return None
     prev = entry.prev_session_id
     if not entry.reset_had_activity or not prev:
         return None
-    where = "thread" if source.thread_id else "channel"
+    if source.thread_id:
+        where = "thread"
+    elif source.platform in (Platform.SLACK, Platform.DISCORD):
+        where = "channel"
+    else:
+        # DMs are conversations, not channels — "channel" is Slack/Discord vocabulary and
+        # reads wrong to a model reasoning about a 1:1 chat.
+        where = "conversation"
     return (
         f"[System note: This {where} had an earlier Hermes session (session_id: {prev}) that was "
         f"auto-reset. If the user refers to earlier work here, or the request depends on this "
@@ -1139,6 +1174,20 @@ class SessionStore(
                 display_name=new_entry.display_name, include_compression_ancestors=True,
             )
         return new_entry
+
+    def restore_route_entry(self, session_key: str, entry: SessionEntry) -> None:
+        """Reinstall a captured entry snapshot (undo of a partially applied ``switch_session``).
+
+        ``switch_session`` can raise from ``_save()`` *after* ``_replace_route_locked`` already
+        swapped ``_entries`` — and its database bookkeeping only runs after that point. Callers
+        that captured the prior entry before switching put it back verbatim, so the live route
+        keeps its counters, model overrides and auto-reset metadata instead of a fresh shell
+        entry. Persists via the same save path; a save failure propagates to the caller.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            self._entries[session_key] = entry
+            self._save()
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
         """List all sessions, optionally filtered by activity."""

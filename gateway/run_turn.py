@@ -367,6 +367,21 @@ class GatewayTurnMixin:
             if canonical_session_id and canonical_session_id != bound_session_id:
                 bound_session_id = canonical_session_id
         if bound_session_id and bound_session_id != session_entry.session_id:
+            prev_id = str(getattr(session_entry, "prev_session_id", None) or "")
+            if prev_id and prev_id in {stored_session_id, bound_session_id}:
+                # The binding names the exact conversation this entry replaced: it is the
+                # auto-reset leftover, so repoint it at the successor instead of switching back —
+                # switching would end the fresh successor and drop its reset metadata, silently
+                # undoing the reset. A binding naming anything else (e.g. a deliberate
+                # /topic <id> restore, which relies on this heal to switch) is followed, never
+                # overwritten. Keys off prev_session_id metadata because the typed /model path
+                # can consume was_auto_reset early (#48031); the stale-binding trap and the
+                # /new rebind are the same family (#31501).
+                await asyncio.to_thread(
+                    self._sync_telegram_topic_binding, source, session_entry,
+                    reason="auto-reset-repoint",
+                )
+                return session_entry
             # Route through SessionStore so the key → id mapping persists and the previous lane
             # session ends cleanly (in-place mutation split-brained the JSON index).
             switched = await self.async_session_store.switch_session(session_key, bound_session_id)

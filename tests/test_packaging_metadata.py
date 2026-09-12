@@ -1,8 +1,10 @@
 import ast
+import json
 import re
 import tomllib
 from pathlib import Path
 
+from packaging.version import Version
 import pytest
 
 
@@ -63,27 +65,17 @@ def test_faster_whisper_is_not_a_base_dependency():
 # transitive dep (fastapi in [web]; sse-starlette/mcp in [mcp]/[computer-use]/
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
-_STARLETTE_CVE_FLOOR = (1, 0, 1)
+_STARLETTE_CVE_FLOOR = Version("1.0.1")
 _UPDATE_DOWNGRADE_GUARD_FLOORS = {
     # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
     # reviewed CVE pins must not slide back to stale versions that downgrade
     # already-patched user environments.
-    "cryptography": (50, 0, 0),
-    "starlette": (1, 3, 1),
-    "python-multipart": (0, 0, 32),
+    "cryptography": Version("50.0.0"),
+    "starlette": Version("1.3.1"),
+    "python-multipart": Version("0.0.32"),
+    "mcp": Version("1.28.1"),
+    "pillow": Version("12.3.0"),
 }
-
-
-def _version_tuple(spec: str) -> tuple[int, ...]:
-    # "1.0.1" -> (1, 0, 1); tolerant of pre/post suffixes by truncating.
-    head = spec.split("+", 1)[0]
-    parts = []
-    for chunk in head.split("."):
-        digits = "".join(ch for ch in chunk if ch.isdigit())
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts)
 
 
 def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
@@ -114,9 +106,9 @@ def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
         )
 
     for extra, ver in found.items():
-        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
+        assert Version(ver) >= _STARLETTE_CVE_FLOOR, (
             f"[{extra}] pins starlette=={ver}, below the CVE-2026-48710 fix "
-            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))}"
+            f"floor {_STARLETTE_CVE_FLOOR}"
         )
 
 
@@ -142,11 +134,30 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
 
     assert versions, "starlette not found in uv.lock"
     for ver in versions:
-        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
+        assert Version(ver) >= _STARLETTE_CVE_FLOOR, (
             f"uv.lock resolves starlette=={ver}, below the CVE-2026-48710 fix "
-            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))} — regenerate the "
+            f"floor {_STARLETTE_CVE_FLOOR} — regenerate the "
             f"lockfile after bumping the pin"
         )
+
+
+@pytest.mark.parametrize("version", ("1.0.1rc1", "1.0.0post999"))
+@pytest.mark.parametrize("source", ("pyproject.toml", "uv.lock"))
+def test_starlette_guards_reject_vulnerable_pep440_versions(tmp_path, monkeypatch, source, version):
+    if source == "pyproject.toml":
+        metadata = "[project.optional-dependencies]\n" + "\n".join(
+            f'{extra} = ["starlette=={version}"]'
+            for extra in ("web", "mcp", "computer-use", "dev")
+        )
+        guard = test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject
+    else:
+        metadata = f'[[package]]\nname = "starlette"\nversion = "{version}"\n'
+        guard = test_locked_starlette_is_not_vulnerable_to_cve_2026_48710
+    (tmp_path / source).write_text(metadata, encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match="below the CVE-2026-48710 fix"):
+        guard()
 
 
 
@@ -232,6 +243,54 @@ def _lazy_deps_pinned_specs():
                 specs.append(sub.value)
     assert specs, "could not extract specs from LAZY_DEPS — the AST parser drifted"
     return specs
+
+
+def test_update_cve_pins_do_not_downgrade_reviewed_current_versions():
+    """Matching eager/lazy/lock pins must also stay above the reviewed CVE floors."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    lazy_specs = [spec for specs in LAZY_DEPS.values() for spec in specs]
+    pins = _pins_from_specs(_pyproject_pinned_specs() + lazy_specs)
+    for package, floor in _UPDATE_DOWNGRADE_GUARD_FLOORS.items():
+        for source, versions in (("exact pins", pins.get(package)), ("uv.lock", _locked_versions(package))):
+            assert versions, f"{package} is missing from {source}; update this guard"
+            assert all(Version(version) >= floor for version in versions), (
+                f"{source} selects {package} {sorted(versions)}, below the reviewed CVE floor {floor}"
+            )
+
+
+@pytest.mark.parametrize("package,source", (
+    ("cryptography", "pyproject"),
+    ("starlette", "pyproject"),
+    ("python-multipart", "lazy"),
+    ("mcp", "lazy"),
+    ("pillow", "lock"),
+))
+def test_update_floor_guard_rejects_downgrades(tmp_path, monkeypatch, package, source):
+    from tools.lazy_deps import LAZY_DEPS
+
+    version = f"{_UPDATE_DOWNGRADE_GUARD_FLOORS[package]}rc1"
+    specs = _pyproject_pinned_specs()
+    if source == "pyproject":
+        specs = [f"{package}=={version}" if _distribution_name(spec) == package else spec for spec in specs]
+    (tmp_path / "pyproject.toml").write_text(
+        f"[project]\ndependencies = {json.dumps(specs)}\n", encoding="utf-8"
+    )
+    records = []
+    for name in _UPDATE_DOWNGRADE_GUARD_FLOORS:
+        versions = {version} if source == "lock" and name == package else _locked_versions(name)
+        records.extend(f'[[package]]\nname = "{name}"\nversion = "{pin}"\n' for pin in versions)
+    (tmp_path / "uv.lock").write_text("\n".join(records), encoding="utf-8")
+    if source == "lazy":
+        for feature, requirements in LAZY_DEPS.items():
+            monkeypatch.setitem(LAZY_DEPS, feature, tuple(
+                f"{package}=={version}" if _distribution_name(spec) == package else spec
+                for spec in requirements
+            ))
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=f"{package} .*below the reviewed CVE floor"):
+        test_update_cve_pins_do_not_downgrade_reviewed_current_versions()
 
 
 def test_pyproject_pins_are_internally_consistent():
@@ -344,38 +403,6 @@ def test_build_system_requires_wheel_for_isolated_builds():
     )
 
 
-def _lazy_deps_by_feature():
-    """Parse LAZY_DEPS into {feature_name: [spec, ...]} via AST.
-
-    Same parse-don't-import rationale as _lazy_deps_pinned_specs, but keeps the
-    feature -> specs grouping so per-feature coverage can be asserted.
-    """
-    src = (REPO_ROOT / "tools" / "lazy_deps.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        targets = (
-            node.targets if isinstance(node, ast.Assign)
-            else [node.target] if isinstance(node, ast.AnnAssign)
-            else []
-        )
-        if not any(isinstance(t, ast.Name) and t.id == "LAZY_DEPS" for t in targets):
-            continue
-        if not isinstance(node.value, ast.Dict):
-            continue
-        by_feature: dict[str, list[str]] = {}
-        for key, value in zip(node.value.keys, node.value.values):
-            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
-                continue
-            by_feature[key.value] = [
-                sub.value
-                for sub in ast.walk(value)
-                if isinstance(sub, ast.Constant) and isinstance(sub.value, str)
-            ]
-        assert by_feature, "could not extract features from LAZY_DEPS — AST parser drifted"
-        return by_feature
-    raise AssertionError("LAZY_DEPS dict literal not found in tools/lazy_deps.py")
-
-
 # Security-critical packages whose patched floor must be enforced on EVERY
 # install path, eager and lazy. test_pyproject_and_lazy_deps_pins_agree only
 # fires when a package is pinned in BOTH sources, so it cannot catch a lazy
@@ -388,6 +415,7 @@ def _lazy_deps_by_feature():
 # each security package -> the lazy features that bundle an SDK pulling it and
 # must therefore carry the same pin as the pyproject extra.
 _REQUIRED_SECURITY_PINS = {
+    "python-multipart": {"tool.dashboard"},
     # Every lazy messaging feature whose SDK pulls aiohttp transitively must
     # carry the patched floor directly: discord.py (aiohttp<4), slack-bolt,
     # mautrix/aiohttp-socks (aiohttp<4 / >=3.10), and microsoft-teams-apps —
@@ -406,8 +434,9 @@ def test_security_pins_present_in_mirrored_lazy_features():
     """Curated security pins must be present (not just version-consistent) in
     every lazy feature that bundles an SDK pulling that package transitively.
     """
+    from tools.lazy_deps import LAZY_DEPS
+
     py = _pins_from_specs(_pyproject_pinned_specs())
-    by_feature = _lazy_deps_by_feature()
 
     problems = []
     for pkg, features in _REQUIRED_SECURITY_PINS.items():
@@ -418,7 +447,7 @@ def test_security_pins_present_in_mirrored_lazy_features():
             f"in pyproject.toml — update the map or the pin."
         )
         for feature in sorted(features):
-            specs = by_feature.get(feature)
+            specs = LAZY_DEPS.get(feature)
             assert specs is not None, (
                 f"lazy feature {feature!r} named in _REQUIRED_SECURITY_PINS no "
                 f"longer exists in LAZY_DEPS — update the map."
@@ -434,3 +463,14 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+def test_dashboard_multipart_pin_cannot_disappear(monkeypatch):
+    from tools.lazy_deps import LAZY_DEPS
+
+    monkeypatch.setitem(LAZY_DEPS, "tool.dashboard", tuple(
+        spec for spec in LAZY_DEPS["tool.dashboard"]
+        if _distribution_name(spec) != "python-multipart"
+    ))
+    with pytest.raises(AssertionError, match="tool.dashboard: python-multipart=.*MISSING"):
+        test_security_pins_present_in_mirrored_lazy_features()

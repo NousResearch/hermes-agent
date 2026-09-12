@@ -57,6 +57,46 @@ class TestQuerySessionListingSearch:
         finally:
             db.close()
 
+    @pytest.mark.parametrize("include_current", [False, True])
+    def test_plain_listing_paginates_past_unnamed_rows(self, tmp_path, include_current):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "paging.db")
+        db.create_session("named_old", "telegram")
+        db.set_session_title("named_old", "Older Work")
+        for i in range(65):
+            db.create_session(f"unnamed_{i}", "telegram")
+        db.create_session("current", "telegram")
+        try:
+            rows = query_session_listing(
+                db, source="telegram", current_session_id="current",
+                include_current_session=include_current, limit=2,
+            )
+            assert [r["id"] for r in rows] == (["current", "named_old"] if include_current else ["named_old"])
+            if include_current:
+                assert rows[0]["is_current_session"] is True
+        finally:
+            db.close()
+
+    def test_paging_stops_after_enough_rows_or_exhaustion(self):
+        class FiniteDB:
+            def __init__(self, rows):
+                self.rows = rows
+                self.offsets = []
+
+            def list_sessions_rich(self, *, limit, offset=0, **kwargs):
+                assert offset not in self.offsets, "paging must advance"
+                self.offsets.append(offset)
+                return self.rows[offset:offset + limit]
+
+        invisible = [{"id": f"unnamed_{i}"} for i in range(65)]
+        exhausted = FiniteDB(invisible)
+        assert query_session_listing(exhausted, source="telegram", limit=1) == []
+        assert len(exhausted.offsets) > 1
+        enough = FiniteDB([{"id": "first", "title": "First"}, *invisible])
+        assert [row["id"] for row in query_session_listing(enough, source="telegram", limit=1)] == ["first"]
+        assert enough.offsets == [0]
+
     def test_plain_listing_still_hides_unnamed(self, db):
         assert self._ids(db, source="telegram") == ["sess_an94"]
 

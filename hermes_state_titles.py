@@ -167,7 +167,12 @@ class SessionTitlesMixin:
             "WHERE s.title = ? OR s.title LIKE ? ESCAPE '\\' "
             "ORDER BY CASE WHEN s.title = ? THEN 1 ELSE 0 END, s.started_at DESC, s.id DESC",
             (title, f"{_escape_like(title)} #%", title))
-        return [self._session_row_dict(row) for row in rows]
+        return [
+            self._session_row_dict(row) for row in rows
+            if row["title"] == title or (
+                (match := _NUMBERED_TITLE_RE.match(row["title"])) and match.group(1) == title
+            )
+        ]
 
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
@@ -177,7 +182,10 @@ class SessionTitlesMixin:
             "SELECT id, title, started_at FROM sessions "
             "WHERE title LIKE ? ESCAPE '\\' ORDER BY started_at DESC",
             (f"{_escape_like(title)} #%",))
-        return numbered[0]["id"] if numbered else (exact["id"] if exact else None)
+        for row in numbered:
+            if (match := _NUMBERED_TITLE_RE.match(row["title"])) and match.group(1) == title:
+                return row["id"]
+        return exact["id"] if exact else None
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
         """Next title in a lineage ("my session" -> "my session #2"): strip any " #N" suffix,

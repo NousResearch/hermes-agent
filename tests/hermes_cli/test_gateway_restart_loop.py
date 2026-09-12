@@ -1837,6 +1837,42 @@ class TestRestartLoopGuard:
         for ts in (1000.0, 1150.0, 1300.0, 1450.0):
             assert rlg.check_and_record(0, 60, now=ts) is False
 
+    def test_clock_rollback_does_not_chain_distant_future_boots(self):
+        """#93427: admitting *any* entry timestamped after ``ts`` let a single
+        backward clock step (NTP correction, restored RTC) chain an unrelated
+        episode into "now" and trip the breaker — sessions then stay
+        resume-pending until the user manually messages. Future entries must be
+        bounded by the same ``gap`` every other link uses.
+        """
+        import gateway.restart_loop_guard as rlg
+        # Boots from a resolved episode weeks ago, then a large backward step:
+        # pre-fix this returned [1000.0, 1010.0].
+        assert rlg._chain_ending_at([1000.0, 1010.0], ts=500.0, gap=300.0) == []
+
+    def test_distant_future_entry_is_skipped_not_a_break(self):
+        """Skipping a far-future entry must not end the walk. The list is sorted
+        descending, so a distant future entry is visited FIRST — a ``break``
+        there drops an otherwise valid chain entirely (the variant rejected in
+        #93427: boots=[2000, 1100, 1050], ts=1060, gap=300 -> []).
+        """
+        import gateway.restart_loop_guard as rlg
+        assert rlg._chain_ending_at([2000.0, 1100.0, 1050.0], ts=1060.0, gap=300.0) == [1050.0, 1100.0]
+
+    def test_small_backward_clock_step_stays_adjacent(self):
+        """The original intent survives: a seconds-long NTP step keeps the
+        future entry in the chain rather than ending it."""
+        import gateway.restart_loop_guard as rlg
+        assert rlg._chain_ending_at([1010.0], ts=1000.0, gap=300.0) == [1010.0]
+
+    def test_backward_clock_step_cannot_trip_on_old_episode(self):
+        """End-to-end through the public entry point: an old episode in
+        restart_loop.json plus a backward step must not reach max_restarts."""
+        import gateway.restart_loop_guard as rlg
+        rlg.record_restart_interrupted_boot(60, now=1000.0)
+        rlg.record_restart_interrupted_boot(60, now=1010.0)
+        # Clock steps back ~8 minutes; only this boot belongs to the chain.
+        assert rlg.check_and_record(3, 60, now=500.0, max_gap_seconds=300) is False
+
 class TestTerminalToolGatewayLifecycleGuardRemote:
     """Remote-backend and two-session cwd regression coverage."""
 

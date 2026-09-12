@@ -161,6 +161,13 @@ def check_api_response(
         return _verdict("break")
 
     if finish_reason == "length":
+        # A 413 may arrive as an in-band error after a stream already delivered
+        # deltas. Re-raise it before truncation recovery so the outer loop reaches
+        # turn_overflow._recover_payload_too_large; appending the partial fragment
+        # here would bypass byte-scored image recovery and grow the transcript.
+        _partial_payload_error = getattr(response, "_payload_too_large_error", None)
+        if _partial_payload_error is not None:
+            raise _partial_payload_error
         _tv = recover_from_truncation(
             agent, response, finish_reason, _retry, messages=messages,
             conversation_history=conversation_history, api_kwargs=api_kwargs,

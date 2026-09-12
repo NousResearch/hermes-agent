@@ -153,6 +153,45 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
 class TestHTTP413Compression:
     """413 errors should trigger compression, not abort as generic 4xx."""
 
+    def test_in_stream_413_reenters_byte_scored_recovery(self, agent):
+        """A 413 arriving after a stream delta must use the normal 413 owner.
+
+        The partial response is deliberately not appended to the transcript:
+        the outer API-error handler must receive the original error and run the
+        byte-scored recovery path before the next request is built.
+        """
+        from agent.chat_completion_helpers import _build_partial_stream_stub
+
+        err_413 = _make_413_error()
+        partial = _build_partial_stream_stub(
+            "assistant", "partial stream text", None, "test/model", None,
+            payload_too_large_error=err_413,
+        )
+        ok_resp = _mock_response(content="Recovered after streamed 413", finish_reason="stop")
+        agent._has_stream_consumers = lambda: True
+        agent._interruptible_streaming_api_call = MagicMock(side_effect=[partial, ok_resp])
+
+        with (
+            patch.object(agent, "_compress_context", return_value=(
+                [{"role": "user", "content": "compressed"}],
+                "compressed prompt",
+            )) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "continue",
+                conversation_history=[{"role": "user", "content": "old context"}],
+            )
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after streamed 413"
+        assert agent._interruptible_streaming_api_call.call_count == 2
+        mock_compress.assert_called_once()
+        assert all(message.get("content") != "partial stream text" for message in result["messages"])
+        assert not any(message.get("_length_continuation_nudge") for message in result["messages"])
+
     def test_413_triggers_compression(self, agent):
         """A 413 error should call _compress_context and retry, not abort."""
         # First call raises 413; second call succeeds after compression.

@@ -78,7 +78,7 @@ class TestOverflowTerminalStub:
     ):
         """Review P1 (andrexibiza): payload_too_large (413) has its own byte-scored
         recovery owner and must NOT be collapsed into the context-overflow terminal
-        contract — the partial keeps its normal continuation stub."""
+        contract — the partial keeps its content for that owner."""
         def _overflowing_stream():
             yield _make_stream_chunk(content="some media-heavy partial output ...")
             raise RuntimeError(
@@ -97,8 +97,73 @@ class TestOverflowTerminalStub:
 
         assert response.id == PARTIAL_STREAM_STUB_ID
         assert getattr(response, "_overflow_terminal", False) is False
-        # The recovered text is preserved for the normal continuation path.
+        assert getattr(response, "_payload_too_large_error", None) is not None
+        # The recovered text is preserved for the byte-scored overflow owner.
         assert response.choices[0].message.content == "some media-heavy partial output ..."
+
+
+    def test_payload_too_large_partial_returns_to_overflow_owner_before_continuation(self):
+        """An in-stream 413 must be re-raised to the outer API-error handler.
+
+        The outer handler owns ``turn_overflow._recover_payload_too_large``;
+        letting this response enter ``recover_from_truncation`` would append the
+        partial fragment and continuation nudge to the transcript first.
+        """
+        from agent.turn_response_check import check_api_response
+
+        error = RuntimeError("Request entity too large")
+        response = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            _payload_too_large_error=error,
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content="partial", tool_calls=None),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        agent = MagicMock()
+        agent.api_mode = "chat_completions"
+        agent.quiet_mode = True
+        agent.verbose_logging = False
+        agent.thinking_callback = None
+        agent._get_transport.return_value.validate_response.return_value = True
+        agent._get_transport.return_value.normalize_response.return_value = SimpleNamespace(
+            finish_reason=FINISH_REASON_LENGTH,
+        )
+        agent._should_treat_stop_as_truncated.return_value = False
+        messages = [{"role": "user", "content": "unchanged"}]
+
+        with pytest.raises(RuntimeError, match="Request entity too large") as raised:
+            check_api_response(
+                agent,
+                response=response,
+                _retry=MagicMock(),
+                thinking_spinner=None,
+                messages=messages,
+                api_messages=messages,
+                api_kwargs={},
+                active_system_prompt=None,
+                conversation_history=None,
+                finish_reason=None,
+                retry_count=0,
+                max_retries=3,
+                compression_attempts=0,
+                max_compression_attempts=3,
+                length_continue_retries=0,
+                truncated_response_parts=[],
+                truncated_tool_call_retries=0,
+                current_turn_user_idx=0,
+                api_call_count=1,
+                api_request_id=None,
+                api_start_time=0.0,
+                effective_task_id=None,
+                turn_id=None,
+                _preflight_compression_blocked=False,
+                _last_preflight_pressure=None,
+            )
+
+        assert raised.value is error
+        assert messages == [{"role": "user", "content": "unchanged"}]
 
 
 class TestRecoverFromTruncationOverflowTerminal:

@@ -2181,7 +2181,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None, overflow_terminal=False):
+    dropped_tool_names=None, overflow_terminal=False, payload_too_large_error=None):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
@@ -2191,6 +2191,11 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
     context-overflow error. Seeding the recovered text as a continuation stub
     would grow every later request into the same overflow (#106260); the loop
     treats the marker as terminal and ends the turn via the recovery contract.
+
+    ``payload_too_large_error``: the stream delivered content before an in-band
+    413 error. The response check re-raises this original error so the outer
+    retry loop reaches the byte-scored 413 recovery owner instead of treating
+    the fragment as a length continuation.
     """
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
@@ -2204,6 +2209,7 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
         usage=usage_obj,
         _dropped_tool_names=dropped_tool_names or None,
         _overflow_terminal=overflow_terminal,
+        _payload_too_large_error=payload_too_large_error,
     )
 
 
@@ -3282,6 +3288,7 @@ class _StreamingCall(StreamingWaitMonitor):
             from agent.error_classifier import classify_api_error
             _cls = classify_api_error(
                 error, provider=str(getattr(self.agent, "provider", "") or ""), model=str(getattr(self.agent, "model", "") or ""))
+        _is_payload_overflow = _cls is not None and _cls.reason == FailoverReason.payload_too_large
         _reset_stale_streak(self.agent)  # deltas fired => provider responsive: clear the breaker
         # #106260: continuing after a context-overflow error re-sends a larger request into the
         # same overflow. Return an EMPTY stub marked terminal so the loop ends the turn instead.
@@ -3298,12 +3305,21 @@ class _StreamingCall(StreamingWaitMonitor):
                 dropped_tool_names=_partial_names, overflow_terminal=True,
             )
         if not _partial_names:
-            logger.warning(
-                "Partial stream delivered before error; returning length-truncated stub with %s chars of "
-                "recovered content so the loop can continue from where the stream died: %s",
-                len(_partial_text or ""), error)
-        _stub = _build_partial_stream_stub("assistant", _partial_text, None,
-            getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names)
+            if _is_payload_overflow:
+                logger.warning(
+                    "Partial stream delivered before a payload-too-large error; returning a marker for "
+                    "byte-scored recovery with %s chars of recovered content: %s",
+                    len(_partial_text or ""), error)
+            else:
+                logger.warning(
+                    "Partial stream delivered before error; returning length-truncated stub with %s chars of "
+                    "recovered content so the loop can continue from where the stream died: %s",
+                    len(_partial_text or ""), error)
+        _stub = _build_partial_stream_stub(
+            "assistant", _partial_text, None, getattr(self.agent, "model", "unknown"), None,
+            dropped_tool_names=_partial_names,
+            payload_too_large_error=(error if _is_payload_overflow else None),
+        )
         if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:
             _stub._content_filter_terminated = True
         return _stub

@@ -306,7 +306,26 @@ _FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None
 def _mirror_fast(sid, session, agent, arg) -> None:
     if agent:
         if arg.lower() in _FAST_TIERS:
-            agent.service_tier = _FAST_TIERS[arg.lower()]
+            # Keep request_overrides in lock-step with service_tier (mirrors _set_fast in
+            # methods_config_set): the transport emits the tier from the overrides, so setting
+            # only service_tier would leave a session built with a configured tier still
+            # sending it after `/fast off` (reporting normal while billing the tier), and
+            # `/fast on` would relabel without sending. auto/cold windows are applied per
+            # request by agent.fast_mode, so they only clear pinned tier keys.
+            tier = _FAST_TIERS[arg.lower()]
+            overrides = {k: v for k, v in (getattr(agent, "request_overrides", {}) or {}).items()
+                         if k not in ("service_tier", "speed")}
+            agent.service_tier = tier
+            if tier == "priority":
+                from hermes_cli.models import resolve_fast_mode_overrides
+                try:
+                    resolved = resolve_fast_mode_overrides(
+                        getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+                        base_url=getattr(agent, "base_url", None))
+                except Exception:
+                    resolved = None
+                overrides.update(resolved or {})
+            agent.request_overrides = overrides
         _emit("session.info", sid, _session_info(agent, session))
 
 

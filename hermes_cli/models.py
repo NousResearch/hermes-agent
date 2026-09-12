@@ -1055,7 +1055,9 @@ def provider_label(provider: Optional[str]) -> str:
 
 def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     """OpenAI flagship eligible for Priority Processing. Codex-series excluded — the Codex Responses
-    API doesn't accept ``service_tier``."""
+    API doesn't accept ``service_tier``. Two-level aggregator ids (``openrouter/openai/gpt-4.1``)
+    deliberately do NOT match: the route gate keeps tier params off aggregator routes anyway, so
+    matching them would only expose a ``/fast`` toggle that confirms and then sends nothing."""
     base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
     return bool(base) and "codex" not in base and base.startswith(tuple(_OPENAI_FAST_MODE_PREFIXES))
 
@@ -1066,6 +1068,32 @@ def _strip_vendor_prefix(model_id: str) -> str:
     return raw.split("/", 1)[1] if "/" in raw else raw
 
 
+def _is_google_service_tier_model(model_id: Optional[str]) -> bool:
+    """Return True if the model accepts Gemini's ``service_tier`` request field.
+
+    Gemini exposes both tiers on ``generateContent`` as a top-level body field:
+    ``flex`` (https://ai.google.dev/gemini-api/docs/flex-inference) and
+    ``priority``
+    (https://ai.google.dev/gemini-api/docs/generate-content/priority-inference).
+    Both docs list the same ``gemini-2.5+`` family, so match ``gemini-*`` by
+    pattern rather than pinning a version list that goes stale each release.
+    """
+    # Two-level aggregator ids ('openrouter/google/gemini-x') deliberately do
+    # NOT match — same reasoning as the OpenAI check. Gemma/Lyria are also not
+    # matched: service tiers apply to Gemini only.
+    base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
+    match = re.match(r"gemini-(\d+)(?:\.(\d+))?", base)
+    if not match:
+        return False
+    # Both tier docs list gemini-2.5 and newer. Gemini's native REST rejects
+    # the entire request on an unexpected body field, so sending service_tier
+    # to 1.5/2.0 would hard-fail every call for a globally-configured tier —
+    # gate on version rather than matching gemini-* broadly.
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return (major, minor) >= (2, 5)
+
+
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
     from agent.model_metadata import is_grok_46_family
@@ -1073,7 +1101,8 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     return (
         _is_anthropic_fast_model(model_id)
         or _is_openai_fast_model(model_id)
-        or is_grok_46_family(str(model_id or "")))
+        or is_grok_46_family(str(model_id or ""))
+        or _is_google_service_tier_model(model_id))
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
@@ -1097,6 +1126,8 @@ def _fast_mode_route_supported(
         allowed = {"anthropic": "api.anthropic.com"}
     elif is_grok_46_family(str(model_id or "")):
         allowed = {"xai": "api.x.ai"}
+    elif _is_google_service_tier_model(model_id):
+        allowed = {"gemini": "generativelanguage.googleapis.com"}
     else:
         allowed = {"openai": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:
@@ -1105,18 +1136,44 @@ def _fast_mode_route_supported(
     return not host or host in allowed.values()
 
 
+# Tier values Hermes will send. "priority" is OpenAI Priority Processing /
+# Gemini priority / xAI priority / Anthropic speed=fast; "flex" is the
+# discounted latency-tolerant tier (OpenAI + Gemini only).
+_SUPPORTED_SERVICE_TIERS: frozenset[str] = frozenset({"priority", "flex"})
+
+
 def resolve_fast_mode_overrides(
-    model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None
+    model_id: Optional[str], *, tier: str = "priority", provider: Optional[str] = None,
+    base_url: Optional[str] = None
 ) -> dict[str, Any] | None:
-    """Fast/priority request_overrides — ``{"speed": "fast"}`` (Anthropic Fast Mode) or
-    ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing) — or None if unsupported.
-    With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
-    never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
+    """Request_overrides for the requested service tier, or None if unsupported.
+
+    ``tier`` is the resolved config value — ``"priority"`` (the ``/fast`` toggle and
+    ``agent.service_tier: fast``) or ``"flex"``. OpenAI and Gemini get ``{"service_tier": tier}``
+    (top-level ``generateContent`` field for Gemini); Anthropic gets ``{"speed": "fast"}`` for
+    priority only (no flex equivalent — ``speed`` is a go-faster knob, so mapping flex onto it
+    would silently bill MORE for a setting chosen to cost less); Grok 4.6 gets priority only
+    (xAI publishes no flex tier and its Responses API rejects ``service_tier`` — see the strip in
+    ``agent/transports/codex.py``). With ``provider``/``base_url`` the route is gated too
+    (``_fast_mode_route_supported``) so proxies never see the params. Single fast-mode gate for
+    ``/fast`` and ``agent.fast_mode`` windows."""
     if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
         return None
-    return {"speed": "fast"} if _is_anthropic_fast_model(model_id) else {"service_tier": "priority"}
+    from agent.model_metadata import is_grok_46_family
+
+    normalized = str(tier or "priority").strip().lower() or "priority"
+    # Only documented values go on the wire. Callers normalize today, but that
+    # invariant is spread across four parsers — a stray "fast"/"scale" here
+    # would become an invalid service_tier the provider 400s on.
+    if normalized not in _SUPPORTED_SERVICE_TIERS:
+        return None
+    if _is_anthropic_fast_model(model_id):
+        return {"speed": "fast"} if normalized == "priority" else None
+    if is_grok_46_family(str(model_id or "")) and normalized != "priority":
+        return None
+    return {"service_tier": normalized}
 
 
 def _first_exchangeable_copilot_token(raw_tokens) -> str:

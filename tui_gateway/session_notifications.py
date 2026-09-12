@@ -119,6 +119,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
 _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
 _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0  # /loop and /heartbeat share one idle-poll cadence
+_BOT_DELIVERY_POLL_SECONDS = 5.0  # idle CPU: do not probe leases on every 0.5s queue timeout
 
 
 def _notif_release_turn(session: dict) -> None:
@@ -558,13 +559,15 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = 0.0
+    last_kanban_poll = last_loop_poll = last_bot_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        try:
-            _poll_bot_live_delivery_once(sid, session)
-        except Exception:
-            logger.warning("Bot live-owner delivery poll failed", exc_info=True)
+        if now - last_bot_poll >= _BOT_DELIVERY_POLL_SECONDS:
+            last_bot_poll = now
+            try:
+                _poll_bot_live_delivery_once(sid, session)
+            except Exception:
+                logger.warning("Bot live-owner delivery poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

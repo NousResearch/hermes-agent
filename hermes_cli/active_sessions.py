@@ -329,6 +329,8 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
         pid_int = 0
     if pid_int <= 0:
         return unknown_dead
+    if pid_int == os.getpid():
+        return True
     try:
         from gateway.status import _pid_exists
         exists = bool(_pid_exists(pid_int))

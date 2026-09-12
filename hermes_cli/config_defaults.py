@@ -1899,6 +1899,18 @@ DEFAULT_CONFIG = {
         # secret values); values are read from the environment at export time.
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
+    "profiles": {  # Profile creation defaults.
+        # Where a NEW profile's gateway will be supervised. "auto" = follow the gateway serving
+        # the active profile (a containerized one means the container's supervisor owns the new
+        # profile too); "container" = the container's supervisor; "native" = this machine's
+        # service manager. "auto" reads the runtime_kind the serving gateway stamps into its
+        # gateway_state.json, so it resolves to "native" wherever nothing containerized is
+        # running — which is today's behaviour for every plain host install.
+        "runtime": "auto",
+        # Container name used ONLY to render the exact `docker exec <name> ...` hand-off command
+        # after creating a containerized profile. Never shelled out to and never inspected.
+        "container_name": "hermes",
+    },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.

@@ -1215,6 +1215,22 @@ agent:
   #     style: "terse"
 
 # =============================================================================
+# Profiles
+# =============================================================================
+profiles:
+  # Where a NEW profile's gateway will be supervised:
+  #   auto      - default: follow the gateway serving the active profile. A containerized
+  #               gateway means the container's supervisor owns the new profile too.
+  #   container - the container's supervisor owns it
+  #   native    - this machine's service manager owns it
+  # "auto" reads the runtime_kind the serving gateway stamps into its gateway_state.json, so it
+  # resolves to "native" wherever nothing containerized is running.
+  runtime: "auto"
+  # Container name used ONLY to render the `docker exec <name> ...` hand-off command printed
+  # after creating a containerized profile. Never shelled out to and never inspected.
+  container_name: "hermes"
+
+# =============================================================================
 # Gateway Lifecycle
 # =============================================================================
 gateway:

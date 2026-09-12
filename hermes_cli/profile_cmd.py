@@ -157,6 +157,11 @@ def _profile_create(args):
     clone_from = getattr(args, "clone_from", None)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
+    from hermes_cli.profile_runtime import resolve_profile_runtime
+    try:
+        runtime_kind, runtime_reason = resolve_profile_runtime(getattr(args, "runtime", None))
+    except ValueError as e:
+        _die(f"Error: {e}")
     try:
         profile_dir = create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
@@ -165,6 +170,7 @@ def _profile_create(args):
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {profile_dir}")
+    print(f"Runtime: {runtime_kind} — {runtime_reason}")
     if cloned:
         source_label = clone_from or get_active_profile_name()
         if clone_all:
@@ -208,7 +214,15 @@ def _profile_create(args):
     print("\nNext steps:")
     print(f"  {name} setup              Configure API keys and model")
     print(f"  {name} chat               Start chatting")
-    print(f"  {name} gateway start      Start the messaging gateway")
+    if runtime_kind == "container":
+        from hermes_cli.profile_runtime import container_name
+        container = container_name()
+        print(f"  docker exec {container} hermes -p {name} gateway start")
+        print("                            Start the supervised gateway (registers its s6 slot)")
+        print(f"  ⚠ Do not run '{name} gateway start' on this host — it would start a second,")
+        print(f"    unsupervised gateway for a profile the {container} container already serves.")
+    else:
+        print(f"  {name} gateway start      Start the messaging gateway")
     if clone or clone_all:
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")

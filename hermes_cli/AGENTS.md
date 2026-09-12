@@ -61,6 +61,10 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   gateway, logging, cron, profiles, plugins, honcho`. `auxiliary` = per-task side-LLM overrides
   (`agent/AGENTS.md`); `curator` = `enabled, interval_hours, min_idle_hours, stale_after_days,
   archive_after_days, backup.*`.
+  `profiles.runtime` (`auto|container|native`) decides where `profile create` says the new
+  profile's gateway lives; `auto` reads the `runtime_kind` the serving gateway re-stamps into the
+  active home's `gateway_state.json`, because `is_container()`/`detect_service_manager()` only
+  describe the CREATING process and a bind-mounted host create is exactly where they mislead.
 - **.env = SECRETS ONLY** (keys, tokens, passwords): add to `OPTIONAL_ENV_VARS` with
   `{"description", "prompt", "url", "password": True, "category": provider|tool|messaging|setting}`.
   Non-secret settings go in config.yaml; if internal code needs an env mirror, bridge it in code

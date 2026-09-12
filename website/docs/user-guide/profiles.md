@@ -192,6 +192,13 @@ Each profile gets its own service name. They run independently.
 
 :::note Inside the official Docker image
 Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](/user-guide/docker#per-profile-gateway-supervision) for details.
+
+Creating a profile **from the host** on a bind-mounted `~/.hermes` is the one case that needs
+care: the directory lands where the container reads it, but a host process cannot reach
+`/run/service`, so no slot is registered there. `profiles.runtime` (default `auto`) makes
+`profile create` notice that the serving gateway is containerized and print the `docker exec`
+hand-off instead of the host start command. Starting it inside the container registers the slot
+on demand, so no container restart is needed.
 :::
 
 ## Configuring profiles

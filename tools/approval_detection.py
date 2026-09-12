@@ -194,6 +194,66 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
+# ---- Global-flag runs between a command word and its subcommand ---------------------------
+# `git`, `systemctl`, `killall`, `pkill`, `hermes` and `docker` all accept OPTIONS before the
+# token the rules below anchor on, and several of those options take a SEPARATE value word
+# (`git -C <path>`, `git --git-dir <p>`, `systemctl -M <host>`, `killall -u <user>`,
+# `hermes -p <name>`, `docker --log-level <lvl>`). A rule written `\bgit\s+push\b` therefore never
+# matched `git -C /tmp push --force` and auto-approved it with no prompt at all; the older
+# `(-[^\s]+\s+)*` spelling is broken by the same value word, since it only accepts dash-tokens.
+#
+# `_global_flag_run` builds the run per program from the options that program actually takes a
+# separate value for. Two alternatives, and NEITHER can match the same span as the other:
+#
+#   * a named value-taking option followed by whitespace and its value word. The option must be
+#     followed by whitespace, so a glued `--git-dir=/p` never reaches this branch.
+#   * any other single option token, which covers boolean flags and every glued `=value` form.
+#
+# Naming the value-taking options is what makes the run both safe and cheap:
+#
+#   * It cannot swallow a real subcommand. A boolean flag consumes only itself, so
+#     `systemctl --user status restart-nginx.service` and `git --no-pager log push --force` are
+#     NOT matched — with a blanket "any option may take a value" run they were, because the run
+#     paired `--user` with `status` and `--no-pager` with `log`.
+#   * It is unambiguous, so the match is linear. A blanket run tiles a sequence of dash-tokens as
+#     either one- or two-token pieces (Fibonacci-many tilings, doubled again by `-{1,2}` on every
+#     `--` token) and explores all of them before failing. Measured on the blanket spelling:
+#     `git ` + `--ab ` * 16 + `x` took 10.6s inside `detect_dangerous_command`, and a benign
+#     `rsync -av --exclude .git ...` line reached it through the `.git` in the excluded path,
+#     because `\bgit` matches there. With the run below every token has exactly one parse.
+#
+# Separators are HORIZONTAL whitespace on purpose, so the run stays inside one command segment.
+# A punctuation separator (`;`, `&&`, `|`) already stops it — that token starts with neither `-`
+# nor the anchor, so it cannot be consumed — but a NEWLINE-separated command is not stopped by a
+# plain `\s+`, which would let the value word straddle the line break and reach an unrelated later
+# token. Measured on the sibling docker lifecycle rule, whose `\s+` spelling this deliberately
+# does not copy: `docker --tls ps\nkill 123` matches it as a container kill, and
+# `hermes --version\nnpm update` would match a `\s+` version of the `hermes update` rule here.
+def _global_flag_run(value_taking: str) -> str:
+    """A run of global options before the token a rule anchors on.
+
+    *value_taking* is an alternation of the options of this program that take a SEPARATE value
+    word. Everything else is consumed one token at a time.
+    """
+    return (rf'(?:(?:{value_taking})[^\S\n]+\S+[^\S\n]+'
+            rf'|(?!(?:{value_taking})[^\S\n])-{{1,2}}[^\s-]\S*[^\S\n]+)*')
+
+
+# Value-taking GLOBAL options, i.e. those legal before the subcommand. Boolean globals
+# (`git --no-pager`, `systemctl --user`, `docker --debug`) are deliberately absent: listing one
+# would let the run pair it with the following word and swallow a real subcommand.
+_GIT_GLOBAL_FLAG_RUN = _global_flag_run(
+    r'-c|-C|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix')
+_SYSTEMCTL_GLOBAL_FLAG_RUN = _global_flag_run(
+    r'-M|--machine|-H|--host|-t|--type|-p|--property|--state|--root|--signal')
+# killall(1)/pkill(1): `-s`/`--signal` is deliberately absent — the SIGKILL rules anchor ON it.
+_SIGNAL_GLOBAL_FLAG_RUN = _global_flag_run(
+    r'-u|--user|-t|--tty|-n|--ns|-G|--group|-P|--parent|-Z|--context|--older-than|--younger-than')
+_HERMES_GLOBAL_FLAG_RUN = _global_flag_run(r'-p|--profile|--config')
+_DOCKER_GLOBAL_FLAG_RUN = _global_flag_run(
+    r'-l|--log-level|--config|-D|--tlscacert|--tlscert|--tlskey')
+
+
 # ---- Dangerous command patterns -----------------------------------------------------------
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
@@ -269,14 +329,17 @@ DANGEROUS_PATTERNS = [
     (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
-    (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
+    # `(-[^\s]+\s+)*` accepted dash-tokens only, so a value-taking global option defeated it:
+    # `systemctl -M <host> stop nginx` / `systemctl --host <host> restart nginx` auto-approved.
+    (rf'\bsystemctl\s+{_SYSTEMCTL_GLOBAL_FLAG_RUN}(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
-    (r'\bpkill\s+-9\b', "force kill processes"),
+    # `pkill -u <user> -9 <name>` put a value word before `-9` and slipped the anchor.
+    (rf'\bpkill\s+{_SIGNAL_GLOBAL_FLAG_RUN}-9\b', "force kill processes"),
     # killall with SIGKILL (-9 / -KILL / -s KILL / -SIGKILL) and `killall -r <regex>` broad sweeps
     # that can wipe unrelated processes.
-    (r'\bkillall\s+(-[^\s]*\s+)*-(9|KILL|SIGKILL)\b', "force kill processes (killall -KILL)"),
-    (r'\bkillall\s+(-[^\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b', "force kill processes (killall -s KILL)"),
-    (r'\bkillall\s+(-[^\s]*\s+)*-r\b', "kill processes by regex (killall -r)"),
+    (rf'\bkillall\s+{_SIGNAL_GLOBAL_FLAG_RUN}-(9|KILL|SIGKILL)\b', "force kill processes (killall -KILL)"),
+    (rf'\bkillall\s+{_SIGNAL_GLOBAL_FLAG_RUN}-s\s+(KILL|SIGKILL|9)\b', "force kill processes (killall -s KILL)"),
+    (rf'\bkillall\s+{_SIGNAL_GLOBAL_FLAG_RUN}-r\b', "kill processes by regex (killall -r)"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(); a regex searching a dash-token
     # for "c" also matched --norc/--rcfile/--restricted.
@@ -304,7 +367,9 @@ DANGEROUS_PATTERNS = [
     # Gateway lifecycle: stopping/restarting the gateway kills all running agents. Global flags
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
     (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
-    (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # The gateway rule above already tolerated global flags; `hermes update` did not, so
+    # `hermes -p <profile> update` restarted the gateway with no prompt.
+    (rf'\bhermes\s+{_HERMES_GLOBAL_FLAG_RUN}update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context
@@ -312,7 +377,9 @@ DANGEROUS_PATTERNS = [
     # a redirected lifecycle command surfaces the more specific reason.
     (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-h|--host)[=\s]+\S+', "docker with remote daemon redirect (-H/--host)"),
     (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-c|--context)[=\s]+\S+', "docker with daemon redirect (--context: alternate daemon)"),
-    (r'\bdocker\s+context\s+use\b', "docker context use (switches default daemon for future commands)"),
+    # Sibling docker rules already admit a global-flag run; this one did not, so
+    # `docker --log-level debug context use prod` switched the default daemon with no prompt.
+    (rf'\bdocker\s+{_DOCKER_GLOBAL_FLAG_RUN}context\s+use\b', "docker context use (switches default daemon for future commands)"),
     (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:--url|--connection|--identity)[=\s]+\S+', "podman with remote daemon redirect (--url/--connection/--identity)"),
     (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-r\b|--remote\b)', "podman remote mode (-r/--remote: remote daemon)"),
     (r'\b(?:docker_host|docker_context|container_host|container_connection)=\S+', "docker/podman daemon redirect via environment (DOCKER_HOST/CONTAINER_HOST)"),
@@ -373,15 +440,19 @@ DANGEROUS_PATTERNS = [
     # Git destructive operations. `git reset --hard` accepts any unambiguous long-flag prefix (--h,
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
-    (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
-    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # Every git rule admits a run of GLOBAL options between `git` and the subcommand
+    # (_GLOBAL_FLAG_RUN): `git -C <path> push --force`, `git -c k=v reset --hard`,
+    # `git --git-dir=<p> clean -fd` and `git --work-tree <p> branch -D` all reached the shell with
+    # no approval prompt while the rules were anchored `\bgit\s+<subcommand>`.
+    (rf'\bgit\s+{_GIT_GLOBAL_FLAG_RUN}reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
+    (rf'\bgit\s+{_GIT_GLOBAL_FLAG_RUN}push\b[^;|&\n]*--forc[a-z]*\b', "git force push (rewrites remote history)"),
+    (rf'\bgit\s+{_GIT_GLOBAL_FLAG_RUN}push\b[^;|&\n]*-f\b', "git force push short flag (rewrites remote history)"),
+    (rf'\bgit\s+{_GIT_GLOBAL_FLAG_RUN}clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (rf'\bgit\s+{_GIT_GLOBAL_FLAG_RUN}branch\s+-D\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
-    (r'\bgit\s+branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
+    (rf'\bgit\s+{_GIT_GLOBAL_FLAG_RUN}branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
+    (rf'\bgit\s+{_GIT_GLOBAL_FLAG_RUN}branch\b[^;|&\n]*?(?:-f\b|--force\b)[^;|&\n]*?(?:-d\b|--delete\b)', "git branch force delete (long flags, force-first)"),
     # chmod +x then immediate run: the script content may hold dangerous commands individual patterns miss.
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
     # Sudo stdin/askpass/shell/list-privs flags. The agent has no TTY, so sudo invocations that succeed
@@ -399,9 +470,26 @@ DANGEROUS_PATTERNS = [
 DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
 
 # Preserve approvals stored under the removed interpreter regex rules.
+# Also preserves the keys of every rule whose regex gained a _GLOBAL_FLAG_RUN: the legacy key is
+# derived from the regex text (`p.split(r'\b')[1]` below), so widening the pattern silently
+# renames it and an allowlist/session entry stored under the old spelling would stop matching.
 _REMOVED_PATTERN_KEY_ALIASES = {
     "script execution via -e/-c flag": "(python[23]?|perl|ruby|node)\\s+-[ec]\\s+",
     "script execution via heredoc": "(python[23]?|perl|ruby|node)\\s+<<",
+    "git reset --hard (destroys uncommitted changes)": "git\\s+reset\\s+--h(?:a(?:r(?:d)?)?)?",
+    "git force push (rewrites remote history)": "git\\s+push",
+    "git force push short flag (rewrites remote history)": "git\\s+push",
+    "git clean with force (deletes untracked files)": "git\\s+clean\\s+-[^\\s]*f",
+    "git branch force delete": "git\\s+branch\\s+-D",
+    "git branch force delete (long flags)": "git\\s+branch",
+    "git branch force delete (long flags, force-first)": "git\\s+branch",
+    "stop/restart system service": "systemctl\\s+(-[^\\s]+\\s+)*(stop|restart|disable|mask)",
+    "force kill processes": "pkill\\s+-9",
+    "force kill processes (killall -KILL)": "killall\\s+(-[^\\s]*\\s+)*-(9|KILL|SIGKILL)",
+    "force kill processes (killall -s KILL)": "killall\\s+(-[^\\s]*\\s+)*-s\\s+(KILL|SIGKILL|9)",
+    "kill processes by regex (killall -r)": "killall\\s+(-[^\\s]*\\s+)*-r",
+    "hermes update (restarts gateway, kills running agents)": "hermes\\s+update",
+    "docker context use (switches default daemon for future commands)": "docker\\s+context\\s+use",
 }
 # description <-> legacy regex-derived key (the old approval key, kept for backwards compatibility
 # with stored allowlist/session entries), both ways.

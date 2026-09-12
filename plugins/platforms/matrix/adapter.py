@@ -499,7 +499,7 @@ def _csv_set(raw: Any) -> Set[str]:
 def _extra_csv_set(config, key: str, env_name: str) -> Set[str]:
     """Resolve a room/user list from config.extra[key], else the env var."""
     raw = config.extra.get(key)
-    if raw is None:
+    if raw is None or (not isinstance(raw, list) and not str(raw).strip()):
         # Scoped read: under multiplex os.environ is the DEFAULT profile's room/user list.
         raw = _startup_env_secret(env_name)
     return _csv_set(raw)

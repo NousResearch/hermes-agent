@@ -253,22 +253,144 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     return _interpolate_env_vars(config)
 
 
+def _truncate_mcp_tool_desc(desc: str) -> str:
+    desc = desc or ""
+    return desc[:77] + "..." if len(desc) > 80 else desc
+
+
+def _tool_rows_from_mcp_server(server) -> List[Tuple[str, str]]:
+    return [
+        (t.name, _truncate_mcp_tool_desc(getattr(t, "description", "") or ""))
+        for t in (getattr(server, "_tools", None) or [])
+    ]
+
+
+def _fill_probe_schema_chars(name: str, server, details: dict) -> None:
+    """Per-tool registry-schema sizes (the SAME converted schema the agent registers)."""
+    try:
+        import json as _json
+        from tools.mcp_tool_schema import _convert_mcp_schema
+
+        details["schema_chars"] = {
+            t.name: len(_json.dumps(_convert_mcp_schema(name, t), separators=(",", ":"), default=str))
+            for t in (getattr(server, "_tools", None) or [])
+        }
+    except Exception:  # pragma: no cover — display-only extra
+        pass
+
+
+async def _fill_probe_capability_counts(server, config: dict, details: dict) -> None:
+    """Best-effort prompts/resources counts on an existing session. Never opens a new one."""
+    from tools.mcp_tool_common import _parse_boolish
+
+    tools_filter = config.get("tools") or {}
+    advertised_caps = getattr(getattr(server, "initialize_result", None), "capabilities", None)
+
+    def _wanted(cap: str) -> bool:
+        # No capability info captured (legacy fixtures / older servers) => always try.
+        if not _parse_boolish(tools_filter.get(cap), default=True):
+            return False
+        return advertised_caps is None or getattr(advertised_caps, cap, None) is not None
+
+    session = getattr(server, "session", None)
+    if session is None:
+        return
+    if _wanted("prompts"):
+        try:
+            details["prompts"] = len((await session.list_prompts()).prompts)
+        except Exception:
+            pass
+    if _wanted("resources"):
+        try:
+            details["resources"] = len((await session.list_resources()).resources)
+        except Exception:
+            pass
+
+
+def _apply_probe_details(name: str, server, config: dict, details: Optional[dict], *, capability_rpcs: bool) -> None:
+    if details is None:
+        return
+    _fill_probe_schema_chars(name, server, details)
+    if not capability_rpcs:
+        return
+    from tools.mcp_tool_loop import _run_on_mcp_loop
+
+    try:
+        _run_on_mcp_loop(lambda: _fill_probe_capability_counts(server, config, details), timeout=15)
+    except Exception:
+        pass  # display-only; a live tools list is still a successful probe
+
+
+def _wait_for_live_mcp_server(name: str, timeout: float, *, wait_for_claim: bool = False):
+    """Poll for a live session owned by this process. Never opens a new one.
+
+    Synchronous: may ``time.sleep`` on a worker/CLI thread. Must not run on
+    the dedicated MCP event-loop thread — if it does, we snapshot once and
+    return instead of blocking the loop.
+
+    ``wait_for_claim`` keeps waiting even before discovery has inserted the
+    name into the process-owned table — desktop's health sweep races that
+    by a few hundred milliseconds on gateway-open.
+    """
+    from tools.mcp_tool_discovery import (
+        mcp_event_loop_is_current,
+        mcp_server_owned_or_connecting,
+        snapshot_live_mcp_server,
+    )
+
+    if mcp_event_loop_is_current():
+        return snapshot_live_mcp_server(name)
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    saw_claim = False
+    while True:
+        server = snapshot_live_mcp_server(name)
+        if server is not None:
+            return server
+        owned = mcp_server_owned_or_connecting(name)
+        if owned:
+            saw_claim = True
+        elif saw_claim or not wait_for_claim:
+            return None
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.1)
+
+
 def _probe_single_server(
     name: str, config: dict, connect_timeout: Optional[float] = None, *, details: Optional[dict] = None
 ) -> List[Tuple[str, str]]:
-    """Temporarily connect to one MCP server, list its tools, disconnect.
+    """List tools from one MCP server without evicting a live process-owned session.
 
-    Returns ``(tool_name, description)`` tuples; raises on connection failure. ``details`` is an
-    out-param filled with ``schema_chars``/``prompts``/``resources`` so the return shape stays stable.
+    Reuses the process-owned session when one exists (including a live session
+    with zero tools). Raises on connection failure, including ``TimeoutError``
+    when this process already owns the server (parked or still connecting) and
+    a second Streamable HTTP connect would evict it. All current callers wrap
+    the probe in ``except Exception`` (CLI print, dashboard/desktop ``ok:
+    false`` / red row, ``hermes doctor --live`` fail).
+
+    ``details`` is an out-param filled with ``schema_chars``/``prompts``/
+    ``resources`` so the return shape stays stable. Live reuse fills the same
+    contract via the existing session — it does not open a second connect.
+
+    Synchronous. May poll with a short sleep on a worker/CLI thread.
+    Must not be called on the dedicated MCP event-loop thread (dashboard
+    uses ``asyncio.to_thread``; ``mcp.servers.test`` is in
+    ``_LONG_HANDLERS``). If it ever is, the wait snapshots once and
+    returns instead of blocking the loop.
     """
     issues = validate_mcp_server_entry(name, config)
     if issues:
         raise ValueError("; ".join(issues))
 
     from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
-    from tools.mcp_tool_discovery import _connect_server
+    from tools.mcp_tool_discovery import (
+        _connect_server,
+        mcp_event_loop_is_current,
+        mcp_event_loop_is_running,
+        mcp_server_owned_or_connecting,
+    )
     from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
-    from tools.mcp_tool_common import _parse_boolish
 
     config = _resolve_mcp_server_config(config)
     if connect_timeout is None:
@@ -277,53 +399,59 @@ def _probe_single_server(
         except (TypeError, ValueError):
             connect_timeout = 30.0
 
+    # Reuse (or wait for) the process-global session. A second Streamable HTTP
+    # connect to Slack MCP expires the live desktop session and is exactly
+    # what paints the Capabilities row red on every launch.
+    live = _wait_for_live_mcp_server(name, connect_timeout)
+    if live is not None:
+        logger.info(
+            "MCP probe '%s': reusing live session (%d tool(s)); skip standalone connect",
+            name,
+            len(getattr(live, "_tools", None) or []),
+        )
+        _apply_probe_details(
+            name, live, config, details, capability_rpcs=not mcp_event_loop_is_current()
+        )
+        return _tool_rows_from_mcp_server(live)
+
+    if mcp_server_owned_or_connecting(name):
+        raise TimeoutError(
+            f"MCP server '{name}' is already claimed by this process; not opening a second session"
+        )
+    # Desktop/gateway: the MCP loop is already up, and the health sweep can
+    # beat discover_mcp_tools by a few hundred milliseconds. Wait briefly for
+    # this process to claim the server before opening a second Streamable HTTP
+    # session that would evict Slack's live one. Gated on the loop so a cold
+    # `hermes mcp test` (no loop, no discovery) does not stall 5s waiting for a
+    # claim that will never come.
+    if config.get("url") and mcp_event_loop_is_running():
+        grace = min(5.0, float(connect_timeout))
+        live = _wait_for_live_mcp_server(name, grace, wait_for_claim=True)
+        if live is not None:
+            logger.info(
+                "MCP probe '%s': reusing live session after claim grace (%d tool(s))",
+                name,
+                len(getattr(live, "_tools", None) or []),
+            )
+            _apply_probe_details(
+                name, live, config, details, capability_rpcs=not mcp_event_loop_is_current()
+            )
+            return _tool_rows_from_mcp_server(live)
+        if mcp_server_owned_or_connecting(name):
+            raise TimeoutError(
+                f"MCP server '{name}' is already claimed by this process; not opening a second session"
+            )
+
     _ensure_mcp_loop()
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
         server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
         try:
-            for t in server._tools:
-                desc = getattr(t, "description", "") or ""
-                if len(desc) > 80:
-                    desc = desc[:77] + "..."
-                tools_found.append((t.name, desc))
+            tools_found.extend(_tool_rows_from_mcp_server(server))
             if details is not None:
-                # Per-tool registry-schema sizes (the SAME converted schema the agent registers) so
-                # the desktop can estimate per-call token cost. Best-effort, absent on failure.
-                try:
-                    import json as _json
-                    from tools.mcp_tool_schema import _convert_mcp_schema
-
-                    details["schema_chars"] = {
-                        t.name: len(_json.dumps(_convert_mcp_schema(name, t), separators=(",", ":"), default=str))
-                        for t in server._tools
-                    }
-                except Exception:  # pragma: no cover — display-only extra
-                    pass
-                # Gate capability probes like runtime registration (_select_utility_schemas):
-                # honour tools.prompts / tools.resources config AND only call a family the server
-                # advertises — some servers hard-error on unknown prompts/list.
-                tools_filter = config.get("tools") or {}
-                advertised_caps = getattr(getattr(server, "initialize_result", None), "capabilities", None)
-
-                def _wanted(cap: str) -> bool:
-                    # No capability info captured (legacy fixtures / older servers) => always try.
-                    if not _parse_boolish(tools_filter.get(cap), default=True):
-                        return False
-                    return advertised_caps is None or getattr(advertised_caps, cap, None) is not None
-
-                # Best-effort: servers without the capability raise, which just means "0".
-                if _wanted("prompts"):
-                    try:
-                        details["prompts"] = len((await server.session.list_prompts()).prompts)
-                    except Exception:
-                        pass
-                if _wanted("resources"):
-                    try:
-                        details["resources"] = len((await server.session.list_resources()).resources)
-                    except Exception:
-                        pass
+                _fill_probe_schema_chars(name, server, details)
+                await _fill_probe_capability_counts(server, config, details)
         finally:
             await server.shutdown()
 

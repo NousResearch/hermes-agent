@@ -56,7 +56,7 @@ from gateway.platforms.yuanbao_media import (
 )
 from gateway.platforms.yuanbao_proto import (
     CMD_TYPE, WS_HEARTBEAT_RUNNING, WS_HEARTBEAT_FINISH, HERMES_INSTANCE_ID,
-    _fields_to_dict, _get_string, _get_varint, _parse_fields,
+    _decode_varint, _fields_to_dict, _get_string, _get_varint, _parse_fields,
     decode_conn_msg, decode_inbound_push, decode_forward_msg_data,
     decode_query_group_info_rsp, decode_get_group_member_list_rsp,
     encode_auth_bind, encode_ping, encode_push_ack, encode_send_c2c_message, encode_send_group_message,
@@ -2419,6 +2419,9 @@ class MessageSender:
             chunks = self.truncate_message(content_to_send, adapter.MAX_TEXT_CHUNK)
             logger.info("[%s] truncate_message: input=%d chars, max=%d, output=%d chunk(s) sizes=%s",
                         adapter.name, len(content_to_send), adapter.MAX_TEXT_CHUNK, len(chunks), [len(c) for c in chunks])
+            if any(len(c) > adapter.MAX_TEXT_CHUNK for c in chunks):
+                logger.error("[%s] unsplittable chunk exceeds MAX_TEXT_CHUNK", adapter.name)
+                return SendResult(success=False, error="Unsplittable message block exceeds MAX_TEXT_CHUNK")
             for i, chunk in enumerate(chunks):
                 result = await self.send_text_chunk(chat_id, chunk, reply_to if i == 0 else None, group_code=group_code)
                 if not result.success:
@@ -2540,15 +2543,105 @@ class MessageSender:
         ), req_id)
 
     @staticmethod
+    def _decode_varint_strict(data: bytes, pos: int) -> tuple[int, int]:
+        """Like ``_decode_varint`` but raises when the varint is truncated (continuation bit left on)."""
+        start = pos
+        value, pos = _decode_varint(data, pos)
+        if pos == start or data[pos - 1] & 0x80:
+            raise ValueError("truncated varint")
+        return value, pos
+
+    @staticmethod
+    def _decode_send_ack_payload(data: bytes) -> tuple[int, str]:
+        """Send-response protobuf: field 1 int32/varint ``code``, field 2 string ``message``.
+
+        Raises if the payload is truncated/malformed or has no decodable field-1 code.
+        """
+        pos = 0
+        code: Optional[int] = None
+        message = ""
+        while pos < len(data):
+            tag, pos = MessageSender._decode_varint_strict(data, pos)
+            fn, wt = tag >> 3, tag & 7
+            if wt == 0:
+                val, pos = MessageSender._decode_varint_strict(data, pos)
+                if fn == 1 and code is None:
+                    code = val
+            elif wt == 2:
+                length, pos = MessageSender._decode_varint_strict(data, pos)
+                if pos + length > len(data):
+                    raise ValueError("truncated length-delimited field")
+                val = data[pos:pos + length]
+                pos += length
+                if fn == 2 and not message:
+                    message = val.decode("utf-8", errors="replace")
+            elif wt in (1, 5):
+                n = 8 if wt == 1 else 4
+                if pos + n > len(data):
+                    raise ValueError("truncated fixed field")
+                pos += n
+            else:
+                raise ValueError(f"unknown wire type {wt}")
+        if code is None:
+            raise ValueError("missing business code")
+        return code, message
+
+    @staticmethod
+    def _format_send_nack(status: Optional[int], code: Optional[int], message: str) -> str:
+        msg = (message or "").replace("\n", " ").replace("\r", " ")[:160]
+        return (
+            f"send rejected: status={0 if status is None else status} "
+            f"code={'-' if code is None else code} message={msg}"
+        )
+
+    @staticmethod
+    def _ack_from_response(adapter: "YuanbaoAdapter", response: dict) -> dict:
+        """Map a WS Response dict ``{head, data?}`` to ``{success, msg_key|error}``.
+
+        Fail closed on nonzero ``head.status``, nonzero business ``code``, or nonempty
+        malformed ``data``. Fail open (success ACK) when status is missing/0 and ``data``
+        is absent or empty — no business rejection signal.
+        """
+        head = response.get("head") if isinstance(response.get("head"), dict) else {}
+        status = head.get("status")
+        data = response.get("data")
+        if status is not None and status != 0:
+            error = MessageSender._format_send_nack(status, None, "")
+            logger.warning("[%s] %s", adapter.name, error)
+            return {"success": False, "error": error}
+        if data:
+            if not isinstance(data, (bytes, bytearray)):
+                error = "malformed send response"
+                logger.warning("[%s] send rejected: status=%s malformed payload", adapter.name, 0 if status is None else status)
+                return {"success": False, "error": error}
+            try:
+                biz_code, biz_msg = MessageSender._decode_send_ack_payload(bytes(data))
+            except Exception:
+                error = "malformed send response"
+                logger.warning("[%s] send rejected: status=%s malformed payload", adapter.name, 0 if status is None else status)
+                return {"success": False, "error": error}
+            if biz_code:
+                error = MessageSender._format_send_nack(0 if status is None else status, biz_code, biz_msg)
+                logger.warning("[%s] %s", adapter.name, error)
+                return {"success": False, "error": error}
+        return {"success": True, "msg_key": head.get("msg_id", "")}
+
+    @staticmethod
     async def _dispatch_encoded(adapter: "YuanbaoAdapter", encoded: bytes, req_id: str) -> dict:
         """Send pre-encoded bytes via WS → ``{"success", "msg_key" | "error"}``."""
         try:
             response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            return {"success": True, "msg_key": response.get("msg_id", "")}
         except asyncio.TimeoutError:
             return {"success": False, "error": f"Request timeout after {DEFAULT_SEND_TIMEOUT}s"}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
+        if not isinstance(response, dict):
+            logger.warning(
+                "[%s] send rejected: non-dict response type=%s req_id=%s",
+                adapter.name, type(response).__name__, req_id,
+            )
+            return {"success": False, "error": "malformed send response"}
+        return MessageSender._ack_from_response(adapter, response)
 
     @staticmethod
     def validate_media(file_bytes: Optional[bytes], filename: str, max_size_mb: int = 20) -> Optional[str]:
@@ -2602,7 +2695,7 @@ class OutboundManager:
 class YuanbaoAdapter(BasePlatformAdapter):
     """Yuanbao AI Bot adapter backed by a persistent WebSocket connection."""
     PLATFORM = Platform.YUANBAO
-    MAX_TEXT_CHUNK: int = 4000  # Yuanbao single message character limit
+    MAX_TEXT_CHUNK: int = 1200  # character limit (openclaw DELIVER_TEXT_CHUNK_LIMIT)
     splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000

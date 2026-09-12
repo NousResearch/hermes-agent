@@ -2113,9 +2113,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key)
         return model, session_override, request_model, request_provider
 
+    def _reasoning_enabled(self) -> bool:
+        from gateway.run import _load_gateway_config, _resolve_gateway_display_bool
+        return _resolve_gateway_display_bool(_load_gateway_config(), "api_server", "show_reasoning")
+
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
-        stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
+        stream_delta_callback=None, reasoning_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
@@ -2166,6 +2170,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "enabled_toolsets": enabled_toolsets, "session_id": session_id,
             "platform": "api_server",
             "stream_delta_callback": stream_delta_callback,
+            "reasoning_callback": reasoning_callback if self._reasoning_enabled() else None,
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
@@ -2275,6 +2280,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "responses_api": True, "responses_streaming": True, "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
+                "reasoning_streaming": self._reasoning_enabled(),
                 "cors": bool(self._cors_origins),
                 # Always advertised for feature-detection; enabled follows config.
                 "browser_extension_control": {
@@ -3158,10 +3164,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if delta:
                 events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
+        def _reasoning(delta: str) -> None:
+            """Emit live model reasoning separately from assistant text."""
+            if delta:
+                events.enqueue("reasoning.delta", {"message_id": message_id, "delta": delta})
+
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
-            if event_type == "reasoning.available":
-                events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
-            elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
+            # Completion-time reasoning previews may contain assistant text; live reasoning
+            # is delivered through the dedicated callback above instead of a fake tool event.
+            if event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
         async def _run_and_signal() -> None:
@@ -3174,6 +3185,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
+                    reasoning_callback=_reasoning,
                     tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
@@ -3660,7 +3672,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _run_agent(
         self, user_message: str, conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
-        stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
+        stream_delta_callback=None, reasoning_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
@@ -3696,7 +3708,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
-                        stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
+                        stream_delta_callback=stream_delta_callback, reasoning_callback=reasoning_callback,
+                        tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,

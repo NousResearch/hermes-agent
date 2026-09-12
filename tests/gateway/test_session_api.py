@@ -366,6 +366,64 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert any(m.get("tool_calls") for m in messages)
 
 
+@pytest.mark.asyncio
+async def test_session_chat_stream_emits_live_reasoning_deltas(adapter, session_db):
+    """Reasoning must stream before answer text and must not be a fake tool."""
+    import json as _json
+
+    session_id = session_db.create_session("reasoning-stream-session", "api_server")
+
+    async def fake_run(**kwargs):
+        kwargs["reasoning_callback"]("")
+        kwargs["reasoning_callback"]("check ")
+        kwargs["reasoning_callback"]("evidence")
+        # This legacy completion-time callback contains assistant content, not
+        # a real reasoning delta.  The API adapter must ignore it.
+        kwargs["tool_progress_callback"](
+            "reasoning.available", "_thinking", "final answer misclassified", None
+        )
+        kwargs["stream_delta_callback"]("answer")
+        return {
+            "final_response": "answer",
+            "session_id": session_id,
+        }, {"total_tokens": 3}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "reason out loud"},
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    events = []
+    for block in body.split("\n\n"):
+        event_name = None
+        payload = None
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line[len("event: "):]
+            elif line.startswith("data: "):
+                payload = _json.loads(line[len("data: "):])
+        if event_name and payload is not None:
+            events.append((event_name, payload))
+
+    streamed = [
+        (name, payload["delta"])
+        for name, payload in events
+        if name in {"reasoning.delta", "assistant.delta"}
+    ]
+    assert streamed == [
+        ("reasoning.delta", "check "),
+        ("reasoning.delta", "evidence"),
+        ("assistant.delta", "answer"),
+    ]
+    assert not any(name == "tool.progress" for name, _ in events)
+    assert "final answer misclassified" not in body
+
+
 # ---------------------------------------------------------------------------
 # Session-persisted model threading + provider-auth failure surfacing
 # (salvaged from PR #57947 by @FvanW and PR #59941 by @kaishi00)

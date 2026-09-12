@@ -31,6 +31,7 @@ from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
     apply_llm_request_middleware,
     apply_tool_request_middleware,
+    run_llm_execution_middleware,
     run_tool_execution_middleware,
 )
 
@@ -928,6 +929,48 @@ class TestDeliveryParity:
         monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: stub)
 
         assert plugins_mod.invoke_hook("anything") == ["stubbed"]
+
+    def test_execution_chain_lazily_discovers(self, monkeypatch):
+        """Execution middleware must fire on cold surfaces too (#105827).
+
+        ``run_tool_execution_middleware`` / ``run_llm_execution_middleware`` deliver via
+        ``_run_execution_chain``, which used to read ``get_plugin_manager()._middleware``
+        directly — no lazy discovery — so a registered fail-closed policy gate was silently
+        skipped (fail-open) on surfaces that never ran discovery at startup (query mode
+        ``chat -q``, cron delivery, dashboard, TUI slash workers). The chain must route
+        through ``_delivery_manager()`` like every other delivery entry point (#64178).
+        """
+        fired = []
+        terminal_calls = []
+
+        def _tool_gate(**kw):
+            fired.append(kw.get("tool_name"))
+            return {"denied": True}  # fail-closed: returns without calling next_call
+
+        def _llm_gate(**kw):
+            fired.append("llm")
+            return {"denied": True}
+
+        def _register(m):
+            m._middleware.setdefault("tool_execution", []).append(_tool_gate)
+            m._middleware.setdefault("llm_execution", []).append(_llm_gate)
+
+        mgr = self._fresh_manager(monkeypatch, _register)
+
+        def _terminal(payload):
+            terminal_calls.append(payload)
+            return "terminal-ran"
+
+        tool_result = run_tool_execution_middleware("terminal", {"path": "x"}, _terminal)
+        assert mgr._discovered is True, "execution chain must lazily discover on cold surfaces"
+        assert fired == ["terminal"]
+        assert tool_result == {"denied": True}
+        assert terminal_calls == [], "a fail-closed gate must not be bypassed by terminal execution"
+
+        llm_result = run_llm_execution_middleware({"messages": []}, _terminal)
+        assert fired == ["terminal", "llm"]
+        assert llm_result == {"denied": True}
+        assert terminal_calls == []
 
 
 class TestForceReloadSymmetry:

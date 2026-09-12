@@ -1214,6 +1214,96 @@ def _emit_compression_attempt_telemetry(
         logger.info(
             "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
+        _record_compaction_end(agent, payload)
+
+
+def _compaction_audit_db(agent: Any) -> Any:
+    """Live session store for the audit trail, or None (no db, legacy API)."""
+    with contextlib.suppress(Exception):
+        db = getattr(agent, "_session_db", None)
+        if db is not None and callable(getattr(type(db), "record_compaction_event", None)):
+            return db
+    return None
+
+
+def _record_compaction_start(
+    agent: Any, *, attempt_id: str, message_count: int, approx_tokens: Optional[int],
+) -> bool:
+    """Append the ``start`` bracket; arms the one-shot ``end`` for this attempt.
+
+    Best-effort: False (or a silent skip when no store is bound) never affects
+    the compaction itself. Only attempts that reach this point — past the
+    pre-lease sit-outs — are audited, so lock-contention/breaker no-ops stay
+    out of the table.
+    """
+    db = _compaction_audit_db(agent)
+    if db is None or not attempt_id:
+        return False
+    try:
+        session_id = getattr(agent, "session_id", "") or ""
+        if not session_id:
+            return False
+        compressor = getattr(agent, "context_compressor", None)
+        telemetry = getattr(compressor, "_last_compression_telemetry", None)
+        seed = getattr(compressor, "_compression_telemetry_seed", None)
+        if isinstance(telemetry, dict) and isinstance(telemetry.get("trigger_source"), str):
+            trigger_source: str = telemetry["trigger_source"]
+        elif isinstance(seed, dict) and isinstance(seed.get("trigger_source"), str):
+            trigger_source = seed["trigger_source"]
+        else:
+            trigger_source = "unknown"
+        threshold = getattr(compressor, "threshold_tokens", None)
+        provider = getattr(compressor, "provider", None)
+        model = getattr(compressor, "model", None)
+        payload = {
+            "trigger_source": trigger_source,
+            "message_count": max(0, int(message_count)),
+            "approx_tokens": approx_tokens if isinstance(approx_tokens, (int, float)) else None,
+            "threshold_tokens": threshold if isinstance(threshold, (int, float)) else None,
+            "main_provider": provider if isinstance(provider, str) else (getattr(agent, "provider", "") or ""),
+            "main_model": model if isinstance(model, str) else (getattr(agent, "model", "") or ""),
+        }
+        recorder = getattr(type(db), "record_compaction_event", None)
+        if recorder is None or not recorder(db, session_id, attempt_id, "start", payload):
+            return False
+    except Exception:
+        logger.debug("compaction audit start write failed", exc_info=True)
+        return False
+    with contextlib.suppress(Exception):
+        # Anchor the row identity: rotation rebinds agent.session_id to the
+        # child mid-attempt, so the ``end`` must reuse the *start* session or
+        # the pair splits into a false orphan + a dangling end.
+        agent._compaction_audit_start_written = (attempt_id, session_id)
+    return True
+
+
+def _record_compaction_end(agent: Any, payload: Dict[str, Any]) -> None:
+    """Append the ``end`` bracket when this attempt wrote a ``start``.
+
+    Pre-lease sit-outs (lock contention, breaker gates, codex route) never
+    wrote one, so their telemetry stays log-only — no orphan, no noise row.
+    """
+    try:
+        attempt_id = str(payload.get("attempt_id") or "")
+        marker = getattr(agent, "_compaction_audit_start_written", None)
+        if (
+            not attempt_id
+            or not isinstance(marker, tuple)
+            or len(marker) != 2
+            or marker[0] != attempt_id
+        ):
+            return
+        db = _compaction_audit_db(agent)
+        if db is None:
+            return
+        recorder = getattr(type(db), "record_compaction_event", None)
+        if recorder is None:
+            return
+        if recorder(db, marker[1], attempt_id, "end", payload):
+            with contextlib.suppress(Exception):
+                agent._compaction_audit_start_written = None
+    except Exception:
+        logger.debug("compaction audit end write failed", exc_info=True)
 
 
 def _existing_system_prompt(agent: Any, system_message: str) -> str:
@@ -3203,6 +3293,7 @@ def _candidate_rejected(
             agent._emit_warning(
                 "⚠ Compression returned an empty transcript. No session split was performed; conversation continues unchanged."
             )
+        _emit_aborted_attempt_telemetry(agent, attempt_started_at, "empty_transcript")
         return True
 
     # A newer attempt claiming this compressor supersedes us; discard the late
@@ -3500,6 +3591,11 @@ def _begin_compression_attempt(agent: Any, *, force: bool, defer_notification: b
     agent._last_compression_attempt_recorded = True
     agent._last_compression_attempt_in_place = None
     agent._compression_skipped_due_to_lock = None
+    # A new attempt disarms any prior audit bracket: an out-of-band emit
+    # (pool-saturated refusal outside the worker) must never close a
+    # previous attempt's orphan with a mismatched failure_class.
+    with contextlib.suppress(Exception):
+        agent._compaction_audit_start_written = None
     # Clear the lock-skip signal at the VERY TOP, before the codex route and the breaker gates below can
     # early-return (per-attempt state rule, #58630/#69853). A stale ``True``/holder value from a prior
     # lock-skip must never make a later breaker/codex no-op look like lock contention to the automatic-path
@@ -3646,6 +3742,13 @@ def compress_context(
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown, include_cooldown=False):
         lease.release()
         return messages, _existing_system_prompt(agent, system_message)
+
+    # Only attempts past the pre-summary sit-outs are audited; pre-lease
+    # breaker/lock/cooldown no-ops stay log-only and never leave an orphan.
+    _record_compaction_start(
+        agent, attempt_id=getattr(agent, "_compression_attempt_id", "") or "",
+        message_count=len(messages), approx_tokens=approx_tokens,
+    )
 
     # Interrupts/redirects must not tear a summary in half. Use the explicit stop
     # Event (message fields race) + fence timeout so pool slots free promptly.

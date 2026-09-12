@@ -78,6 +78,12 @@ class TestCommandCodeProfileIdentity:
     def test_default_aux_model(self, commandcode_profile):
         assert commandcode_profile.default_aux_model == "deepseek/deepseek-v4-flash"
 
+    def test_relocate_tool_result_images_opted_in(self, commandcode_profile):
+        """The chat-completions endpoint accepts user-message images but 400s
+        on list-type tool content; opting into relocation keeps the pixels
+        flowing (via a following user message) instead of dropping to text."""
+        assert commandcode_profile.relocate_tool_result_images is True
+
     def test_signup_url(self, commandcode_profile):
         assert "commandcode" in commandcode_profile.signup_url.lower()
 
@@ -138,6 +144,11 @@ class TestCommandCodeAnthropicProfileIdentity:
 
     def test_default_aux_model(self, commandcode_anthropic_profile):
         assert commandcode_anthropic_profile.default_aux_model == "claude-haiku-4-5-20251001"
+
+    def test_anthropic_profile_does_not_relocate_tool_images(
+        self, commandcode_anthropic_profile
+    ):
+        assert commandcode_anthropic_profile.relocate_tool_result_images is False
 
     def test_display_name_distinct_from_chat(self, commandcode_anthropic_profile):
         # The Anthropic profile should be distinguishable in /model picker

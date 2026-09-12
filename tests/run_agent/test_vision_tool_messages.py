@@ -27,7 +27,9 @@ def _make_agent(provider="openrouter", model="gpt-4o"):
     agent = MagicMock(spec=AIAgent)
     agent.provider = provider
     agent.model = model
+    agent.api_mode = "chat_completions"
     agent._no_list_tool_content_models = set()
+    agent._relocate_tool_images_models = set()
 
     def _real_content_has_image_parts(content):
         if not isinstance(content, list):
@@ -40,6 +42,10 @@ def _make_agent(provider="openrouter", model="gpt-4o"):
     agent._content_has_image_parts = _real_content_has_image_parts
     agent._model_supports_vision = lambda: AIAgent._model_supports_vision(agent)
     agent._provider_supports_vision_tool_messages = lambda: AIAgent._provider_supports_vision_tool_messages(agent)
+    agent._provider_relocates_tool_images = lambda: AIAgent._provider_relocates_tool_images(agent)
+    agent._should_relocate_tool_result_images = (
+        lambda: AIAgent._should_relocate_tool_result_images(agent)
+    )
     agent._tool_result_content_for_active_model = (
         lambda name, result: AIAgent._tool_result_content_for_active_model(agent, name, result)
     )
@@ -55,6 +61,38 @@ def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"
         ],
         "text_summary": text,
     }
+
+
+class TestRelocatingProfileKeepsListContent:
+    """A profile that opts into ``relocate_tool_result_images`` keeps the
+    image parts in the tool row — the request-build projection relocates
+    them into a user message instead of dropping them to text."""
+
+    def test_commandcode_opted_in_keeps_list_content(self):
+        agent = _make_agent("commandcode", "deepseek/deepseek-v4-pro")
+        result = _multimodal_result(text="screenshot captured")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model(
+                "browser_screenshot", result
+            )
+
+        assert isinstance(content, list)
+        assert any(
+            p.get("type") == "image_url" for p in content if isinstance(p, dict)
+        )
+
+    def test_default_profile_still_downgrades(self):
+        agent = _make_agent("xiaomi", "mimo-v2.5")
+        result = _multimodal_result(text="screenshot captured")
+
+        with patch.object(agent, "_model_supports_vision", return_value=True):
+            content = agent._tool_result_content_for_active_model(
+                "browser_screenshot", result
+            )
+
+        assert isinstance(content, str)
+        assert "screenshot captured" in content
 
 
 # ---------------------------------------------------------------------------

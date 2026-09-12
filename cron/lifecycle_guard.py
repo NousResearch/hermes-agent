@@ -108,6 +108,17 @@ _LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
 _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
+# Python interpreter basenames: when one of these executes a script file
+# (`/abs/python3 /abs/snapshot.py`), the INTERPRETER is not a shell script and
+# must not be size-checked as one; the SCRIPT operand is what gets scanned.
+# Deliberately narrow (python only): matching is positional, never a blanket
+# name exemption — `sh python3-oversized` still fails closed via the shell
+# branch. See #105427.
+_PYTHON_INTERPRETER_RE = re.compile(r"(?i)^python(\d+(\.\d+)*)?w?(\.exe)?$")
+# Python options taking a separate value (`-W ignore snapshot.py`).
+_PYTHON_OPTIONS_WITH_VALUES = frozenset({"-W", "-X"})
+# Long option taking a separate value (`--check-hash-based-pycs always`).
+_PYTHON_LONG_OPTIONS_WITH_VALUES = frozenset({"--check-hash-based-pycs"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
@@ -692,6 +703,43 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
+def _python_script_operand(segment: list[str], index: int) -> Optional[str]:
+    """Script file a Python interpreter executes, or None when there is none.
+
+    Returns None for `-c`/`-m` (payload/module, covered by the direct regex, no
+    file to scan) and for `-`/stdin. Used positionally: only when the
+    executable itself is a python interpreter. Never a name exemption.
+    """
+    args = segment[index + 1 :]
+    pos = 0
+    while pos < len(args):
+        token = args[pos]
+        if token == "--":
+            pos += 1
+            break
+        if token in ("-c", "-m"):
+            return None
+        if token in _PYTHON_OPTIONS_WITH_VALUES:
+            pos += 2
+            continue
+        if token in _PYTHON_LONG_OPTIONS_WITH_VALUES:
+            pos += 2
+            continue
+        if token.startswith("--") and "=" not in token:
+            pos += 1
+            continue
+        if token.startswith("-") and token != "-":
+            pos += 1
+            continue
+        break
+    if pos >= len(args):
+        return None
+    candidate = args[pos]
+    if candidate in ("-", "-c", "-m"):
+        return None
+    return candidate
+
+
 def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
     """Yield the scripts the token at *index* executes, if any."""
     if index >= len(segment):
@@ -724,6 +772,23 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
             yield from _resolved_or_nothing(arguments[arg_index], cwd)
         return
+
+    if _PYTHON_INTERPRETER_RE.match(executable_name):
+        operand = _python_script_operand(segment, index)
+        if operand is not None:
+            # Interpreter position with a script payload: scan the SCRIPT, never
+            # the interpreter binary. Fail-closed preserved: the script itself is
+            # still size/content-checked; `sh <python-named-file>` still blocks
+            # via the shell branch above.
+            yield from _resolved_or_nothing(operand, cwd)
+            return
+        if any(token in ("-c", "-m") for token in segment[index + 1 :]):
+            # `-c` payload is covered by the direct regex; `-m` is a module, not
+            # a file. No file to scan, and the interpreter binary itself is never
+            # a shell script.
+            return
+        # No script operand and no -c/-m (bare `--version`, REPL, ...): fall
+        # through so direct execution of a file named python* is still scanned.
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.

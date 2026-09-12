@@ -3108,15 +3108,32 @@ def _compute_mcp_rev() -> str:
     return ""
 
 
-def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
-    """Shared tail for both reload paths: honor ``always`` (persist the confirm opt-out) and return the ok payload."""
+def _finish_reload(rid, params: dict, *, coalesced: bool, refresh: dict | None = None,
+                   host_ack: dict | None = None) -> dict:
+    """Shared tail for both reload paths: honor ``always`` (persist the confirm opt-out) and return the ok payload.
+    ``refresh`` is _refresh_session_agents' per-session report; ``host_ack`` is set when the requester was
+    forwarded to the compute host (its sessions refresh inside the host's own reload.mcp fan-out)."""
     if bool(params.get("always", False)):
         try:
             from cli import save_config_value
             save_config_value("approvals.mcp_reload_confirm", False)
         except Exception as _exc:
             logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
-    return _ok(rid, {"status": "reloaded", "loaded_rev": _mcp_reload_loaded_rev, **({"coalesced": True} if coalesced else {})})
+    payload = {"status": "reloaded", "loaded_rev": _mcp_reload_loaded_rev,
+               **({"coalesced": True} if coalesced else {})}
+    if refresh is not None:
+        payload["sessions_refreshed"] = refresh["refreshed"]
+        if refresh["deferred"]:
+            payload["sessions_deferred"] = refresh["deferred"]
+        if refresh["failed"]:
+            payload["sessions_failed"] = refresh["failed"]
+        if refresh["compute_host_sessions"]:
+            payload["compute_host_sessions"] = refresh["compute_host_sessions"]
+        if refresh.get("host_error"):
+            payload["compute_host_error"] = refresh["host_error"]
+    if host_ack is not None:
+        payload.update(turn_isolation=True, host_ack=host_ack)
+    return _ok(rid, payload)
 
 
 _TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny"})

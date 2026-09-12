@@ -268,13 +268,6 @@ def _(rid, params: dict) -> dict:
             "Reply `/reload-mcp now` to proceed, or `/reload-mcp always` to proceed and "
             "silence this prompt permanently.")
         return _ok(rid, {"status": "confirm_required", "message": message})
-    if session and _session_uses_compute_host(session):
-        try:
-            ack = _get_compute_host_supervisor().reload_mcp(
-                str(params.get("session_id") or ""), request_id=f"reload-mcp-{rid}")
-        except Exception as exc:
-            return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
-        return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
     _mcp_agent, _mcp_lifecycle, _mcp_discovery = (
         _tools_mod("tools.mcp_tool_agent"), _tools_mod("tools.mcp_tool_lifecycle"), _tools_mod("tools.mcp_tool_discovery"))
     global _mcp_reload_gen, _mcp_reload_loaded_rev
@@ -282,23 +275,89 @@ def _(rid, params: dict) -> dict:
     # (generation-only coalescing).
     req_rev = str(params.get("rev") or "")
 
-    def _refresh_session_agent() -> None:
-        """Rebuild THIS session's cached tool snapshot + push session.info (the agent never
-        re-reads the registry). Runs under _mcp_reload_lock so a concurrent reload can't
-        tear the registry down mid-refresh."""
-        if not session:
-            return
-        agent = session["agent"]
-        try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-            _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
-        except Exception as _exc:
-            logger.warning("Failed to refresh cached agent tools after /reload-mcp: %s", _exc)
-        _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
+    def _forward_to_host(sid: str):
+        """One reload_mcp control frame to the compute host. The host re-enters ``reload.mcp``
+        in ITS process, which fans the refresh out to every session it owns — one forward covers
+        all host-side sessions (HostSupervisor owns a single child). Returns (ack, error): the
+        ``reload_mcp.ack`` envelope is NOT proof of success — the child's JSON-RPC response is
+        inspected for ``result`` vs ``error``/``control.error``."""
+        try:
+            ack = _get_compute_host_supervisor().reload_mcp(sid, request_id=f"reload-mcp-{rid}")
+        except Exception as exc:
+            return None, f"compute-host reload_mcp failed: {exc}"
+        resp = ack.get("response") if isinstance(ack, dict) else None
+        if isinstance(resp, dict) and "result" in resp:
+            return ack, None
+        msg = ((resp or {}).get("error") or {}).get("message") or (ack or {}).get("message") \
+            or (ack or {}).get("error") or "no result in reload_mcp.ack"
+        return ack, f"compute-host reload_mcp failed: {msg}"
 
-    def _do_full_reload() -> None:
+    # A compute-host requester is forwarded FIRST (its agent lives in the host process), then —
+    # unlike the old early return — local siblings still get the in-process reload below.
+    host_ack = None
+    if session and _session_uses_compute_host(session):
+        host_ack, host_err = _forward_to_host(str(params.get("session_id") or ""))
+        if host_err:
+            return _err(rid, 5019, host_err)
+        if not any(
+                s.get("agent") is not None and not _session_uses_compute_host(s)
+                for s in list(_sessions.values())):
+            return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": host_ack})
+
+    def _refresh_session_agents() -> dict:
+        """Rebuild EVERY live session's cached tool snapshot + push session.info (agents never
+        re-read the registry). The pool is process-global, so refreshing only the requester leaves
+        siblings stale — and a missing/unknown session_id would refresh nothing at all. Runs under
+        _mcp_reload_lock so a concurrent reload can't tear the registry down mid-refresh.
+
+        Per-session rules: compute-host sessions are forwarded once to the host (its own reload.mcp
+        fans out there); running sessions defer to the next turn boundary (``pending_mcp_refresh``,
+        applied by _apply_pending_mcp_refresh before request assembly — a mid-turn swap would let a
+        sibling issue against the old schema and validate against the new); a replaced/removed sid
+        is re-validated before refresh AND before emit so a stale agent's info never lands on the
+        replacement's transport. Returns a per-session report for _finish_reload."""
+        report = {"refreshed": 0, "deferred": 0, "failed": {}, "compute_host_sessions": []}
+        with _sessions_lock:
+            sessions = list(_sessions.items())
+        for sid, sess in sessions:
+            if _session_uses_compute_host(sess):
+                report["compute_host_sessions"].append(sid)
+                continue
+            if sess.get("agent") is None:
+                continue  # lazy session: nothing cached to refresh
+            with _sessions_lock:
+                if _sessions.get(sid) is not sess:
+                    continue  # replaced/removed since the snapshot
+                if sess.get("running"):
+                    sess["pending_mcp_refresh"] = True
+                    report["deferred"] += 1
+                    continue
+            try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
+                with _session_profile_runtime_scope(sess):
+                    _mcp_agent.refresh_agent_mcp_tools(
+                        sess["agent"],
+                        enabled_override=_load_enabled_toolsets(_session_source(sess)), quiet_mode=True)
+            except Exception as _exc:
+                logger.warning("Failed to refresh cached agent tools after /reload-mcp: %s", _exc)
+                report["failed"][sid] = str(_exc)
+                continue  # no success-shaped session.info for a session that didn't refresh
+            report["refreshed"] += 1
+            with _sessions_lock:
+                if _sessions.get(sid) is not sess:
+                    continue
+            _emit_session_info_for_session(sid, sess)
+        if report["compute_host_sessions"] and host_ack is None:
+            report["host_ack"], host_err = _forward_to_host(report["compute_host_sessions"][0])
+            if host_err:
+                report["host_error"] = host_err
+        return report
+
+    def _do_full_reload() -> dict:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
         can change WHILE discover connects: re-hash and repeat until stable so the marked
-        generation matches what loaded."""
+        generation matches what loaded. Discovery runs once per live session's profile scope —
+        the unscoped shutdown tears down every profile's connections, so ambient-only discovery
+        would leave non-ambient profiles' servers dead (gateway multiplex precedent: #95518)."""
         global _mcp_reload_gen, _mcp_reload_loaded_rev
         loaded = _compute_mcp_rev()
         for _ in range(_MCP_RELOAD_MAX_PASSES):
@@ -309,24 +368,33 @@ def _(rid, params: dict) -> dict:
             if after == loaded:
                 break
             loaded = after
-        _refresh_session_agent()
+        with _sessions_lock:
+            homes = {s.get("profile_home") for s in _sessions.values()}
+        for home in sorted(homes - {None}):
+            try:
+                with _session_profile_runtime_scope({"profile_home": home}):
+                    _mcp_discovery.discover_mcp_tools()
+            except Exception as _exc:
+                logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc)
+        report = _refresh_session_agents()
         _mcp_reload_loaded_rev = loaded
         _mcp_reload_gen += 1
+        return report
 
     # LEADER (won the non-blocking acquire) runs the full reload. FOLLOWER waits, then — still
     # holding the lock — coalesces only if a reload COMPLETED meanwhile (generation advanced
     # ⇒ leader didn't throw) AND it loaded the requested revision; otherwise it re-runs.
     if _mcp_reload_lock.acquire(blocking=False):
         try:
-            _do_full_reload()
+            report = _do_full_reload()
         finally:
             _mcp_reload_lock.release()
-        return _finish_reload(rid, params, coalesced=False)
+        return _finish_reload(rid, params, coalesced=False, refresh=report, host_ack=host_ack)
     gen_before = _mcp_reload_gen
     with _mcp_reload_lock:
         coalesced = _mcp_reload_gen > gen_before and (not req_rev or req_rev == _mcp_reload_loaded_rev)
-        _refresh_session_agent() if coalesced else _do_full_reload()
-    return _finish_reload(rid, params, coalesced=coalesced)
+        report = _refresh_session_agents() if coalesced else _do_full_reload()
+    return _finish_reload(rid, params, coalesced=coalesced, refresh=report, host_ack=host_ack)
 
 
 # ─── Command catalog / dispatch ──────────────────────────────────────────────

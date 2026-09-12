@@ -469,6 +469,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         _apply_pending_model_switch(sid, session)
         _sync_agent_model_with_config(sid, session)
         _sync_agent_compression_with_config(sid, session)
+    # A reload.mcp deferred while this session was mid-turn lands here — inside the profile scope
+    # bound above, before request assembly — regardless of the one_turn_restore skip.
+    _apply_pending_mcp_refresh(sid, session)
     _sync_bot_capabilities(sid, session)  # Bot Chat: adopt Settings->Capabilities edits
     st.agent = agent = session["agent"]
     # Snapshot after the model sync: a deferred switch's history mutation belongs to this turn.

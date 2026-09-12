@@ -135,6 +135,8 @@ def reset_language_cache() -> None:
     _config_language_cached.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
+    from hermes_cli.commands import _reset_localized_command_catalog_cache
+    _reset_localized_command_catalog_cache()
 
 
 def get_language() -> str:

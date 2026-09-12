@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
-from hermes_cli.commands import COMMANDS, SUBCOMMANDS
+from hermes_cli.commands import COMMANDS, SUBCOMMANDS, localized_command_catalog
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -276,7 +276,10 @@ class SlashCommandCompleter(Completer):
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
         self._skill_bundles_provider = skill_bundles_provider
-        self._commands = commands if commands is not None else COMMANDS
+        self._commands = (
+            commands if commands is not None
+            else dict(localized_command_catalog()["pairs"])
+        )
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0

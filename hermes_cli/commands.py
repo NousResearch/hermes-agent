@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
@@ -352,13 +353,13 @@ def _build_description(cmd: CommandDef, lang: str | None = None) -> str:
     return f"{description} ({usage}: /{cmd.name} {cmd.args_hint})"
 
 
-def localized_command_catalog(lang: str | None = None) -> dict[str, object]:
+@lru_cache(maxsize=None)
+def _localized_command_catalog_cached(lang: str) -> dict[str, object]:
     """Return registry descriptions and categories for a requested UI language.
 
     The English registry remains the compatibility/default view; translations
     live in the Python locale catalogs so CLI, TUI, and Desktop share one source.
     """
-    lang = lang or get_language()
     pairs: dict[str, str] = {}
     categories: dict[str, dict[str, str]] = {}
     english_pairs: dict[str, str] = {}
@@ -385,6 +386,16 @@ def localized_command_catalog(lang: str | None = None) -> dict[str, object]:
         "english_pairs": english_pairs,
         "categories": [{"name": name, "pairs": list(rows.items())} for name, rows in categories.items()],
     }
+
+
+def localized_command_catalog(lang: str | None = None) -> dict[str, object]:
+    """Return the cached command catalog for the requested or active UI language."""
+    return _localized_command_catalog_cached(lang or get_language())
+
+
+def _reset_localized_command_catalog_cache() -> None:
+    """Clear localized command descriptions after the active language changes."""
+    _localized_command_catalog_cached.cache_clear()
 
 
 # Flat "/command" -> description, and the same grouped by category; both exclude gateway_only.

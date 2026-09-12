@@ -1392,16 +1392,40 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
 
 
 def _config_model_provider() -> Tuple[Any, Optional[str]]:
-    """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names a registry provider.
+    """``(model_cfg, provider)`` when ``model.provider`` names a configured route.
 
     The normal chat/gateway path resolves config.provider upstream in resolve_requested_provider();
     this is the safety net for the lone direct caller (main.py resolve_provider("auto"))."""
     try:
         from hermes_cli.config import load_config
-        model_cfg = (load_config() or {}).get("model")
+        config = load_config() or {}
+        model_cfg = config.get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
-        return model_cfg, (provider if provider in PROVIDER_REGISTRY else None)
+        if not provider or provider == "auto":
+            return model_cfg, None
+        if provider.startswith("custom:"):
+            from hermes_cli.runtime_provider_custom import has_named_custom_provider
+            return model_cfg, (provider if has_named_custom_provider(provider) else None)
+        try:
+            resolved = resolve_provider(provider)
+        except AuthError:
+            return model_cfg, None
+        if resolved == "custom":
+            from hermes_cli.runtime_provider_custom import has_named_custom_provider
+            custom_base_url = _scoped_key_env_reader()("CUSTOM_BASE_URL")
+            has_custom_route = bool(
+                _optional_base_url(model_cfg.get("base_url"))
+                or _optional_base_url(custom_base_url)
+                or has_named_custom_provider(provider)
+            )
+            if not has_custom_route:
+                from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES, resolve_llamacpp_endpoint
+                if provider in LLAMACPP_ALIASES:
+                    has_custom_route = resolve_llamacpp_endpoint(config=config, wait_for_boot_s=0) is not None
+            if not has_custom_route:
+                return model_cfg, None
+        return model_cfg, (provider if is_runtime_provider_routable(provider) else None)
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
         return None, None

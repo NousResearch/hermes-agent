@@ -880,3 +880,68 @@ class TestWeixinVoiceGatewayHandoff:
             "the wrong transcript instead of re-transcribing (#27300)."
         )
 
+class TestWeixinContextTokenToggle:
+    """Outbound context_token echo must stay opt-out-able (#105506): echoing it on sendmessage
+    makes the WeChat client render the bot's reply twice on iLink v2.1+."""
+
+    def _connected_adapter(self, extra=None) -> WeixinAdapter:
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True, token="test-token", extra={"account_id": "test-account", **(extra or {})}
+            )
+        )
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        return adapter
+
+    def test_context_token_echoed_by_default(self):
+        assert self._connected_adapter()._send_context_token is True
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_extra_false_omits_context_token_from_text_sends(
+        self, send_message_mock, _sleep_mock
+    ):
+        adapter = self._connected_adapter(extra={"send_context_token": "false"})
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+        assert result.success is True
+        assert send_message_mock.await_count == 1
+        assert send_message_mock.await_args.kwargs["context_token"] is None
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_default_still_echoes_cached_token_on_text_sends(
+        self, send_message_mock, _sleep_mock
+    ):
+        adapter = self._connected_adapter()
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+        assert result.success is True
+        assert send_message_mock.await_args.kwargs["context_token"] == "ctx-token"
+
+    @patch("gateway.platforms.weixin._get_upload_url", new=AsyncMock(return_value={"upload_full_url": "https://upload.example.com/media"}))
+    @patch("gateway.platforms.weixin._upload_ciphertext", new=AsyncMock(return_value="enc-param"))
+    @patch("gateway.platforms.weixin._send_items", new_callable=AsyncMock)
+    def test_extra_false_omits_context_token_from_media_sends(
+        self, send_items_mock, tmp_path
+    ):
+        adapter = self._connected_adapter(extra={"send_context_token": "false"})
+        image_path = tmp_path / "demo.png"
+        image_path.write_bytes(b"fake-png-bytes")
+        with (
+            patch("gateway.platforms.weixin.secrets.token_hex", return_value="filekey-123"),
+            patch("gateway.platforms.weixin.secrets.token_bytes", return_value=bytes(range(16))),
+        ):
+            asyncio.run(adapter._send_file("wxid_test123", str(image_path), ""))
+        assert send_items_mock.await_args.kwargs["context_token"] is None
+
+    def test_env_form_disables_echo(self, monkeypatch):
+        monkeypatch.setenv("WEIXIN_SEND_CONTEXT_TOKEN", "false")
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True, token="test-token", extra={"account_id": "test-account"}
+            )
+        )
+        assert adapter._send_context_token is False

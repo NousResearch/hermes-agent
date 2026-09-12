@@ -31,18 +31,30 @@ def _submit(authority, request_id, text=None):
 
 
 @pytest.mark.asyncio
-async def test_cancel_queued_settles_the_native_delivery_waiter(tmp_path, monkeypatch):
+async def test_cancel_queued_settles_native_waiter_and_publishes_terminal_completion(tmp_path, monkeypatch):
     db, authority = _authority(tmp_path, monkeypatch)
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    frames = []
     with db:
         receipt = await _submit(authority, 'queued-then-cancelled')
-        # The native ingress delivery waiter (session_ingress.admit_message) waits on this row.
+        # The native ingress delivery waiter (session_ingress.admit_message) and an
+        # event-stream observer (ACP prompt(), API run projections) both wait on this row.
         authority.native_waiters.add(receipt.admission_id)
         waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
+        authority.sessions['s'].event_stream.observers.add(frames.append)
 
         cancelled = await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
         assert (cancelled.status, cancelled.outcome) == ('terminal', 'cancelled')
 
         assert waiter.done() and receipt.admission_id not in authority.native_waiters
         assert receipt.admission_id not in authority.waiters
+        terminal = [f['params'] for f in frames if f['params']['type'] == 'message.complete']
+        assert len(terminal) == 1, [f['params']['type'] for f in frames]
+        assert terminal[0]['admission_id'] == receipt.admission_id
+        assert terminal[0]['payload']['outcome'] == 'cancelled'
+        assert terminal[0]['payload']['admission_id'] == receipt.admission_id
+
+        # Idempotent: a repeated cancel of the terminal row is not a second completion.
+        await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
+        assert len([f for f in frames if f['params']['type'] == 'message.complete']) == 1
 

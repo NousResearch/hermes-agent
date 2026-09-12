@@ -278,12 +278,24 @@ class SessionAuthority:
         row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
         from gateway.session_ingress_media import release_admission_media
         release_admission_media(self.db, admission_id)
-        self._publish_pending(ref)
         if before.status != 'queued' or row['status'] != 'terminal':
+            self._publish_pending(ref)
             return self._receipt(row)
-        # The only place a queued row becomes terminal: the delivery waiters that wait on
-        # the admission (native ingress, API/webhook/hosted) settle here, or a cancelled row
-        # that never reaches _drain blocks them forever.
+        # The only place a queued row becomes terminal: every observer kind that waits on
+        # the admission (native delivery, API/webhook/hosted waiters, ACP and viewer streams)
+        # settles here, or a cancelled row that never reaches _drain blocks them forever.
+        live = self.sessions[ref.session_id]
+        with live.event_stream.lock:
+            self._publish_pending(ref)
+            running = live.event_stream.execution
+            # A queued row owns no execution generation; stamp its own identity so the
+            # completion is not attributed to the turn currently running ahead of it.
+            live.event_stream.execution = {'authority_epoch': self.epoch, 'admission_id': admission_id}
+            try:
+                live.event_stream.publish(ref.session_id, {
+                    'text': '', 'content': '', 'admission_id': admission_id, 'outcome': 'cancelled'})
+            finally:
+                live.event_stream.execution = running
         self.native_waiters.discard(admission_id)
         waiter = self.waiters.pop(admission_id, None)
         if waiter is not None and not waiter.done():

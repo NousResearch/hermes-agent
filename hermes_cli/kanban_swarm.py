@@ -148,7 +148,7 @@ def create_swarm(
     if activated:
         # After commit: recompute_ready opens its own txn and must never run
         # under an open write_txn.
-        kb.recompute_ready(conn)
+        kb._recompute_ready_after_commit(conn, f"activate swarm {created.root_id}")
         root = kb.get_task(conn, created.root_id)
         run = kb.latest_run(conn, created.root_id)
         kb._fire_kanban_lifecycle_hook(

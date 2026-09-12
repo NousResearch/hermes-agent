@@ -76,11 +76,14 @@ def _registered(scope, servers, cwd):
     from tools.mcp_tool_discovery import register_mcp_servers
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     from tools.mcp_tool import _servers
+    from tools.mcp_tool_scope import _server_key
     configs = _configs(scope, servers, cwd)
     with session_tool_scope(scope):
         try:
             register_mcp_servers(configs)
-            if any(name not in _servers or _servers[name].session is None for name in configs):
+            # Inside the scope the ledger keys are ``(scope, name)``, never bare names.
+            keys = [_server_key(name, scope) for name in configs]
+            if any(key not in _servers or _servers[key].session is None for key in keys):
                 raise RuntimeStoreError('acp_mcp_discovery_failed')
             names = [n for n in registry.get_all_tool_names()
                      if registry.get_toolset_for_tool(n) in {f'mcp-{k}' for k in configs}]

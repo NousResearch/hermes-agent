@@ -198,23 +198,23 @@ def _preview(value: Any, limit: int = 160) -> str:
 
 # atexit safety net: commit pending sessions even if shutdown_memory_provider
 # never runs (gateway crash, exception in the session expiry watcher, ...).
-_last_active_provider: Optional["OpenVikingMemoryProvider"] = None
+# One entry per Hermes home: a multiplexed gateway initializes a provider per profile and every
+# one of them holds pending sessions worth committing, not just the last to initialize.
+_active_providers_by_home: Dict[str, "OpenVikingMemoryProvider"] = {}
 
 
 def _atexit_commit_sessions():
-    global _last_active_provider
-    provider = _last_active_provider
-    if provider is None:
-        return
-    _last_active_provider = None
-    try:
-        with suppress(Exception):  # best-effort at shutdown time
-            provider.on_session_end([])
-    finally:
-        # ``finally`` (as on main): the run lock is released even when on_session_end
-        # dies of a BaseException (KeyboardInterrupt during atexit).
-        with suppress(Exception):
-            provider._release_run_lock()
+    providers = list(_active_providers_by_home.values())
+    _active_providers_by_home.clear()
+    for provider in providers:
+        try:
+            with suppress(Exception):  # best-effort at shutdown time
+                provider.on_session_end([])
+        finally:
+            # ``finally`` (as on main): the run lock is released even when on_session_end
+            # dies of a BaseException (KeyboardInterrupt during atexit).
+            with suppress(Exception):
+                provider._release_run_lock()
 
 
 atexit.register(_atexit_commit_sessions)
@@ -1436,8 +1436,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._conn_snapshot = self._settings_tuple()
             self._recover_pending_sessions()
 
-        global _last_active_provider  # atexit safety net
-        _last_active_provider = self
+        _active_providers_by_home[self._hermes_home] = self  # atexit safety net
 
     def _ensure_client(self) -> Optional["_VikingClient"]:
         """Active client, rebuilt if the resolved config changed.
@@ -2488,9 +2487,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         for t in workers:
             if t.is_alive():
                 t.join(timeout=5.0)
-        global _last_active_provider  # clear so atexit doesn't double-commit
-        if _last_active_provider is self:
-            _last_active_provider = None
+        # Clear so atexit doesn't double-commit.
+        if _active_providers_by_home.get(self._hermes_home) is self:
+            del _active_providers_by_home[self._hermes_home]
         self._release_run_lock()
 
     @staticmethod

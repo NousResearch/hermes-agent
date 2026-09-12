@@ -24,7 +24,7 @@ const row = (admission_id: string, input_id: string, text: string, status = 'que
   ref: { profile_id: '/tmp/profile', session_id: 'stored-owner' }
 })
 
-function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue') {
+function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue', cancel: () => Promise<unknown> = () => Promise.resolve({ status: 'terminal', outcome: 'cancelled' })) {
   const home = mkdtempSync(join(tmpdir(), 'ink-busy-admit-'))
   vi.stubEnv('HERMES_HOME', home)
   resetUiState()
@@ -45,7 +45,7 @@ function mount(busyInputMode: 'queue' | 'interrupt' | 'steer' = 'queue') {
         target_session_id: 'stored-owner', target_profile_home: home, status: 'queued' })
     }
 
-    if (method === 'prompt.cancel') { return Promise.resolve({ admission_id: params.admission_id, status: 'terminal', outcome: 'cancelled' }) }
+    if (method === 'prompt.cancel') { return cancel() }
     throw new Error(`unexpected RPC: ${method}`)
   })
 
@@ -228,4 +228,40 @@ it('projects canonical pending rows onto the legacy pending_submissions shape fo
     status: 'queued', target_session_id: 'stored-owner', target_profile_home: '/tmp/profile' })])
   const ev = canonicalEvent({ type: 'session.info', session_id: 'sid', payload: { pending } } as any)
   expect((ev.payload as any).pending_submissions[0]).toMatchObject({ admission_id: 'adm-3', user: 'hello' })
+})
+
+it('does not admit an edited replacement while the original row is still being retired, and keeps it as a retryable draft when retirement is refused', async () => {
+  let release!: (value: unknown) => void
+  const h = mount('queue', () => new Promise(resolve => { release = resolve }))
+
+  try {
+    h.fanout([row('adm-orig', 'in-orig', 'ORIGINAL_EFFECT')])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[queued] ORIGINAL_EFFECT'])
+    h.queue.setQueueEdit(0)
+    h.submission.dispatchSubmission('EDITED_EFFECT')
+    await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    // Retirement is still pending: nothing has been re-admitted yet.
+    expect(h.calls.filter(c => c.method === 'prompt.submit')).toEqual([])
+    release({ admission_id: 'adm-orig', status: 'terminal', outcome: 'cancelled' })
+    await expect.poll(() => h.calls.filter(c => c.method === 'prompt.submit').length).toBe(1)
+    expect(h.calls.find(c => c.method === 'prompt.submit')!.params).toMatchObject({ text: 'EDITED_EFFECT', queued: true })
+  } finally { h.cleanup() }
+})
+
+it('keeps the edited text as an unconfirmed durable draft when the store refuses to cancel the original', async () => {
+  const h = mount('queue', () => Promise.reject(new Error('stale_generation')))
+
+  try {
+    h.fanout([row('adm-orig', 'in-orig', 'ORIGINAL_EFFECT')])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[queued] ORIGINAL_EFFECT'])
+    h.queue.setQueueEdit(0)
+    h.submission.dispatchSubmission('EDITED_EFFECT')
+    await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)
+    await expect.poll(() => $uiState.get().status).toContain('discard failed')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(h.calls.filter(c => c.method === 'prompt.submit')).toEqual([])
+    expect(h.queue.queuedDisplay).toEqual(['[unconfirmed · Alt+K retry] EDITED_EFFECT', '[queued] ORIGINAL_EFFECT'])
+    expect(loadPendingInputs(captureDestination()).map(item => [item.text, item.failed])).toEqual([['EDITED_EFFECT', true]])
+  } finally { h.cleanup() }
 })

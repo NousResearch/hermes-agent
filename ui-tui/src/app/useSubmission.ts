@@ -372,18 +372,25 @@ export function useSubmission(opts: UseSubmissionOptions) {
           return
         }
 
-        if (getUiState().busy) {
-          // 'interrupt' / 'steer' should reach the live turn instead of
-          // silently going back to the queue.  handleBusyInput resolves
-          // mode-specific behavior (interrupt-and-send, steer, or queue).
-          if (getUiState().busyInputMode === 'queue' && !gw.isCanonical) {
-            return composerActions.prependQueue(picked)
+        // An edited authority row is admitted only after its original retires.
+        return void Promise.resolve(picked).then(item => {
+          if (!item) {
+            return
           }
 
-          return handleBusyInput(picked, { fallbackToFront: true })
-        }
+          if (getUiState().busy) {
+            // 'interrupt' / 'steer' should reach the live turn instead of
+            // silently going back to the queue.  handleBusyInput resolves
+            // mode-specific behavior (interrupt-and-send, steer, or queue).
+            if (getUiState().busyInputMode === 'queue' && !gw.isCanonical) {
+              return composerActions.prependQueue(item)
+            }
 
-        return sendQueued(picked)
+            return handleBusyInput(item, { fallbackToFront: true })
+          }
+
+          return sendQueued(item)
+        })
       }
 
       composerActions.pushHistory(toHistory)

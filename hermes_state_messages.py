@@ -21,11 +21,11 @@ logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module
 
 # One INSERT shape for every message writer (append, batch, replace, compact, import).
 _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, stop_kind, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -254,7 +254,9 @@ class SessionMessagesMixin:
         }
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
-            msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
+            msg.get("effect_disposition"),
+            _scrub_surrogates(msg.get("stop_kind")) if isinstance(msg.get("stop_kind"), str) else None,
+            message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
             *(self._reasoning_json_text(_reasoning(k))
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
@@ -967,7 +969,7 @@ class SessionMessagesMixin:
             if include_summary_markers and row["_compressed_summary"]:
                 msg["_compressed_summary"] = True
             msg.update(
-                (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition") if row[col])
+                (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition", "stop_kind") if row[col])
             if row["tool_calls"]:
                 msg["tool_calls"] = _json_or(
                     row["tool_calls"], [], "Failed to deserialize tool_calls in conversation replay, falling back to []")

@@ -46,9 +46,24 @@ def _any_side_effecting(calls: List[Dict[str, Any]]) -> bool:
     return any(tool_may_have_side_effect(_call_name(call)) for call in calls)
 
 
-def _orphan_recovery(name: str, notices: tuple) -> tuple:
+def _orphan_recovery(name: str, notices: tuple, stop_kind: Any = None) -> tuple:
     """(effect_disposition, content) for an interrupted/dangling call named ``name``."""
     if tool_may_have_side_effect(name):
+        # Interrupt provenance (#84207): when the tool result carries a
+        # structured stop_kind, phrase the note after the actual cause — a
+        # deliberate stop is the user's own action, not an unexpected failure.
+        if stop_kind == "user_stop":
+            return "unknown", (
+                "[Orphan recovery: you stopped this tool; "
+                "interrupted side-effecting tool may have executed — "
+                "its effect is UNKNOWN. Inspect state before retrying.]"
+            )
+        if stop_kind == "client_disconnect":
+            return "unknown", (
+                "[Orphan recovery: the client connection dropped; "
+                "interrupted side-effecting tool may have executed — "
+                "its effect is UNKNOWN. Inspect state before retrying.]"
+            )
         return "unknown", notices[0]
     return "none", notices[1]
 
@@ -76,7 +91,7 @@ def strip_interrupted_tool_tails(agent_history: List[Dict[str, Any]]) -> List[Di
                     for tool_result in tool_results:
                         if is_interrupted_tool_result(tool_result.get("content", "")):
                             name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
-                            disposition, content = _orphan_recovery(name, _INTERRUPTED_NOTICES)
+                            disposition, content = _orphan_recovery(name, _INTERRUPTED_NOTICES, tool_result.get("stop_kind"))
                             tool_result = {**tool_result, "effect_disposition": disposition, "content": content}
                         cleaned.append(tool_result)
                 else:

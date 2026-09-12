@@ -948,7 +948,8 @@ class TestOptionalSkillSourceLiveRepoFallback:
             contents[rel_path] = data
         fake = MagicMock()
         fake._get_repo_tree.return_value = ("main", entries)
-        fake._fetch_file_bytes.side_effect = lambda repo, path: contents.get(path)
+        fake._tree_revisions = {"NousResearch/hermes-agent": "deadbeef"}
+        fake._fetch_file_bytes.side_effect = lambda repo, path, ref=None: contents.get(path)
         return fake
 
     def test_fetch_falls_back_to_live_repo_when_missing_locally(self, tmp_path):
@@ -971,6 +972,9 @@ class TestOptionalSkillSourceLiveRepoFallback:
         # FULL directory arrives — including root-level files GitHubSource.fetch drops
         assert bundle.files["install.sh"] == b"#!/bin/sh\n"
         assert bundle.files["LICENSE"] == b"MIT"
+        # Live-repo blobs must pin to the cached tree SHA (raw.githubusercontent.com path).
+        assert src._github._fetch_file_bytes.call_args_list
+        assert all(c.kwargs.get("ref") == "deadbeef" for c in src._github._fetch_file_bytes.call_args_list)
 
     def test_fetch_bare_name_resolves_via_remote_tree(self, tmp_path):
         src = self._make_source(tmp_path, ["software-development/ast-grep"])
@@ -1927,3 +1931,108 @@ class TestUrlSourceFetchMissingReferencedFile:
         assert bundle is not None
         assert bundle.name == "demo"
         assert "references/missing.md" not in bundle.files
+
+
+# ---------------------------------------------------------------------------
+# GitHubSource pinned raw.githubusercontent.com blob fetch (#107548)
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubSourcePinnedRawBlobFetch:
+    """Pinned tree-SHA blob fetches must use raw.githubusercontent.com, not
+    sequential Contents API GETs. Unpinned / dangling-link paths stay fail-open."""
+
+    def test_pinned_blob_uses_raw_not_contents_api(self, monkeypatch):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        seen = []
+
+        def fake_get(url, **kw):
+            seen.append(url)
+            return MagicMock(status_code=200, content=b"bytes")
+
+        monkeypatch.setattr("tools.skills_hub_github.httpx.get", fake_get)
+        src._fetch_file_bytes("owner/repo", "archify/bin/preview.mjs", ref="deadbeef")
+        assert seen and "raw.githubusercontent.com/owner/repo/deadbeef/" in seen[0]
+        assert "/contents/" not in seen[0]
+
+    def test_unpinned_blob_still_uses_contents_api(self, monkeypatch):
+        """CONTROL: ref is None keeps today's Contents API (quota-limited) path."""
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        seen = []
+
+        def fake_get(url, **kw):
+            seen.append(url)
+            return MagicMock(status_code=200, content=b"bytes")
+
+        monkeypatch.setattr("tools.skills_hub_github.httpx.get", fake_get)
+        src._fetch_file_bytes("owner/repo", "archify/SKILL.md")
+        assert seen and "/contents/" in seen[0]
+        assert "raw.githubusercontent.com" not in seen[0]
+
+    def test_tree_member_fetch_fail_rejects_bundle(self):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        md = "---\nname: demo\ndescription: d\n---\n\nSee `assets/a.html`.\n"
+        tree = [
+            {"path": "archify/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "archify/assets/a.html", "type": "blob", "mode": "100644"},
+        ]
+        with patch.object(src, "_fetch_file_content", return_value=md), \
+             patch.object(src, "_get_repo_tree", return_value=("main", tree)), \
+             patch.object(src, "_fetch_file_bytes", return_value=None):
+            bundle = src.fetch("owner/repo/archify")
+        # current main: partial bundle with only SKILL.md; after fix: None
+        assert bundle is None
+
+    def test_pinned_raw_retries_transient_http_error(self, monkeypatch):
+        """Pinned raw GET must reuse _github_get's 3x backoff, not fail on first blip."""
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        src.auth.get_headers.return_value = {}
+        seen = []
+
+        def flaky_get(url, **kw):
+            seen.append(url)
+            if len(seen) < 3:
+                raise httpx.ConnectError("transient")
+            return MagicMock(status_code=200, content=b"bytes")
+
+        monkeypatch.setattr("tools.skills_hub_github.httpx.get", flaky_get)
+        monkeypatch.setattr("tools.skills_hub_github.time.sleep", lambda *_a, **_k: None)
+        assert src._fetch_file_bytes("owner/repo", "archify/bin/preview.mjs", ref="deadbeef") == b"bytes"
+        assert len(seen) == 3
+        assert all("raw.githubusercontent.com/owner/repo/deadbeef/" in u for u in seen)
+
+    def test_tree_fetch_progress_reaches_stderr(self, monkeypatch, capsys):
+        """Progress must hit stderr during install — logger.info is file-only without -v."""
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        md = "---\nname: demo\ndescription: d\n---\n\nSee `assets/a.html`.\n"
+        tree = [
+            {"path": "archify/SKILL.md", "type": "blob", "mode": "100644"},
+            {"path": "archify/assets/a.html", "type": "blob", "mode": "100644"},
+        ]
+        monkeypatch.setattr("tools.skills_hub_github._stderr_is_tty", lambda: False)
+        with patch.object(src, "_fetch_file_content", return_value=md), \
+             patch.object(src, "_get_repo_tree", return_value=("main", tree)), \
+             patch.object(src, "_fetch_file_bytes", return_value=b"<html>"):
+            bundle = src.fetch("owner/repo/archify")
+        assert bundle is not None
+        err = capsys.readouterr().err
+        assert "fetched 1/1" in err
+
+    def test_dangling_referenced_path_not_in_tree_still_returns_bundle(self):
+        """CONTROL: SKILL.md link absent from the tree is still warn-and-install."""
+        md = (
+            "---\nname: demo\ndescription: demo\n---\n\n"
+            "See [guide](references/guide.md) and `references/missing.md`.\n"
+        )
+        tree_entries = [
+            {"path": "skills/demo/references/guide.md", "type": "blob", "mode": "100644"},
+        ]
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        with patch.object(src, "_fetch_file_content", return_value=md), \
+             patch.object(src, "_get_repo_tree", return_value=("main", tree_entries)), \
+             patch.object(src, "_fetch_file_bytes", return_value=b"# guide"):
+            bundle = src.fetch("owner/repo/skills/demo")
+        assert bundle is not None
+        assert bundle.files["references/guide.md"] == b"# guide"
+        assert "references/missing.md" not in bundle.files
+

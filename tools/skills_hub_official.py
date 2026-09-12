@@ -169,11 +169,12 @@ class OptionalSkillSource(SkillSource):
         tree = github._get_repo_tree(self.OFFICIAL_REPO)
         if tree is None:
             return None
+        pinned_ref = github._tree_revisions.get(self.OFFICIAL_REPO)
         files: Dict[str, Union[str, bytes]] = {}
         for rel_file, item_path, regular in _tree_members(tree[1], f"{self.OPTIONAL_SKILLS_PREFIX}/{rel}/"):
             if not regular or _skip_bundle_file(rel_file):
                 continue
-            content = github._fetch_file_bytes(self.OFFICIAL_REPO, item_path)
+            content = github._fetch_file_bytes(self.OFFICIAL_REPO, item_path, ref=pinned_ref)
             if content is None:
                 logger.warning("Live-repo optional skill fetch failed for %s", item_path)
                 return None

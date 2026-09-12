@@ -3,6 +3,7 @@
 import json
 import logging
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -56,6 +57,36 @@ def _is_rate_limit_response(resp: httpx.Response) -> bool:
     return resp.status_code == 429 or (
         resp.status_code == 403 and resp.headers.get("X-RateLimit-Remaining", "") == "0"
     )
+
+
+def _stderr_is_tty() -> bool:
+    try:
+        return sys.stderr.isatty()
+    except Exception:
+        return False
+
+
+def _report_tree_fetch_progress(fetched: int, n: int) -> None:
+    """Show fetch progress on the CLI (stderr). ``logger.info`` is file-only
+    unless ``--verbose``, so a 199-file skill would otherwise look hung after
+    ``Fetching:``. TTY: one rewriting line. Non-TTY: every 25 files + last."""
+    if n <= 0:
+        return
+    if fetched == 1 or fetched == n or fetched % 25 == 0:
+        logger.info("fetched %d/%d", fetched, n)
+    if _stderr_is_tty():
+        print(f"\r  fetched {fetched}/{n}", end="", file=sys.stderr, flush=True)
+        if fetched >= n:
+            print(file=sys.stderr)
+        return
+    if fetched == n or fetched % 25 == 0:
+        print(f"  fetched {fetched}/{n}", file=sys.stderr, flush=True)
+
+
+def _finish_tree_fetch_progress() -> None:
+    """Newline after a mid-loop abort so the next warning is not glued to the progress line."""
+    if _stderr_is_tty():
+        print(file=sys.stderr)
 
 
 class GitHubAuth:
@@ -264,12 +295,22 @@ class GitHubSource(SkillSource):
         """Download the FULL skill directory from the pinned tree into ``files``. Link-driven fetching
         silently dropped support files under non-canonical dirs (``reference/``, ``agents/``, root
         LICENSE); everything still goes through quarantine + scan, and the scanner sees MORE this way.
-        Returns False (bundle rejected) on an unsafe path or a SKILL.md-linked path that exists in the
-        tree as a symlink/non-blob — that shape is an escape attempt. A linked path that is simply absent
-        is a dangling link (repo-only dev tool, prose over-match): warn and install without it."""
+        Returns False (bundle rejected) on an unsafe path, a regular tree-member blob fetch that
+        returns None, or a SKILL.md-linked path that exists in the tree as a symlink/non-blob —
+        that shape is an escape attempt. A linked path that is simply absent is a dangling link
+        (repo-only dev tool, prose over-match): warn and install without it."""
         prefix = f"{skill_path}/"
+        members = [
+            (rel_path, item_path, regular)
+            for rel_path, item_path, regular in _tree_members(entries, prefix)
+        ]
+        n = sum(
+            1 for rel_path, _, regular in members
+            if regular and rel_path != "SKILL.md" and not _skip_bundle_file(rel_path)
+        )
+        fetched = 0
         symlinked: set = set()
-        for rel_path, item_path, regular in _tree_members(entries, prefix):
+        for rel_path, item_path, regular in members:
             if not regular:
                 symlinked.add(rel_path)
                 continue
@@ -280,7 +321,14 @@ class GitHubSource(SkillSource):
             except ValueError:
                 logger.warning("Rejected unsafe file path in skill bundle: %s", item_path)
                 return False
-            self._add_support_file(repo, item_path, rel_path, files, item_path, ref=ref)
+            content = self._fetch_file_bytes(repo, item_path, ref=ref)
+            if content is None:
+                _finish_tree_fetch_progress()
+                logger.warning("Failed to fetch skill tree member; aborting bundle: %s", item_path)
+                return False
+            files[rel_path] = content
+            fetched += 1
+            _report_tree_fetch_progress(fetched, n)
         for rel_path in sorted(referenced):
             # A SKILL.md-linked support path that isn't in the tree is a dangling link — a repo-only dev
             # tool, prose over-match, or a file the author forgot to push. Warn and install without it
@@ -446,11 +494,20 @@ class GitHubSource(SkillSource):
 
     def _fetch_file_bytes(self, repo: str, path: str, ref: Optional[str] = None) -> Optional[bytes]:
         """Fetch exact file bytes. ``ref`` pins to a tree SHA (see ``fetch`` on
-        the TOCTOU); None keeps the legacy unpinned behavior."""
-        resp = self._github_get(
-            f"{_API}/{repo}/contents/{quote(path, safe='/')}", params={"ref": ref} if ref else None,
-            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-        )
+        the TOCTOU) via raw.githubusercontent.com so blob downloads do not burn
+        Contents-API quota. None keeps the legacy unpinned Contents-API behavior.
+        Pinned raw GETs reuse ``_github_get`` so a transient CDN blip retries
+        with the same 3x backoff as the Contents path instead of fail-closed
+        on the first ``httpx.HTTPError``."""
+        quoted = quote(path, safe="/")
+        if ref:
+            url = f"https://raw.githubusercontent.com/{repo}/{ref}/{quoted}"
+            resp = self._github_get(url)
+        else:
+            resp = self._github_get(
+                f"{_API}/{repo}/contents/{quoted}",
+                headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
+            )
         return resp.content if resp is not None and resp.status_code == 200 else None
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:

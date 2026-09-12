@@ -122,3 +122,18 @@ class TestCapabilityProbe:
         )
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
+
+
+class TestRequiresHermesSpec:
+    """A typo'd ``requires_hermes`` clause must fail admission, not silently gate nothing."""
+
+    def test_typoed_clause_fails_admission(self, tmp_path):
+        d = _make_plugin(
+            tmp_path, manifest={**BASE_MANIFEST, "requires_hermes": ">=0.21.1,<0.x"}
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        assert any(
+            "requires_hermes" in f and "does not parse" in f for f in report.failures
+        ), report.failures
+

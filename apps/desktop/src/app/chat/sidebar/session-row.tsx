@@ -46,6 +46,7 @@ import {
   SidebarRowLeadGlyph,
   SidebarRowShell
 } from './chrome'
+import { ProfileLead } from './profile-lead'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
@@ -69,9 +70,12 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
-  /** Tag the row with its owning profile (initial chip + tooltip). Used by
-   *  flat cross-profile lists — Pinned and search results in the All-profiles
-   *  view — where no group header communicates ownership (#66003). */
+  /** Tag the row with its owning profile. The one-line row leads its title
+   *  with the profile's name (`inbox ›`), grey at rest and the profile's
+   *  colour while hovered or selected; the card keeps the initial chip in its
+   *  header cluster. Set by every list in the All-profiles view — recents,
+   *  Pinned and search results — where no group header communicates
+   *  ownership (#66003). Default-profile rows carry no mark either way. */
   showProfile?: boolean
   /** Inbox-style card: workspace header, title + last-message preview, and a
    *  model · size footer. The flat recents list opts in via the filter menu;
@@ -170,6 +174,11 @@ function SidebarSessionRowImpl({
   // every row that says "the normal one" is noise. Named profiles only.
   const hasProfileTag = normalizeProfileKey(session.profile) !== 'default'
   const pinnedProfile = hasProfileTag && rowMeta.includes('profile')
+  // In a list that mixes profiles the one-line row names its owner in the
+  // title itself (ProfileLead) rather than parking a chip in the trailing
+  // slot, where the ages' differing widths leave a ragged column. The card
+  // keeps the chip: its header cluster is a straight column of its own.
+  const leadsWithProfile = showProfile && hasProfileTag && !card
   // The branch's PR, if the row was asked to show one. A selector, not a plain
   // useStore: a repo's PRs land as a single map write, and only the rows on
   // those branches should repaint.
@@ -200,7 +209,7 @@ function SidebarSessionRowImpl({
   // to the left of the kebab's own column: never flush right, never swapping.
   const trailing: { key: string; node: React.ReactNode }[] = []
 
-  if ((showProfile || pinnedProfile) && hasProfileTag) {
+  if ((showProfile || pinnedProfile) && hasProfileTag && !leadsWithProfile) {
     trailing.push({ key: 'profile', node: <ProfileTag profile={session.profile} /> })
   }
 
@@ -499,7 +508,10 @@ function SidebarSessionRowImpl({
                         onPointerEnter={armMarquee}
                         onPointerLeave={disarmMarquee}
                       >
-                        <span className="hover-marquee-inner">{title}</span>
+                        <span className="hover-marquee-inner">
+                          {leadsWithProfile && <ProfileLead profile={session.profile} selected={isSelected} />}
+                          {title}
+                        </span>
                       </SidebarRowLabel>
                     </OverflowTip>
                     {/* Session-list density (#68119): comfortable adds one

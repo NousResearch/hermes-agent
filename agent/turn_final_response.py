@@ -20,7 +20,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_false_stop_synthetic",
 )
 
 
@@ -201,6 +201,61 @@ def finish_text_response(
 
     # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
     agent._dropped_toolcall_retries = 0
+
+    # ── False-stop detection guard ─────────────────────────
+    # When the model produces finish_reason=stop with text that indicates
+    # intent to continue (a colon-preamble that lost its tool_calls, or a
+    # narrated continuation) right after a tool round completed, nudge it to
+    # issue the actual tool call instead of silently ending the turn (#42503).
+    # Bounded to 2 retries; the budget resets on any successful tool round or
+    # genuine completion. Complementary to intent_ack_continuation (which
+    # fires at turn start, not after a tool round) and #57610 (which targets
+    # progress-placeholder text specifically).
+    try:
+        from agent.false_stop import (
+            build_false_stop_nudge,
+            false_stop_detection_enabled,
+        )
+
+        _false_nudge = None
+        if false_stop_detection_enabled():
+            _false_nudge = build_false_stop_nudge(
+                content=(final_response or "").strip(),
+                messages=messages,
+                attempts=getattr(agent, "_false_stop_nudges", 0),
+            )
+    except Exception:
+        logger.debug("false-stop check failed", exc_info=True)
+        _false_nudge = None
+
+    if _false_nudge:
+        agent._false_stop_nudges = getattr(agent, "_false_stop_nudges", 0) + 1
+        final_msg["finish_reason"] = "false_stop_retry"
+        final_msg["_false_stop_nudge"] = True
+        agent._emit_interim_assistant_message(final_msg)
+        append_message(messages, final_msg)
+        append_message(messages, {
+            "role": "user",
+            "content": _false_nudge,
+            "_false_stop_synthetic": True,
+        })
+        agent._session_messages = messages
+        logger.info(
+            "false-stop nudge issued (attempt %d) model=%s",
+            agent._false_stop_nudges,
+            getattr(agent, "model", ""),
+        )
+        agent._emit_status(
+            "⚠️ Model stopped prematurely — nudging to continue..."
+        )
+        _pending_verification_response = final_response
+        _pending_verification_response_previewed = (
+            agent._interim_content_was_streamed(final_response or "")
+        )
+        final_response = None
+        return _verdict("continue")
+
+    agent._false_stop_nudges = 0  # genuine completion — reset for next turn
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.

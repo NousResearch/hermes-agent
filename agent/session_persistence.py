@@ -35,6 +35,11 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_pre_verify_synthetic",
     "_kanban_stop_synthetic",  # kanban worker stop-guard
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
+    # false-stop nudge: the synthetic "issue the actual tool call now" user
+    # nudge drives the false-stop retry loop. The assistant candidate is NOT
+    # synthetic — it persists with finish_reason="false_stop_retry" and is
+    # emitted as an interim message. Only the user nudge is stripped (#42503).
+    "_false_stop_synthetic",
 )
 
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}

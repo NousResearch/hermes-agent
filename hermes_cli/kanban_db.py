@@ -473,15 +473,40 @@ def _dir_holds_board(d: Path) -> bool:
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
 ) -> Path:
-    """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
+    """Shared resolver: explicit ``board`` parameter (when set) takes priority
+    over any env-var pin; a scoped ``--board`` context (:func:`scoped_current_board`)
+    is the same explicit caller intent and trumps the env pin too; otherwise the
+    ``env_var`` override, else legacy ``<root>/<default_parts>`` for the
+    ``default`` board, else ``board_dir(slug)/leaf``."""
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        # A caller-scoped board (CLI `hermes kanban --board B ...`, dashboard
+        # plugin_api) is explicit intent just like a direct board= argument —
+        # it must also trump any ambient env pin, not merely fall through to
+        # get_current_board() after the env check has already won. Without
+        # this, a worker-pinned HERMES_KANBAN_DB silently outranks --board
+        # (os-reviewer P1 on PR#107195 / t_11c4afd8).
+        ctx = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+        if ctx:
+            try:
+                ctx_slug = _normalize_board_slug(ctx)
+            except ValueError:
+                ctx_slug = None
+            if ctx_slug:
+                slug = ctx_slug
+    if slug is not None:
+        # Explicit board parameter (or scoped --board context) trumps
+        # everything — essential for cross-board routing from MCP-only
+        # sessions where the env pins one board (HERMES_KANBAN_DB) but the
+        # caller needs another.
+        if slug == DEFAULT_BOARD:
+            return kanban_home().joinpath(*default_parts)
+        return board_dir(slug) / leaf
     if env_var:
         override = os.environ.get(env_var, "").strip()
         if override:
             return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
-    if slug is None:
-        slug = get_current_board()
+    slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home().joinpath(*default_parts)
     return board_dir(slug) / leaf

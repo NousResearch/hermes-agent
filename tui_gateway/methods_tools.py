@@ -808,6 +808,22 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
 
+def _slash_worker_run_parts(raw) -> tuple[str, str | None]:
+    """Split worker.run() into (stdout, pending_agent_seed). Accepts dict/tuple/str."""
+    if isinstance(raw, dict):
+        output = str(raw.get("output") or "")
+        seed = raw.get("pending_agent_seed")
+    elif isinstance(raw, tuple):
+        output = str(raw[0] if raw else "")
+        seed = raw[1] if len(raw) > 1 else None
+    else:
+        output = str(raw or "")
+        seed = None
+    if not (isinstance(seed, str) and seed):
+        seed = None
+    return output, seed
+
+
 @method("slash.exec")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
@@ -856,7 +872,10 @@ def _(rid, params: dict) -> dict:
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
-        payload = {"output": worker.run(cmd) or "(no output)"}
+        output, seed = _slash_worker_run_parts(worker.run(cmd))
+        if seed:
+            return _ok(rid, {"type": "send", "message": seed})
+        payload = {"output": output or "(no output)"}
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:

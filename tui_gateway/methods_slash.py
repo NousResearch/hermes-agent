@@ -19,7 +19,6 @@ _registry = HandlerRegistry()
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
-_NO_AGENT = "No active agent -- send a message first."
 
 
 def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> str:
@@ -112,19 +111,6 @@ def _format_live_history_output(sid: str, session: dict, arg: str) -> str:
     return "\n".join(lines)
 
 
-def _format_live_prompt_output(sid: str, session: dict, arg: str) -> str:
-    agent = session.get("agent")
-    mirror = _metadata_mirror(session)
-    if agent is None and "system_prompt" not in mirror:
-        return _NO_AGENT
-    prompt = (
-        mirror.get("system_prompt") or getattr(agent, "ephemeral_system_prompt", None)
-        or getattr(agent, "_cached_system_prompt", None) or "")
-    if not prompt:
-        return "Current system prompt is not built yet; send a message first."
-    return f"Current system prompt:\n{prompt}"
-
-
 def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     from collections import Counter
     try:
@@ -202,7 +188,6 @@ _LIVE_SLASH_OUTPUT = {
     "usage": (_NO_AGENT_USAGE, _format_live_usage_output),
     "review": (None, _format_live_review_output),
     "history": ("No conversation history yet.", _format_live_history_output),
-    "prompt": (_NO_AGENT, _format_live_prompt_output),
     "status": (None, _format_live_status_output),
     "context": ("Conversation is empty (no messages yet).", _format_live_context_output),
     "tools": ("No tools available.", _format_live_tools_output),
@@ -235,7 +220,7 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
 # Read-then-mutate live agent/session state that a running turn is using; rejected
 # while running (parity with session.compress / session.undo and the gateway's
 # running-agent /model guard).
-_MUTATES_WHILE_RUNNING = frozenset({"model", "personality", "prompt", "compress"})
+_MUTATES_WHILE_RUNNING = frozenset({"model", "personality", "compress"})
 
 
 def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, snapshot_kwargs: bool) -> str:
@@ -293,13 +278,6 @@ def _mirror_personality(sid, session, agent, arg) -> None:
         _apply_personality_to_session(sid, session, new_prompt, pname)
 
 
-def _mirror_prompt(sid, session, agent, arg) -> None:
-    if agent:
-        cfg = _load_cfg()
-        agent.ephemeral_system_prompt = _prompt_text((cfg.get("agent") or {}).get("system_prompt", "")) or None
-        agent._cached_system_prompt = None
-
-
 _FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold"}
 
 
@@ -324,7 +302,7 @@ def _mirror_stop(sid, session, agent, arg) -> None:
 _SLASH_MIRRORS = {
     "model": lambda sid, session, agent, arg: (
         _apply_model_switch(sid, session, arg).get("warning", "") if arg and agent else ""),
-    "approvals": _mirror_approvals, "personality": _mirror_personality, "prompt": _mirror_prompt,
+    "approvals": _mirror_approvals, "personality": _mirror_personality,
     "compress": lambda sid, session, agent, arg: (
         _compress_live_with_feedback(sid, session, agent, arg, snapshot_kwargs=False) if agent else ""),
     "fast": _mirror_fast,

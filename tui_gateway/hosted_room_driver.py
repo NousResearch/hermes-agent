@@ -139,6 +139,7 @@ class HostedRoomRuntime:
             else (lambda bindings=tuple(rooms): bindings))
         self._stop, self._wake = threading.Event(), threading.Event()
         self._thread = self._last_error = None
+        self._wal_keeper_state = None
         self._room_threads: dict[str, threading.Thread] = {}
         self._rooms_needing_reschedule: set[str] = set()
         self._leases: dict[str, state.DriverLease] = {}
@@ -204,7 +205,8 @@ class HostedRoomRuntime:
                 "current_task": current_tasks[0] if current_tasks else None,
                 "current_tasks": current_tasks, "leased_rooms": tuple(sorted(self._leases)),
                 "blocked_rooms": tuple(sorted(self._blocked_rooms)),
-                "last_error": self._last_error, "cycles": self._cycles}
+                "last_error": self._last_error, "cycles": self._cycles,
+                "wal_keeper_state": self._wal_keeper_state}
 
     # ------------------------------------------------------------------ public ops
     def cancel(self, identity: state.TaskIdentity, *, cancel_id: str) -> dict[str, Any]:
@@ -457,9 +459,13 @@ class HostedRoomRuntime:
             # The keeper close must survive a lease-cleanup failure: a stray
             # OperationalError out of _release_idle_leases would otherwise skip
             # it — leaving _wal_keeper referenced so a later restart skips
-            # re-acquire. Nested finally guarantees both sides run.
+            # re-acquire. Nested finally guarantees both sides run; record the
+            # cleanup failure so status()["last_error"] stays the diagnostic
+            # channel instead of the error escaping the supervisor thread.
             try:
                 self._release_idle_leases()
+            except Exception as exc:  # lease cleanup is best-effort at shutdown
+                self._record_error(f"lease cleanup failed during shutdown: {exc}")
             finally:
                 self._release_wal_keeper()
 
@@ -476,9 +482,11 @@ class HostedRoomRuntime:
         held (review-reproduced on PR #103665). Applying the policy here makes
         the keeper the *first* WAL connection, honoring ``database.journal_mode``
         and the WAL-reset-vulnerable-runtime gate exactly like
-        :mod:`gateway.hosted_rooms_common`, and is a mode-aware no-op when a
-        DELETE-mode or indeterminate-mode database cannot safely be flipped
-        (the keeper still pins the file against last-closer deletes).
+        :mod:`gateway.hosted_rooms_common`. When the policy leaves (or cannot
+        prove) the file in WAL — configured DELETE, a vulnerable runtime, or
+        an indeterminate probe — the acquire verifies the on-disk header and
+        drops the keeper rather than holding false protection (below); a
+        transient indeterminacy re-probes on the next cycle.
 
         Failure is non-fatal (old behaviour: no sidecar protection) and the
         acquire is retried on the next worker cycle — a transient failure must
@@ -514,10 +522,22 @@ class HostedRoomRuntime:
                 # genuinely transient indeterminacy self-heals into coverage.
                 conn.close()
                 conn = None
-                self._record_error(
-                    f"wal keeper inapplicable: journal policy left {self.db_path.name} "
-                    f"in {actual!r} (policy reported {mode!r}); nothing to guard — "
-                    f"will re-probe next cycle")
+                if actual is None:
+                    # "Could not verify" is not "not WAL": a locked or
+                    # unreadable header means the mode is unknown, not DELETE.
+                    detail = (f"could not verify the on-disk journal mode of "
+                              f"{self.db_path.name} (probe returned no result; "
+                              f"policy reported {mode!r})")
+                else:
+                    detail = (f"journal policy left {self.db_path.name} "
+                              f"in {actual!r} (policy reported {mode!r})")
+                # Status fact, not an error: on a configured-DELETE or
+                # vulnerable-runtime deployment the drop fires every cycle,
+                # and writing the shared room-error channel each time would
+                # overwrite a genuine room error within seconds. Record the
+                # state for status() instead, once per transition.
+                self._record_wal_keeper_state(
+                    f"inapplicable: {detail}; will re-probe next cycle")
                 return
             # Touch the content: merely opening an fd does not join the WAL
             # shared-memory index — SQLite registers a connection only on first
@@ -526,6 +546,8 @@ class HostedRoomRuntime:
             # their own close.
             conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
             self._wal_keeper = conn
+            with self._status_lock:
+                self._wal_keeper_state = None  # acquired: supersede any prior drop state
         except Exception as exc:  # best-effort: no failure may kill the loop
             if conn is not None:  # do not leak the half-opened connection
                 with suppress(Exception):
@@ -537,6 +559,8 @@ class HostedRoomRuntime:
 
     def _release_wal_keeper(self) -> None:
         conn, self._wal_keeper = self._wal_keeper, None
+        with self._status_lock:
+            self._wal_keeper_state = None  # stopped: no re-probe pending
         if conn is not None:
             with suppress(Exception):
                 conn.close()
@@ -999,6 +1023,16 @@ class HostedRoomRuntime:
     def _record_error(self, message: str) -> None:
         with self._status_lock:
             self._last_error = message
+
+    def _record_wal_keeper_state(self, message: str) -> None:
+        """Record keeper-health state without touching the room-error channel.
+
+        The inapplicable drop recurs every cycle on DELETE-mode /
+        vulnerable-runtime deployments; writing ``_last_error`` each time
+        would mask a genuine room error within seconds. Status surface only.
+        """
+        with self._status_lock:
+            self._wal_keeper_state = message
 
 
 def room_session_title(room_id: str) -> str:

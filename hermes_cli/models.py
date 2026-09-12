@@ -677,6 +677,29 @@ _KNOWN_PROVIDER_NAMES: set[str] = set(_PROVIDER_LABELS) | set(_PROVIDER_ALIASES)
 _CONFIG_ERRORS = (ImportError, OSError, RuntimeError, TypeError, ValueError, AttributeError)
 
 
+def _routable_provider_names() -> set[str]:
+    """Bare names valid left of the ``provider:model`` colon in :func:`parse_model_input`.
+
+    ``_KNOWN_PROVIDER_NAMES`` plus the bare keys of configured custom providers
+    (``custom:relay`` → ``relay``), so a user-configured key routes without
+    its ``custom:`` prefix. Canonical names keep precedence: a user key colliding
+    with one (``providers: anthropic:``) still routes natively because
+    :func:`parse_model_input` only maps names outside ``_KNOWN_PROVIDER_NAMES``
+    — letting it hijack ``anthropic:claude-…`` would silently re-route native
+    input to the user's relay. Such a provider stays reachable via
+    ``custom:<key>:``. Keys with an inner colon (``local-127.0.0.1:11434``)
+    are skipped: they can never be typed bare because the split happens at
+    the FIRST colon."""
+    names = set(_KNOWN_PROVIDER_NAMES)
+    for pid in _configured_custom_provider_ids():
+        if not pid.startswith("custom:"):
+            continue
+        bare = pid[len("custom:"):]
+        if bare and ":" not in bare:
+            names.add(bare)
+    return names
+
+
 def _configured_custom_provider_ids() -> set[str]:
     """Return routable custom-provider IDs configured by the user."""
     ids = {"custom"}
@@ -729,13 +752,14 @@ def list_available_providers() -> list[dict[str, str]]:
 
 def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
     """Parse ``/model`` input into ``(provider, model)``. The colon is a provider delimiter only when
-    the left side is a known provider/alias, so ``anthropic/claude-3.5-sonnet:beta`` stays a model."""
+    the left side is a known provider/alias or the bare key of a configured custom provider,
+    so ``anthropic/claude-3.5-sonnet:beta`` stays a model."""
     stripped = raw.strip()
     colon = stripped.find(":")
     if colon > 0:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
-        if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+        if provider_part and model_part and provider_part in _routable_provider_names():
             if provider_part == "custom":
                 # Longest configured ``custom:<name>`` id that prefixes the input wins.
                 lowered = stripped.lower()
@@ -750,6 +774,10 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
                         if f"custom:{custom_name.lower()}" in _configured_custom_provider_ids():
                             return (f"custom:{custom_name.lower()}", actual_model)
                         return ("custom", model_part)
+            if provider_part not in _KNOWN_PROVIDER_NAMES:
+                # A bare configured key (``relay:…``) selects that named provider —
+                # canonical names took the branch above, so user keys never hijack them.
+                return (f"custom:{provider_part}", model_part)
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 

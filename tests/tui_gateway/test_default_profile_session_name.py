@@ -168,3 +168,16 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
         assert launch_db.get_session("lazy-default") is None
         assert launch_db.get_session("seeded-default") is None
         assert launch_db.get_session("branched-default") is None
+
+
+def test_deleted_profile_falls_back_to_current_profile(tmp_path, monkeypatch):
+    """Deleted/non-existent profiles must not raise FileNotFoundError in _response_profile_name."""
+    from tui_gateway import server
+
+    default_home, launch_home = _profile_layout(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+
+    assert server._response_profile_name("non-existent-profile-123") == server._current_profile_name()
+

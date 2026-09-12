@@ -471,7 +471,12 @@ def _canonical_profile_request(name: str) -> str:
 def _response_profile_name(profile: str | None = None) -> str:
     """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
     name = _canonical_profile_request((profile or "").strip())
-    return name if name and _profile_home(name) is not None else _current_profile_name()
+    if not name:
+        return _current_profile_name()
+    try:
+        return name if _profile_home(name) is not None else _current_profile_name()
+    except FileNotFoundError:
+        return _current_profile_name()
 
 
 def _db_unavailable_error(rid, *, code: int):

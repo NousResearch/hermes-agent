@@ -19,6 +19,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -31,6 +32,12 @@ from typing import Dict, List, Optional, Tuple
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch, SecretCache, atomic_write_json, entry_from_payload,
     fingerprint as _token_fingerprint, resolve_cache_home,
+)
+from agent.secret_sources._binary_security import (
+    _get_effective_uid,
+    probe_environment as _probe_environment,
+    probe_version as _probe_binary_version,
+    resolve_executable as _resolve_executable,
 )
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
@@ -46,6 +53,16 @@ _BWS_RELEASE_BASE = f"https://github.com/bitwarden/sdk-sm/releases/download/bws-
 _BWS_CHECKSUM_NAME = f"bws-sha256-checksums-{_BWS_VERSION}.txt"
 _BWS_DOWNLOAD_TIMEOUT = 60
 _BWS_RUN_TIMEOUT = 30
+
+# A PATH-provided bws is accepted only from a root-owned POSIX trust chain and
+# identifies the version Hermes expects.  Managed copies use a checksum
+# sidecar instead (see ``_verify_managed_bws``).
+_BWS_VERSION_PATTERN = rf"(?<![0-9.]){re.escape(_BWS_VERSION)}(?![0-9.])"
+_LDD_MUSL_PATTERN = r"(?i:musl)"
+_BWS_CHECKSUM_SUFFIX = ".sha256"
+_BWS_BIN_MODE = stat.S_IRWXU
+_BWS_BIN_DIR_MODE = stat.S_IRWXU
+_BWS_CHECKSUM_MODE = stat.S_IRUSR | stat.S_IWUSR
 
 # <hermes_home>/cache/bws_cache.json holds only secret VALUES (never the access
 # token); kept out of .env so users editing .env don't commit BSM-sourced secrets.
@@ -97,19 +114,164 @@ def _hermes_bin_dir() -> Path:
     return get_hermes_home() / "bin"
 
 
+def _managed_bws_checksum_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}{_BWS_CHECKSUM_SUFFIX}")
+
+
+def _verify_managed_bws(path: Path) -> bool:
+    """Verify the canonical managed binary and its install-time digest.
+
+    This intentionally recomputes the digest for every call.  The discovery
+    and use-time gates must observe the actual bytes; caching by stat metadata
+    could accept a same-size, same-mtime replacement and weaken that gate.
+    """
+    if path.is_symlink():
+        return False
+    try:
+        resolved = _resolve_executable(path, check_explicit_parent_dirs=os.name != "nt")
+        canonical_path = path.parent.resolve(strict=True) / path.name
+        if resolved is None or resolved != canonical_path:
+            return False
+        if os.name != "nt":
+            effective_uid = _get_effective_uid()
+            if effective_uid is None:
+                return False
+            trusted_owners = {0, effective_uid}
+            binary_info = path.stat()
+            directory_info = path.parent.stat()
+            # The sidecar digest is only meaningful when an untrusted user
+            # cannot replace either the binary or its containing directory.
+            # Exact private modes alone are insufficient when Hermes runs as
+            # root against another user's HERMES_HOME: that user still owns
+            # and can rewrite both files.  Windows has no portable POSIX
+            # owner/mode equivalent; its canonical-path, native-executable,
+            # and checksum gates above remain the platform policy there.
+            if (
+                binary_info.st_uid not in trusted_owners
+                or directory_info.st_uid not in trusted_owners
+            ):
+                return False
+            if stat.S_IMODE(binary_info.st_mode) != _BWS_BIN_MODE:
+                return False
+            if stat.S_IMODE(directory_info.st_mode) != _BWS_BIN_DIR_MODE:
+                return False
+        checksum_path = _managed_bws_checksum_path(path)
+        if checksum_path.is_symlink():
+            return False
+        if (
+            os.name != "nt"
+            and stat.S_IMODE(checksum_path.stat().st_mode) != _BWS_CHECKSUM_MODE
+        ):
+            return False
+        expected = checksum_path.read_text(
+            encoding="ascii"
+        ).strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", expected):
+            return False
+        return _sha256_file(path).lower() == expected.lower()
+    except (OSError, UnicodeError):
+        return False
+
+
+def _write_managed_bws_checksum(path: Path) -> None:
+    """Atomically persist the verified digest beside a managed binary."""
+    checksum_path = _managed_bws_checksum_path(path)
+    fd, staged = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=_BWS_CHECKSUM_SUFFIX
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as stream:
+            stream.write(f"{_sha256_file(path)}\n")
+        os.chmod(staged, _BWS_CHECKSUM_MODE)
+        os.replace(staged, checksum_path)
+    except Exception:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        raise
+
+
+def _is_managed_bws(path: Path) -> bool:
+    """Whether ``path`` is the exact profile-managed bws location."""
+    try:
+        managed = _hermes_bin_dir() / _platform_binary_name()
+        # ``find_bws`` canonicalizes PATH results before returning them, while
+        # HERMES_HOME may itself contain a symlinked ancestor.  Compare the
+        # canonical locations so the use-time checksum gate cannot be skipped
+        # merely because the same managed file has two spellings.  A leaf
+        # symlink is intentionally not rejected here; _verify_managed_bws()
+        # performs the explicit leaf-symlink rejection after classification.
+        return path.resolve(strict=False) == managed.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+
+
+def verify_bws_for_use(path: Path) -> Optional[Path]:
+    """Return a BWS path that is safe for one immediate subprocess use.
+
+    Managed profile copies are checked against their install-time digest.
+    Other paths are treated as PATH candidates and must pass the same
+    canonical root-owned, non-writable, pinned-version policy as discovery.
+    Returning the canonical PATH result prevents callers from falling back to
+    an unvalidated spelling after this gate succeeds.
+    """
+    try:
+        candidate = Path(path)
+        if _is_managed_bws(candidate):
+            if candidate.is_symlink():
+                return None
+            canonical = candidate.resolve(strict=True)
+            return canonical if _verify_managed_bws(canonical) else None
+
+        resolved = _resolve_executable(
+            candidate, check_parent_dirs=True, reject_current_owner=True
+        )
+        if resolved is None or not _probe_binary_version(
+            resolved, _BWS_VERSION_PATTERN
+        ):
+            return None
+        return resolved
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
 def find_bws(*, install_if_missing: bool = False) -> Optional[Path]:
-    """Managed ``<hermes_home>/bin/bws`` first, then PATH, then optional auto-install."""
+    """Return a path to a usable ``bws`` binary, or None.
+
+    Resolution order:
+      1. ``<hermes_home>/bin/bws``  (our managed copy — preferred)
+      2. ``shutil.which("bws")``    (system PATH)
+
+    When ``install_if_missing`` is True and neither resolves, this calls
+    :func:`install_bws` to download and verify the pinned version.
+    """
     managed = _hermes_bin_dir() / _platform_binary_name()
-    if managed.exists() and os.access(managed, os.X_OK):
+    if _verify_managed_bws(managed):
         return managed
+    if managed.exists() or managed.is_symlink():
+        logger.warning("managed bws binary failed integrity verification")
+
     system = shutil.which("bws")
     if system:
-        return Path(system)
+        resolved = _resolve_executable(
+            system, check_parent_dirs=True, reject_current_owner=True
+        )
+        if resolved is not None and _probe_binary_version(
+            resolved, _BWS_VERSION_PATTERN
+        ):
+            return resolved
+        logger.warning(
+            "refusing untrusted bws PATH binary (expected version %s)",
+            _BWS_VERSION,
+        )
+
     if install_if_missing:
         try:
             return install_bws()
         except Exception as exc:  # noqa: BLE001 — never block startup
             logger.warning("bws auto-install failed: %s", exc)
+            return None
     return None
 
 
@@ -130,13 +292,15 @@ def _platform_asset_name() -> str:
     if system == "Linux":
         # glibc default; musl only if ldd says so (a wrong guess surfaces as a loader error).
         libc = "gnu"
-        try:
-            res = subprocess.run(["ldd", "--version"], capture_output=True, text=True, encoding='utf-8',
-                                 errors='replace', timeout=2, stdin=subprocess.DEVNULL)
-            if "musl" in (res.stdout + res.stderr).lower():
+        ldd = shutil.which("ldd")
+        if ldd:
+            trusted_ldd = _resolve_executable(
+                ldd, check_parent_dirs=True, reject_current_owner=True
+            )
+            if trusted_ldd is not None and _probe_binary_version(
+                trusted_ldd, _LDD_MUSL_PATTERN, timeout=2
+            ):
                 libc = "musl"
-        except (OSError, subprocess.TimeoutExpired):
-            pass
         return f"bws-{arch}-unknown-linux-{libc}-{_BWS_VERSION}.zip"
 
     raise RuntimeError(f"Unsupported platform for bws auto-install: {system} {machine}")
@@ -147,9 +311,12 @@ def install_bws(*, force: bool = False) -> Path:
     (the auto-install path catches; the setup wizard shows the error)."""
     bin_dir = _hermes_bin_dir()
     bin_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(bin_dir, _BWS_BIN_DIR_MODE)
     target = bin_dir / _platform_binary_name()
     if target.exists() and not force:
-        return target
+        if _verify_managed_bws(target):
+            return target
+        logger.warning("managed bws binary is stale or tampered; reinstalling")
 
     asset_name = _platform_asset_name()
     with tempfile.TemporaryDirectory(prefix="hermes-bws-") as tmpdir:
@@ -167,6 +334,8 @@ def install_bws(*, force: bool = False) -> Path:
             raise RuntimeError(f"Checksum mismatch for {asset_name}: expected {expected}, got {actual}")
 
         with zipfile.ZipFile(zip_path) as zf:
+            if any(_zip_info_is_symlink(info) for info in zf.infolist()):
+                raise RuntimeError("Refusing bws archive containing symbolic-link members")
             member = _pick_zip_member(zf, _platform_binary_name())
             extracted = _safe_extract_member(zf, member, tmp)
 
@@ -174,8 +343,9 @@ def install_bws(*, force: bool = False) -> Path:
         fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".bws_")
         os.close(fd)
         shutil.copy2(extracted, staged)
-        os.chmod(staged, 0o755)
+        os.chmod(staged, _BWS_BIN_MODE)
         os.replace(staged, target)
+        _write_managed_bws_checksum(target)
 
     logger.info("Installed bws %s at %s", _BWS_VERSION, target)
     return target
@@ -219,6 +389,15 @@ def _pick_zip_member(zf: zipfile.ZipFile, binary_name: str) -> str:
 def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: Path) -> Path:
     """Extract one member, refusing zip-slip: ``ZipFile.extract`` never verifies the
     joined path stays inside ``dest_dir``, so containment is checked here first."""
+    try:
+        info = zf.getinfo(member)
+    except KeyError as exc:
+        raise RuntimeError(f"Archive member {member!r} is missing") from exc
+    if _zip_info_is_symlink(info):
+        raise RuntimeError(
+            f"Refusing to extract symbolic-link archive member {member!r}"
+        )
+
     dest_root = os.path.realpath(dest_dir)
     target = os.path.realpath(os.path.join(dest_root, member))
     try:  # commonpath raises for e.g. different Windows drives — treat as escape
@@ -230,6 +409,12 @@ def _safe_extract_member(zf: zipfile.ZipFile, member: str, dest_dir: Path) -> Pa
                            f"it escapes the extraction directory")
     zf.extract(member, dest_root)
     return Path(target)
+
+
+def _zip_info_is_symlink(info: zipfile.ZipInfo) -> bool:
+    """Return whether a ZIP member advertises a Unix symbolic-link type."""
+    mode = (info.external_attr >> 16) & 0o170000
+    return stat.S_ISLNK(mode)
 
 
 # --- Encrypted last-good cache (opt-in) -------------------------------------
@@ -398,7 +583,10 @@ def _summarize_bws_stderr(raw: str) -> str:
 
 
 def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str = "") -> Tuple[Dict[str, str], List[str]]:
-    cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
+    verified = verify_bws_for_use(bws)
+    if verified is None:
+        raise RuntimeError("bws binary failed use-time verification")
+    cmd = [str(verified), "secret", "list", project_id, "--output", "json"]
     # The bws child intentionally receives the access token; a profile-local
     # fetch must not inherit sibling credentials (source_child_env).
     env = source_child_env()

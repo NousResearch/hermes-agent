@@ -20,6 +20,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.secret_sources._cache import CachedFetch, SecretCache, fingerprint as _fingerprint
+from agent.secret_sources._binary_security import (
+    probe_version as _probe_binary_version,
+    resolve_executable as _resolve_executable,
+)
 from agent.secret_sources.base import (
     ErrorKind, FetchResult, SecretSource, classify_cli_error, coerce_float,
     get_source_environment, is_valid_env_name, run_cli,
@@ -111,13 +115,37 @@ def _refs_fingerprint(references: Dict[str, str]) -> str:
     return _fingerprint("\n".join(f"{name}={references[name]}" for name in sorted(references)))
 
 
+_OP_VERSION_PATTERN = r"(?<![0-9])\d+\.\d+\.\d+(?![0-9])"
+
+
 def find_op(binary_path: str = "") -> Optional[Path]:
-    """Resolve a usable ``op`` binary, or None. A pinned ``binary_path`` is used
-    verbatim — pinned-but-missing returns None rather than falling back to PATH."""
-    found = binary_path or shutil.which("op")
-    if not found or (binary_path and not os.access(binary_path, os.X_OK)):
+    """Resolve a usable ``op`` binary, or None.
+
+    When ``binary_path`` is set it is canonicalised, checked for a private
+    canonical parent chain, and PATH is NOT consulted — pinning an absolute
+    path is a way to avoid trusting whatever ``op`` shows up first on ``PATH``.
+    A pinned-but-missing or untrusted path returns None (the caller surfaces a
+    clear error) rather than silently falling back.
+    """
+    if binary_path:
+        # Explicit configuration is still canonicalised so a relative path or
+        # a later symlink swap cannot redirect the child to an arbitrary CWD
+        # entry.  The resolved target is what callers execute.
+        return _resolve_executable(
+            binary_path, check_explicit_parent_dirs=True
+        )
+    found = shutil.which("op")
+    if not found:
         return None
-    return Path(found)
+    resolved = _resolve_executable(
+        found, check_parent_dirs=True, reject_current_owner=True
+    )
+    if resolved is None or not _probe_binary_version(
+        resolved, _OP_VERSION_PATTERN
+    ):
+        logger.warning("refusing untrusted op PATH binary")
+        return None
+    return resolved
 
 
 def _scrub(text: str) -> str:
@@ -137,10 +165,22 @@ def _op_child_env(token_value: str) -> Dict[str, str]:
     return env
 
 
-def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: str = "") -> str:
+def verify_op_for_use(path: Path, *, explicit_binary: bool = False) -> Optional[Path]:
+    """Canonical path for an immediate use, preserving the discovery trust mode."""
+    return _resolve_executable(
+        path, check_explicit_parent_dirs=explicit_binary,
+        check_parent_dirs=not explicit_binary, reject_current_owner=not explicit_binary,
+    )
+
+
+def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: str = "",
+                 explicit_binary: bool = False) -> str:
     """Resolve one ``op://`` reference; raises ``RuntimeError`` on any failure, including
     an exit-0 empty value (applying it would clobber a good credential with ``""``)."""
-    cmd: List[str] = [str(op), "read"]
+    verified = verify_op_for_use(op, explicit_binary=explicit_binary)
+    if verified is None:
+        raise RuntimeError("op binary failed use-time verification")
+    cmd: List[str] = [str(verified), "read"]
     if account:
         cmd += ["--account", account]
     cmd += ["--", reference]  # `--` so a reference can never parse as an op flag
@@ -170,7 +210,9 @@ def fetch_onepassword_secrets(
 
     Raises ``RuntimeError`` only when no ``op`` binary is available; per-ref
     failures become warnings. Only a complete, error-free pull is cached, so a
-    transient auth failure isn't frozen in for the whole TTL window.
+    transient auth failure isn't frozen in for the whole TTL window. ``binary``
+    is an explicit caller-selected path; normal source callers pass ``binary_path``
+    so automatic PATH discovery keeps its stricter ownership checks at use time.
     """
     valid, warnings = _validate_references(references)
     if not valid:
@@ -195,7 +237,10 @@ def fetch_onepassword_secrets(
     read_errors = 0
     for name in sorted(valid):
         try:
-            secrets[name] = _run_op_read(op, valid[name], account=account, token_value=token_value)
+            secrets[name] = _run_op_read(
+                op, valid[name], account=account, token_value=token_value,
+                explicit_binary=bool(binary_path or binary is not None),
+            )
         except RuntimeError as exc:
             warnings.append(str(exc))
             read_errors += 1
@@ -248,7 +293,7 @@ def apply_onepassword_secrets(
     try:
         secrets, fetch_warnings = fetch_onepassword_secrets(
             references=refs_to_fetch, account=account, token_env=service_account_token_env,
-            binary=binary, cache_ttl_seconds=cache_ttl_seconds, home_path=home_path)
+            binary_path=binary_path, cache_ttl_seconds=cache_ttl_seconds, home_path=home_path)
     except RuntimeError as exc:
         result.error = str(exc)
         return result
@@ -318,7 +363,7 @@ class OnePasswordSource(SecretSource):
         try:
             secrets, fetch_warnings = fetch_onepassword_secrets(
                 references=valid, account=str(cfg.get("account") or ""), token_env=self.token_env(cfg),
-                binary=binary, cache_ttl_seconds=coerce_float(cfg.get("cache_ttl_seconds", 300), 300.0),
+                binary_path=binary_path, cache_ttl_seconds=coerce_float(cfg.get("cache_ttl_seconds", 300), 300.0),
                 home_path=home_path)
         except RuntimeError as exc:
             return result.fail(str(exc), _classify_op_error(str(exc)))

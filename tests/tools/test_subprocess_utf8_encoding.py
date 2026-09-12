@@ -37,13 +37,17 @@ def _assert_utf8_kwargs(mock_run):
     )
 
 
-def test_op_whoami_passes_utf8_encoding(tmp_path):
+def test_op_whoami_passes_utf8_encoding(tmp_path, monkeypatch):
     """_op_whoami must pass encoding='utf-8', errors='replace' so op CLI
     output containing non-ASCII account names doesn't crash on cp936."""
     from hermes_cli import onepassword_secrets_cli as op_cli
 
     fake_binary = tmp_path / "op"
     fake_binary.write_bytes(b"")
+    # Binary policy has dedicated tests; exercise the authenticated/version
+    # subprocess boundary here with an already verified path.
+    monkeypatch.setattr(op_cli.op_src, "verify_op_for_use",
+                        lambda path, **kwargs: Path(path))
     with patch.object(op_cli.subprocess, "run") as mock_run:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="user@example.com", stderr=""
@@ -52,7 +56,7 @@ def test_op_whoami_passes_utf8_encoding(tmp_path):
     _assert_utf8_kwargs(mock_run)
 
 
-def test_op_version_passes_utf8_encoding(tmp_path):
+def test_op_version_passes_utf8_encoding(tmp_path, monkeypatch):
     """_op_version must pass encoding='utf-8', errors='replace' so op CLI
     output containing non-ASCII bytes doesn't crash on cp936. Pairs with
     _op_whoami — both run in the same setup/status CLI flow."""
@@ -60,6 +64,10 @@ def test_op_version_passes_utf8_encoding(tmp_path):
 
     fake_binary = tmp_path / "op"
     fake_binary.write_bytes(b"")
+    # Binary policy has dedicated tests; exercise the authenticated/version
+    # subprocess boundary here with an already verified path.
+    monkeypatch.setattr(op_cli.op_src, "verify_op_for_use",
+                        lambda path, **kwargs: Path(path))
     with patch.object(op_cli.subprocess, "run") as mock_run:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="2.24.0", stderr=""

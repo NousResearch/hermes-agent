@@ -3298,7 +3298,7 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     """Canonicalize ``platforms.<name>.<display_setting>`` -> ``display.platforms.<name>.<setting>``.
     The gateway resolves per-platform display settings (streaming, show_reasoning, ...) from
     ``display.platforms``; the top-level ``platforms.<name>`` block holds only connection config.
-    Only known display settings (``OVERRIDEABLE_KEYS``) are redirected. Returns ``(key, note)``;
+    Only known display settings (``OVERRIDABLE_KEYS``) are redirected. Returns ``(key, note)``;
     the gateway import is guarded so the CLI works where the gateway package is unavailable.
 
     Before #71047 a write such as ``hermes config set platforms.telegram.streaming false`` landed on a key
@@ -3309,7 +3309,7 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     if len(segs) != 3 or segs[0] != "platforms":
         return key, None
     try:
-        from gateway.display_config import OVERRIDEABLE_KEYS as _display_keys
+        from gateway.display_config import OVERRIDABLE_KEYS as _display_keys
     except Exception:
         return key, None
     if segs[2] not in _display_keys:

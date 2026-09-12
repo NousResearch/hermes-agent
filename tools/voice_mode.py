@@ -926,7 +926,7 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
     return chunk_paths
 
 
-# ── Audio playback (interruptable) ──
+# ── Audio playback (interruptible) ──
 _active_playback: Optional[subprocess.Popen] = None  # so stop_playback can interrupt it
 _playback_lock = threading.Lock()
 

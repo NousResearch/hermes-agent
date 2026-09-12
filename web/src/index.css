@@ -253,3 +253,14 @@ html[dir="rtl"] {
   direction: rtl;
 }
 
+/* Dashboard chat's xterm.js host (/chat tab). Vertical touch-drag scrolling
+   is handled manually in ChatPage.tsx (xterm.js has no built-in touch
+   scroll support) by converting drag distance into `term.scrollLines()`
+   calls. `touch-action: none` stops the browser's own scroll/pull-to-
+   refresh/pinch gestures from fighting that handler — without it, a
+   one-finger drag on mobile does nothing (or scrolls the page instead of
+   the transcript) because the browser claims the gesture first. */
+.hermes-chat-xterm-host {
+  touch-action: none;
+}
+

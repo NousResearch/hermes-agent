@@ -165,9 +165,24 @@ DEFAULT_CONFIG = {
         # toolset to the lean coding set (+ enabled MCP servers) + demote non-coding skill
         # categories to names-only (explicit opt-in); "on" = force everywhere; "off" = disable.
         "coding_context": "auto",
-        # Standing operator instructions (string or list) appended to the coding brief as an extra
-        # stable system block — project-wide workflow rules, e.g. "Don't run tsc/lint until I
-        # approve." Cache-safe: takes effect next session.
+        # Guarded prompt profile — opt-in, exact provider/model route pairs
+        # only. It replaces redundant long-form coaching with a compact
+        # worktree/verification contract and renders skills names-only. The
+        # task-completion, configured tool-use enforcement, and env-gated
+        # Kanban worker protocol remain load-bearing in this mode.
+        # Requires coding_context: focus and a coding workspace. It is safe to
+        # list local Ollama and Copilot routes together because matching is by
+        # pair, not independent provider/model allowlists.
+        "guarded_prompt_mode": {
+            "enabled": False,
+            "routes": [],
+        },
+        # Standing operator instructions for the coding posture. A string (or
+        # list of strings) appended to the coding brief as an extra stable
+        # system block — pin project-wide workflow rules here instead of editing
+        # the shipped brief, e.g. "For UI work, don't run tsc/lint until I
+        # approve. Clean the diff before you commit and push." Cache-safe:
+        # takes effect next session. Empty by default.
         "coding_instructions": "",
         # When verify-on-stop finds edits without fresh verification evidence, add guidance for
         # creative UI work (no broad tsc/lint/test before visual approval) and clean-diff

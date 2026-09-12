@@ -195,6 +195,31 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     return _MODE_ALIASES.get(str(raw).strip().lower(), "auto")
 
 
+def guarded_prompt_enabled(
+    *,
+    platform: Optional[str] = None,
+    cwd: Optional[str | Path] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Return whether the explicitly opted-in local prompt profile is allowed."""
+    agent_cfg = (config or {}).get("agent", {}) or {}
+    if not isinstance(agent_cfg, dict) or _coding_mode(config) != "focus":
+        return False
+    raw = agent_cfg.get("guarded_prompt_mode")
+    if not isinstance(raw, dict) or raw.get("enabled") is not True:
+        return False
+    routes = raw.get("routes")
+    if not isinstance(routes, (list, tuple)):
+        return False
+    route = (str(provider or "").strip().lower(), str(model or "").strip().lower())
+    allowed = {(str(item.get("provider") or "").strip().lower(), str(item.get("model") or "").strip().lower()) for item in routes if isinstance(item, dict)}
+    if not route[0] or not route[1] or route not in allowed:
+        return False
+    return resolve_runtime_mode(platform=platform, cwd=cwd, config=config, model=model).is_coding
+
+
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
     if cwd:
         return Path(cwd).expanduser()

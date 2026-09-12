@@ -36,6 +36,20 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
 )
 _GATE_WORDS = {**dict.fromkeys(("true", "always", "yes", "on"), True), **dict.fromkeys(("false", "never", "no", "off"), False)}
 
+GUARDED_EXECUTION_CONTRACT = (
+    "# Guarded coding execution contract\n"
+    "- Work only in the current session worktree. Inspect git status before edits "
+    "and preserve unrelated user changes.\n"
+    "- Ground claims in tools: read/search before changing code; use tools for "
+    "files, git, system state, calculations, and current facts.\n"
+    "- Make the requested change through tools, then verify it with the relevant "
+    "command and report its real result. Do not claim completion from a plan or guess.\n"
+    "- Batch independent read-only calls. Serialize dependent edits. Respect tool "
+    "permissions and confirmations for side effects.\n"
+    "- All listed skills remain available. Load a relevant skill with skill_view; "
+    "use tool discovery when a needed capability is not visible."
+)
+
 
 def _model_gate(setting: Any, model: Optional[str], default_models) -> bool:
     """Resolve a config gate: True/"true"-ish -> on, False/"false"-ish -> off,
@@ -308,8 +322,16 @@ def _skills_prompt(agent: Any) -> str:
         _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
     except Exception:
         _compact_cats = frozenset()
-    return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
-                                         compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
+    build_skills_system_prompt = _pb.build_skills_system_prompt
+    try:
+        import run_agent
+        build_skills_system_prompt = run_agent.__dict__.get("build_skills_system_prompt") or build_skills_system_prompt
+    except Exception:
+        pass
+    return build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
+                                      compact_categories=_compact_cats or None,
+                                      compact_all_categories=_guarded_prompt_enabled(agent),
+                                      skills_dir_override=_agent_skills_dir(agent))
 
 
 def _bot_mode_parts(agent: Any) -> List[str]:
@@ -485,6 +507,20 @@ def _memory_parts(agent: Any) -> List[str]:
     return parts
 
 
+def _guarded_prompt_enabled(agent: Any) -> bool:
+    """Guarded prompt is opt-in and restricted to coding-focus sessions."""
+    try:
+        from agent.coding_context import guarded_prompt_enabled
+        return bool(guarded_prompt_enabled(
+            platform=getattr(agent, "platform", None),
+            cwd=resolve_context_cwd(),
+            provider=getattr(agent, "provider", None),
+            model=getattr(agent, "model", None),
+        ))
+    except Exception:
+        return False
+
+
 def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool]:
     """SOUL.md (primary identity; cron keeps the persona while skipping cwd
     instructions, scoped to the agent's OWN home) or the default identity.
@@ -497,18 +533,25 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool
 def _guidance_parts(agent: Any) -> List[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
     parts: List[str] = []
+    guarded = _guarded_prompt_enabled(agent)
+    if guarded:
+        parts.append(GUARDED_EXECUTION_CONTRACT)
     if agent.valid_tool_names:
-        parts += [
-            text for flag, text in (
-                ("_task_completion_guidance", TASK_COMPLETION_GUIDANCE),
-                ("_parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE),
-            ) if getattr(agent, flag, True)
-        ]
-    parts.append(_tool_guidance_block(agent))  # None/empty entries are dropped by _join_tier
+        if getattr(agent, "_task_completion_guidance", True):
+            parts.append(TASK_COMPLETION_GUIDANCE)
+        if not guarded and getattr(agent, "_parallel_tool_call_guidance", True):
+            parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
+    if not guarded:
+        parts.append(_tool_guidance_block(agent))  # None/empty entries are dropped by _join_tier
+    elif getattr(agent, "_kanban_worker_guidance", None):
+        parts.append(agent._kanban_worker_guidance)
+    elif "kanban_show" in agent.valid_tool_names:
+        parts.append(KANBAN_GUIDANCE)
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools.
-    parts.append(STEER_CHANNEL_NOTE)
+    if not guarded:
+        parts.append(STEER_CHANNEL_NOTE)
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
     # matches the hardcoded model lists; true/false force; a list gives custom
     # model-name substrings.  Execution guidance is an independent gate so
@@ -517,7 +560,7 @@ def _guidance_parts(agent: Any) -> List[str]:
         parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
         if any(g in (agent.model or "").lower() for g in ("gemini", "gemma")):
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-    if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
+    if not guarded and _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
         parts.append(execution_guidance_text(agent.valid_tool_names))
     return parts

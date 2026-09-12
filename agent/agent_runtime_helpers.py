@@ -1175,6 +1175,7 @@ def restore_primary_runtime(agent) -> bool:
         if saved_reasoning is not None:
             agent.reasoning_config = dict(saved_reasoning)
         agent._fallback_activated = False
+        agent._active_fallback_service_tier_override = rt.get("fallback_service_tier_override")
         agent._fallback_index = 0
         agent._rate_limit_backoff_count = 0
         # Reset the stale-call circuit breaker: its streak measured the fallback provider.
@@ -2075,6 +2076,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "fallback_service_tier_override": None,
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
@@ -2104,6 +2106,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
     agent._fallback_activated = False
+    agent._active_fallback_service_tier_override = None
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0

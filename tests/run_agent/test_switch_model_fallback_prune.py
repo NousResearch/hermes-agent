@@ -85,11 +85,14 @@ def test_manual_switch_clears_provider_fallback_provenance():
     ])
     agent._provider_fallback_active = True
     agent._provider_fallback_route = ("fallback-model", "fallback-provider")
+    agent._active_fallback_service_tier_override = "normal"
 
     _switch_to_anthropic(agent)
 
     assert agent._provider_fallback_active is False
     assert agent._provider_fallback_route is None
+    assert agent._active_fallback_service_tier_override is None
+    assert agent._primary_runtime["fallback_service_tier_override"] is None
 
 
 
@@ -97,6 +100,7 @@ def test_manual_switch_clears_provider_fallback_provenance():
 def test_switch_within_same_provider_preserves_chain():
     chain = [{"provider": "openrouter", "model": "x-ai/grok-4"}]
     agent = _make_agent(chain)
+    agent._active_fallback_service_tier_override = "normal"
 
     with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
         agent.switch_model(
@@ -107,3 +111,5 @@ def test_switch_within_same_provider_preserves_chain():
         )
 
     assert agent._fallback_chain == chain
+    assert agent._active_fallback_service_tier_override is None
+    assert agent._primary_runtime["fallback_service_tier_override"] is None

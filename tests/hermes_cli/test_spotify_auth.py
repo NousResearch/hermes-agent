@@ -9,6 +9,8 @@ import hermes_cli.auth_spotify as auth_spotify
 from hermes_cli.auth import AuthError, resolve_spotify_runtime_credentials
 
 
+def test_default_spotify_scope_includes_cover_upload() -> None:
+    assert "ugc-image-upload" in auth_mod.DEFAULT_SPOTIFY_SCOPE.split()
 
 
 def test_resolve_spotify_runtime_credentials_refreshes_without_changing_active_provider(

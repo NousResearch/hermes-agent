@@ -359,6 +359,12 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
         if token and self._session.supports_capability("accessibility.element_tokens", tool=name):
             args["element_token"] = token
+        if token and self._session.supports_input_property(name, "snapshot_id") and "snapshot_id" not in args:
+            # Token format is `snapshot_id:element_index` (e.g. "s0001:5"). Only a
+            # token carrying its snapshot prefix can supply snapshot_id — a bare
+            # token without ":" leaves it off rather than guessing.
+            if ":" in token and token.split(":")[0]:
+                args["snapshot_id"] = token.split(":")[0]
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

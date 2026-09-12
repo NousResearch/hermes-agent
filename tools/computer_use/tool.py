@@ -490,10 +490,12 @@ def _bounds_hints(elements: List[UIElement], image_width: int, image_height: int
         max_x, max_y = max(max_x, int(x) + int(w)), max(max_y, int(y) + int(h))
     if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
         return None, None
+    scale = round(max(max_x / image_width, max_y / image_height), 2)
     note = (f"element bounds are in native desktop coordinates (extend to ~{max_x}x{max_y}), "
-            f"NOT screenshot pixels ({image_width}x{image_height}). coordinate= clicks expect the native "
-            "space — derive click points from element bounds, or scale screenshot positions up accordingly")
-    return round(max(max_x / image_width, max_y / image_height), 2), note
+            f"NOT screenshot pixels ({image_width}x{image_height}). element= clicks bypass this scaling entirely; "
+            f"coordinate= clicks expect the native space — derive click points from element bounds, "
+            f"or scale screenshot positions up by ~{scale:.2f}x")
+    return scale, note
 
 _bounds_scale = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[0]  # noqa: E731
 _bounds_space_note = lambda elements, image_width, image_height: _bounds_hints(elements, image_width, image_height)[1]  # noqa: E731

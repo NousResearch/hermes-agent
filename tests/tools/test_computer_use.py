@@ -2194,26 +2194,31 @@ class TestElementTokenAttachment:
        sending both is safe and stale-detection becomes explicit.
     """
 
-    def _backend_with_session(self, capabilities):
-        """Build a backend whose session reports the given capabilities map."""
+    def _backend_with_capabilities(self, capabilities, schemas=None):
+        """Build a backend with a REAL session whose discovery maps are set by hand.
+
+        Only the transport (`call_tool`) is mocked — capability/schema gating runs
+        production code, so these tests assert the real contract instead of a mock
+        that duplicates it. `capabilities` mirrors `tools/list` capability tokens;
+        `schemas` mirrors `tools/list` input schemas (`{"tool": {"properties": {...}}}`).
+        """
         from unittest.mock import MagicMock
         from tools.computer_use.cua_backend import CuaDriverBackend
 
         backend = CuaDriverBackend()
-        backend._session = MagicMock()
-        backend._session.call_tool.return_value = {
+        backend._session._capabilities = {k: set(v) for k, v in capabilities.items()}
+        backend._session._tool_schemas = dict(schemas or {})
+        backend._session.call_tool = MagicMock(return_value={
             "data": "ok", "images": [], "image_mime_types": [],
             "structuredContent": None, "isError": False,
-        }
-        # `supports_capability(cap, tool=None)` honors the supplied map.
-        def _supports(cap, tool=None):
-            if tool is not None:
-                return cap in capabilities.get(tool, set())
-            return any(cap in caps for caps in capabilities.values())
-        backend._session.supports_capability = _supports
+        })
         backend._active_pid = 111
         backend._active_window_id = 222
         return backend
+
+    def _backend_with_session(self, capabilities):
+        """Legacy shim over `_backend_with_capabilities` (no schemas)."""
+        return self._backend_with_capabilities(capabilities)
 
     def test_token_attached_when_tool_advertises_capability(self):
         backend = self._backend_with_session({
@@ -2226,6 +2231,37 @@ class TestElementTokenAttachment:
         assert args["element_index"] == 5
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
+
+    def test_token_and_snapshot_attached_via_schema_property(self):
+        # 0.26-era driver: empty capability map, but the input schema advertises
+        # both properties — the session-level fallback must still attach them.
+        backend = self._backend_with_capabilities({}, schemas={
+            "click": {"properties": {
+                "element_index": {"type": "integer"},
+                "element_token": {"type": "string"},
+                "snapshot_id": {"type": "string"},
+                "session": {"type": "string"},
+            }},
+        })
+        backend._snapshot_tokens = {5: "s0001:5", 6: "s0001:6"}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_index"] == 5
+        assert args["element_token"] == "s0001:5"
+        assert args["snapshot_id"] == "s0001"
+
+    def test_old_driver_gets_neither_token_nor_snapshot(self):
+        # Fails closed: empty capability map AND empty schemas (pre-token driver
+        # with additionalProperties=false) must see neither new arg.
+        backend = self._backend_with_capabilities({})
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_index"] == 5
+        assert "element_token" not in args
+        assert "snapshot_id" not in args
 
 
     def test_capture_refreshes_snapshot_tokens(self):

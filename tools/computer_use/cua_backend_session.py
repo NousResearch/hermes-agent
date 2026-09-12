@@ -360,7 +360,13 @@ class _CuaDriverSession:
         capability token (trycua/cua#1961 capability vocabulary).
         """
         caps = [self._capabilities.get(tool, set())] if tool is not None else self._capabilities.values()
-        return any(capability in c for c in caps)
+        if any(capability in c for c in caps):
+            return True
+        if capability == "accessibility.element_tokens":
+            if tool:
+                return self.supports_input_property(tool, "element_token")
+            return any(self.supports_input_property(t, "element_token") for t in getattr(self, "_tool_schemas", {}))
+        return False
 
     def _has_tool(self, name: str) -> bool:
         """``tools/list`` advertised *name*. Routes capture() (PNG capture moved into ``get_window_state``).

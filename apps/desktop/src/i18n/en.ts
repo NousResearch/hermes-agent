@@ -752,6 +752,12 @@ export const en: Translations = {
       introSplashDesc: 'The wordmark and prompt shown on an empty chat.',
       reactionsTitle: 'Message Reactions',
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
+      autoSendTitle: 'Hands-free send',
+      autoSendDesc:
+        'Send what you have written automatically after you stop typing or dictating. Any keystroke cancels it.',
+      autoSendDelayTitle: 'Hands-free delay',
+      autoSendDelayDesc:
+        'How long the composer waits after your last keystroke or dictated word before it sends.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
         'Occasional hints from the app and Hermes. Each tip appears once. Turns off automatically after your first 30 days; you can turn it back on.',
@@ -2788,6 +2794,7 @@ export const en: Translations = {
     steer: 'Steer the current run',
     stop: 'Stop',
     send: 'Send',
+    autoSendCountdown: (seconds: number) => `Sending in ${seconds}s`,
     speaking: 'Speaking',
     transcribing: 'Transcribing',
     thinking: 'Thinking',

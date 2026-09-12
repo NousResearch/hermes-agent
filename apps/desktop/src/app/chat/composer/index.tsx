@@ -19,6 +19,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
+import { $autoSendIdleDelayMs, $autoSendIdleEnabled } from '@/store/auto-send'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
@@ -49,6 +50,7 @@ import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-aff
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useAutoSendIdle } from './hooks/use-auto-send-idle'
 import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
@@ -226,6 +228,10 @@ export function ChatBar({
   // engine writes it — an explicit shared handle, not a back-reference.
   const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  // Live voice-conversation handle for the auto-send gate: the voice loop submits
+  // its own turns, so a text turn auto-firing mid-conversation would collide with
+  // it. Assigned next to voiceStopRef (below) and read at fire time.
+  const voiceLiveRef = useRef(false)
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
@@ -428,6 +434,96 @@ export function ChatBar({
     triggerLoading
   } = useComposerTrigger({ at, draftRef, editorRef, emoji, recordUndoPoint, requestMainFocus, setComposerText, slash })
 
+  // An attachment mid-upload would be dropped or half-carried by a send. Also
+  // drives the disarm effect below, so the countdown cannot tick while it holds.
+  const hasUploadingAttachment = attachments.some(attachment => attachment?.uploadState === 'uploading')
+
+  // Hands-free send: an opt-in auto-submit after the user stops producing input
+  // (typing or OS-level dictation). Off by default — see store/auto-send.
+  const autoSendEnabled = useStore($autoSendIdleEnabled)
+  const autoSendDelayMs = useStore($autoSendIdleDelayMs)
+
+  const {
+    armedInSeconds: autoSendArmedInSeconds,
+    cancel: cancelAutoSend,
+    noteCommittedComposition: noteAutoSendComposition,
+    noteEdit: noteAutoSendEdit
+  } = useAutoSendIdle({
+    canAutoSend: () =>
+      !busy &&
+      !disabled &&
+      !inputDisabled &&
+      !compacting &&
+      // A composition can outlive a missed `compositionstart` (the editor
+      // self-heals the same flag on keydown for exactly that reason), so never
+      // fire while a preedit is live.
+      !composingRef.current &&
+      !queueEdit &&
+      !awaitingInput &&
+      !blockingPrompt &&
+      // An open completion popover means the text is mid-selection (`/` or `@`).
+      trigger === null &&
+      // The narrowest layout hides the countdown, and an armed auto-send with no
+      // visible affordance is precisely the surprise this feature must not create.
+      !minimal &&
+      !voiceLiveRef.current &&
+      // An attachment mid-upload would be dropped or half-carried by a send.
+      !hasUploadingAttachment &&
+      // Leaving the window keeps DOM focus on the editor (Chromium does not blur
+      // the element), so the focus check alone cannot see it — and the countdown
+      // the user needs to see is off screen.
+      (typeof document === 'undefined' || document.hasFocus()) &&
+      !!editorRef.current &&
+      editorRef.current.contains(document.activeElement),
+    delayMs: autoSendDelayMs,
+    enabled: autoSendEnabled,
+    onFire: submitDraft,
+    readText: () => (editorRef.current ? composerPlainText(editorRef.current) : draftRef.current),
+    resetKey: activeQueueSessionKey ?? ''
+  })
+
+  // Anything that makes a send wrong right now also disarms the pending one.
+  useEffect(() => {
+    if (
+      awaitingInput ||
+      blockingPrompt ||
+      busy ||
+      compacting ||
+      disabled ||
+      hasUploadingAttachment ||
+      inputDisabled ||
+      minimal ||
+      queueEdit ||
+      trigger
+    ) {
+      cancelAutoSend()
+    }
+  }, [
+    awaitingInput,
+    blockingPrompt,
+    busy,
+    cancelAutoSend,
+    compacting,
+    disabled,
+    hasUploadingAttachment,
+    inputDisabled,
+    minimal,
+    queueEdit,
+    trigger
+  ])
+
+  // Leaving the window disarms: the pending countdown is not on screen, so the
+  // send would happen out of sight.
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+
+    window.addEventListener('blur', cancelAutoSend)
+
+    return () => window.removeEventListener('blur', cancelAutoSend)
+  }, [cancelAutoSend])
+
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
@@ -481,6 +577,13 @@ export function ChatBar({
   )
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    // Hands-free send: only a trusted insert arms the idle timer. A paste, a
+    // delete, or a programmatic DOM write (restored draft, undo restore, queue
+    // load) disarms it instead — none of those may ever auto-send.
+    const nativeInput = event.nativeEvent as InputEvent
+
+    noteAutoSendEdit(nativeInput.isTrusted, nativeInput.inputType)
+
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend flushes
     // the finalized text (see onCompositionEnd).
@@ -949,6 +1052,7 @@ export function ChatBar({
         return
       }
 
+      cancelAutoSend()
       submitDraft()
 
       return
@@ -1031,6 +1135,17 @@ export function ChatBar({
   // live conversation state. Render-time ref assignment, same pattern as
   // dispatchSubmitRef — no effect needed for a plain mirror.
   voiceStopRef.current = { active: voiceConversationActive, end: endConversation }
+  voiceLiveRef.current = voiceConversationActive
+
+  // A live voice conversation owns the turn — the loop submits its own turns —
+  // so a pending auto-send gives way the moment one starts. Declared here rather
+  // than with the other disarm conditions because the conversation state only
+  // exists below the composer body's own hooks.
+  useEffect(() => {
+    if (voiceConversationActive) {
+      cancelAutoSend()
+    }
+  }, [cancelAutoSend, voiceConversationActive])
 
   const contextMenu = (
     <ContextMenu
@@ -1046,6 +1161,7 @@ export function ChatBar({
 
   const controls = (
     <ComposerControls
+      autoSendArmedInSeconds={autoSendArmedInSeconds}
       autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
@@ -1102,6 +1218,7 @@ export function ChatBar({
           // guard forever (#44135). Clear unconditionally: by the time blur
           // runs there is nothing left composing in this editor.
           composingRef.current = false
+          cancelAutoSend()
           window.setTimeout(closeTrigger, 80)
         }}
         onCompositionEnd={event => {
@@ -1115,9 +1232,11 @@ export function ChatBar({
           // `hasComposerPayload` stays false and the send button stays hidden
           // until an unrelated edit forces a sync (#39614).
           flushEditorToDraft(event.currentTarget)
+          noteAutoSendComposition()
         }}
         onCompositionStart={event => {
           composingRef.current = true
+          cancelAutoSend()
 
           // Input events are skipped for the rest of the composition, so
           // nothing else would clear the empty marker until it ends — and the
@@ -1298,6 +1417,7 @@ export function ChatBar({
                 return
               }
 
+              cancelAutoSend()
               submitDraft()
             }}
             ref={composerRef}

@@ -538,6 +538,12 @@ export const ja = defineLocale({
       reactionsTitle: 'メッセージリアクション',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
+      autoSendTitle: 'ハンズフリー送信',
+      autoSendDesc:
+        '入力やディクテーションを停止した後に、作成した内容を自動で送信します。任意のキーを押すとキャンセルされます。',
+      autoSendDelayTitle: 'ハンズフリー遅延',
+      autoSendDelayDesc:
+        '最後のキー入力またはディクテーションの単語の後、入力欄が送信するまでに待機する時間。',
       tipsTitle: 'アプリ内ヒント',
       tipsDesc:
         'アプリや Hermes からのヒントをときどき表示します。各ヒントは一度だけ表示されます。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
@@ -2363,6 +2369,7 @@ export const ja = defineLocale({
     queueMessage: 'メッセージをキューに入れる',
     stop: '停止',
     send: '送信',
+    autoSendCountdown: (seconds: number) => `${seconds}秒後に送信`,
     speaking: '話しています',
     transcribing: '文字起こし中',
     thinking: '考え中',

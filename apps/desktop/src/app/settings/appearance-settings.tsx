@@ -6,6 +6,7 @@ import { useDebounced } from '@/app/hooks/use-debounced'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -14,6 +15,13 @@ import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import {
+  $autoSendIdleDelayMs,
+  $autoSendIdleEnabled,
+  type AutoSendDelayId,
+  setAutoSendIdleDelayId,
+  setAutoSendIdleEnabled
+} from '@/store/auto-send'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
@@ -411,6 +419,8 @@ export function AppearanceSettings() {
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
   const reactionsEnabled = useStore($reactionsEnabled)
+  const autoSendEnabled = useStore($autoSendIdleEnabled)
+  const autoSendDelayMs = useStore($autoSendIdleDelayMs)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
   const spentTips = useStore($spentTipCount)
@@ -853,6 +863,43 @@ export function AppearanceSettings() {
             }
             description={a.reactionsDesc}
             title={a.reactionsTitle}
+          />
+
+          <ListRow
+            action={
+              <Switch
+                aria-label={a.autoSendTitle}
+                checked={autoSendEnabled}
+                onCheckedChange={on => {
+                  triggerHaptic('selection')
+                  setAutoSendIdleEnabled(on)
+                }}
+              />
+            }
+            description={a.autoSendDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.autoSend)}
+            title={a.autoSendTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setAutoSendIdleDelayId(id as AutoSendDelayId)
+                }}
+                options={[
+                  { id: '1500', label: '1.5s' },
+                  { id: '2000', label: '2s' },
+                  { id: '3000', label: '3s' },
+                  { id: '5000', label: '5s' }
+                ]}
+                value={String(autoSendDelayMs)}
+              />
+            }
+            description={a.autoSendDelayDesc}
+            id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.autoSendDelay)}
+            title={a.autoSendDelayTitle}
           />
 
           <ListRow

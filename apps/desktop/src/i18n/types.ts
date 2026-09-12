@@ -633,6 +633,10 @@ export interface Translations {
       introSplashDesc: string
       reactionsTitle: string
       reactionsDesc: string
+      autoSendTitle: string
+      autoSendDesc: string
+      autoSendDelayTitle: string
+      autoSendDelayDesc: string
       tipsTitle: string
       tipsDesc: string
       tipsReset: (count: number) => string
@@ -2394,6 +2398,7 @@ export interface Translations {
     steer: string
     stop: string
     send: string
+    autoSendCountdown: (seconds: number) => string
     speaking: string
     transcribing: string
     thinking: string

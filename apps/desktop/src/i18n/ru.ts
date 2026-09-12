@@ -607,6 +607,12 @@ export const ru = defineLocale({
       introSplashDesc: 'Логотип и подсказка, показываемые на пустом чате.',
       reactionsTitle: 'Реакции на сообщения',
       reactionsDesc: 'Эмодзи-тапбеки в стиле iMessage — реагируйте на сообщения, и Hermes сможет реагировать на ваши.',
+      autoSendTitle: 'Автоматическая отправка',
+      autoSendDesc:
+        'Автоматически отправляет написанное после прекращения ввода или диктовки. Любое нажатие клавиши отменяет отправку.',
+      autoSendDelayTitle: 'Задержка автоотправки',
+      autoSendDelayDesc:
+        'Сколько времени композер ждёт после последнего нажатия клавиши или продиктованного слова перед отправкой.',
       composerPopoutTitle: 'Плавающий композер',
       composerPopoutDesc: 'Позволяет вытягивать композер из его док-зоны. Отключите, чтобы он был закреплён снизу.',
       embedsTitle: 'Встроенные превью',
@@ -2637,6 +2643,7 @@ export const ru = defineLocale({
     steer: 'Направить текущий запуск',
     stop: 'Стоп',
     send: 'Отправить',
+    autoSendCountdown: (seconds: number) => `Отправка через ${seconds}с`,
     speaking: 'Говорит',
     transcribing: 'Расшифровка',
     thinking: 'Думает',

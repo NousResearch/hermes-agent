@@ -3023,7 +3023,7 @@ _PAYMENT_KEYWORDS = (
     "reached your session usage limit", "quota exceeded", "quota_exceeded",
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
     "resource_exhausted", "resource-exhausted", "resourceexhausted",
-    "weekly usage limit", "weekly limit",
+    "weekly usage limit", "weekly limit", "7-day usage limit",
 )
 
 

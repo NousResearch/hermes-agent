@@ -265,6 +265,7 @@ def test_run_local_turn_retry_reads_the_stream_the_cli_writes_and_resumes_the_pe
     """Same invariant on the same-install `message_agent` runner: the real stdout/stderr split opens
     the retry gate once, and only the re-run carries the resume marker (the first attempt's env is
     otherwise kept)."""
+    from hermes_cli.active_sessions import DELIVERY_TURN_ENV
     from tools import bot_mode_dm
     from tools.bot_relay import RESUME_UNANSWERED_TURN_ENV
 
@@ -281,6 +282,7 @@ def test_run_local_turn_retry_reads_the_stream_the_cli_writes_and_resumes_the_pe
     monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
     rc = bot_mode_dm._run_local_turn(["hermes", "-p", "ops", "chat"], str(dm), env={"HERMES_HOME": str(tmp_path)})
     assert rc == 0
-    assert envs[0] == {"HERMES_HOME": str(tmp_path)}
-    assert envs[1] == {"HERMES_HOME": str(tmp_path), RESUME_UNANSWERED_TURN_ENV: "1"}
+    assert envs[0] == {"HERMES_HOME": str(tmp_path), DELIVERY_TURN_ENV: "1"}
+    assert envs[1] == {"HERMES_HOME": str(tmp_path), DELIVERY_TURN_ENV: "1",
+                       RESUME_UNANSWERED_TURN_ENV: "1"}
     assert "the reply text" in capsys.readouterr().out

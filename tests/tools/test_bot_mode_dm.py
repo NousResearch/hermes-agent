@@ -5,6 +5,7 @@ canonical Bot Chat session on a Bot-Mode-managed install, and must refuse to
 deliver from anywhere else even if a schema leaks.
 """
 
+import hashlib
 import json
 import os
 import shlex
@@ -277,7 +278,13 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert result["status"] == "queued"
     assert result["to"] == "@researcher"
     assert result["process_id"] == "proc_test1234"
+    # P9(a)/§1.2: the ack is a RECEIPT — additive to upstream's dispatch acknowledgement
+    # (``queued`` + ``delivery_id``): accepted and retained, so the sender must not resend.
+    assert result["result"] == "receipt"
+    assert len(result["delivery_id"]) == 64  # content-addressed, never a send_id
     assert "do NOT wait" in result["detail"]
+    assert "not a delivery receipt" in result["detail"]
+    assert "queue_position" in result
 
     assert len(calls) == 1
     call = calls[0]
@@ -290,6 +297,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     command = call["command"]
     mode, dm_file, transport_argv = _runner_parts(command)
     assert mode == "query-file"
+    assert result["delivery_id"] == hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
     assert transport_argv == [
         "hermes",
         "-p",
@@ -721,9 +729,9 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     assert not dm_file.exists()
 
 
-def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
-    """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
-    sender can read, not a raw exit-1 with the payload silently gone."""
+def test_delivery_runner_reports_live_owner_hold_as_receipt(tmp_path, capsys):
+    """#100523 + §5.2/P12: the CLI's single-owner hold on a DELIVERY turn is a RECEIPT —
+    the payload is accepted and retained, so the sender must not resend."""
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hi", encoding="utf-8")
     child = tmp_path / "owned.py"
@@ -738,10 +746,16 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
         [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
     )
 
-    assert returncode == 1
+    assert returncode == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["reason"] == "target_busy"
-    assert "NOT delivered" in payload["error"]
+    assert payload["object"] == "hermes.peer.send_result"
+    assert payload["result"] == "receipt"
+    assert payload["status"] == "queued"
+    assert payload["status_detail"] == "live_owner_present"
+    assert payload["attempts"] == 0 and payload["busy"] is True
+    assert payload["reason"] is None and payload["error"] is None
+    assert "target_busy" not in json.dumps(payload["reason"])
+    assert "NOT delivered" not in json.dumps(payload)
 
 
 def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):

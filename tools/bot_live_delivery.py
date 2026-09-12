@@ -664,6 +664,32 @@ def complete_lease_delivery(
         )
 
 
+#: ENUM B (§4.8): a sender never sees the transport's storage words. The storage layer keeps
+#: ``queued -> claimed -> settled`` (the ``claimed/``/``settled/`` dirs and the record's
+#: ``status`` field are unchanged); only this boundary translation renames them.
+_PUBLIC_STATUS = {"claimed": "running", "settled": "delivered"}
+
+
+def public_delivery_status(status: str) -> str:
+    """Translate a stored delivery status to the sender-visible ENUM B word (§4.8)."""
+    word = str(status or "")
+    return _PUBLIC_STATUS.get(word, word)
+
+
+def public_delivery_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A sender-visible copy of ``record`` — status translated, storage never mutated."""
+    if record is None:
+        return None
+    public = dict(record)
+    public["status"] = public_delivery_status(record.get("status"))
+    return public
+
+
+def read_public_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
+    """Sender-facing read: :func:`read_delivery_result` with ENUM B status words (§4.8)."""
+    return public_delivery_record(read_delivery_result(profile_home, delivery_id))
+
+
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
     return _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")

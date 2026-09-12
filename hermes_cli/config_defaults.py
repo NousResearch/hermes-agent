@@ -1906,10 +1906,32 @@ DEFAULT_CONFIG = {
         # error reply (reason 'queued_expired') so a DM can't land hours late as a zombie. 0 = no
         # drain-time expiry (the 6h stale-artifact sweep still applies).
         "envelope_ttl_seconds": 900,
-        # How long a second delivery into a busy target profile queues behind the current turn
-        # before failing with a structured 'target_busy' error. Deliveries are serialized per
-        # profile with a cross-process file lock.
+        # How long a synchronous send call may block trying to run the delivery turn before
+        # returning result "receipt" (the message is durably queued, not lost).
+        "receipt_after_seconds": 15,
+        # Durable receiver-side delivery queue (tools/bot_delivery_queue.py). A busy target's
+        # delivery is queued and retried by the receiver — reported to the sender as result
+        # "receipt", never a failure (this removes the target_busy retry storm).
+        "delivery_queue_ttl_seconds": 1800,
+        "delivery_queue_max_per_profile": 32,
+        "delivery_queue_max_per_sender": 8,
+        "delivery_retry_base_seconds": 2,
+        "delivery_sweep_seconds": 30,
+        "delivery_max_turn_attempts": 3,
+        "delivery_probe_base_seconds": 0.5,
+        "delivery_probe_max_seconds": 2.0,
+        "delivery_probe_jitter": 0.2,
+        "lease_probe_seconds": 2,
+        "dedup_window_seconds": 900,
+        # Remaining meaning of turn_wait_seconds: the synchronous wait for a local delivery turn
+        # lock when no caller budget (X-Hermes-Wait-Seconds) is passed. Not repurposed to 1800.
         "turn_wait_seconds": 120,
+    },
+    # Peer bot-to-bot messaging (hermes peer dm/run). dm_wait_seconds is the optional client poll
+    # budget (CLI --wait): how long a send call may block polling a receipt before returning
+    # result "unknown". Default 600 s (was the DM_TIMEOUT_S module constant).
+    "peer": {
+        "dm_wait_seconds": 600,
     },
     "code_execution": {  # execute_code settings (programmatic tool calls).
         # project = run in the session cwd with the active venv/conda python so project deps and

@@ -28,6 +28,7 @@ def test_closed_vocabulary_contains_every_code():
         "delivery_timeout",
         "agent_blocked",
         "cancelled",
+        "queue_full",
         "provider_auth_or_access",
         "provider_quota_limit",
         "provider_rate_limit",

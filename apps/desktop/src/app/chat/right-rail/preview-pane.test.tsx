@@ -2,9 +2,11 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
+import { PreviewTilePane } from './preview'
 import { PreviewPane } from './preview-pane'
 
 // The consent dialog has its own test file and needs a QueryClientProvider;
@@ -639,5 +641,56 @@ describe('PreviewPane console state', () => {
       path: `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
       profile: 'macmini'
     })
+  })
+})
+
+describe('PreviewPane local HTML Render|Source toggle', () => {
+  afterEach(() => {
+    cleanup()
+    closeRightRail()
+  })
+
+  it('defaults a browsed HTML file to Render and toggles Source on the same tab', async () => {
+    const target = {
+      kind: 'file' as const,
+      label: 'page.html',
+      path: '/work/page.html',
+      previewKind: 'html' as const,
+      source: '/work/page.html',
+      url: 'file:///work/page.html'
+    }
+
+    openPreview(target, 'file-browser')
+
+    const tabId = previewTabId(target)
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(<PreviewTilePane tabId={tabId} />)
+    })
+
+    expect(rendered.getByRole('button', { name: 'PREVIEW' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'SOURCE' })).toBeTruthy()
+    expect(rendered.container.querySelector('webview')).toBeInstanceOf(HTMLElement)
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.target.renderMode).toBe('preview')
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'SOURCE' }))
+    })
+
+    expect(rendered.container.querySelector('webview')).toBeNull()
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.id).toBe(tabId)
+    expect($previewTabs.get()[0]?.target.renderMode).toBe('source')
+
+    await act(async () => {
+      fireEvent.click(rendered.getByRole('button', { name: 'PREVIEW' }))
+    })
+
+    expect(rendered.container.querySelector('webview')).toBeInstanceOf(HTMLElement)
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0]?.id).toBe(tabId)
+    expect($previewTabs.get()[0]?.target.renderMode).toBe('preview')
   })
 })

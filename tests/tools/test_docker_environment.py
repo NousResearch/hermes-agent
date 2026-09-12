@@ -1,6 +1,7 @@
 import logging
 import os
 from io import StringIO
+from pathlib import Path
 import subprocess
 
 import pytest
@@ -490,6 +491,9 @@ def test_snap_compat_drops_only_init_and_no_new_privileges(monkeypatch):
     """#9730: snap-packaged Docker under AppArmor turns ``--init`` and ``no-new-privileges`` into
     "exec: operation not permitted" for every process in the container. The opt-out drops exactly
     those two flags; cap-drop, tmpfs hardening and the privdrop caps are unchanged."""
+    # Pin the persona file: the sandbox HERMES_HOME seeds SOUL.md lazily, which would
+    # otherwise make the persona-mount list differ between the two runs below.
+    Path(os.environ["HERMES_HOME"], "SOUL.md").write_text("# pinned", encoding="utf-8")
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
 
     def run_args(**kw):
@@ -1809,3 +1813,21 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+def test_persona_context_mount_args_included(tmp_path, monkeypatch):
+    """HERMES_HOME persona files and scripts reach the container read-only (#100900).
+
+    The docker backend mounts only subdirectories by default, so a SOUL.md at
+    the home root stayed invisible and the in-container agent fell back to the
+    seeded default persona.
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "SOUL.md").write_text("# persona", encoding="utf-8")
+    (hermes_home / "scripts").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    args = docker_env._readonly_skill_mount_args()
+    assert f"{hermes_home / 'SOUL.md'}:/root/.hermes/SOUL.md:ro" in args
+    assert f"{hermes_home / 'scripts'}:/root/.hermes/scripts:ro" in args

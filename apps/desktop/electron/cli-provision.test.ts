@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, type TestContext } from 'vitest'
 
 import { provisionCliLinks } from './cli-provision'
 
@@ -68,11 +68,11 @@ test('repairs owned dangling CLI links without changing foreign or live entries'
   }
 })
 
-test('qualified CLI paths expose their filenames, not shared canonical command keys', context => {
-  const { root, binDir, source } = fixture()
+test('qualified CLI paths expose their filenames, not shared canonical command keys', (context: TestContext): void => {
+  const { root, binDir, source }: ReturnType<typeof fixture> = fixture()
 
   try {
-    const plain = path.join(binDir, 'hermes')
+    const plain: string = path.join(binDir, 'hermes')
     fs.writeFileSync(plain, 'stable command')
 
     try {
@@ -87,11 +87,11 @@ test('qualified CLI paths expose their filenames, not shared canonical command k
     }
 
     for (const name of ['hermes-canary', 'hermes-abcdef1', 'hermes-1234567']) {
-      const cli = path.join(path.dirname(source), name)
-      const acp = `${cli}-acp`
+      const cli: string = path.join(path.dirname(source), name)
+      const acp: string = `${cli}-acp`
       fs.writeFileSync(cli, name)
       fs.writeFileSync(acp, `${name}-acp`)
-      provisionCliLinks({ hermes: cli, 'hermes-acp': acp }, binDir, () => {})
+      provisionCliLinks({ hermes: cli, 'hermes-acp': acp }, binDir, (): void => {})
       assert.equal(fs.readlinkSync(path.join(binDir, name)), cli)
       assert.equal(fs.readlinkSync(path.join(binDir, `${name}-acp`)), acp)
     }

@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -79,6 +80,19 @@ def _urlopen_with_retry(req: urllib.request.Request):
                 break
             wait = _retry_wait_s(e.headers, attempt)
             print(f"GitHub API {e.code} on {req.full_url} — "
+                  f"retry {attempt}/{_MAX_ATTEMPTS - 1} in {wait:.0f}s",
+                  file=sys.stderr)
+            time.sleep(wait)
+        except http.client.HTTPException as e:
+            # RemoteDisconnected & friends subclass http.client.HTTPException
+            # (not URLError/HTTPError) and surface directly from urlopen()
+            # when the peer drops mid-response. Transient — retry like
+            # connection errors, then land on the soft-fail path.
+            last_err = e
+            if attempt == _MAX_ATTEMPTS:
+                break
+            wait = _retry_wait_s(None, attempt)
+            print(f"GitHub API connection error on {req.full_url} ({e}) — "
                   f"retry {attempt}/{_MAX_ATTEMPTS - 1} in {wait:.0f}s",
                   file=sys.stderr)
             time.sleep(wait)

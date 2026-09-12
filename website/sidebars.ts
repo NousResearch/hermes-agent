@@ -373,6 +373,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-simple-english',
                     'user-guide/skills/optional/creative/creative-sketch',
                     'user-guide/skills/optional/creative/creative-social-media-content-calendar',
+                    'user-guide/skills/optional/creative/creative-system-atlas',
                     'user-guide/skills/optional/creative/creative-tldraw-offline',
                     'user-guide/skills/optional/creative/creative-unreal-mcp',
                   ],

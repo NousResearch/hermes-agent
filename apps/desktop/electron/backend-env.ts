@@ -37,6 +37,19 @@ function currentPathValue(env = process.env, platform = process.platform) {
 }
 
 function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
+  // Windows PATH/PYTHONPATH entries are case-insensitive and tolerate either
+  // separator, so `C:\Foo\`, `c:/foo` and `C:\FOO` name the same directory and
+  // must dedupe against each other — otherwise every backend launch stacks
+  // spelling-variant duplicates. POSIX entries stay case-sensitive as-is;
+  // trailing separators are ignored on both.
+  const caseInsensitive = delimiter === ';'
+
+  const normalize = value => {
+    const trimmed = String(value).replace(/[\\/]+$/, '').replace(/\\/g, '/')
+
+    return caseInsensitive ? trimmed.toLowerCase() : trimmed
+  }
+
   const seen = new Set()
   const ordered = []
 
@@ -48,11 +61,11 @@ function appendUniquePathEntries(entries, { delimiter = path.delimiter } = {}) {
     const parts = Array.isArray(entry) ? entry : String(entry).split(delimiter)
 
     for (const part of parts) {
-      if (!part || seen.has(part)) {
+      if (!part || seen.has(normalize(part))) {
         continue
       }
 
-      seen.add(part)
+      seen.add(normalize(part))
       ordered.push(part)
     }
   }

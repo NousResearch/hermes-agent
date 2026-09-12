@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,7 +59,8 @@ GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 TTS_RESPONSE_BODY_LIMIT_BYTES = 16 * 1024 * 1024
 TTS_RESPONSE_BODY_CHUNK_BYTES = 64 * 1024
 _EDGE_TTS_SSL_LOCK = threading.Lock()
-_EDGE_TTS_SSL_STATE: Optional[tuple[int, int, str]] = None
+_EDGE_TTS_SSL_STATE: Optional[tuple[Any, Any, str]] = None
+_EDGE_TTS_SSL_ERROR: Optional[str] = None
 
 _TRUE_WORDS = {"1", "true", "yes", "on", "enabled"}
 _FALSE_WORDS = {"0", "false", "no", "off", "disabled"}
@@ -198,15 +200,21 @@ def _rewrite_with_auxiliary_model(
 # --- Edge TTS (free default) ---
 def _configure_edge_tts_ssl(edge_tts: Any) -> None:
     """Add Hermes' configured CA bundle to edge-tts' verified contexts."""
-    global _EDGE_TTS_SSL_STATE
+    global _EDGE_TTS_SSL_ERROR, _EDGE_TTS_SSL_STATE
 
     from agent.ssl_verify import resolve_ca_bundle_path
 
     ca_bundle = resolve_ca_bundle_path()
-    if not ca_bundle:
-        return
-
     with _EDGE_TTS_SSL_LOCK:
+        if _EDGE_TTS_SSL_ERROR is not None:
+            raise RuntimeError(_EDGE_TTS_SSL_ERROR)
+        if ca_bundle is None:
+            if _EDGE_TTS_SSL_STATE is not None:
+                raise RuntimeError(
+                    "Edge TTS CA configuration changed after initialization; restart Hermes"
+                )
+            return
+
         contexts = []
         for module_name in ("communicate", "voices"):
             module = getattr(edge_tts, module_name, None)
@@ -217,16 +225,26 @@ def _configure_edge_tts_ssl(edge_tts: Any) -> None:
                 )
             contexts.append(context)
 
-        state = (id(contexts[0]), id(contexts[1]), ca_bundle)
-        if _EDGE_TTS_SSL_STATE == state:
-            return
         if _EDGE_TTS_SSL_STATE is not None:
+            prior_communicate, prior_voices, prior_bundle = _EDGE_TTS_SSL_STATE
+            if (
+                prior_communicate is contexts[0]
+                and prior_voices is contexts[1]
+                and prior_bundle == ca_bundle
+            ):
+                return
             raise RuntimeError(
                 "Edge TTS CA configuration changed after initialization; restart Hermes"
             )
+
+        ssl.create_default_context(cafile=ca_bundle)
+        _EDGE_TTS_SSL_ERROR = (
+            "Edge TTS CA initialization did not complete; restart Hermes"
+        )
         for context in contexts:
             context.load_verify_locations(cafile=ca_bundle)
-        _EDGE_TTS_SSL_STATE = state
+        _EDGE_TTS_SSL_STATE = (contexts[0], contexts[1], ca_bundle)
+        _EDGE_TTS_SSL_ERROR = None
 
 
 async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:

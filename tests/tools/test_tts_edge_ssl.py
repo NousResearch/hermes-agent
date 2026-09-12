@@ -30,6 +30,8 @@ def test_edge_ssl_adds_custom_ca_to_both_dependency_contexts(monkeypatch, tmp_pa
     edge_tts, communicate_context, voices_context = _fake_edge_tts()
     monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: str(ca_bundle))
     monkeypatch.setattr(tts_tool_providers, "_EDGE_TTS_SSL_STATE", None)
+    monkeypatch.setattr(tts_tool_providers, "_EDGE_TTS_SSL_ERROR", None)
+    monkeypatch.setattr(tts_tool_providers.ssl, "create_default_context", MagicMock())
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(
@@ -45,6 +47,10 @@ def test_edge_ssl_adds_custom_ca_to_both_dependency_contexts(monkeypatch, tmp_pa
     other_bundle = tmp_path / "other-ca.pem"
     other_bundle.write_text("other certificate bundle", encoding="utf-8")
     monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: str(other_bundle))
+    with pytest.raises(RuntimeError, match="changed after initialization"):
+        tts_tool_providers._configure_edge_tts_ssl(edge_tts)
+
+    monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: None)
     with pytest.raises(RuntimeError, match="changed after initialization"):
         tts_tool_providers._configure_edge_tts_ssl(edge_tts)
 
@@ -78,6 +84,31 @@ def test_edge_ssl_fails_before_mutation_when_dependency_context_is_missing(
         tts_tool_providers._configure_edge_tts_ssl(edge_tts)
 
     communicate_context.load_verify_locations.assert_not_called()
+
+
+def test_edge_ssl_poisoned_initialization_cannot_be_retried(monkeypatch, tmp_path):
+    from agent import ssl_verify
+    from tools import tts_tool_providers
+
+    ca_bundle = tmp_path / "corporate-ca.pem"
+    ca_bundle.write_text("test certificate bundle", encoding="utf-8")
+    edge_tts, communicate_context, voices_context = _fake_edge_tts()
+    voices_context.load_verify_locations.side_effect = ValueError("invalid CA")
+    monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: str(ca_bundle))
+    monkeypatch.setattr(tts_tool_providers, "_EDGE_TTS_SSL_STATE", None)
+    monkeypatch.setattr(tts_tool_providers, "_EDGE_TTS_SSL_ERROR", None)
+    monkeypatch.setattr(tts_tool_providers.ssl, "create_default_context", MagicMock())
+
+    with pytest.raises(ValueError, match="invalid CA"):
+        tts_tool_providers._configure_edge_tts_ssl(edge_tts)
+    with pytest.raises(RuntimeError, match="did not complete"):
+        tts_tool_providers._configure_edge_tts_ssl(edge_tts)
+    monkeypatch.setattr(ssl_verify, "resolve_ca_bundle_path", lambda: None)
+    with pytest.raises(RuntimeError, match="did not complete"):
+        tts_tool_providers._configure_edge_tts_ssl(edge_tts)
+
+    communicate_context.load_verify_locations.assert_called_once_with(cafile=str(ca_bundle))
+    voices_context.load_verify_locations.assert_called_once_with(cafile=str(ca_bundle))
 
 
 def test_pinned_edge_tts_exposes_verified_module_contexts():

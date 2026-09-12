@@ -319,8 +319,7 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
         ]
 
         totals = _rows(db, """
-            SELECT COUNT(DISTINCT model) as distinct_models,
-                   SUM(input_tokens) as total_input,
+            SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
                    SUM(reasoning_tokens) as total_reasoning,
@@ -330,6 +329,10 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
         """, cutoff)[0]
+        # Counted over the same merged row set the cards come from, so a model
+        # reached only through auxiliary usage is in the header as well as on
+        # the page (#89631).
+        totals["distinct_models"] = len({row["model"] for row in rows})
 
         return {"models": models, "totals": totals, "period_days": days}
     finally:

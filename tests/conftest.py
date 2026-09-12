@@ -316,6 +316,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
+    "HERMES_KANBAN_NOTIFY_IN_GATEWAY",
     # Pytest is routinely launched from a delegated worker.  The worker
     # lineage marker must not make parent-state tests run as delegated
     # children; tests that exercise child behavior set it explicitly.

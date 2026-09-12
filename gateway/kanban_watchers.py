@@ -60,6 +60,12 @@ class GatewayKanbanWatchersMixin:
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
+        Gated by ``kanban.notify_in_gateway`` (default True), with the
+        ``HERMES_KANBAN_NOTIFY_IN_GATEWAY`` env override — mirroring the
+        dispatcher's ``dispatch_in_gateway`` gate; when disabled the loop
+        exits before its first tick, so a subscription-less home (e.g. a
+        secondary profile's gateway) pays no per-tick log line.
+
         Per subscription, claims ``task_events`` newer than the stored cursor
         (kinds in TERMINAL_KINDS), sends one message per event, then advances
         the cursor. The subscription is removed only when the task is
@@ -68,6 +74,34 @@ class GatewayKanbanWatchersMixin:
         dispatcher respawned a crashed task). All SQLite work runs in a thread;
         one tick's failure never stops the next.
         """
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            logger.warning(
+                "kanban notifier: config loader unavailable; notifier disabled"
+            )
+            return
+        env_override = (
+            os.environ.get("HERMES_KANBAN_NOTIFY_IN_GATEWAY", "").strip().lower()
+        )
+        if env_override in {"0", "false", "no", "off"}:
+            logger.info(
+                "kanban notifier: disabled via HERMES_KANBAN_NOTIFY_IN_GATEWAY env"
+            )
+            return
+        try:
+            cfg = _load_config()
+        except Exception as exc:
+            logger.warning(
+                "kanban notifier: cannot load config (%s); notifier disabled", exc
+            )
+            return
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        if not kanban_cfg.get("notify_in_gateway", True):
+            logger.info(
+                "kanban notifier: disabled via config kanban.notify_in_gateway=false"
+            )
+            return
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb

@@ -1714,6 +1714,10 @@ DEFAULT_CONFIG = {
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.
         "auto_subscribe_on_create": True,
+        # Run the notifier loop inside the gateway process. False when nothing in this home uses
+        # gateway subscriptions (e.g. a secondary profile's gateway): without it the notifier
+        # polls every 5s forever and writes one DEBUG line per tick into every board it checks.
+        "notify_in_gateway": True,
         # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
         # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,

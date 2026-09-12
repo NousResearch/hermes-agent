@@ -278,6 +278,9 @@ up on the next tick (60s by default).
 # config.yaml
 kanban:
   dispatch_in_gateway: true        # default
+  notify_in_gateway: true          # default; set false on gateways whose home
+                                   # has no notify subscriptions (e.g. a second
+                                   # profile's gateway) to stop the 5s poll
   dispatch_interval_seconds: 60    # default
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
@@ -285,7 +288,7 @@ kanban:
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
-for debugging. Standard gateway supervision applies: run `hermes gateway
+for debugging (and `HERMES_KANBAN_NOTIFY_IN_GATEWAY=0` for the notifier). Standard gateway supervision applies: run `hermes gateway
 start` directly, or wire the gateway up as a systemd user unit (see the
 gateway docs). Without a running gateway, `ready` tasks stay where they are
 until one comes up — `hermes kanban create` warns about this at creation

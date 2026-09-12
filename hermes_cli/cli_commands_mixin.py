@@ -605,6 +605,7 @@ def _browser_status() -> None:
 
 
 class CLICommandsMixin:
+    _SESSIONS_LIST_LIMIT = 20  # sync with cli.py (see #80750)
     """Mixin holding the interactive-CLI slash-command handlers."""
 
     # ---- /rollback ------------------------------------------------------------------------
@@ -1274,7 +1275,7 @@ class CLICommandsMixin:
                 # next line instead of having to retype `/resume 3`. The list here must match the one shown
                 # by _show_recent_sessions and used for index resolution below — all three go through
                 # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+                self._pending_resume_sessions = self._list_recent_sessions(limit=self._SESSIONS_LIST_LIMIT)
                 return
             return _cp("  Tip:   Use /history or `hermes sessions list` to find sessions.")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
@@ -1326,7 +1327,7 @@ class CLICommandsMixin:
         it could not be resolved. An empty compression-chain head redirects to the descendant
         that actually holds the transcript."""
         if target.isdigit():
-            sessions = self._list_recent_sessions(limit=10)
+            sessions = self._list_recent_sessions(limit=self._SESSIONS_LIST_LIMIT)
             index = int(target)
             if index < 1 or index > len(sessions):
                 return _cp(f"  Resume index {index} is out of range.",
@@ -1362,6 +1363,79 @@ class CLICommandsMixin:
             _cp(_db_unavailable_line())
         elif not self._show_recent_sessions(reason="sessions"):
             _cp("  (._.) No previous sessions yet.")
+        """Handle /sessions [list|all|full|search <q>|<id_or_title>] — browse or resume.
+
+        Without arguments, prints the recent-sessions table (all sources by
+        default) and tells the user how to resume. With an explicit subcommand
+        or target, delegates to the resume flow so ``/sessions <id>`` and
+        ``/resume <id>`` behave identically.
+
+        Flags (parsed via ``parse_session_listing_args``, same as gateway):
+          ``all``   — include all sources (default for CLI since it's single-user)
+          ``full``  — include unnamed sessions
+          ``search <query>`` — filter by title/id substring match
+
+        The TUI ships an interactive picker overlay for this command; the
+        classic CLI prints an inline list because there is no equivalent
+        overlay primitive here. Without this handler the canonical name
+        ``sessions`` falls through ``process_command``'s elif chain and
+        prints ``Unknown command: sessions`` even though the command is
+        registered in the central COMMAND_REGISTRY.
+        """
+        from cli import _cprint
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+
+        from hermes_cli.session_listing import parse_session_listing_args
+
+        try:
+            include_all, include_unnamed, target, search_query = (
+                parse_session_listing_args(raw_args)
+            )
+        except ValueError:
+            include_all, include_unnamed, target, search_query = (
+                True, True, "", None,
+            )
+
+        # /sessions search <query>
+        if search_query is not None:
+            if not search_query:
+                _cprint("  Usage: /sessions search <query>")
+                return
+            if not self._session_db:
+                from hermes_state import format_session_db_unavailable
+                _cprint(f"  {format_session_db_unavailable()}")
+                return
+            if not self._show_recent_sessions(
+                reason="sessions",
+                include_all_sources=True,
+                include_unnamed=True,
+                search_query=search_query,
+                limit=20,
+            ):
+                _cprint(f"  (._.) No sessions matching \"{search_query}\".")
+            return
+
+        # Bare /sessions, /sessions list, /sessions all, /sessions full
+        if not target:
+            if not self._session_db:
+                from hermes_state import format_session_db_unavailable
+                _cprint(f"  {format_session_db_unavailable()}")
+                return
+            # CLI is single-user — always include unnamed sessions (matches
+            # pre-fix behaviour) and widen the default limit so desktop/tui/
+            # gateway sessions aren't truncated to 10.
+            if not self._show_recent_sessions(
+                reason="sessions",
+                include_all_sources=True,
+                include_unnamed=True,
+                limit=20,
+            ):
+                _cprint("  (._.) No previous sessions yet.")
+            return
+
+        # /sessions <id_or_title> behaves the same as /resume <id_or_title>.
+        self._handle_resume_command(f"/resume {target}")
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the

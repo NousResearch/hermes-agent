@@ -101,11 +101,6 @@ def codex_auth_dir(tmp_path, monkeypatch):
     return codex_dir
 
 
-class TestAuxiliaryMaxTokensParam:
-    pass
-
-
-
 class TestResolveTaskProviderModel:
     @pytest.mark.parametrize(
         "provider",

@@ -741,6 +741,53 @@ class TestRenameProfile:
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
 
+    def test_rename_under_running_multiplexer_tombstones_old_and_hot_serves_new(
+        self, profile_env
+    ):
+        tmp_path = profile_env
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+        served = []
+        notified = []
+
+        with patch("hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                   side_effect=lambda name: served.append(name) or True), \
+             patch("hermes_cli.gateway_multiplex_served.notify_multiplexer_profiles_changed",
+                   side_effect=lambda canon: notified.append(canon)), \
+             patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            create_profile("oldname", no_alias=True)
+            assert old_dir.is_dir()
+            served.clear()
+            notified.clear()
+            rename_profile("oldname", "newname")
+
+        # The old name was detected as multiplexed, un-routed before the rename, then the
+        # renamed profile was hot-served — the create_profile notification is patched out
+        # too, so this order is purely rename_profile's.
+        assert served == ["oldname"]
+        assert notified == ["oldname", "newname"]
+        # Directory moved; no tombstone left behind (rename is not delete); old name stays gone.
+        assert not old_dir.exists()
+        assert (tmp_path / ".hermes" / "profiles" / "newname").is_dir()
+        assert not (tmp_path / ".hermes" / "profiles" / ".deleted" / "oldname").exists()
+
+    def test_rename_without_multiplexer_skips_tombstone_and_notify(self, profile_env):
+        tmp_path = profile_env
+        notified = []
+
+        with patch("hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                   return_value=False), \
+             patch("hermes_cli.gateway_multiplex_served.notify_multiplexer_profiles_changed",
+                   side_effect=lambda canon: notified.append(canon)), \
+             patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            create_profile("oldname", no_alias=True)
+            notified.clear()
+            rename_profile("oldname", "newname")
+
+        # A non-multiplexed rename keeps its historical behavior: no tombstone, no notify.
+        assert notified == []
+        assert (tmp_path / ".hermes" / "profiles" / "newname").is_dir()
+        assert not (tmp_path / ".hermes" / "profiles" / ".deleted" / "oldname").exists()
+
     def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
         tmp_path = profile_env
         create_profile("ssi_health", no_alias=True)

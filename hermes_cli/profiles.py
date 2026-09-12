@@ -1656,10 +1656,25 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
+    multiplexed = _served_by_running_multiplexer(old_canon)
+    if multiplexed:
+        # A multiplexed secondary has no gateway.pid of its own, so the guard above missed
+        # it: the multiplexer still holds adapters and SQLite/logging handles bound to the
+        # old name. Tombstone before rename so its stale mkdirs cannot relist the old name
+        # live, and let it un-route the old name and release its handles into the directory
+        # (the same unroute-before-mutate discipline as delete_profile).
+        mark_named_profile_deleted(old_dir)
+        _notify_multiplexer(old_canon)
 
     # 2. Rename directory
     old_dir.rename(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
+
+    if multiplexed:
+        # The old home no longer exists, so nothing can mkdir it back; drop the tombstone
+        # (rename is not delete) and hot-serve the renamed profile like create_profile.
+        clear_named_profile_deleted(old_dir)
+        _notify_multiplexer(new_canon)
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
     _migrate_honcho_profile_host(old_canon, new_canon, new_dir)

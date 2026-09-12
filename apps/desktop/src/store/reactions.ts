@@ -1,7 +1,8 @@
 import type { ChatMessage } from '@/lib/chat-messages'
-import { activeGateway } from '@/store/gateway'
+import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $messages, setMessages } from '@/store/session'
+import { $activeSessionId, $messages, $selectedStoredSessionId, setMessages } from '@/store/session'
+import { requestForOwnedSession } from '@/store/session-states'
 import type { MessageReaction } from '@/types/hermes'
 
 /** The six iOS Tapback defaults, in Apple's order. */
@@ -51,15 +52,22 @@ function writeReactions(messageId: string, reactions: MessageReaction[], rowId?:
 export async function toggleMessageReaction(
   message: ChatMessage,
   emoji: null | string,
-  author: MessageReaction['author'] = 'user'
+  author: MessageReaction['author'] = 'user',
+  sessionIdOverride?: null | string
 ): Promise<void> {
   // A live message hasn't round-tripped through a resume yet, so it carries no
   // rowId. Rather than disable the affordance (which made reactions invisible
   // in any active conversation), let the backend resolve the newest row of
   // this role — which is exactly the message being reacted to.
   const rowId = message.rowId
-  const sessionId = $activeSessionId.get()
-  const gateway = activeGateway()
+  // The runtime id is unavailable while a stored conversation is being
+  // resumed (and can briefly be cleared during a profile/context switch), but
+  // the mounted transcript is still owned by the selected stored session.
+  // Use that durable identity as the routing fallback instead of treating a
+  // visible conversation as a draft. A genuinely new draft has neither id.
+  const sessionId =
+    sessionIdOverride === undefined ? ($activeSessionId.get() ?? $selectedStoredSessionId.get()) : sessionIdOverride
+  const gateway = $gateway.get()
 
   if (!sessionId || !gateway) {
     notifyError(new Error(!sessionId ? 'No active session' : 'Gateway not connected'), 'Could not react')
@@ -72,12 +80,20 @@ export async function toggleMessageReaction(
   writeReactions(message.id, applyReaction(snapshot, emoji, author))
 
   try {
-    const result = await gateway.request<MessageReactResponse>('message.react', {
-      session_id: sessionId,
-      ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
-      emoji,
-      author
-    })
+    // Keep reaction writes on the session's owning backend. The selected
+    // stored-id fallback above is especially important here: owner lookup can
+    // resolve it even while the runtime binding is still being rebuilt.
+    const result = await requestForOwnedSession<MessageReactResponse>(
+      sessionId,
+      gateway.request.bind(gateway) as typeof gateway.request,
+      'message.react',
+      {
+        session_id: sessionId,
+        ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
+        emoji,
+        author
+      }
+    )
 
     // Learn the row id from the response so later toggles address it directly.
     writeReactions(message.id, result?.reactions ?? [], result?.row_id)

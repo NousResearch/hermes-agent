@@ -1807,11 +1807,28 @@ def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
 _COPILOT_CHAT_ENDPOINTS = {"/chat/completions", "/responses", "/v1/messages"}
 
 
+def _copilot_policy_is_disabled(item: dict[str, Any]) -> bool:
+    """Whether GitHub reports this model's per-user policy as not accepted.
+
+    The catalog carries ``policy: {"state": "disabled", "terms": "Enable access to ..."}`` for
+    models whose terms the account has not accepted on github.com. Every chat request for one
+    of them fails with HTTP 400 ``model_not_supported``, so listing it only offers the user a
+    choice that cannot serve a turn. Verified against a live account: 12/12 ``disabled`` models
+    returned 400, and the state never flips without an explicit opt-in on github.com. Anything
+    other than an explicit ``disabled`` (absent policy, ``enabled``, unknown value) stays
+    listed — the flag is used only to exclude a certain failure, never to gate on absence.
+    """
+    policy = item.get("policy")
+    return isinstance(policy, dict) and str(policy.get("state") or "").strip().lower() == "disabled"
+
+
 def _copilot_catalog_item_is_text_model(
     item: dict[str, Any], *, ignore_picker_flag: bool = False) -> bool:
     if not str(item.get("id") or "").strip():
         return False
     if not ignore_picker_flag and item.get("model_picker_enabled") is False:
+        return False
+    if _copilot_policy_is_disabled(item):
         return False
     capabilities = item.get("capabilities")
     if isinstance(capabilities, dict):

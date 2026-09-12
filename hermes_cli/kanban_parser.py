@@ -149,6 +149,14 @@ _SPECS = [
         _arg("title", help="Task title"),
         _arg("--body", help="Optional opening post"),
         _arg("--assignee", help="Profile name to assign"),
+        _arg(
+            "--context-isolation",
+            choices=sorted(kb.VALID_CONTEXT_ISOLATIONS),
+            default="none",
+            help="Worker context policy: 'task' excludes implicit cross-task history and "
+                 "suppresses profile memory/rules and preloaded skills; default 'none' "
+                 "preserves normal context.",
+        ),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
         _arg("--workspace",
              help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "

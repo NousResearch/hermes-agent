@@ -371,6 +371,17 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "links. The assigned worker reads this as part of "
                 "its context."
         )),
+        "context_isolation": {
+            "type": "string",
+            "enum": ["none", "task"],
+            "description": (
+                "Worker context authority policy. 'task' excludes implicit "
+                "cross-task assignee history and suppresses the assignee "
+                "profile's memory/rules and preloaded skills before session "
+                "construction. "
+                "Defaults to 'none' (existing behavior)."
+            ),
+        },
         "parents": {
             "type": "array",
             "items": {"type": "string"},

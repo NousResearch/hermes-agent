@@ -36,6 +36,7 @@ from typing import Any, Callable, List, Optional, Protocol
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
+from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
     _expand_env_vars, load_config, resolve_cron_model_drift_defaults)
@@ -605,7 +606,7 @@ def _inflight_min_allowance_minutes() -> float:
             val = float(_cfg_val)
             if val > 0:
                 return val
-    raw = os.getenv("HERMES_CRON_INFLIGHT_MAX_MINUTES", "").strip()
+    raw = cron_env_setting("HERMES_CRON_INFLIGHT_MAX_MINUTES").strip()
     if raw:
         try:
             val = float(raw)
@@ -936,7 +937,7 @@ def _cron_inactivity_seconds() -> float:
     """Parse HERMES_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600. Shared by the
     inactivity monitor and the cwd-lock bound so they can't drift: the lock bound must stay >= the
     inactivity limit or waiters fail while a healthy holder runs."""
-    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    raw = cron_env_setting("HERMES_CRON_TIMEOUT").strip()
     if not raw:
         return 600.0
     try:
@@ -1355,7 +1356,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
     creation snapshot > HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so
     ``hermes cron edit --model`` applies next tick."""
-    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
     _model_cfg: Any = {}
@@ -1380,7 +1381,8 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                 if _cron_default_model:
                     model = _cron_default_model
                 else:
-                    _, _global_model = resolve_cron_model_drift_defaults(_cfg)
+                    _, _global_model = resolve_cron_model_drift_defaults(
+                        _cfg, environ={"HERMES_MODEL": cron_env_setting("HERMES_MODEL")})
                     model = _snapshot_pin(job, "model", _global_model, job_id) or _global_model or model
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
@@ -1391,7 +1393,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
         raise RuntimeError(
             f"Cron job '{job_name}' has no model configured "
             f"(job.model={job.get('model')!r}, "
-            f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
+            f"HERMES_MODEL={cron_env_setting('HERMES_MODEL')!r}, "
             "config.yaml model.default missing or empty). "
             f"Set a per-job model via "
             f"`hermes cron edit {job_id} --model <name>` or set a "
@@ -1410,7 +1412,7 @@ def _load_prefill_messages(cfg: dict, job_id: str) -> Optional[list]:
     """Prefill messages from env or config.yaml (top-level key canonical; agent.* is legacy)."""
     agent_cfg = cfg.get("agent", {}) if isinstance(cfg.get("agent", {}), dict) else {}
     prefill_file = (
-        os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+        cron_env_setting("HERMES_PREFILL_MESSAGES_FILE")
         or cfg.get("prefill_messages_file", "")
         or agent_cfg.get("prefill_messages_file", "")
     )
@@ -3072,7 +3074,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         set_secret_scope,
     )
     from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from tools.environments.local import build_subprocess_env
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
         systemd_user_bus_env,
@@ -3117,11 +3119,11 @@ def _launch_external_cron_worker(job: dict) -> bool:
     hydrate_profile_secret_sources(profile_home)
     secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
     try:
-        worker_env = build_subprocess_env(
+        worker_env = strip_launch_profile_env(build_subprocess_env(
             scrub_secrets=multiplex_active,
             inherit_profile_home=True,
             extra={"HERMES_HOME": str(profile_home)},
-        )
+        ))
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
@@ -3527,7 +3529,7 @@ def _sweep_stale_inflight_for_tick(due_jobs: list) -> None:
 def _resolve_max_parallel_workers() -> Optional[int]:
     """Max workers: env > config.yaml > unbounded (HERMES_CRON_MAX_PARALLEL=1 restores serial)."""
     try:
-        _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
+        _env_par = cron_env_setting("HERMES_CRON_MAX_PARALLEL").strip()
         if _env_par:
             return int(_env_par) or None
     except (ValueError, TypeError):

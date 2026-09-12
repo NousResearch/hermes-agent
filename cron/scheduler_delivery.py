@@ -733,7 +733,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         return msg
 
     from agent.delegation_context import delegated_child_subprocess_env
-    env = delegated_child_subprocess_env(os.environ)
+    from tools.environments.local import strip_launch_profile_env
+    env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
     if profile:
         argv += ["-p", profile]
         # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.

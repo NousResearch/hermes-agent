@@ -18,6 +18,7 @@ import os
 import random
 import re
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -115,8 +116,18 @@ class SimplexAdapter(BasePlatformAdapter):
         self._ws = None  # websockets connection
         self._ws_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
+        self._health_prime_task: Optional[asyncio.Task] = None
         self._running = False
         self._last_ws_activity = 0.0
+        self._health_item_highwater: Optional[int] = None
+        self._preprime_deferred_item: Optional[int] = None
+        self._seen_chat_items: set[int] = set()
+        self._pending_chat_items: set[int] = set()
+        self._retry_chat_items: set[int] = set()
+        self._delivering_chat_items: set[int] = set()
+        self._max_unreconciled_seen_items = 2000
+        self._seen_chat_item_order = deque()
+        self._max_recent_reconciled_seen_items = 2000
         self._pending_corr_ids: set = set()  # cosmetic echo filter: corrIds we minted, bounded
         self._max_pending_corr = 200
         self._pending_file_transfers: Dict[int, dict] = {}  # awaiting rcvFileComplete, by fileId
@@ -126,6 +137,7 @@ class SimplexAdapter(BasePlatformAdapter):
         self._text_batch_delay = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._pending_text_batch_item_ids: Dict[str, List[int]] = {}
         logger.info(
             "SimpleX adapter initialized: url=%s auto_accept=%s groups=%s",
             self.ws_url, self.auto_accept, "enabled" if self.group_allow_from else "disabled")
@@ -158,6 +170,7 @@ class SimplexAdapter(BasePlatformAdapter):
         self._running = False
         await _cancel_task(self._ws_task)
         await _cancel_task(self._health_task)
+        await _cancel_task(self._health_prime_task)
         if self._ws:
             with contextlib.suppress(Exception):
                 await self._ws.close()
@@ -168,6 +181,9 @@ class SimplexAdapter(BasePlatformAdapter):
                     item.cancel()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
+        self._pending_text_batch_item_ids.clear()
+        self._pending_chat_items.clear()
+        self._delivering_chat_items.clear()
         self._pending_responses.clear()
         self._mark_disconnected()
         logger.info("SimpleX: disconnected")
@@ -181,6 +197,10 @@ class SimplexAdapter(BasePlatformAdapter):
                 logger.debug("SimpleX WS: connecting to %s", self.ws_url)
                 async with _wsclient.connect(self.ws_url, ping_interval=20, ping_timeout=20, close_timeout=10) as ws:
                     self._ws = ws
+                    if self._health_item_highwater is None:
+                        self._health_prime_task = asyncio.create_task(
+                            self._prime_health_cursor(ws)
+                        )
                     backoff = WS_RETRY_DELAY_INITIAL
                     self._last_ws_activity = time.time()
                     logger.info("SimpleX WS: connected")
@@ -203,18 +223,146 @@ class SimplexAdapter(BasePlatformAdapter):
                 if self._running:
                     logger.warning("SimpleX WS: unexpected error: %s (reconnecting in %.0fs)", e, backoff)
             finally:
+                await _cancel_task(self._health_prime_task)
+                self._health_prime_task = None
                 self._ws = None
             if self._running:
                 await asyncio.sleep(backoff + backoff * 0.2 * random.random())
                 backoff = min(backoff * 2, WS_RETRY_DELAY_MAX)
 
+    @staticmethod
+    def _chat_item_id(item: dict) -> Optional[int]:
+        chat_item = item.get("chatItem")
+        if not isinstance(chat_item, dict):
+            return None
+        meta = chat_item.get("meta")
+        if not isinstance(meta, dict):
+            return None
+        item_id = meta.get("itemId")
+        return (
+            item_id
+            if isinstance(item_id, int) and not isinstance(item_id, bool) and item_id > 0
+            else None
+        )
+
+    def _rewind_health_cursor(self, item_id: int) -> None:
+        """Keep reconciliation behind an item until its delivery is settled."""
+        if (
+            self._health_item_highwater is not None
+            and item_id <= self._health_item_highwater
+        ):
+            self._health_item_highwater = max(0, item_id - 1)
+
+    async def _prime_health_cursor(self, ws=None) -> bool:
+        """Snapshot the latest item through the running correlated receiver."""
+        probe_ws = ws or self._ws
+        response = await self._send_command("/_get items count=1", timeout=10.0)
+        response_items = response.get("chatItems") if isinstance(response, dict) else None
+        valid_response = (
+            isinstance(response, dict)
+            and response.get("type") == "chatItems"
+            and isinstance(response_items, list)
+            and all(
+                isinstance(item, dict) and self._chat_item_id(item) is not None
+                for item in response_items
+            )
+        )
+        if not valid_response:
+            if probe_ws:
+                with contextlib.suppress(Exception):
+                    await probe_ws.close()
+            return False
+        assert isinstance(response_items, list)
+        item_ids = [self._chat_item_id(item) for item in response_items]
+        cursor = max(
+            (item_id for item_id in item_ids if item_id is not None), default=0
+        )
+        unsettled = self._pending_chat_items | self._retry_chat_items
+        if self._preprime_deferred_item is not None:
+            unsettled.add(self._preprime_deferred_item)
+        if unsettled:
+            cursor = min(cursor, max(0, min(unsettled) - 1))
+        self._health_item_highwater = cursor
+        self._preprime_deferred_item = None
+        self._prune_reconciled_seen_items()
+        return True
+
+    async def _run_health_check(self) -> bool:
+        """Replay stored items newer than the last reconciled global item ID."""
+        if self._health_item_highwater is None:
+            return False
+
+        page_size = 100
+        max_pages = 10
+        for _ in range(max_pages):
+            cursor = self._health_item_highwater
+            response = await self._send_command(
+                f"/_get items after={cursor} count={page_size}", timeout=10.0
+            )
+            if not isinstance(response, dict) or response.get("type") != "chatItems":
+                return False
+            response_items = response.get("chatItems")
+            if not isinstance(response_items, list):
+                return False
+            ordered_items = []
+            page_ids = set()
+            for item in response_items:
+                item_id = self._chat_item_id(item) if isinstance(item, dict) else None
+                if item_id is None or item_id <= cursor or item_id in page_ids:
+                    return False
+                page_ids.add(item_id)
+                ordered_items.append((item_id, item))
+            ordered_items.sort(key=lambda pair: pair[0])
+            if not ordered_items:
+                return not response_items
+
+            page_max = ordered_items[-1][0]
+            unsettled = self._pending_chat_items | self._retry_chat_items
+            if any(
+                cursor < item_id <= page_max and item_id not in page_ids
+                for item_id in unsettled
+            ):
+                return False
+
+            previous_cursor = cursor
+            for item_id, item in ordered_items:
+                delivered = await self._handle_chat_item(item, replay=True)
+                if delivered is False:
+                    return True
+                unsettled = self._pending_chat_items | self._retry_chat_items
+                if any(pending_id <= item_id for pending_id in unsettled):
+                    return True
+                self._health_item_highwater = item_id
+                self._prune_reconciled_seen_items()
+            if len(response_items) < page_size:
+                return True
+            if (
+                self._health_item_highwater is None
+                or self._health_item_highwater <= previous_cursor
+            ):
+                return False
+
+        logger.info("SimpleX: health replay backlog remains after %d items", page_size * max_pages)
+        return True
+
     async def _health_monitor(self) -> None:
-        """Log (never reconnect on) WebSocket idleness: simplex-chat legitimately stays
-        application-silent for long periods and the client already sends protocol pings."""
+        """Verify daemon responsiveness and reconcile missed inbound events."""
         while self._running:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
                 break
+            probe_ws = self._ws
+            try:
+                healthy = await self._run_health_check()
+            except Exception:
+                logger.exception("SimpleX: health check failed")
+                healthy = False
+            if not healthy:
+                logger.warning("SimpleX: health check failed, forcing reconnect")
+                if probe_ws and self._ws is probe_ws:
+                    with contextlib.suppress(Exception):
+                        await probe_ws.close()
+                continue
             elapsed = time.time() - self._last_ws_activity
             if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
                 logger.debug("SimpleX: WS application-idle for %.0fs", elapsed)
@@ -246,7 +394,8 @@ class SimplexAdapter(BasePlatformAdapter):
         contact_req_id = (resp.get("contactRequest", {}) or {}).get("contactRequestId")
         if contact_req_id is not None:
             logger.info("SimpleX: auto-accepting contact request %s", _redact_id(str(contact_req_id)))
-            await self._send_command(f"/accept {contact_req_id}")
+            # The event listener must remain free to receive this command's response.
+            await self._send_fire_and_forget(f"/accept {contact_req_id}")
 
     async def _on_rcv_file_descr_ready(self, resp: dict) -> None:
         """XFTP files fire this before newChatItems; start the download now, the chat item arrives later."""
@@ -271,6 +420,13 @@ class SimplexAdapter(BasePlatformAdapter):
         if file_id is None or file_id not in self._pending_file_transfers:
             return
         pending = self._pending_file_transfers.pop(file_id)
+        pending_item_id = self._chat_item_id(pending)
+        if pending_item_id is not None:
+            self._pending_chat_items.discard(pending_item_id)
+            if pending_item_id in self._seen_chat_items:
+                self._retry_chat_items.discard(pending_item_id)
+            else:
+                self._retry_chat_items.add(pending_item_id)
         file_source = file_info.get("fileSource", {}) or {}
         file_path = file_source.get("filePath") if isinstance(file_source, dict) else None
         if file_path:
@@ -290,7 +446,9 @@ class SimplexAdapter(BasePlatformAdapter):
         except Exception:
             logger.exception(err_msg)
 
-    async def _handle_chat_item(self, chat_item: dict) -> None:
+    async def _handle_chat_item(
+        self, chat_item: dict, *, replay: bool = False
+    ) -> Optional[bool]:
         chat_info = chat_item.get("chatInfo", {}) or {}
         chat_item_data = chat_item.get("chatItem", {}) or {}
         chat_type = chat_info.get("type", "")
@@ -333,6 +491,83 @@ class SimplexAdapter(BasePlatformAdapter):
         if not sender_id:
             logger.debug("SimpleX: ignoring message with no sender")
             return
+        # Polling reconciliation can race the live event.  Reject an item that
+        # completed delivery already; deferred/failed items are marked later.
+        item_id = self._chat_item_id(chat_item)
+        if item_id is None:
+            logger.warning("SimpleX: ignoring message with missing or invalid itemId")
+            return False
+        if item_id is not None and item_id in self._seen_chat_items:
+            return True
+        if item_id is not None and item_id in self._delivering_chat_items:
+            return False
+        cursor = self._health_item_highwater
+        if (
+            item_id is not None
+            and not replay
+            and (cursor is None or item_id > cursor)
+            and len(
+                {
+                    seen_id
+                    for seen_id in self._seen_chat_items
+                    if cursor is None or seen_id > cursor
+                }
+                | self._pending_chat_items
+                | self._retry_chat_items
+                | self._delivering_chat_items
+            )
+            >= self._max_unreconciled_seen_items
+        ):
+            if cursor is None:
+                self._preprime_deferred_item = min(
+                    item_id,
+                    self._preprime_deferred_item or item_id,
+                )
+            logger.warning(
+                "SimpleX: reconciliation backlog full; deferring live item %d",
+                item_id,
+            )
+            return False
+        if item_id is not None and item_id in self._pending_chat_items:
+            pending_file = chat_item_data.get("file", {}) or {}
+            pending_source = (
+                pending_file.get("fileSource", {})
+                if isinstance(pending_file, dict)
+                else {}
+            ) or {}
+            file_ready_for_replay = (
+                replay
+                and isinstance(pending_source, dict)
+                and bool(pending_source.get("filePath"))
+            )
+            if not file_ready_for_replay:
+                pending_name = (
+                    pending_file.get("fileName", "")
+                    if isinstance(pending_file, dict)
+                    else ""
+                )
+                pending_id = (
+                    pending_file.get("fileId")
+                    if isinstance(pending_file, dict)
+                    else None
+                )
+                if (
+                    replay
+                    and pending_id is not None
+                    and _is_audio_ext(Path(pending_name).suffix.lower())
+                ):
+                    await self._send_fire_and_forget(f"/freceive {pending_id}")
+                return False
+            ready_file_id = (
+                pending_file.get("fileId")
+                if isinstance(pending_file, dict)
+                else None
+            )
+            if ready_file_id is not None:
+                if self._pending_file_transfers.pop(ready_file_id, None) is None:
+                    return False
+            self._pending_chat_items.discard(item_id)
+            self._retry_chat_items.add(item_id)
         # Attachment: chatItem.chatItem.file (sibling of meta/content/chatDir).
         media_urls: List[str] = []
         media_types: List[str] = []
@@ -349,8 +584,12 @@ class SimplexAdapter(BasePlatformAdapter):
             if not file_path and _is_audio_ext(ext) and file_id is not None:
                 logger.info("SimpleX: voice file %d not yet received, accepting transfer", file_id)
                 self._pending_file_transfers[file_id] = chat_item
+                if isinstance(item_id, int):
+                    self._retry_chat_items.discard(item_id)
+                    self._pending_chat_items.add(item_id)
+                    self._rewind_health_cursor(item_id)
                 await self._send_fire_and_forget(f"/freceive {file_id}")
-                return
+                return False
             if file_path:
                 media_urls.append(file_path)
                 media_types.append(_mime_for_ext(ext))
@@ -371,25 +610,93 @@ class SimplexAdapter(BasePlatformAdapter):
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp, raw_message=chat_item)
         logger.debug("SimpleX: message from %s in %s: %s", _redact_id(sender_id), chat_id[:20], (text or "")[:50])
-        if msg_type == MessageType.TEXT and text:  # batch rapid-fire text into one combined message
+        if isinstance(item_id, int):
+            self._retry_chat_items.discard(item_id)
+            self._pending_chat_items.add(item_id)
+            self._rewind_health_cursor(item_id)
+        if msg_type == MessageType.TEXT and text and not replay:
+            key = self._text_batch_key(msg_event)
+            if isinstance(item_id, int):
+                self._pending_text_batch_item_ids.setdefault(key, []).append(item_id)
             self._enqueue_text_event(msg_event)
-        else:
+            return False
+        if isinstance(item_id, int):
+            self._delivering_chat_items.add(item_id)
+        try:
             await self.handle_message(msg_event)
+        except Exception:
+            if isinstance(item_id, int):
+                self._delivering_chat_items.discard(item_id)
+                self._pending_chat_items.discard(item_id)
+                self._retry_chat_items.add(item_id)
+                self._rewind_health_cursor(item_id)
+            raise
+        if isinstance(item_id, int):
+            self._mark_chat_item_delivered(item_id)
+        return True
 
     # Text batching: enqueue lives on BasePlatformAdapter.
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         return f"{event.source.platform.value}:{event.source.chat_id}"
 
+    def _mark_chat_item_delivered(self, item_id: int) -> None:
+        self._delivering_chat_items.discard(item_id)
+        self._pending_chat_items.discard(item_id)
+        self._retry_chat_items.discard(item_id)
+        self._seen_chat_items.add(item_id)
+        self._seen_chat_item_order.append(item_id)
+
+    def _prune_reconciled_seen_items(self) -> None:
+        """Keep unreconciled IDs plus a bounded recent reconciled window."""
+        cursor = self._health_item_highwater
+        if cursor is None:
+            return
+        unreconciled = {
+            item_id for item_id in self._seen_chat_items if item_id > cursor
+        }
+        recent_reconciled = []
+        retained = set()
+        for item_id in reversed(self._seen_chat_item_order):
+            if item_id <= cursor and item_id not in retained:
+                recent_reconciled.append(item_id)
+                retained.add(item_id)
+                if len(recent_reconciled) >= self._max_recent_reconciled_seen_items:
+                    break
+        retained |= unreconciled
+        self._seen_chat_items = retained
+        self._seen_chat_item_order = deque(
+            item_id for item_id in self._seen_chat_item_order if item_id in retained
+        )
+
     async def _flush_text_batch(self, key: str) -> None:
         """Wait for the quiet period then dispatch the aggregated text."""
         current_task = asyncio.current_task()
+        batch_item_ids: List[int] = []
         try:
             await asyncio.sleep(self._text_batch_delay)
             event = self._pending_text_batches.pop(key, None)
             if event:
+                batch_item_ids = self._pending_text_batch_item_ids.pop(key, [])
                 logger.info("[SimpleX] Flushing text batch %s (%d chars)", key, len(event.text or ""))
                 await self.handle_message(event)
+                for item_id in batch_item_ids:
+                    self._mark_chat_item_delivered(item_id)
+        except asyncio.CancelledError:
+            for item_id in batch_item_ids:
+                self._pending_chat_items.discard(item_id)
+                self._retry_chat_items.add(item_id)
+                self._rewind_health_cursor(item_id)
+            raise
+        except Exception:
+            failed_ids = batch_item_ids or self._pending_text_batch_item_ids.pop(
+                key, []
+            )
+            for item_id in failed_ids:
+                self._pending_chat_items.discard(item_id)
+                self._retry_chat_items.add(item_id)
+                self._rewind_health_cursor(item_id)
+            raise
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -426,6 +733,9 @@ class SimplexAdapter(BasePlatformAdapter):
         try:
             await ws.send(json.dumps({"corrId": corr_id, "cmd": command}))
             return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.CancelledError:
+            self._pending_responses.pop(corr_id, None)
+            raise
         except asyncio.TimeoutError:
             logger.warning("SimpleX: command timed out: %s", command[:50])
         except Exception as e:
@@ -434,7 +744,7 @@ class SimplexAdapter(BasePlatformAdapter):
         return None
 
     async def _send_fire_and_forget(self, command: str) -> None:
-        """Send a command the daemon never replies to with a corrId (e.g. ``/freceive``)."""
+        """Send a command whose correlated response is not needed by the caller."""
         await self._send_ws({"corrId": self._make_corr_id(), "cmd": command})
 
     async def _send_items(self, chat_id: str, items: list, error: str) -> SendResult:

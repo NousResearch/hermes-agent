@@ -46,6 +46,9 @@ def _screen_start(args) -> int:
 
 def _screen_stop(args) -> int:
     from tools.bot_desktop import runtime
+    if runtime.is_supported_host():
+        from tools.bot_desktop import lease
+        lease.release()
     print("Bot Desktop: stopped" if runtime.stop() else "Bot Desktop: was not running")
     return 0
 

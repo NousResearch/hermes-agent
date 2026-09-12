@@ -46,6 +46,7 @@ import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } f
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { normalize } from '@/lib/text'
+import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
@@ -361,20 +362,30 @@ function ToolEntry({ part }: ToolEntryProps) {
   // below and re-running buildToolView (full JSON.stringify of result) on every
   // stream delta — the freeze on big `/learn` runs. Re-derive a stable part from
   // the referentially-stable args/result so the memos hold across deltas.
-  const { args, completedAt, isError, result, timestamp, toolCallId, toolName } = part
+  const { args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName } = part
 
   const stablePart = useMemo<ToolPart>(
-    () => ({ args, completedAt, isError, result, timestamp, toolCallId, toolName, type: 'tool-call' }),
-    [args, completedAt, isError, result, timestamp, toolCallId, toolName]
+    () => ({
+      args,
+      completedAt,
+      isError,
+      result,
+      toolResultMetadata,
+      timestamp,
+      toolCallId,
+      toolName,
+      type: 'tool-call'
+    }),
+    [args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
   )
 
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
   const dismissed = useStore($toolRowDismissed(disclosureId))
-  const isPending = messageRunning && result === undefined
+  const isPending = messageRunning && result === undefined && completedAt === undefined
   // Subscribe to this tool's diff only, so a live patch for one tool doesn't
   // re-render every mounted tool row (the factory caches a per-id atom).
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
-  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
+  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff)
   const open = useDisclosureOpen(disclosureId, defaultOpen)
@@ -386,11 +397,11 @@ function ToolEntry({ part }: ToolEntryProps) {
   const enterRef = useEnterAnimation(messageRunning && !embedded, `tool-entry:${disclosureId}`)
   const elapsed = useElapsedSeconds(isPending, `tool:${disclosureId}`)
 
-  // Stale parts (no result, but message stopped running) get a synthetic empty
-  // result so buildToolView treats them as completed-no-output. Keyed on
-  // stablePart so it recomputes only when this tool's data changes.
+  // A stopped turn is not evidence that an unobserved tool succeeded. Use a
+  // presentation-only completion marker, never manufacture a result.
   const view = useMemo(() => {
-    const p = !isPending && result === undefined ? { ...stablePart, result: {} } : stablePart
+    const p =
+      !isPending && result === undefined ? { ...stablePart, completedAt: stablePart.completedAt ?? 0 } : stablePart
 
     return buildToolView(p, inlineDiff)
   }, [inlineDiff, isPending, result, stablePart])
@@ -900,7 +911,9 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
                   : Math.min(earliest, tool.timestamp),
             undefined
           ),
-          pendingApprovalTool: tools.some(tool => tool.result === undefined && APPROVAL_TOOLS.has(tool.toolName)),
+          pendingApprovalTool: timelineTools.some(
+            tool => tool.result === undefined && tool.completedAt === undefined && APPROVAL_TOOLS.has(tool.toolName)
+          ),
           summary: summarizeToolRun(tools, live)
         }
       }
@@ -1035,7 +1048,8 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
  * its return type and the underlying ToolEntry stays mounted across
  * group-shape changes.
  */
-type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
+type TimelineToolCallProps = ToolCallMessagePartProps &
+  Pick<ToolPart, 'completedAt' | 'timestamp' | 'toolResultMetadata'>
 
 export const ToolFallback = ({
   toolCallId,
@@ -1044,9 +1058,20 @@ export const ToolFallback = ({
   completedAt,
   isError,
   result,
+  toolResultMetadata,
   timestamp
 }: TimelineToolCallProps) => {
-  const part: ToolPart = { args, completedAt, isError, result, timestamp, toolCallId, toolName, type: 'tool-call' }
+  const part: ToolPart = {
+    args,
+    completedAt,
+    isError,
+    result,
+    toolResultMetadata,
+    timestamp,
+    toolCallId,
+    toolName,
+    type: 'tool-call'
+  }
 
   return <ToolEntry part={part} />
 }

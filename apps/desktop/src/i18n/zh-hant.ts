@@ -3240,6 +3240,7 @@ export const zhHant = defineLocale({
       statusError: '錯誤',
       statusRecovered: '已復原',
       statusDone: '完成',
+      resultUnavailable: '結果無法使用',
       memoryWriteNoted: '已記下記憶寫入',
       actions: {
         read: '已讀取',

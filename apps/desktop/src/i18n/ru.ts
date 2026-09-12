@@ -3662,6 +3662,7 @@ export const ru = defineLocale({
       statusError: 'Ошибка',
       statusRecovered: 'Восстановлено',
       statusDone: 'Готово',
+      resultUnavailable: 'Результат недоступен',
       memoryWriteNoted: 'Запись в память отмечена',
       actions: {
         read: 'Чтение',

@@ -3355,6 +3355,7 @@ export const ja = defineLocale({
       statusError: 'エラー',
       statusRecovered: '回復しました',
       statusDone: '完了',
+      resultUnavailable: '結果を取得できません',
       memoryWriteNoted: 'メモリへの書き込みを記録',
       actions: {
         read: '読み取り完了',

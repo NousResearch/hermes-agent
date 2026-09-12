@@ -88,15 +88,33 @@ def _require_room(conn: sqlite3.Connection, room_id: str) -> None:
 
 
 def _settled_message(
-    conn: sqlite3.Connection, room_id: str, discussion_event_id: str, message_event_id: Any) -> dict[str, Any] | None:
-    """Read the committed message even after its active discussion was compacted."""
+conn: sqlite3.Connection, room_id: str, discussion_event_id: str, message_event_id: Any
+) -> dict[str, Any] | None:
+    """Return the member message a ``turn.settled`` event committed.
+
+    Reads the active projection first, then the durable log: once the round
+    settles the projection rows are dropped, but the committed message must
+    still reach the thread transcript (issue #104007).
+    """
+    rows = conn.execute(
+        "SELECT seq, event_json FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=?",
+        (room_id, discussion_event_id)).fetchall()
+    found = next(
+        (m for m in (json.loads(row["event_json"]) for row in rows) if m.get("event_id") == message_event_id),
+        None)
+    if found is not None:
+        return found
     row = conn.execute(
         f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND event_id=?",
         (room_id, message_event_id)).fetchone()
     if row is None:
         return None
     event = _event_from_room_row(row)
-    if event["kind"] != "message.member" or _text(event["payload"], "discussion_event_id") != discussion_event_id:
+    payload = event.get("payload")
+    if (
+        str(event.get("kind")) != "message.member" or not isinstance(payload, Mapping)
+        or _text(payload, "discussion_event_id") != discussion_event_id
+    ):
         return None
     return event
 
@@ -200,17 +218,25 @@ class HostedRoomPolicyCheckpoint:
         self._store_transcript_event(conn, event=event, thread_id=thread_id)
 
     def _apply_discussion_event(
-        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
-        """Index member messages and terminal turn outcomes of a known discussion."""
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]
+    ) -> None:
+        """Index member messages and terminal turn outcomes of a known discussion.
+
+        Terminal outcomes additionally record their publication and watermark
+        from their own payload when the discussion already settled: the active
+        projection is dropped on settle, but a retried turn may still complete
+        afterwards and must publish exactly once (issue #104007).
+        """
         room_id, seq, kind = str(event["room_id"]), int(event["seq"]), _text(event, "kind")
         thread_id, discussion_event_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
-        if conn.execute(
+        known = conn.execute(
             "SELECT 1 FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=? LIMIT 1",
-            (room_id, discussion_event_id)).fetchone() is not None:
+            (room_id, discussion_event_id)).fetchone() is not None
+        if known:
             self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
-        # Late outcomes still need publication receipts and transcript commits,
-        # but must not resurrect a completed discussion's active projection.
-        if kind not in _TERMINAL_KINDS:
+            if kind not in _TERMINAL_KINDS:
+                return
+        elif kind not in _TERMINAL_KINDS:
             return
         task_id = _text(payload, "task_id")
         execution_generation = int(payload.get("execution_generation") or 0) if kind == "turn.deferred" else 0
@@ -344,18 +370,32 @@ class HostedRoomPolicyCheckpoint:
             row = conn.execute(
                 f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?",
                 (room_id, source_event_seq)).fetchone()
-            if row is None or row["kind"] != "message.user":
+            source = conn.execute(
+                "SELECT discussion_event_id, thread_id FROM hosted_room_policy_events WHERE room_id=? AND seq=?",
+                (room_id, source_event_seq)).fetchone()
+            if source is not None:
+                return self._discussion_events(
+                    conn, room_id=room_id, thread_id=str(source["thread_id"]),
+                    discussion_event_id=str(source["discussion_event_id"]),
+                    bound_error="task policy projection exceeded its bound")
+            # The active projection is dropped once the round settles
+            # (_apply_room_activity), but a retried turn may still complete
+            # afterwards. Fall back to the durable log, which never forgets
+            # the source user event, and merge it with the thread transcript.
+            if row is None:
                 return []
-            source = _event_from_room_row(row)
-            events = self._discussion_events(
-                conn, room_id=room_id, thread_id=_text(source["payload"], "thread_id"),
-                discussion_event_id=str(source["event_id"]),
+            event = _event_from_room_row(row)
+            if str(event.get("kind")) != "message.user":
+                return []
+            payload = event.get("payload")
+            thread_id = _text(payload, "thread_id") if isinstance(payload, Mapping) else ""
+            event_id = str(event.get("event_id") or "")
+            if not thread_id or not event_id:
+                return []
+            return self._discussion_events(
+                conn, room_id=room_id, thread_id=thread_id,
+                discussion_event_id=event_id,
                 bound_error="task policy projection exceeded its bound")
-            # The source can age out of BOTH bounded projections while a
-            # deferred task remains retryable. Its frozen prompt lives in the task.
-            by_seq = {event["seq"]: event for event in events}
-            by_seq[source_event_seq] = source
-            return [by_seq[seq] for seq in sorted(by_seq)]
 
     def compact_completed(self, *, room_id: str) -> None:
         """Drop any completed projections left by an interrupted sync."""

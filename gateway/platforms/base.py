@@ -180,6 +180,31 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     return is_voice or normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
 
 
+def tts_scratch_dir() -> str:
+    """Return an app-owned scratch dir for gateway TTS synthesis.
+
+    Must live inside HERMES_WRITE_SAFE_ROOT: tools.tts_tool refuses
+    ``output_path`` values outside the safe roots (agent.file_safety), and
+    the OS temp dir is never inside them — which broke gateway auto-TTS
+    whenever a safe root was configured. Reuse tools.tts_tool's profile-aware
+    output dir (it re-resolves from the live HERMES_HOME every call via
+    ``hermes_constants.get_hermes_home``, respecting profile overrides) instead
+    of re-implementing a weaker resolver here; when a safe root is configured
+    but that dir sits outside it, fall back to the first safe root, then the OS
+    temp dir when no safe root is configured.
+    """
+    from tools.tts_tool import _default_output_dir
+    scratch = _default_output_dir()
+    from agent.file_safety import get_safe_write_roots
+    roots = get_safe_write_roots()
+    if roots:
+        resolved = os.path.realpath(scratch)
+        if not any(resolved == r or resolved.startswith(r + os.sep) for r in roots):
+            scratch = os.path.join(sorted(roots)[0], "cache", "hermes_voice")
+    os.makedirs(scratch, exist_ok=True)
+    return scratch
+
+
 def build_auto_tts_output_path(platform) -> str:
     """Unique temp output path for gateway auto-TTS: ``.ogg`` for ``OPUS_VOICE_PLATFORMS``
     (the tool's ``_repair_ogg_container`` then guarantees real Opus bytes), else ``.mp3``.
@@ -194,8 +219,8 @@ def build_auto_tts_output_path(platform) -> str:
     from tools.tts_tool import OPUS_VOICE_PLATFORMS
     ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
     audio_path = os.path.join(
-        tempfile.gettempdir(), "hermes_voice", f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
-    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+        tts_scratch_dir(),
+        f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
     return audio_path
 
 

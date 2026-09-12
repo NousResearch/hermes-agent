@@ -12,6 +12,8 @@ voice bubble). The fix passes an explicit output path from
 
 import asyncio
 import json
+import os
+import tempfile
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -140,3 +142,61 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
     adapter.play_tts.assert_not_awaited()
     # Text reply still goes out.
     assert adapter.sent and adapter.sent[0]["content"] == "reply text"
+
+
+# ---------------------------------------------------------------------------
+# #80386: HERMES_WRITE_SAFE_ROOT must not reject auto-TTS paths (tts_scratch_dir)
+# ---------------------------------------------------------------------------
+
+
+def test_tts_scratch_dir_respects_write_safe_root():
+    """Docker defaults HERMES_HOME and WRITE_SAFE_ROOT to the same tree.
+
+    Auto-TTS must land under that tree, not /tmp (which is write-denied).
+    """
+    from agent.file_safety import is_write_denied
+    from gateway.platforms.base import tts_scratch_dir
+
+    base = tempfile.mkdtemp(prefix="tts_scratch_")
+    try:
+        safe = os.path.join(base, "opt", "data")
+        os.makedirs(safe, exist_ok=True)
+        os.environ["HERMES_HOME"] = safe
+        os.environ["HERMES_WRITE_SAFE_ROOT"] = safe
+        os.environ.pop("HERMES_HOME_PROFILE", None)
+
+        scratch = tts_scratch_dir()
+        assert scratch.startswith(safe), scratch
+        assert not is_write_denied(os.path.join(scratch, "tts_probe")), scratch
+        assert os.path.isdir(scratch)
+    finally:
+        for k in ("HERMES_HOME", "HERMES_WRITE_SAFE_ROOT"):
+            os.environ.pop(k, None)
+        import shutil
+
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_tts_scratch_dir_falls_back_to_safe_root_when_home_outside():
+    """If HERMES_HOME is outside WRITE_SAFE_ROOT, fall back to the safe root."""
+    from agent.file_safety import is_write_denied
+    from gateway.platforms.base import tts_scratch_dir
+
+    base = tempfile.mkdtemp(prefix="tts_scratch_")
+    try:
+        home = os.path.join(base, "home")
+        safe = os.path.join(base, "safe")
+        os.makedirs(home, exist_ok=True)
+        os.makedirs(safe, exist_ok=True)
+        os.environ["HERMES_HOME"] = home
+        os.environ["HERMES_WRITE_SAFE_ROOT"] = safe
+
+        scratch = tts_scratch_dir()
+        assert scratch.startswith(safe), scratch
+        assert not is_write_denied(os.path.join(scratch, "tts_probe")), scratch
+    finally:
+        for k in ("HERMES_HOME", "HERMES_WRITE_SAFE_ROOT"):
+            os.environ.pop(k, None)
+        import shutil
+
+        shutil.rmtree(base, ignore_errors=True)

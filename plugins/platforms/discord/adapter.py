@@ -3325,10 +3325,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             phrases = self._voice_fx_cfg.get("ack_phrases") or ["One moment."]
             phrase = random.choice(phrases)
         import uuid as _uuid
+        from gateway.platforms.base import tts_scratch_dir
         audio_path = os.path.join(
-            tempfile.gettempdir(), "hermes_voice", f"ack_{_uuid.uuid4().hex[:12]}.mp3",
+            tts_scratch_dir(),
+            f"ack_{_uuid.uuid4().hex[:12]}.mp3",
         )
-        os.makedirs(os.path.dirname(audio_path), exist_ok=True)
         try:
             from tools.tts_tool import text_to_speech_tool
             result_json = await asyncio.to_thread(

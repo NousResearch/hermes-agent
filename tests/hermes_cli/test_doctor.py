@@ -26,6 +26,44 @@ from hermes_cli import doctor_config
 from tools import browser_tool_install as bt_install
 
 
+@pytest.fixture(autouse=True)
+def _disable_live_npm_audits(monkeypatch):
+    """Doctor unit tests must not access the npm registry."""
+    monkeypatch.setattr(doctor_tools, "bounded_probe_run", lambda *args, **kwargs: None, raising=False)
+
+
+def test_npm_audit_uses_bounded_probe_with_workspace_cwd(monkeypatch, tmp_path):
+    expected = SimpleNamespace(returncode=0, stdout="{}", stderr="")
+    calls = []
+
+    def fake_bounded_probe_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return expected
+
+    def reject_direct_run(*args, **kwargs):
+        raise AssertionError("npm audit must not use subprocess.run")
+
+    monkeypatch.setattr(doctor_tools, "bounded_probe_run", fake_bounded_probe_run)
+    monkeypatch.setattr(doctor_tools.subprocess, "run", reject_direct_run)
+
+    issues = []
+    doctor_tools._audit_one(
+        "npm.cmd",
+        tmp_path,
+        "web workspace",
+        ["--workspace", "web"],
+        issues,
+    )
+
+    assert calls == [
+        (
+            ["npm.cmd", "audit", "--json", "--workspace", "web"],
+            {"cwd": str(tmp_path), "timeout": 30},
+        )
+    ]
+    assert issues == []
+
+
 class TestDoctorPlatformHints:
     def test_termux_package_hint(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")

@@ -4023,12 +4023,12 @@ class TelegramAdapter(BasePlatformAdapter):
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
         return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton("✗ Cancel", callback_data="mx")])
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+    def _build_model_keyboard(self, models: list, page: int, bedrock: bool = True) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         # Labels are derived from the WHOLE list so a model's label cannot change as
         # the user pages; only this page's slice is rendered. IDs stay untouched —
         # selection is the positional ``mm:<idx>`` callback.
-        labels = bedrock_model_labels(models)
+        labels = bedrock_model_labels(models, bedrock=bedrock)
         _page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
         buttons = [InlineKeyboardButton(labels[start + i], callback_data=f"mm:{start + i}")
@@ -4044,11 +4044,8 @@ class TelegramAdapter(BasePlatformAdapter):
         provider rather than on the IDs alone. ``openai-codex`` also ships
         ``openai.``-prefixed IDs and must keep the original flat flow.
         """
-        try:
-            from hermes_cli.models import normalize_provider
-            return normalize_provider(provider_slug) == "bedrock"
-        except Exception:
-            return str(provider_slug or "").lower() == "bedrock"
+        from hermes_cli.models import normalize_provider
+        return normalize_provider(provider_slug) == "bedrock"
 
     def _build_vendor_keyboard(self, models: list) -> "InlineKeyboardMarkup":
         """Vendor drill-down keyboard for a Bedrock-shaped model list."""
@@ -4094,11 +4091,15 @@ class TelegramAdapter(BasePlatformAdapter):
         """Render the model page for the provider currently selected in ``state``."""
         models = state.get("model_list", [])
         state["model_page"] = page
-        keyboard, page_info = self._build_model_keyboard(models, page)
+        # Bedrock-specific display (namespace stripping, routing legend) is scoped to
+        # Bedrock: elsewhere a ``<vendor>.`` segment is part of the name, not a
+        # namespace the picker already named.
+        is_bedrock = self._is_bedrock_provider(state.get("selected_provider", ""))
+        keyboard, page_info = self._build_model_keyboard(models, page, bedrock=is_bedrock)
         pname = state.get("selected_provider_name", "")
         # A bare label means "no routing namespace"; say so once in the body,
         # where it costs no button width, instead of prefixing every button.
-        legend = routing_legend(models, configured_region_geo())
+        legend = routing_legend(models, configured_region_geo()) if is_bedrock else ""
         legend_line = f"\n*{legend}*" if legend else ""
         vendor = state.get("selected_vendor", "")
         if vendor:

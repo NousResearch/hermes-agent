@@ -90,48 +90,50 @@ def _display_short(vendor: str, short: str) -> str:
     return short.removeprefix("claude-") if vendor == "anthropic" else short
 
 
-def _clamp(label: str, tail_len: int = 0, limit: int = _MAX_LABEL) -> str:
+def _clamp(label: str, limit: int = _MAX_LABEL) -> str:
     """Fit *label* in *limit* characters, keeping both ends.
 
     Bedrock's long IDs differ in their TAIL (``…-preview-20260101-v1:0`` vs
     ``…-20260202-v1:0``), so a head-only clamp deletes exactly the part that
     tells two buttons apart and re-creates the collision these labels exist to
     remove. Eliding the middle keeps the head, which says what the model is, and
-    the tail, which says which variant it is. *tail_len* forces a wider tail when
-    the caller knows the discriminating text sits further left.
+    the tail, which says which variant it is.
     """
     if len(label) <= limit:
         return label
     keep = limit - 1  # one character for the ellipsis
-    tail = min(keep, max(tail_len, keep // 2))
+    tail = keep // 2
     return f"{label[:keep - tail]}…{label[len(label) - tail:]}"
 
 
-def _clamp_distinct(labels: List[str], limit: int = _MAX_LABEL) -> List[str]:
-    """Clamp *labels* to *limit*, keeping already-distinct entries distinct.
+def _clamp_distinct(labels: List[str], identities: List[str]) -> List[str]:
+    """Fit the complete list, reserving every label before resolving collisions.
 
-    Clamping is the last step before a button is rendered, so it is where an
-    otherwise-correct label set can still collapse into identical buttons. For
-    each colliding group the tail is widened until it covers the first character
-    where the members differ, which is the minimum the user needs to tell them
-    apart. Order is preserved: callbacks are positional.
+    Middle ellipses preserve useful model/version text. If that still loses the
+    distinction, append a rank of the original ID in the sorted complete list.
+    Reserve literal labels too: an ID may itself end in a rank-looking suffix.
+    Labels stay stable across pagination and reordering of distinct IDs.
     """
-    clamped = [_clamp(label, limit=limit) for label in labels]
+    clamped = [_clamp(label) for label in labels]
     groups: Dict[str, List[int]] = {}
     for i, label in enumerate(clamped):
         groups.setdefault(label, []).append(i)
-
-    for idx in groups.values():
-        if len(idx) < 2:
+    ranks = {i: rank for rank, i in enumerate(
+        sorted(range(len(labels)), key=lambda i: (identities[i], i)), start=1)}
+    used = set(clamped)
+    for indices in groups.values():
+        if len(indices) < 2:
             continue
-        originals = [labels[i] for i in idx]
-        if len(set(originals)) < len(originals):
-            continue  # genuinely identical input: no truncation can separate them
-        # First position where the group's members stop agreeing.
-        shortest = min(len(o) for o in originals)
-        diff_at = next((p for p in range(shortest) if len({o[p] for o in originals}) > 1), shortest)
-        for i in idx:
-            clamped[i] = _clamp(labels[i], tail_len=len(labels[i]) - diff_at, limit=limit)
+        for i in sorted(indices, key=ranks.__getitem__):
+            ordinal = ranks[i]
+            while True:
+                suffix = f" [{ordinal}]"
+                candidate = _clamp(labels[i], limit=_MAX_LABEL - len(suffix)) + suffix
+                if candidate not in used:
+                    break
+                ordinal += len(labels)
+            clamped[i] = candidate
+            used.add(candidate)
     return clamped
 
 
@@ -140,7 +142,7 @@ def _geo_prefix(geo: str) -> str:
     return "G" if geo == "global" else geo
 
 
-def model_button_labels(models: List[str]) -> List[str]:
+def model_button_labels(models: List[str], bedrock: bool = True) -> List[str]:
     """Readable, pairwise-distinct labels for *models*, one per entry, same order.
 
     The routing namespace is dropped when the model name alone is unambiguous and
@@ -154,7 +156,14 @@ def model_button_labels(models: List[str]) -> List[str]:
     Collisions are counted over the list the caller renders, on the label as
     displayed, so labels neither change as the user pages nor collide after the
     vendor prefix is stripped.
+
+    *bedrock* is False for any other provider: its IDs are shown verbatim, since a
+    ``<vendor>.`` segment there is part of the name the user typed, not a routing
+    namespace the picker already named. Only the width clamp still applies — that
+    one is a Telegram limit, not a Bedrock nicety.
     """
+    if not bedrock:
+        return _clamp_distinct([m.split("/")[-1] if "/" in m else m for m in models], models)
     parsed = [split_bedrock_id(m) for m in models]
     counts: Dict[str, int] = {}
     for _geo, vendor, short in parsed:
@@ -171,7 +180,7 @@ def model_button_labels(models: List[str]) -> List[str]:
         labels.append(label)
     # Clamped last, and collision-aware: the width limit is itself a way to turn
     # two distinct labels into one indistinguishable button.
-    return _clamp_distinct(labels)
+    return _clamp_distinct(labels, models)
 
 
 def routing_legend(models: List[str], region_geo: str = "") -> str:

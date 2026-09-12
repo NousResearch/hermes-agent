@@ -54,6 +54,43 @@ class TestLabelsStayDistinctAfterTruncation:
         assert len(set(labels)) == 2, labels
         assert labels[0].endswith("v1:0") and labels[1].endswith("v2:0"), labels
 
+    @pytest.mark.parametrize("count", [2, 3, 5])
+    def test_variation_buried_between_two_long_common_runs_still_separates(self, count):
+        """The hard shape: the IDs agree on a long head AND on a long tail, and
+        differ only in the middle. Neither keeping the head nor keeping the tail
+        can separate them once both exceed the button width, so the label needs a
+        deterministic fallback. Distinctness is the contract — the exact rendering
+        is not asserted."""
+        models = [f"anthropic.claude-{'a' * 45}{c}{'z' * 60}" for c in "XYZWV"[:count]]
+
+        labels = model_button_labels(models)
+
+        assert len(labels) == count
+        assert len(set(labels)) == count, labels
+        assert all(label.strip() for label in labels), labels
+        assert all(len(label) <= 38 for label in labels), labels
+
+    def test_labels_do_not_depend_on_the_order_models_arrive_in(self):
+        """A fallback keyed on list position would relabel every button as soon as
+        the catalog is reordered or paged differently. Same set in, same labels
+        out."""
+        models = [f"anthropic.claude-{'a' * 45}{c}{'z' * 60}" for c in "XYZ"]
+
+        forward = model_button_labels(models)
+        backward = model_button_labels(list(reversed(models)))
+
+        assert set(forward) == set(backward)
+        assert dict(zip(models, forward)) == dict(zip(reversed(models), backward))
+
+    def test_fallback_cannot_collide_with_an_existing_literal_label(self):
+        models = [f"anthropic.claude-{'a' * 45}{c}{'z' * 60}" for c in "XYZ"]
+        # Reserve a string that looks exactly like the formatter's own fallback.
+        literal = model_button_labels(models)[0]
+        models += [literal, "moonshot.same", "moonshotai.same"]
+        labels = model_button_labels(models)
+        assert len(set(labels)) == len(models), labels
+        assert all(0 < len(label) <= 38 for label in labels)
+
 
 class TestVendorGroupingLosesNothing:
     # A listing that mixes known vendors with an ID whose vendor segment Hermes
@@ -103,6 +140,98 @@ class TestVendorGroupingLosesNothing:
         to keep the original two-step flow instead of routing every provider
         through a pointless single ``Other`` button."""
         assert group_models_by_vendor(models) == []
+
+
+class TestNonBedrockProvidersKeepVerbatimLabels:
+    """Label shaping is Bedrock-specific and must not reach other providers.
+
+    ``_is_bedrock_provider`` gates the vendor drill-down, but the labels and the
+    routing legend are computed for whatever list the picker renders. Stripping a
+    ``openai.`` segment off an ``openai-codex`` ID, or explaining routing scopes
+    that provider does not have, is a change to a provider this fix never claimed
+    to touch.
+    """
+
+    def test_a_vendor_like_prefix_is_not_stripped_for_another_provider(self):
+        from plugins.platforms.telegram.model_picker_display import model_button_labels as labels_for
+
+        models = ["openai.gpt-6-astra", "openai.gpt-5.6-terra"]
+
+        assert labels_for(models, bedrock=False) == models
+        # Bedrock is where the prefix IS redundant, because the vendor step named it.
+        assert labels_for(models, bedrock=True) == ["gpt-6-astra", "gpt-5.6-terra"]
+
+    def test_no_routing_legend_for_a_non_bedrock_list(self):
+        from plugins.platforms.telegram.model_picker_display import routing_legend
+
+        assert routing_legend(["gpt-4o-mini", "o3"], "us") == ""
+
+    def test_width_clamp_still_applies_and_stays_distinct(self):
+        """The clamp is a Telegram limit, not a Bedrock nicety: it applies to every
+        provider, and must not merge two distinct IDs into one button there either."""
+        from plugins.platforms.telegram.model_picker_display import model_button_labels as labels_for
+
+        models = [f"vendor/some-really-long-model-name-that-will-not-fit-{c}" for c in "AB"]
+
+        labels = labels_for(models, bedrock=False)
+
+        assert all(len(label) <= 38 for label in labels), labels
+        assert len(set(labels)) == 2, labels
+
+    @pytest.mark.asyncio
+    async def test_real_route_leaves_a_non_bedrock_provider_verbatim(self):
+        """Walked through the real callback dispatcher, not the helper alone.
+
+        ``openai-codex`` ships ``openai.``-prefixed IDs, so this is the provider a
+        shape-only gate would have re-labelled. It must land straight on the model
+        list, with the IDs shown as advertised and no routing legend.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.telegram import adapter as telegram_adapter
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        class _Button:
+            def __init__(self, text, callback_data=None):
+                self.text, self.callback_data = text, callback_data
+
+        class _Markup:
+            def __init__(self, inline_keyboard):
+                self.inline_keyboard = inline_keyboard
+
+        original = (telegram_adapter.InlineKeyboardButton, telegram_adapter.InlineKeyboardMarkup)
+        telegram_adapter.InlineKeyboardButton, telegram_adapter.InlineKeyboardMarkup = _Button, _Markup
+        try:
+            adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+            adapter._bot, adapter._app = AsyncMock(), MagicMock()
+            models = ["openai.gpt-6-astra", "openai.gpt-5.6-terra"]
+            adapter._model_picker_state["12345"] = {
+                "providers": [{"slug": "openai-codex", "name": "Codex", "models": models,
+                               "total_models": len(models)}],
+                "current_model": models[0], "current_provider": "openai-codex",
+                "session_key": "s", "on_model_selected": AsyncMock(return_value="ok"), "msg_id": 42}
+
+            query = AsyncMock()
+            query.data = "mp:openai-codex"
+            query.message = MagicMock()
+            query.message.chat_id = 12345
+            query.from_user = MagicMock()
+            query.edit_message_text = AsyncMock()
+            await adapter._handle_callback_query(SimpleNamespace(callback_query=query), MagicMock())
+
+            assert query.edit_message_text.await_count == 1, "tap reached no handler"
+            kwargs = query.edit_message_text.call_args[1]
+            buttons = [b for row in kwargs["reply_markup"].inline_keyboard for b in row]
+            picks = [(b.text, b.callback_data) for b in buttons
+                     if str(b.callback_data).startswith("mm:")]
+            # Straight to the models (no vendor step) and IDs untouched.
+            assert picks == [("openai.gpt-6-astra", "mm:0"), ("openai.gpt-5.6-terra", "mm:1")]
+            assert not [b for b in buttons if str(b.callback_data).startswith("mvd:")]
+            assert "in-region" not in kwargs["text"] and "= global" not in kwargs["text"]
+        finally:
+            telegram_adapter.InlineKeyboardButton, telegram_adapter.InlineKeyboardMarkup = original
 
 
 class TestOnlyBedrockGetsTheVendorStep:

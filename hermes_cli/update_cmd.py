@@ -75,7 +75,7 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _INSTALL_DEFINING_FILES, _SELF_LOCKING_NATIVE_MODULES, _UPDATE_CRITICAL_MODULES,
     _abort_dependency_sync_if_self_locked, _capture_active_lazy_features,
     _capture_active_tool_dependencies, _critical_module_import_failures,
-    _defer_update_for_self_lock, _dependency_sync_would_rewrite, _desktop_app_present,
+    _defer_update_for_self_lock, _dependency_sync_would_rewrite, _desktop_app_present, _desktop_rebuild_warranted,
     _detect_self_loaded_native_modules, _editable_install_is_current, _ensure_uv_for_termux,
     _ensure_venv_pip, _install_psutil_android_compat, _is_android_python, _npm_bin_exists,
     _npm_lockfile_changed, _npm_manifest_paths, _npm_manifests_digest, _path_uid,
@@ -1315,7 +1315,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # the only phase the lock can actually break — and only when the sync would truly rewrite the loaded
     # distribution.
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-    had_desktop_app_before_update = _desktop_app_present(desktop_dir)
+    had_desktop_app_before_update = _desktop_rebuild_warranted(desktop_dir)
 
     use_zip_update, git_cmd, is_fork = _prepare_git_command()
 

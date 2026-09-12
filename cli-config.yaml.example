@@ -1309,6 +1309,7 @@ platform_toolsets:
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
+#       tls_classic_key_exchange: false  # Opt in to X25519 for TLS handshake EOFs on PQ-incompatible paths; keeps TLS 1.3 and certificate verification
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames

@@ -149,11 +149,13 @@ def _mask_quoted_prose(command: str) -> str:
 
     Detection-only rewrite used by the quote-masked hardline rules (redirect-to-block-device, fork bomb):
     text inside single or double quotes is data the shell passes as an argument, so `echo "cat f >
-    /dev/sda"` must not trip the unconditional floor (#93392). Unquoted text is untouched.
-    """
+    /dev/sda"` must not trip the unconditional floor (#93392). Unquoted text is untouched. ``#``
+    comments are skipped without interpreting their quote syntax: a comment is data the shell
+    discards, so an apostrophe in prose (`# don't`) must not flip the masker into an open-quote
+    state that then exposes following quoted prose (#108707)."""
     return "".join(
         command[i:j] if quote is None or kind in ("quote", "subst") else " " * (j - i)
-        for kind, i, j, quote in _scan_shell(command, subst="q", naive_backtick=True)
+        for kind, i, j, quote in _scan_shell(command, subst="q", naive_backtick=True, comments=True)
     )
 
 
@@ -629,7 +631,12 @@ def _shell_tokens_with_spans(segment: str, start: int):
     Without that, a grep nested as ``"$(grep … | cut …)"`` was lexed together with the enclosing
     command's closing quote, read as unbalanced quoting, and reported as a hardline block (546
     blocked turns in one run, every one a false positive; ``sed -n "$(grep -n X f | cut -d: -f1),+3p" f``
-    is the canonical shape)."""
+    is the canonical shape).
+
+    ``#`` comments are skipped without interpreting their quote syntax: a command inside a
+    substitution body keeps the shell's comment contract even though the top-level segment splitter
+    never sees that body, so ``"$(grep -n X f # don't)"`` no longer lexes the comment's apostrophe
+    as an unterminated quote (#108707)."""
     tokens, value, token_start, quote = [], [], None, None
     depth = 0  # $(...) nesting opened AFTER start; a closer at depth 0 ends the enclosing substitution
     # A backtick opened AFTER start is an operand substitution (``grep -e `cmd` f``); the matching
@@ -644,7 +651,9 @@ def _shell_tokens_with_spans(segment: str, start: int):
         tokens.append(("".join(value), token_start, end, inert))
 
     end_at = len(segment)
-    for kind, i, _, _ in _scan_shell(segment, start):
+    for kind, i, _, _ in _scan_shell(segment, start, comments=True):
+        if kind == "comment":
+            continue  # a comment is a word boundary, never a shell word
         ch = segment[i]
         if kind == "char" and not quote:
             if ch.isspace() and ch != "\n":
@@ -971,9 +980,13 @@ def _scan_shell(text: str, start: int = 0, end: int | None = None, *, subst: str
 
 
 def _scan_dollar_paren_end(command: str, start: int) -> int | None:
-    """Return the offset after a balanced ``$(...)`` command substitution."""
+    """Return the offset after a balanced ``$(...)`` command substitution.
+
+    A ``#`` comment inside the body is honored, so a quoted apostrophe in its prose (`# don't`) no
+    longer leaves the substitution looking unterminated: the closer is found where the shell finds
+    it, instead of the enclosing command being refused as malformed (#108707)."""
     depth = 1
-    for kind, i, _, quote in _scan_shell(command, start + 2):
+    for kind, i, _, quote in _scan_shell(command, start + 2, comments=True):
         if kind == "char" and not quote:
             depth += command.startswith("$(", i) - (command[i] == ")")
             if depth == 0:
@@ -1122,9 +1135,14 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
     inside double quotes is EXECUTABLE, not data: its body is re-scanned with a fresh quote state so a
     newline that separates commands inside it survives as a command boundary. Masking it as quoted
     data turned ``"$(grep x f\nreboot)"`` into ``... f reboot)``, which no later stage can tell from an
-    operand; the pre-fix scanner only caught it by refusing the whole command as malformed."""
+    operand; the pre-fix scanner only caught it by refusing the whole command as malformed.
+
+    ``#`` comments are excluded from quote tracking: they are discarded by the shell, never
+    executed. An apostrophe in prose (`# don't`) otherwise opened a quote that absorbed the following
+    newline, fusing the next command line onto the comment and hiding it from every command-position
+    rule (#108707)."""
     out: list[str] = []
-    for kind, i, j, quote in _scan_shell(command, start, end, subst="q"):
+    for kind, i, j, quote in _scan_shell(command, start, end, subst="q", comments=True):
         if kind == "subst":
             # j is the index just past the closer; keep the opener and closer, recurse into the body.
             body_start = i + (2 if command.startswith("$(", i) else 1)

@@ -14,11 +14,14 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from cron.ledger import ledger_transaction, open_ledger, prepare_ledger
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+
+import logging
+logger = logging.getLogger(__name__)
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -261,8 +264,13 @@ def finish_execution(
     return record
 
 
-def recover_interrupted_executions() -> int:
-    """Mark provably abandoned attempts unknown without scheduling retries."""
+def recover_interrupted_executions(*, on_recovered: Optional[Callable[[Dict[str, Any]], None]] = None) -> int:
+    """Mark provably abandoned attempts unknown without scheduling retries.
+
+    ``on_recovered`` (optional) runs after the store commit with each reaped
+    record — the scheduler surfaces the reclaimed-unknown outcome through it
+    (incident + failure-lane notice, #108802). Handler exceptions are logged
+    and swallowed: recovery must never fail because notification did."""
     now = _hermes_now().isoformat()
     changed = 0
     recovered: List[Dict[str, Any]] = []
@@ -307,6 +315,12 @@ def recover_interrupted_executions() -> int:
         if changed:
             _prune_unlocked(conn)
     for record in recovered:
+        if on_recovered is not None:
+            try:
+                on_recovered(record)
+            except Exception:
+                logger.debug("on_recovered handler failed for execution %s",
+                             record.get("id"), exc_info=True)
         _emit_execution_state(record)
     return changed
 

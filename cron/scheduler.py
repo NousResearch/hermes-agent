@@ -3477,7 +3477,30 @@ def _release_tick_lock(lock_fd) -> None:
     lock_fd.close()
 
 
-def _maybe_reap_dead_owners() -> None:
+def _handle_reclaimed_unknown_execution(record: dict, *, adapters=None, loop=None) -> None:
+    """Surface a reclaimed (``unknown``) execution instead of staying silent (#108802):
+    its owner died before a durable terminal state, so neither the run path nor the crash
+    path ever reported it. Reuses the crash-failure delivery — incident upsert, acked
+    suppression, failure-lane notice, alerted marking — with the record's own error text,
+    which carries the unknown-outcome caveat ('whether side effects ran is unknown')."""
+    job_id = str((record or {}).get("job_id") or "")
+    if not job_id:
+        return
+    try:
+        from cron.jobs import get_job
+        job = get_job(job_id)
+    except Exception as exc:
+        logger.debug("Reclaimed-execution job lookup failed for %s: %s", job_id, exc)
+        return
+    if not isinstance(job, dict) or not job:
+        return
+    with contextlib.suppress(Exception):
+        _deliver_crash_failure(
+            job, str(record.get("error") or "execution reclaimed unknown"),
+            adapters=adapters, loop=loop)
+
+
+def _maybe_reap_dead_owners(*, adapters=None, loop=None) -> None:
     """Dead-owner reclaim: a run that died mid-flight would leave its row 'claimed' forever. Only
     rows whose owner process is proved gone are touched (_owner_is_live). Throttled."""
     # Dead-owner claim reclaim (#86721): execution rows carry their owner pid + process start time, but
@@ -3497,7 +3520,9 @@ def _maybe_reap_dead_owners() -> None:
     try:
         from cron.executions import recover_interrupted_executions
 
-        _reclaimed = recover_interrupted_executions()
+        _reclaimed = recover_interrupted_executions(
+            on_recovered=lambda record: _handle_reclaimed_unknown_execution(
+                record, adapters=adapters, loop=loop))
         if _reclaimed:
             logger.warning(
                 "Reclaimed %d cron execution(s) whose owner process died "
@@ -3707,7 +3732,7 @@ def tick(
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
-        _maybe_reap_dead_owners()
+        _maybe_reap_dead_owners(adapters=adapters, loop=loop)
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:
             _maybe_run_worktree_maintenance()

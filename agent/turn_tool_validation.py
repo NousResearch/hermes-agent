@@ -137,8 +137,12 @@ def validate_tool_calls(
     # Reset retry counter on successful tool call validation
     agent._invalid_tool_retries = 0
 
-    # Validate tool call arguments are valid JSON; empty strings become empty
-    # objects (common model quirk).
+    # Validate tool call arguments are valid JSON. Empty/whitespace args are NOT
+    # normalized to "{}" here (#105189): that fabricated an invocation the
+    # model never emitted and dispatched side-effecting tools with empty args,
+    # bypassing the executor's "tool was not executed" invariant. They take
+    # the invalid-JSON path below (bounded retry, then error results surfaced
+    # to the model) instead.
     invalid_json_args = []
     for tc in tool_calls:
         args = tc.function.arguments
@@ -148,7 +152,10 @@ def validate_tool_calls(
         if args is not None and not isinstance(args, str):
             tc.function.arguments = args = str(args)
         if not args or not args.strip():
-            tc.function.arguments = "{}"
+            # A mixed-batch invalid-name call never executes (error result later);
+            # don't let its missing args trigger the whole-turn JSON retry.
+            if not (_mixed_invalid_batch and tc.function.name not in valid_names):
+                invalid_json_args.append((tc.function.name, "empty arguments: expected a JSON object"))
             continue
         try:
             json.loads(args)
@@ -162,9 +169,12 @@ def validate_tool_calls(
         invalid_names = {n for n, _ in invalid_json_args}
         # Routers may rewrite finish_reason "length" → "tool_calls", hiding
         # truncation; args not ending in } or ] (stripped) were cut off
-        # mid-stream.
+        # mid-stream. Empty args carry no truncation evidence (a model quirk
+        # for arg-less tools as often as a drop), so they are excluded here
+        # and take the bounded-retry path instead (#105189).
         _truncated = any(
-            not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
+            (tc.function.arguments or "").strip()
+            and not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
             for tc in tool_calls if tc.function.name in invalid_names
         )
         if _truncated:

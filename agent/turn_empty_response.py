@@ -28,11 +28,12 @@ _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 class EmptyResponseVerdict:
     """Outcome of ``recover_empty_response``.
 
-    ``action``: ``"break"`` (turn is done — ``final_response`` is set), ``"continue"``
-    (re-enter the OUTER turn loop: a nudge/prefill row was appended, a retry wait
-    elapsed, or a fallback was activated and preflight must re-run), ``"return"``
-    (interrupted during a retry wait — return ``result``) or ``"fallthrough"``
-    (unreachable: every path exits; kept for the contract)."""
+    ``action``: ``"break"`` (turn is done — ``final_response`` is set), ``"promote"``
+    (reasoning became final text and must continue through the ordinary final-response
+    gates), ``"continue"`` (re-enter the OUTER turn loop: a nudge/prefill row was
+    appended, a retry wait elapsed, or a fallback was activated and preflight must
+    re-run), ``"return"`` (interrupted during a retry wait — return ``result``) or
+    ``"fallthrough"`` (unreachable: every path exits; kept for the contract)."""
 
     action: str
     result: Optional[Dict[str, Any]]
@@ -184,26 +185,12 @@ def recover_empty_response(
     _reasoning_text = agent._extract_reasoning(assistant_message)
     if finish_reason == "stop" and _reasoning_text:
         _turn_exit_reason = "reasoning_response(clean_stop)"
-        agent._empty_content_retries = 0
-        agent._thinking_prefill_retries = 0
-        agent._emit_pending_fallback_notice()
-        agent._clear_status_buffer()
-        agent._drop_trailing_empty_response_scaffolding(messages)
-        while (
-            messages
-            and isinstance(messages[-1], dict)
-            and messages[-1].get("_thinking_prefill")
-        ):
-            messages.pop()
-        final_msg = agent._build_assistant_message(assistant_message, finish_reason)
-        final_msg["content"] = _reasoning_text
-        append_message(messages, final_msg)
         final_response = _reasoning_text
         logger.info(
             "Clean-stop reasoning-only response (%d chars) — using reasoning as final response",
             len(_reasoning_text),
         )
-        return _verdict("break")
+        return _verdict("promote")
 
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.
     # With substantive tools it was mid-task narration and the empty reply is a choke;

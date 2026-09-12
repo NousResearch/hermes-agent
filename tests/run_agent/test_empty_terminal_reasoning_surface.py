@@ -79,6 +79,28 @@ def _truly_empty_response():
     )
 
 
+def _tool_call_response():
+    tool_call = SimpleNamespace(
+        id="call_1",
+        type="function",
+        function=SimpleNamespace(name="todo", arguments="{}"),
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content="",
+                reasoning=None,
+                reasoning_content=None,
+                reasoning_details=None,
+                tool_calls=[tool_call],
+            ),
+            finish_reason="tool_calls",
+        )],
+        usage=None,
+        model="test-model",
+    )
+
+
 def test_clean_stop_reasoning_is_promoted_without_retry(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     calls = 0
@@ -123,6 +145,64 @@ def test_clean_stop_promotion_removes_prior_thinking_prefill(tmp_path, monkeypat
     assert not any(message.get("_thinking_prefill") for message in result["messages"])
     roles = [message["role"] for message in result["messages"]]
     assert all(left != right for left, right in zip(roles, roles[1:]))
+
+
+def test_clean_stop_promotion_preserves_completed_tool_exchange(tmp_path, monkeypatch):
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [
+        _tool_call_response(),
+        _truly_empty_response(),
+        _reasoning_only_response(reasoning="The tool result is complete."),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+
+    def execute_tool(assistant_message, messages, effective_task_id, api_call_count=0):
+        messages.append({
+            "role": "tool",
+            "name": "todo",
+            "tool_call_id": "call_1",
+            "content": "tool result",
+        })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", execute_tool)
+
+    result = agent.run_conversation("run the tool")
+
+    assert result["final_response"] == "The tool result is complete."
+    assert not responses
+    assert any(message.get("tool_calls") for message in result["messages"])
+    assert any(message.get("role") == "tool" for message in result["messages"])
+    assert not any(
+        message.get("_empty_recovery_synthetic") for message in result["messages"]
+    )
+
+
+def test_clean_stop_promotion_runs_kanban_stop_gate(tmp_path, monkeypatch):
+    agent = _build_agent(tmp_path, monkeypatch)
+    responses = [
+        _reasoning_only_response(reasoning="I am done."),
+        _reasoning_only_response(reasoning="Lifecycle action completed."),
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: responses.pop(0),
+    )
+    monkeypatch.setattr(
+        "agent.kanban_stop.build_kanban_stop_nudge",
+        lambda messages, attempts=0: "Call the terminal lifecycle tool." if attempts == 0 else None,
+    )
+
+    result = agent.run_conversation("finish the task")
+
+    assert result["final_response"] == "Lifecycle action completed."
+    assert result["turn_exit_reason"] == "reasoning_response(clean_stop)"
+    assert agent._kanban_stop_nudges == 1
+    assert not responses
 
 
 def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):

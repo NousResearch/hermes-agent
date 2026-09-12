@@ -1,0 +1,15 @@
+[Unit]
+Description=Headed Camoufox Playwright server (Xvfb)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.hermes/takeover/venv/bin/python %h/.hermes/takeover/camoufox_server.py
+Restart=always
+RestartSec=5
+Environment=DISPLAY=:98
+Environment=TMPDIR=%h/tmp
+EnvironmentFile=-%h/.hermes/takeover/env
+
+[Install]
+WantedBy=default.target

@@ -23,3 +23,6 @@ def test_repeated_tool_in_one_batch_prints_once():
     with patch.object(_scrollback._cli_mod, "_cprint", lambda line: None):
         cli._on_tool_progress("tool.started", "terminal", "ls", {"command": "ls"})
     assert sum("preparing terminal" in p for p in _announce(cli, ["terminal"])) == 1
+    # A batch that never reached tool.started (cancel/error) must not mute the next invocation.
+    cli._reset_stream_state()
+    assert sum("preparing terminal" in p for p in _announce(cli, ["terminal"])) == 1

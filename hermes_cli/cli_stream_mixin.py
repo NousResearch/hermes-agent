@@ -519,6 +519,8 @@ class CLIStreamMixin:
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
+        # A batch cancelled/errored before any tool.started would otherwise mute the next turn's line.
+        self.__dict__.pop("_tool_gen_announced", None)
         self._stream_table_buf = []
         self._in_stream_table = False
         self._stream_box_live = False

@@ -349,6 +349,17 @@ def _parse_config_int(raw: Any, default: int) -> int:
         return default
 
 
+def _parse_config_ratio(raw: Any, default: float) -> float:
+    """Strict ratio coercion clamped to [0, 1]: bools and junk fall back to *default*."""
+    if isinstance(raw, bool):
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return min(1.0, max(0.0, value))
+
+
 def _cfg_flag(cfg: Dict[str, Any], key: str, default: bool) -> bool:
     """Legacy string-set truthiness used by the ``compression`` section."""
     return str(cfg.get(key, default)).lower() in {"true", "1", "yes"}
@@ -1472,6 +1483,20 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         proactive_prune_min_reclaim=max(
             0, _parse_config_int(cfg.get("proactive_prune_min_reclaim_tokens", 4096), 4096)
         ),
+        # Wire-only tool-result projection (agent/tool_result_projection.py): keeps stale tool
+        # payloads out of the request without rewriting the transcript. Default "off" — it
+        # changes what the model sees, so it ships opt-in. 0 on min_tokens means "derive from
+        # the route and the context window".
+        tool_result_projection=str(cfg.get("tool_result_projection", "off") or "off").strip().lower() or "off",
+        tool_result_projection_min_tokens=max(
+            0, _parse_config_int(cfg.get("tool_result_projection_min_tokens", 0), 0)
+        ),
+        tool_result_projection_min_result_chars=max(
+            0, _parse_config_int(cfg.get("tool_result_projection_min_result_chars", 4000), 4000)
+        ),
+        tool_result_projection_tail_ratio=_parse_config_ratio(
+            cfg.get("tool_result_projection_tail_ratio", 0.025), 0.025
+        ),
         protect_first=protect_first,
         abort_on_summary_failure=_cfg_flag(cfg, "abort_on_summary_failure", False),
         # Per-model threshold overrides: keys substring-matched against the model name
@@ -1847,6 +1872,10 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
+            tool_result_projection=cs.tool_result_projection,
+            tool_result_projection_min_tokens=cs.tool_result_projection_min_tokens,
+            tool_result_projection_min_result_chars=cs.tool_result_projection_min_result_chars,
+            tool_result_projection_tail_ratio=cs.tool_result_projection_tail_ratio,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
             custom_providers=_custom_providers,
         )

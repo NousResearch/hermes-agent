@@ -192,6 +192,79 @@ def extract_persisted_path(content: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def planned_spillover_path(tool_use_id: str):
+    """Where :func:`store_spillover_content` writes for *tool_use_id* — pure, no I/O, so a
+    caller can size or hash a planned write before committing to it."""
+    return get_spillover_dir() / _safe_result_filename(tool_use_id)
+
+
+def spillover_path_is_readable(path: str, env=None) -> bool:
+    """True when the AGENT can actually read *path*.
+
+    Host-side: a local stat. Remote backend: a ``test -r`` probe inside the sandbox — a file
+    that exists on the host is NOT necessarily readable there, which is the whole reason
+    ``_sandbox_visible_spillover_path`` exists. With a remote backend and no live env to probe
+    with, readability is unconfirmed and this returns False (fail closed).
+    """
+    if not isinstance(path, str) or not path:
+        return False
+    if _is_host_side_env(env):
+        try:
+            return os.path.isfile(path) and os.access(path, os.R_OK)
+        except OSError:
+            return False
+    if env is None:
+        return False
+    try:
+        probe = env.execute(f"test -r {shlex.quote(path)}", timeout=15)
+        return probe.get("returncode", 1) == 0
+    except Exception as exc:
+        logger.debug("Spillover readability probe failed for %s: %s", path, exc)
+        return False
+
+
+def store_spillover_content(content: str, tool_use_id: str, env=None) -> str | None:
+    """Persist *content* and return a path the AGENT can read, or None when none can be confirmed.
+
+    Used by the wire-only tool-result projection (``agent/tool_result_projection.py``), which
+    must persist a result BEFORE it is replaced by a stub in the outbound request. Idempotent:
+    an existing file for the same key is reused as-is, so a projection re-applied across turns
+    cannot hand a later request different bytes than the stub it already sent.
+
+    The return value follows the same ladder the tool path uses — host path when the backend is
+    host-side, the translated cache path when a remote sandbox can read the mount, else a copy
+    inside the sandbox temp dir — and is ALWAYS verified readable. A caller that receives None
+    must not stub the row: a recovery pointer the agent cannot open is not recovery.
+    """
+    try:
+        host_path = planned_spillover_path(tool_use_id)
+        if _is_host_side_env(env):
+            if not host_path.is_file() and _write_to_spillover(content, host_path.name) is None:
+                return None
+            return str(host_path) if spillover_path_is_readable(str(host_path), env) else None
+
+        # Remote backend: cache/spillover stays the canonical host copy, but the agent needs a
+        # path that resolves inside the sandbox.
+        if not host_path.is_file() and _write_to_spillover(content, host_path.name) is None:
+            return None
+        if env is None:
+            logger.debug("Spillover stored host-side but no sandbox to confirm visibility for %s", tool_use_id)
+            return None
+        visible = _sandbox_visible_spillover_path(str(host_path), env)
+        if visible and spillover_path_is_readable(visible, env):
+            return visible
+        remote_path = f"{_resolve_storage_dir(env)}/{host_path.name}"
+        try:
+            if _write_to_sandbox(content, remote_path, env) and spillover_path_is_readable(remote_path, env):
+                return remote_path
+        except Exception as exc:
+            logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+        return None
+    except Exception as exc:  # OSError, or a malformed id the filename builder rejects
+        logger.warning("Spillover store failed for %s: %s", tool_use_id, exc)
+        return None
+
+
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
                               threshold: int | float | None = None) -> str:

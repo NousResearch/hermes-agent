@@ -15,6 +15,15 @@ from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+_MAX_PLUGIN_FRAGMENT_CHARS = 160
+
+
+def _normalize_plugin_fragment(fragment: object) -> str:
+    """Return one bounded display line, rejecting non-string or empty plugin output."""
+    if not isinstance(fragment, str):
+        return ""
+    normalized = " ".join(fragment.split())
+    return normalized[:_MAX_PLUGIN_FRAGMENT_CHARS].rstrip()
 
 
 def _append_plugin_fragments(footer: str, *, model: Optional[str], provider: Optional[str],
@@ -46,7 +55,7 @@ def _append_plugin_fragments(footer: str, *, model: Optional[str], provider: Opt
         # Plugin discovery/invocation must never suppress a completed agent response.
         return footer
 
-    rendered = [str(fragment).strip() for fragment in fragments if fragment is not None]
+    rendered = [_normalize_plugin_fragment(fragment) for fragment in fragments]
     rendered = [fragment for fragment in rendered if fragment]
     return _SEP.join((footer, *rendered)) if rendered else footer
 

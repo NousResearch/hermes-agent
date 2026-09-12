@@ -22,7 +22,12 @@ from pathlib import Path
 from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import (
+    PROCESSING_OUTCOME_METADATA_KEY,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+)
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
@@ -235,6 +240,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         source = event.source
 
         if not self._is_user_authorized_for_source(source):
+            # Empty handler responses are normally successful no-ops. Policy
+            # denials must still complete platform lifecycle hooks as failures.
+            event.metadata[PROCESSING_OUTCOME_METADATA_KEY] = ProcessingOutcome.FAILURE
             if source.user_id is None:
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.

@@ -38,14 +38,21 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
     setBusy(true); setError('')
 
     try {
-      const data = await file.arrayBuffer()
-
-      const result = await canonicalGroupRequest<Attachment>(binding, 'bot.group.attachment.upload', {
-        room_id: binding.roomId, upload_id: crypto.randomUUID(), kind: kindFor(file), name: file.name,
-        mime: file.type || 'application/octet-stream', data_base64: btoa(String.fromCharCode(...new Uint8Array(data)))
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result).split(',', 2)[1])
+        reader.onerror = () => reject(reader.error ?? new Error(labels.uploadFailed))
+        reader.readAsDataURL(file)
       })
 
-      onChange([...attachments, result])
+      const result = await canonicalGroupRequest<Attachment>(binding, 'groups.attachment.upload', {
+        room_id: binding.roomId, upload_id: crypto.randomUUID(), kind: kindFor(file), name: file.name,
+        mime: file.type || 'application/octet-stream', data_base64: data
+      })
+
+      // Upload receipts include storage metadata; Send accepts only the manifest.
+      const { attachment_id, kind, name, mime, size } = result
+      onChange([...attachments, { attachment_id, kind, name, mime, size }])
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
     finally { setBusy(false) }
   }
@@ -55,7 +62,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
     setBusy(true); setError('')
 
     try {
-      const result = await canonicalGroupRequest<DownloadedAttachment>(binding, 'bot.group.attachment.download', {
+      const result = await canonicalGroupRequest<DownloadedAttachment>(binding, 'groups.attachment.download', {
         room_id: binding.roomId, event_id: attachment.event_id, attachment_id: attachment.attachment_id
       })
 
@@ -69,10 +76,10 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
     <input hidden onChange={e => { const file = e.target.files?.[0];
 
  if (file) {void upload(file);} e.currentTarget.value = '' }} ref={input} type="file" />
-    <Button disabled={disabled || busy} onClick={() => input.current?.click()}>{labels.attachFiles}</Button>
+    <Button disabled={disabled || busy} onClick={() => input.current?.click()} type="button">{labels.attachFiles}</Button>
     {attachments.map(a => <span className="flex items-center gap-1" key={a.attachment_id ?? a.name}>
-      <span>{a.name}</span><Button disabled={disabled || busy} onClick={() => void download(a)}>{labels.download}</Button>
-      <Button disabled={disabled || busy} onClick={() => onChange(attachments.filter(item => item !== a))}>{labels.removeAttachment}</Button>
+      <span>{a.name}</span><Button disabled={disabled || busy} onClick={() => void download(a)} type="button">{labels.download}</Button>
+      <Button disabled={disabled || busy} onClick={() => onChange(attachments.filter(item => item !== a))} type="button">{labels.removeAttachment}</Button>
     </span>)}
     {error && <span role="alert">{labels.uploadFailed}: {error}</span>}
   </div>

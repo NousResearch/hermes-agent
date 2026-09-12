@@ -773,10 +773,14 @@ export function useSessionActions({
         const cwd =
           options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
 
-        const params = {
-          ...(await desktopSessionCreateParams(cwd, capturedRoute)),
-          ...(workspaceScope.workspaceMode === 'bots' ? { hidden: true } : {})
-        }
+        // A generic New-session tile is a normal user conversation even when
+        // the user opened it from the Bots workspace — its scope only decides
+        // WHERE the tab docks, not whether the conversation is plumbing.
+        // Plugin-owned hidden sessions (canonical Bot Chat, group-member
+        // rooms) set `hidden: true` in their own session.create calls; marking
+        // every bots-scoped tile hidden here made ordinary side chats vanish
+        // from the Sessions sidebar and its search with no way back.
+        const params = await desktopSessionCreateParams(cwd, capturedRoute)
 
         // Same lease chain as createBackendSessionForSend: owner socket held
         // across the create, then the foreground hold carries it until the

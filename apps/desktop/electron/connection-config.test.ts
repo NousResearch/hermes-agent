@@ -811,10 +811,10 @@ test('resolveProfileApiRequest keeps gateway lifecycle verbs on the primary with
   // `-p X gateway restart` that exited 78 while the primary-routed poll read
   // "no such action" as success.
   for (const verb of ['restart', 'start', 'stop']) {
-    assert.deepEqual(
-      resolveProfileApiRequest('iris', `/api/gateway/${verb}`, { requestMethod: 'POST' }),
-      { backendProfile: null, requestPath: `/api/gateway/${verb}?profile=iris` }
-    )
+    assert.deepEqual(resolveProfileApiRequest('iris', `/api/gateway/${verb}`, { requestMethod: 'POST' }), {
+      backendProfile: null,
+      requestPath: `/api/gateway/${verb}?profile=iris`
+    })
   }
 
   assert.deepEqual(

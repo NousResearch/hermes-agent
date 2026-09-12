@@ -535,6 +535,22 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
             scrubber.reset()
 
 
+def _apply_skill_reasoning(agent: Any, user_message: Any) -> None:
+    """Raise this turn's reasoning tier to a skill's declared level; never fatal.
+
+    The snapshot is stashed on the agent so the turn end can restore the pre-skill value
+    (``agent._skill_reasoning_snapshot``). A skill declaring nothing leaves the agent's config
+    untouched — this feature only ever changes behavior for opted-in skills.
+    """
+    agent._skill_reasoning_snapshot = None
+    try:
+        from agent.skill_reasoning import apply_skill_reasoning_override
+
+        agent._skill_reasoning_snapshot = apply_skill_reasoning_override(agent, user_message)
+    except Exception:
+        logger.debug("skill reasoning override skipped", exc_info=True)
+
+
 def _stage_turn_user_message(
     agent: Any, user_message: Any, persist_user_message: Any,
     persist_user_timestamp: Optional[float], persist_user_platform_id: Optional[str],
@@ -905,6 +921,11 @@ def build_turn_context(
         persist_user_timestamp, persist_user_platform_id,
     )
     _reset_per_turn_agent_state(agent)
+
+    # A skill that declares metadata.hermes.reasoning_effort raises (or lowers) this turn's
+    # thinking level; the turn end restores the previous value (issue #108770). Applied here,
+    # before any request is assembled, so the raise covers the whole turn.
+    _apply_skill_reasoning(agent, user_message)
 
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")

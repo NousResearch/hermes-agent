@@ -3542,6 +3542,16 @@ class GatewayTurnMixin:
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt = getattr(pending_event, "channel_prompt", None)
             next_message_type = getattr(pending_event, "message_type", None)
+        else:
+            # A steer/bare-interrupt continuation (result["pending_steer"] or a control
+            # interrupt_message) has no originating queued event, so there is no natural id to
+            # carry here — but it still needs one distinct from the chain's other turns, or an
+            # identical-text reply collides on the SAME obligation id as an earlier one (the exact
+            # bug this whole ledger fix is about, just reached from a different branch). No
+            # transport identity exists to derive one from, so mint one (same fallback shape as
+            # the keyless-turn owner id above, #60671-adjacent).
+            import uuid
+            next_inbound_id = f"steer:{uuid.uuid4().hex}"
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.

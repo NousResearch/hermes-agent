@@ -1547,6 +1547,53 @@ class TestContextLengthCache:
 
 
 
+    def test_scalar_context_lengths_value_is_ignored(self, tmp_path, monkeypatch):
+        """A ``context_lengths`` value that is not a mapping must load as an empty
+        cache instead of escaping as-is: every caller does ``cache.get(...)``, and
+        both writers re-persist what they loaded, so one bad value (hand edit, or a
+        write that stored the model name instead of the mapping) poisoned the file
+        permanently and killed agent init with
+        ``'str' object has no attribute 'get'``."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text("context_lengths: deepseek-flash\n", encoding="utf-8")
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+        monkeypatch.setattr(mm, "_CACHE_SHAPE_WARNED", False, raising=False)
+
+        assert mm._load_context_cache() == {}
+        # The exact call that died in the field (agent init → context compressor).
+        assert get_cached_context_length("deepseek-flash", "https://api.deepseek.com/v1") is None
+        # A later save must repair the file, not re-persist the poison.
+        save_context_length("deepseek-flash", "https://api.deepseek.com/v1", 1_000_000)
+        assert get_cached_context_length("deepseek-flash", "https://api.deepseek.com/v1") == 1_000_000
+        assert yaml.safe_load(cache_file.read_text(encoding="utf-8")) == {
+            "context_lengths": {"deepseek-flash@https://api.deepseek.com/v1": 1_000_000}
+        }
+
+    @pytest.mark.parametrize("payload", ["just-a-string", "42", "- a\n- b\n"])
+    def test_non_mapping_cache_file_is_ignored(self, payload, tmp_path, monkeypatch):
+        """A top-level YAML value that is not a mapping loads as an empty cache."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text(payload, encoding="utf-8")
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+        monkeypatch.setattr(mm, "_CACHE_SHAPE_WARNED", False, raising=False)
+
+        assert mm._load_context_cache() == {}
+        assert get_cached_context_length("m", "http://x") is None
+
+    def test_mapping_cache_file_still_loads(self, tmp_path, monkeypatch):
+        """The shape guard must not change behaviour for a healthy cache."""
+        import agent.model_metadata as mm
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text(
+            "context_lengths:\n  m@http://x: 32768\n  other@http://y: 128000\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        assert mm._load_context_cache() == {"m@http://x": 32768, "other@http://y": 128000}
+        assert get_cached_context_length("m", "http://x") == 32768
+
     def test_idempotent_save(self, tmp_path):
         cache_file = tmp_path / "cache.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):

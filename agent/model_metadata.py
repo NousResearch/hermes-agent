@@ -1035,17 +1035,51 @@ def _get_context_cache_path() -> Path:
     return get_hermes_home() / "context_length_cache.yaml"
 
 
+_CACHE_SHAPE_WARNED = False  # one-shot: a malformed cache must not warn on every resolution
+
+
+def _warn_malformed_context_cache(path: Path, reason: str) -> None:
+    """Warn once per process about an unusable cache file (it is re-read on every resolution)."""
+    global _CACHE_SHAPE_WARNED
+    if _CACHE_SHAPE_WARNED:
+        return
+    _CACHE_SHAPE_WARNED = True
+    logger.warning(
+        "Ignoring malformed context length cache at %s (%s). Delete the file to rebuild it.",
+        path, reason,
+    )
+
+
 def _load_context_cache() -> Dict[str, int]:
-    """Load the model+provider -> context_length cache from disk."""
+    """Load the model+provider -> context_length cache from disk.
+
+    Only a ``str -> int`` mapping is ever returned. The cache is a scratch file that
+    callers treat as ``Dict[str, int]``, so a malformed one used to escape as-is and
+    break agent initialization with ``'str' object has no attribute 'get'`` — and
+    because both writers start from this loader, one bad value was re-persisted on
+    every save instead of healing.
+    """
     path = _get_context_cache_path()
     if not path.exists():
         return {}
     try:
         with open(path, encoding="utf-8") as f:
-            return (yaml.safe_load(f) or {}).get("context_lengths") or {}
+            data = yaml.safe_load(f)
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}
+    if not isinstance(data, dict):
+        if data is not None:
+            _warn_malformed_context_cache(path, f"top level is {type(data).__name__}, expected a mapping")
+        return {}
+    lengths = data.get("context_lengths")
+    if lengths is None:
+        return {}
+    if not isinstance(lengths, dict):
+        _warn_malformed_context_cache(
+            path, f"'context_lengths' is {type(lengths).__name__} ({lengths!r}), expected a mapping")
+        return {}
+    return lengths
 
 
 def _write_context_cache(cache: Dict[str, int]) -> None:

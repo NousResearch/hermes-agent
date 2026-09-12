@@ -29,6 +29,7 @@ import {
   resetSidebarBatchCapability,
   setApiRequestConnection,
   setApiRequestProfile,
+  setModelAssignment,
   speakText,
   transcribeAudio,
   triggerCronJob
@@ -189,6 +190,20 @@ describe('Hermes REST helpers', () => {
       })
     )
     expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
+  })
+
+  it('keeps explicit model assignments scoped in the JSON payload', async () => {
+    await setModelAssignment(
+      { model: 'hermes-4', provider: 'nous', scope: 'main' },
+      'research'
+    )
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: 'research',
+        body: { model: 'hermes-4', provider: 'nous', profile: 'research', scope: 'main' }
+      })
+    )
   })
 
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {

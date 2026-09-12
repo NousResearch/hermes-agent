@@ -120,10 +120,16 @@ export function setModelAssignment(
   body: ModelAssignmentRequest,
   profile?: null | string
 ): Promise<ModelAssignmentResponse> {
+  // Keep the target in the JSON payload as well as the IPC request envelope.
+  // A shared remote can route the request to its primary backend while the
+  // envelope's profile is being normalized; the backend's model handler still
+  // honors body.profile when choosing the config home (#97515).
+  const requestBody = profile == null ? body : { ...body, profile }
+
   return hermesApi<ModelAssignmentResponse>({
     ...profileScoped(profile),
     path: '/api/model/set',
     method: 'POST',
-    body
+    body: requestBody
   })
 }

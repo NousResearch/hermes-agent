@@ -3236,7 +3236,11 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
     if not isinstance(exc, RuntimeError):
         return False
     msg = str(exc).lower()
-    return "auxiliary " in msg and "llm returned invalid response" in msg and "choices[0].message" in msg
+    return (
+        "auxiliary " in msg
+        and "llm returned invalid response" in msg
+        and ("choices[0].message" in msg or "empty content" in msg)
+    )
 
 
 # Tasks on a user-visible critical path (compression blocks resuming an oversized session; vision
@@ -4002,6 +4006,7 @@ def _context_too_small(
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
     failed_base_url: str = "", failure_scope: Any = None,
+    excluded_labels: Optional[set[str]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
@@ -4031,6 +4036,8 @@ def _try_configured_fallback_chain(
             continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
+        if excluded_labels and label in excluded_labels:
+            continue
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception:
@@ -6199,6 +6206,25 @@ def _validate_llm_response(
         model = _field(response, "model")
         if isinstance(model, str) and model.strip():
             context["response_model"] = model
+    # Compression cannot use a response with no text as a summary. Rejecting it here fails the
+    # candidate rather than the route, so the configured fallback chain is tried to exhaustion
+    # before the compressor gives up on the auxiliary route and retries the main chat model — its
+    # existing behaviour when a candidate fails. The emptiness test is the compressor's own helper,
+    # so a summary recovered from reasoning/reasoning_content still counts as text (#11978).
+    if task == "compression":
+        try:
+            message = _field(_field(response, "choices")[0], "message")
+        except (TypeError, IndexError, KeyError):
+            message = None
+        if (
+            message is not None
+            and not extract_content_or_reasoning(response, max_reasoning_chars=8000).strip()
+            and not _field(message, "tool_calls")
+        ):
+            raise RuntimeError(
+                "Auxiliary compression: LLM returned invalid response (empty content). Expected a "
+                "non-empty summary — check provider adapter or custom endpoint compatibility."
+            )
     _complete_relay_auxiliary_call()
     return response
 
@@ -7040,7 +7066,13 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     chain, explicit: main-agent-model net). Returns the response or None.
     Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
     response) bypass the explicit-provider gate — the provider cannot serve this request
-    regardless of user intent. Auth errors only fall back in auto mode."""
+    regardless of user intent. Auth errors only fall back in auto mode.
+
+    A configured candidate that fails with a fallback-able error (auth, payment, connection,
+    rate limit, model incompatible/unknown, invalid response) does NOT abort the remaining
+    chain: its label is excluded and the next entry is tried before any main-agent/discovery
+    layer runs, so the same route is never selected twice.
+    """
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
@@ -7072,10 +7104,44 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         if reason == "payment error" and _custom_health_base_url(resolved_provider, route.base_info)
         else None
     )
-    fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-        task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-        failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
-    if fb_client is None and is_auto:
+    # Walk every configured candidate in order: a capacity/model failure on one candidate must
+    # not abort the rest of the configured chain.
+    excluded_labels: set[str] = set()
+    while True:
+        fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+            task, resolved_provider or "auto", reason=reason,
+            failed_model=_chain_failed_model, failed_base_url=route.base_info,
+            failure_scope=_chain_failure_scope, excluded_labels=excluded_labels)
+        if fb_client is None:
+            break
+        _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
+        try:
+            fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+        except Exception as candidate_err:
+            candidate_can_fallback = (
+                _is_auth_error(candidate_err)
+                or _is_payment_error(candidate_err)
+                or _is_connection_error(candidate_err)
+                or _is_rate_limit_error(candidate_err)
+                or _is_model_incompatible_error(candidate_err)
+                or _is_model_not_found_error(candidate_err)
+                or _is_invalid_aux_response_error(candidate_err)
+            )
+            if not candidate_can_fallback:
+                raise
+            logger.warning(
+                "Auxiliary %s%s: configured fallback %s failed (%s); continuing configured chain",
+                task or "call", tag, fb_label, candidate_err,
+            )
+            excluded_labels.add(fb_label)
+            continue
+        if fb_resp is not None:
+            return fb_resp
+        # Stale/unrefreshable auth returned None after quarantine — try the next entry.
+        excluded_labels.add(fb_label)
+
+    # Configured entries are exhausted — continue with the main-agent/discovery safety layers.
+    if is_auto:
         fb_client, fb_model, fb_label = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
@@ -7102,12 +7168,11 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                 if fb_client is None:
                     break
     # All fallback layers exhausted — one user-visible warning, then re-raise.
-    logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
-                   # All fallback layers exhausted — emit a single user-visible warning so the operator
-                   # knows aux task is about to fail. (#26882) The error itself is re-raised below.
-                   # (#26882)
-                   "(fallback_chain + main agent model). Raising original error.",
-                   task or "call", tag, reason, resolved_provider)
+    logger.warning(
+        "Auxiliary %s%s: %s on %s and all fallbacks exhausted "
+        "(fallback_chain + main agent model). Raising original error.",
+        task or "call", tag, reason, resolved_provider,
+    )
     return None
 
 

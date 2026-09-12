@@ -26,6 +26,8 @@ from agent.auxiliary_client import (
     _is_rate_limit_error,
     _is_model_not_found_error,
     _is_model_incompatible_error,
+    _is_invalid_aux_response_error,
+    _validate_llm_response,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
@@ -4493,6 +4495,231 @@ class TestCompressionFallbackContextFilter:
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
         assert _task_minimum_context_length(None) is None
+
+
+class TestCompressionEmptyResponseFallback:
+    """An empty compression summary is a route failure, not a successful auxiliary call."""
+
+    def test_compression_empty_content_is_invalid_but_tool_call_is_allowed(self):
+        empty = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="   ", tool_calls=None))]
+        )
+        with pytest.raises(RuntimeError, match="empty content") as exc_info:
+            _validate_llm_response(empty, "compression")
+        assert _is_invalid_aux_response_error(exc_info.value)
+
+        tool_only = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content="", tool_calls=[SimpleNamespace(id="call_1")])
+            )]
+        )
+        assert _validate_llm_response(tool_only, "compression") is tool_only
+
+    def test_other_tasks_keep_accepting_empty_content(self):
+        """Only compression needs a summary; a blank vision answer is not a route failure."""
+        blank = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=None))]
+        )
+        assert _validate_llm_response(blank, "vision") is blank
+        assert _validate_llm_response(blank, None) is blank
+
+    def test_compression_reasoning_only_summary_is_still_accepted(self):
+        """A summary recovered from reasoning fields must not be rejected as empty (#11978)."""
+        from_reasoning_content = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="", reasoning_content="kept reasoning summary", tool_calls=None
+            ))]
+        )
+        from_reasoning = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="   ", reasoning="kept reasoning summary", tool_calls=None
+            ))]
+        )
+        assert _validate_llm_response(from_reasoning_content, "compression") is from_reasoning_content
+        assert _validate_llm_response(from_reasoning, "compression") is from_reasoning
+
+
+class TestConfiguredFallbackCandidateFailures:
+    """A failing configured candidate must not abort the remaining chain."""
+
+    def test_sync_chain_continues_after_empty_compression_response(self, monkeypatch):
+        from agent.auxiliary_client import call_llm
+
+        primary = MagicMock(name="primary")
+        first_fallback = MagicMock(name="first_fallback")
+        second_fallback = MagicMock(name="second_fallback")
+        response = _DummyResponse()
+
+        primary.chat.completions.create.side_effect = ConnectionError("primary refused")
+        first_fallback.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=None))]
+        )
+        second_fallback.chat.completions.create.return_value = response
+
+        entries = [
+            {"provider": "first", "model": "first-model"},
+            {"provider": "second", "model": "second-model"},
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("primary", "primary-model", None, None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (primary, "primary-model"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries},
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            lambda entry: (
+                (first_fallback, "first-model")
+                if entry is entries[0]
+                else (second_fallback, "second-model")
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.get_model_context_length",
+            lambda *args, **kwargs: 1_048_576,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._transient_retry_count",
+            lambda: 0,
+        )
+
+        result = call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+        assert result is response
+        first_fallback.chat.completions.create.assert_called_once()
+        second_fallback.chat.completions.create.assert_called_once()
+
+    def test_sync_chain_continues_after_connection_error(self, monkeypatch):
+        from agent.auxiliary_client import call_llm
+
+        primary = MagicMock(name="primary")
+        first_fallback = MagicMock(name="first_fallback")
+        second_fallback = MagicMock(name="second_fallback")
+        response = _DummyResponse()
+
+        primary.chat.completions.create.side_effect = ConnectionError("primary refused")
+        first_fallback.chat.completions.create.side_effect = ConnectionError("fallback refused")
+        second_fallback.chat.completions.create.return_value = response
+
+        entries = [
+            {"provider": "first", "model": "first-model"},
+            {"provider": "second", "model": "second-model"},
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("primary", "primary-model", None, None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (primary, "primary-model"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries},
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            lambda entry: (
+                (first_fallback, "first-model")
+                if entry is entries[0]
+                else (second_fallback, "second-model")
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.get_model_context_length",
+            lambda *args, **kwargs: 1_048_576,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._transient_retry_count",
+            lambda: 0,
+        )
+
+        result = call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+        assert result is response
+        first_fallback.chat.completions.create.assert_called_once()
+        second_fallback.chat.completions.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_chain_continues_after_connection_error(self, monkeypatch):
+        from agent.auxiliary_client import async_call_llm
+
+        primary = MagicMock(name="primary_async")
+        primary.chat.completions.create = AsyncMock(
+            side_effect=ConnectionError("primary refused")
+        )
+        first_sync = MagicMock(name="first_sync")
+        second_sync = MagicMock(name="second_sync")
+        first_async = MagicMock(name="first_async")
+        second_async = MagicMock(name="second_async")
+        first_async.chat.completions.create = AsyncMock(
+            side_effect=ConnectionError("fallback refused")
+        )
+        response = _DummyResponse()
+        second_async.chat.completions.create = AsyncMock(return_value=response)
+
+        entries = [
+            {"provider": "first", "model": "first-model"},
+            {"provider": "second", "model": "second-model"},
+        ]
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *args, **kwargs: ("primary", "primary-model", None, None, None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (primary, "primary-model"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries},
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_fallback_entry",
+            lambda entry: (
+                (first_sync, "first-model")
+                if entry is entries[0]
+                else (second_sync, "second-model")
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._to_async_client",
+            lambda client, model, **kwargs: (
+                (first_async, model) if client is first_sync else (second_async, model)
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.get_model_context_length",
+            lambda *args, **kwargs: 1_048_576,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._transient_retry_count",
+            lambda: 0,
+        )
+
+        result = await async_call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+        )
+
+        assert result is response
+        first_async.chat.completions.create.assert_awaited_once()
+        second_async.chat.completions.create.assert_awaited_once()
 
 
 class TestCustomEndpointApiKeyInheritance:

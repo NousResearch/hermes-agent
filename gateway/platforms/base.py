@@ -1594,6 +1594,10 @@ class SendResult:
     # Extra ids (send order) when a payload was split; ``message_id`` is then the LAST id so
     # later edits target the newest chunk.
     continuation_message_ids: tuple = ()
+    # True when only a PREFIX of the requested text landed (the base plain-text fallback caps at
+    # 3500 chars). ``success`` still means the reader got a reply; a consumer that needs the
+    # COMPLETE text (the post-delivery ``delivered`` stamp) must check this too.
+    truncated: bool = False
     # SEND_ERROR_KINDS member (failures only) via :func:`classify_send_error`, so consumers
     # branch without substring-matching ``error``.
     error_kind: Optional[str] = None
@@ -3279,9 +3283,14 @@ class BasePlatformAdapter(ABC):
         # rate-limited error never reaches here: it classifies as network above and the
         # loop only breaks on a non-transient, non-rate-limited error.
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
-        fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{content[:3500]}")
+        fallback_text = content[:3500]
+        fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{fallback_text}")
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
+        elif len(fallback_text) < len(content):
+            # Only a prefix landed. Success stands (the reader got a reply), but nothing may treat
+            # this as the complete text having arrived.
+            fallback_result.truncated = True
         return fallback_result
 
     @staticmethod
@@ -3812,6 +3821,24 @@ class BasePlatformAdapter(ABC):
             return
         record_delivery(result)
 
+    async def _send_final_ledgered(
+        self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
+        reply_to: Optional[str], is_ephemeral_response: bool = False,
+    ) -> "Tuple[SendResult, BasePlatformAdapter, Optional[str]]":
+        """The bracket behind ``send_final_ledgered``, which also hands back the ledger row id (None
+        when the final was not ledgered). The normal lane passes that id to the post-delivery hook, so
+        a cleanup that stands down on a refused send can wait for the row's redelivery instead."""
+        delivery_adapter = self._final_delivery_adapter(event.source)
+        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
+                    len(text_content), event.source.chat_id)
+        obligation_id = await self._record_delivery_obligation(
+            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        result = await delivery_adapter._send_with_retry(
+            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        if obligation_id is not None:
+            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        return result, delivery_adapter, obligation_id
+
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
@@ -3823,27 +3850,23 @@ class BasePlatformAdapter(ABC):
         supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
         (an ephemeral delete must go to the same transport)."""
-        delivery_adapter = self._final_delivery_adapter(event.source)
-        logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
-        obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
-        if obligation_id is not None:
-            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+        result, delivery_adapter, _obligation_id = await self._send_final_ledgered(
+            event, session_key, text_content, metadata,
+            reply_to=reply_to, is_ephemeral_response=is_ephemeral_response)
         return result, delivery_adapter
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
-        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
-        result, delivery_adapter = await self.send_final_ledgered(
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> Optional[str]:
+        """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete. Returns
+        the ledger row id for the post-delivery hook (None when the final was not ledgered)."""
+        result, delivery_adapter, obligation_id = await self._send_final_ledgered(
             event, session_key, text_content, metadata,
             reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
+        return obligation_id
 
     async def _notify_turn_error(self, event: MessageEvent, e: BaseException) -> Optional[dict]:
         """Tell the user a turn failed rather than leaving radio silence (last resort:
@@ -3941,17 +3964,40 @@ class BasePlatformAdapter(ABC):
             text_content=text_content, images=images, media_files=media_files,
             local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
 
-    async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
+    async def _fire_post_delivery_callback(
+            self, session_key: str, interrupt_event: asyncio.Event, *, delivered: bool = False,
+            obligation_id: Optional[str] = None) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
         read HERE — stamped on the interrupt event DURING the handler await; an earlier snapshot
-        would let stale runs fire a fresher run's callbacks."""
+        would let stale runs fire a fresher run's callbacks.
+
+        ``delivered`` (the COMPLETE final text reached the user: its own send, or riding along as a
+        TTS caption; bare audio and a truncated plain-text fallback do not count) is stamped on the
+        same event first. The hook fires unconditionally
+        because its lifecycle consumers (goal continuation, background review release) must run either
+        way; a callback that would remove the reader's only text copy of the reply (abandoned-preview
+        cleanup) reads the stamp and stands down when the text did not land. Beside it, ``obligation_id``
+        (the ledger row THIS task's own final send recorded, from ``_send_final_text``) is stamped as
+        ``_hermes_final_obligation_id``, so a callback standing down may hand its work to that row's
+        redelivery. It is written here and only here, from this task's own send, and cleared again
+        afterwards: neither a queued-lane ``send_final_ledgered`` inside the handler (an earlier
+        message's reply) nor an earlier turn on this shared event can leave a row behind for a turn
+        whose own final never went out."""
+        with contextlib.suppress(Exception):
+            interrupt_event._hermes_final_delivered = bool(delivered)
+            interrupt_event._hermes_final_obligation_id = obligation_id or None
         _post_cb = self.pop_post_delivery_callback(
             session_key, generation=getattr(interrupt_event, "_hermes_run_generation", None))
-        if callable(_post_cb):
-            with contextlib.suppress(asyncio.TimeoutError, Exception):
-                _post_result = _post_cb()
-                if inspect.isawaitable(_post_result):
-                    await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+        try:
+            if callable(_post_cb):
+                with contextlib.suppress(asyncio.TimeoutError, Exception):
+                    _post_result = _post_cb()
+                    if inspect.isawaitable(_post_result):
+                        await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+        finally:
+            # Cleared even when the await above is cancelled: the row belongs to this firing alone.
+            with contextlib.suppress(Exception):
+                interrupt_event._hermes_final_obligation_id = None
 
     def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
@@ -3980,12 +4026,29 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        # The COMPLETE final text reached the user (own send, or as a TTS caption). Kept apart from the
+        # aggregate: a voice reply can land its audio while the text send fails, and a truncated
+        # plain-text fallback is a success that carried only a prefix. Neither may read as "text
+        # delivered" to the post-delivery stamp.
+        text_delivered = False
+        post_delivery_fired = False
+        # The ledger row THIS task's own final send recorded (None when it was not ledgered or never
+        # went out). Stamped on the session event by the post-delivery hook, from here and nowhere
+        # else, so a cleanup standing down on a refused send can wait for that row's redelivery
+        # without ever picking up a row a queued-lane send or an earlier turn left behind.
+        final_obligation_id = None
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
+
+        def _record_text_delivery(result):
+            nonlocal text_delivered
+            _record_delivery(result)
+            text_delivered = text_delivered or (
+                bool(getattr(result, "success", False)) and not getattr(result, "truncated", False))
         # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
@@ -4027,10 +4090,12 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
+                # _play_tts_file returns True only when the COMPLETE text rode along as the caption.
+                text_delivered = text_delivered or _tts_caption_delivered
                 if text_content and not _tts_caption_delivered:
-                    await self._send_final_text(
+                    final_obligation_id = await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                        is_ephemeral_response, _ephemeral_ttl, _record_text_delivery)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
@@ -4051,6 +4116,14 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
+                # Fire the post-delivery callback BEFORE handing the session over: the follow-up turn
+                # shares this interrupt Event and re-stamps its run generation as soon as it starts, so a
+                # callback popped from ``finally`` could be the NEXT turn's, fired with THIS turn's
+                # delivery outcome (a preview cleanup would then delete a reply still in flight).
+                await self._fire_post_delivery_callback(
+                    session_key, interrupt_event, delivered=text_delivered,
+                    obligation_id=final_obligation_id)
+                post_delivery_fired = True
                 self._spawn_drain_task(pending_event, session_key)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
@@ -4070,7 +4143,10 @@ class BasePlatformAdapter(ABC):
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
-            await self._fire_post_delivery_callback(session_key, interrupt_event)
+            if not post_delivery_fired:
+                await self._fire_post_delivery_callback(
+                    session_key, interrupt_event, delivered=text_delivered,
+                    obligation_id=final_obligation_id)
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)

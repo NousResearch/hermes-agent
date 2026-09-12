@@ -819,7 +819,9 @@ def _json_with_fallback(response: Dict[str, Any], result: Dict[str, Any]) -> str
 
 
 def _failed_response(result: Dict[str, Any], default_error: str) -> str:
-    return _json_with_fallback(_err(result.get("error", default_error)), result)
+    # ``code`` = machine-readable refusal (human_has_control), same shape as computer_use's.
+    extra = {"code": result["code"]} if result.get("code") else {}
+    return _json_with_fallback(_err(result.get("error", default_error), **extra), result)
 
 
 def _tool_response(result: Dict[str, Any], ok: Dict[str, Any], default_error: str) -> str:

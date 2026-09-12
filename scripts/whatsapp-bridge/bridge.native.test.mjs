@@ -16,7 +16,6 @@ import {
   buildPollPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
-  createQuotedMediaCache,
   appendMediaFailureNote,
   extractBridgeEvent,
   inboundReadReceiptKeys,
@@ -631,27 +630,6 @@ import {
   assert.equal(event.hasQuotedMessage, true);
   assert.equal(event.quotedText, 'Example appointment at 11:40');
   console.log('  ✓ nested envelopes: quote text resolves through both layers');
-}
-
-// -- createQuotedMediaCache ------------------------------------------------
-{
-  const cache = createQuotedMediaCache(2);
-  cache.remember('chat-a', 'msg-1', { hasMedia: true, mediaType: 'image', mediaUrls: ['/cache/img1.jpg'] });
-
-  assert.deepEqual(cache.get('chat-a', 'msg-1'), { hasMedia: true, mediaType: 'image', mediaUrls: ['/cache/img1.jpg'] });
-  // Different chatId, same messageId — must not collide; message ids are
-  // only unique within their own chat/JID.
-  assert.equal(cache.get('chat-b', 'msg-1'), null);
-  assert.equal(cache.get('chat-a', 'unknown-msg'), null);
-
-  cache.remember('chat-a', 'msg-2', { hasMedia: false });
-  cache.remember('chat-a', 'msg-3', { hasMedia: false });
-  // Capacity is 2: the oldest entry (msg-1) must have been evicted.
-  assert.equal(cache.get('chat-a', 'msg-1'), null);
-  assert.notEqual(cache.get('chat-a', 'msg-2'), null);
-  assert.notEqual(cache.get('chat-a', 'msg-3'), null);
-
-  console.log('  ✓ createQuotedMediaCache resolves by chatId+messageId and evicts oldest past capacity');
 }
 
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

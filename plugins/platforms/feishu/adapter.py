@@ -33,6 +33,7 @@ import re
 import threading
 import time
 import uuid
+import yaml
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -429,6 +430,83 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 # --- Post payload builders and parsers ---
 
+# Auto-card threshold: replies at or above this length are rendered as an
+# interactive card instead of a ``post`` payload. Deployment-opt-in — the
+# default (0) keeps every reply on the existing ``post``/``text`` paths, so
+# nothing changes unless ``FEISHU_CARD_MIN_CHARS`` is set (80 matches the
+# OpenClaw-style card rendering).
+_DEFAULT_CARD_MIN_CHARS = 0
+
+
+def _optimize_card_markdown(text: str) -> str:
+    """Light markdown polish for card rendering, adapted from the OpenClaw
+    Lark plugin's markdown-style rules: heading downgrade (H1 -> H4,
+    H2~H6 -> H5), <br> spacing around fenced code blocks, invalid image
+    ref stripping, blank-line collapse. Code blocks are protected while
+    rewriting so fence content is never mangled."""
+    if not text:
+        return text
+    code_blocks: List[str] = []
+
+    def _protect(m: "re.Match[str]") -> str:
+        code_blocks.append(m.group(0))
+        return f"\x00CODE{len(code_blocks) - 1}\x00"
+
+    r = re.sub(r"(?:^|\n)(```+|~~~+)[^\n]*\n[\s\S]*?\n\1(?=\n|$)", _protect, text)
+    if re.search(r"^#{1,3} ", r, re.M):
+        r = re.sub(r"^#{2,6} (.+)$", r"##### \1", r, flags=re.M)
+        r = re.sub(r"^# (.+)$", r"#### \1", r, flags=re.M)
+    # Only img_xxx image keys render inside cards; strip URL/local refs.
+    r = re.sub(
+        r"!\[([^\]]*)\]\(([^)\s]+)\)",
+        lambda m: m.group(0) if m.group(2).startswith("img_") else "",
+        r,
+    )
+    r = re.sub(r"\n{3,}", "\n\n", r)
+    for i, block in enumerate(code_blocks):
+        r = r.replace(f"\x00CODE{i}\x00", f"\n<br>\n{block}\n<br>\n")
+    # Strip a trailing footer-like line the model may have written in the
+    # body (e.g. "deepseek-v4-flash · 8s") — the adapter adds the real
+    # footer (⏱ Xs · model) itself, so duplicates are dropped here.
+    lines = [ln for ln in r.split("\n")]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines:
+        last = lines[-1].strip()
+        if len(last) <= 60 and (
+            re.match(r"^⏱\s*(\d+(\.\d+)?s|\d+m\d{2}s)", last)
+            or re.match(r"^[\w./:-]+\s*·\s*(\d+(\.\d+)?s|\d+m\d{2}s)$", last)
+        ):
+            lines.pop()
+    r = "\n".join(lines)
+    return r.strip()
+
+
+def _build_markdown_card_payload(content: str, footer: str | None = None) -> str:
+    """Render a reply as an OpenClaw-style interactive card: optional
+    header (title taken from the first heading, then removed from the
+    body), markdown body, and a footer meta line (model · elapsed)."""
+    optimized = _optimize_card_markdown(content)
+    title = None
+    m = re.search(r"^#{4,5} (.+)$", optimized, re.M)
+    if m:
+        title = m.group(1).strip()
+        optimized = optimized.replace(m.group(0), "", 1).strip()
+    card: Dict[str, Any] = {
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "elements": [],
+    }
+    if title:
+        card["header"] = {
+            "title": {"tag": "plain_text", "content": title[:80]},
+            "template": "blue",
+        }
+    body = optimized or title or content
+    card["elements"].append({"tag": "markdown", "content": body})
+    if footer:
+        card["elements"].append({"tag": "hr"})
+        card["elements"].append({"tag": "markdown", "content": footer})
+    return json.dumps(card, ensure_ascii=False)
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
     return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
@@ -1233,6 +1311,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_anomaly_counts: Dict[str, tuple[int, str, float]] = {}  # ip → (count, last_status, first_seen)
         self._card_action_tokens: Dict[str, float] = {}  # token → first_seen_time
         # Inbound events that arrived before the loop was ready; one drainer thread replays them.
+        self._card_model: str = self._load_card_model()
+        self._chat_inbound_ts: Dict[str, float] = {}
         self._pending_inbound_events: List[Any] = []
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
@@ -1584,7 +1664,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
+                msg_type, payload = self._build_outbound_payload(
+                    chunk, prefer_post=prefer_post, chat_id=chat_id,
+                )
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
@@ -1614,7 +1696,6 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
-
         async def _update(msg_type: str, payload: str) -> SendResult:
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
@@ -1622,7 +1703,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._finalize_send_result(response, "update failed")
 
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            msg_type, payload = self._build_outbound_payload(content, force_post=True)
             result = await _update(msg_type, payload)
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
@@ -1999,6 +2080,14 @@ class FeishuAdapter(BasePlatformAdapter):
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
             return
+        _chat_id_ts = getattr(message, "chat_id", None)
+        if _chat_id_ts:
+            # Lazily created: adapters constructed without ``__init__``
+            # (tests, fixtures) must not crash on the inbound path.
+            _ts_map = getattr(self, "_chat_inbound_ts", None)
+            if _ts_map is None:
+                _ts_map = self._chat_inbound_ts = {}
+            _ts_map[_chat_id_ts] = time.time()
         await self._process_inbound_message(
             data=data, message=message, sender_id=getattr(sender, "sender_id", None),
             chat_type=getattr(message, "chat_type", "p2p"), message_id=message_id, is_bot=_is_bot_sender(sender),
@@ -3469,16 +3558,74 @@ class FeishuAdapter(BasePlatformAdapter):
         return lock
 
     # --- Outbound payload construction and send pipeline ---
-    def _build_outbound_payload(self, content: str, *, prefer_post: bool = False) -> tuple[str, str]:
+    def _card_min_chars(self) -> int:
+        """Auto-card threshold for outbound replies; 0 (the default) disables cards.
+
+        ``FEISHU_CARD_MIN_CHARS`` opts a deployment into automatic card
+        rendering and sets the reply length at which it kicks in (80 matches
+        the OpenClaw-style rendering). Unset, invalid, or negative values keep
+        replies on the existing ``post``/``text`` paths — the default is a
+        no-op for every existing deployment.
+        """
+        raw = os.environ.get("FEISHU_CARD_MIN_CHARS", "")
+        if not str(raw).strip():
+            return _DEFAULT_CARD_MIN_CHARS
+        try:
+            return max(0, int(str(raw).strip()))
+        except ValueError:
+            return _DEFAULT_CARD_MIN_CHARS
+
+    def _load_card_model(self) -> str:
+        """Best-effort model display name from Hermes config.yaml."""
+        try:
+            from hermes_constants import get_hermes_home
+            cfg_path = os.path.join(get_hermes_home(), "config.yaml")
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            m = (cfg.get("model") or {}).get("default") or ""
+            return str(m).strip()
+        except Exception:
+            return ""
+
+    def _card_footer(self, chat_id: str | None) -> str:
+        """Footer meta line: elapsed · model (replaces the static signature)."""
+        parts = []
+        inbound_ts = getattr(self, "_chat_inbound_ts", None) or {}
+        model = getattr(self, "_card_model", "") or ""
+        ts = inbound_ts.get(chat_id) if chat_id else None
+        if ts:
+            secs = time.time() - ts
+            if secs < 60:
+                parts.append(f"⏱ {secs:.1f}s")
+            else:
+                m = int(secs // 60)
+                s = int(round(secs % 60))
+                if s == 60:
+                    m += 1
+                    s = 0
+                parts.append(f"⏱ {m}m{s:02d}s")
+        if model:
+            parts.append(model)
+        return " · ".join(parts)
+
+    def _build_outbound_payload(
+        self, content: str, *, prefer_post: bool = False, force_post: bool = False,
+        chat_id: str | None = None,
+    ) -> tuple[str, str]:
         # Feishu clients render markdown tables inside ``post`` ``md`` elements natively, so tables
         # take the common markdown path (no text downgrade). ``prefer_post`` lets ``send`` keep every
         # chunk of a split markdown reply as ``post`` even when a chunk alone looks like prose.
-        # The previous table-downgrade branch forced any table-containing message to ``text``, which left
-        # Feishu readers seeing the raw pipe-and-dash source instead of a rendered table. ``prefer_post``
-        # lets ``send`` treat the chunk as part of a larger markdown document: when a long markdown reply is
-        # split at MAX_MESSAGE_LENGTH, the per-chunk regex would otherwise mis-classify a plain-prose chunk
-        # as ``text``. See #26841.
-        if prefer_post or _MARKDOWN_HINT_RE.search(content):
+        #
+        # Structured/long markdown replies render as OpenClaw-style interactive
+        # cards once they reach ``_card_min_chars()`` (``FEISHU_CARD_MIN_CHARS``,
+        # 0 disables); ``force_post`` (edit_message) keeps updates as plain post
+        # messages.
+        if force_post or prefer_post or _MARKDOWN_HINT_RE.search(content):
+            threshold = self._card_min_chars()
+            if not force_post and threshold and len(content) >= threshold:
+                return "interactive", _build_markdown_card_payload(
+                    content, footer=self._card_footer(chat_id),
+                )
             return "post", _build_markdown_post_payload(content)
         return "text", json.dumps({"text": content}, ensure_ascii=False)
 

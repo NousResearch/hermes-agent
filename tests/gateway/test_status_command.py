@@ -190,6 +190,63 @@ async def test_status_command_uses_dominant_persisted_model_route(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("restore", [False, True])
+@pytest.mark.parametrize("has_history", [False, True])
+async def test_status_reports_selected_route_before_next_inference(tmp_path, monkeypatch, restore, has_history):
+    """A committed selection, including after restart, supersedes defaults and old billing."""
+    from gateway.session import SessionStore
+    from gateway.slash_commands_model import _ModelSwitchContext
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  default: deepseek/example\n  provider: openrouter\n", encoding="utf-8"
+    )
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    entry = store.get_or_create_session(_make_source())
+    runner = _make_runner(entry)
+    runner.session_store = store
+    runner._session_db = AsyncSessionDB(store._db)
+    runner._session_model_overrides = {}
+    if has_history:
+        store._db.update_token_counts(entry.session_id, model="deepseek/example",
+                                      billing_provider="openrouter", input_tokens=10, api_call_count=1)
+    result = SimpleNamespace(new_model="gpt-5.6-luna-900k", target_provider="openai-codex",
+                             api_key="", base_url="https://chatgpt.com/backend-api/codex",
+                             api_mode="codex_responses", request_overrides={}, runtime_capabilities={},
+                             provider_label="ChatGPT or Codex Subscription")
+    ctx = _ModelSwitchContext(session_key=entry.session_key, source=_make_source(),
+                              config_path=tmp_path / "config.yaml", persist_global=False,
+                              current_model="deepseek/example")
+    await runner._record_model_switch(result, ctx, source=_make_source(), one_turn=False, picker=True)
+    if restore:
+        runner = _make_runner(entry)
+        runner.session_store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        runner._session_db = AsyncSessionDB(store._db)
+        runner._session_model_overrides = {}
+    status = await runner._handle_status_command(_make_event("/status"))
+    assert "**Model:** `gpt-5.6-luna-900k` (openai-codex)" in status
+    assert "(openrouter)" not in status
+
+
+@pytest.mark.asyncio
+async def test_status_prefers_one_turn_override_until_an_agent_is_running():
+    """One-turn selections are memory-only; an actual resident agent remains authoritative."""
+    entry = SessionEntry(session_key=build_session_key(_make_source()), session_id="sess-once",
+                         created_at=datetime.now(), updated_at=datetime.now(),
+                         platform=Platform.TELEGRAM, chat_type="dm",
+                         model_override={"model": "old-model", "provider": "openrouter"})
+    runner = _make_runner(entry)
+    runner._session_model_overrides = {
+        entry.session_key: {"model": "selected-model", "provider": "openai-codex"}
+    }
+    status = await runner._handle_status_command(_make_event("/status"))
+    assert "**Model:** `selected-model` (openai-codex)" in status
+    runner._running_agents[entry.session_key] = SimpleNamespace(model="actual-model", provider="actual-provider")
+    status = await runner._handle_status_command(_make_event("/status"))
+    assert "**Model:** `actual-model` (actual-provider)" in status
+
+
+@pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())
     session_entry = SessionEntry(

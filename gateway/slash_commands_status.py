@@ -79,11 +79,12 @@ def _quiet_sync(call, default=None):
         return default
 
 
-def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
+def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry,
+                        session_override: dict | None = None):
     """``(model, provider, context_used, context_total)`` for /status.
 
-    Order: live/cached agent route -> persisted dominant route -> SessionDB row -> gateway config
-    (only loaded when something is still missing).
+    Order: live/cached agent -> selected session override -> persisted billing -> gateway config.
+    A model switch precedes its first billed call; historical billing cannot describe that selection.
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
@@ -95,6 +96,10 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
+    # Memory also carries /model --once; the stored override survives gateway restarts.
+    override = session_override if isinstance(session_override, dict) else getattr(session_entry, "model_override", None)
+    if isinstance(override, dict):
+        routes.append((_clean_str(override.get("model")), _clean_str(override.get("provider"))))
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider"))))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
@@ -233,7 +238,8 @@ class GatewayStatusCommandsMixin:
         # to SessionDB metadata + last_prompt_tokens so /status stays useful between turns.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
         model_name, provider_name, context_used, context_total = _status_model_route(
-            status_agent, persisted_route, session_row, session_entry
+            status_agent, persisted_route, session_row, session_entry,
+            session_override=(getattr(self, "_session_model_overrides", {}) or {}).get(session_key),
         )
 
         stamp = "%Y-%m-%d %H:%M"

@@ -701,6 +701,8 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 }
 
 export interface SubmitTextOptions {
+  /** Minted only by a human composer submission, never by shared send APIs. */
+  desktopWork?: { origin: 'desktop_user'; root_id: string }
   attachments?: ComposerAttachment[]
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared

@@ -414,17 +414,69 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
              AND delivery_claim=?""", (now, now, delegation_id, claim_id))
 
 
-def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    _event_delivery(complete_completion_delivery, evt, claim_id)
+def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    acknowledged = _event_delivery(complete_completion_delivery, evt, claim_id)
+    if acknowledged:
+        consume_desktop_completion(evt)
+    return acknowledged
+
+
+def _current_desktop_work():
+    # Lazy surface dependency: CLI/gateway dispatches carry no Desktop identity.
+    from tui_gateway import desktop_work
+    context = getattr(desktop_work, "current_work", None)
+    return context.get() if context is not None else None
+
+
+def consume_desktop_completion(evt: Dict[str, Any]) -> None:
+    """Release only under the original root's active consumption context.
+
+    An unrelated user turn (or restart replay without the object) cannot adopt
+    this completion. Unsupported drains deliberately leave the root waiting.
+    DesktopWork owns idempotence and defers terminal emission while a turn runs.
+    """
+    work = evt.get("_desktop_work")
+    if work is not None and _current_desktop_work() is work:
+        work.consume_async(str(evt.get("delegation_id") or ""))
+
+
+def abandon_desktop_completion(evt: Dict[str, Any]) -> None:
+    """Terminate only the exact live root whose completion became undeliverable."""
+    work = evt.get("_desktop_work")
+    if work is not None:
+        work.abandon_async(str(evt.get("delegation_id") or ""))
 
 
 def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
     _event_delivery(release_completion_delivery, evt, claim_id)
 
 
-def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:
+def retry_event_delivery(evt: Dict[str, Any], claim_id: str, *, defer: bool = False) -> bool:
+    """Release a durable claim and put the event back on the live queue."""
+    release = defer_completion_delivery if defer else release_completion_delivery
+    if not _event_delivery(release, evt, claim_id):
+        abandon_desktop_completion(evt)
+        return False
+    if not defer and evt.get("type") == "async_delegation":
+        durable = get_durable_delegation(str(evt.get("delegation_id") or ""))
+        if durable is not None and durable.get("delivery_state") == "dropped":
+            abandon_desktop_completion(evt)
+            return False
+    try:
+        from tools.process_registry import process_registry
+        process_registry.completion_queue.put(evt)
+        return True
+    except Exception:
+        logger.error("Async delegation %s: failed to requeue completion event",
+                     evt.get("delegation_id"), exc_info=True)
+        abandon_desktop_completion(evt)
+        return False
+
+
+def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> bool:
     if claim_id and evt.get("type") == "async_delegation":
-        fn(str(evt.get("delegation_id") or ""), claim_id)
+        return bool(fn(str(evt.get("delegation_id") or ""), claim_id))
+    return evt.get("type") != "async_delegation"
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
@@ -570,12 +622,22 @@ def _dispatch(
             return {"status": "rejected", "error": capacity_error}
         _records[delegation_id] = record
         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
-    _persist_dispatch(record)
+    work = _current_desktop_work()
+    try:
+        _persist_dispatch(record)
+    except Exception:
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        with _DB_LOCK, _transaction() as conn:
+            conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+        raise
     # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
-    executor = _get_executor(max(max_async_children, live_units))
 
     def _worker() -> None:
+        from tui_gateway.desktop_work import current_work
+        # Profile context follows the worker; human notification authority does not.
+        work_token = current_work.set(None)
         result: Dict[str, Any] = {}
         status = "error"
         with _records_lock:
@@ -590,14 +652,21 @@ def _dispatch(
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)
             result = crash_result(f"{type(exc).__name__}: {exc}", round(time.time() - dispatched_at, 2))
         finally:
+            current_work.reset(work_token)
             _finalize(delegation_id, result, status)
 
     try:
+        executor = _get_executor(max(max_async_children, live_units))
+        if work is not None:
+            work.retain_async(delegation_id)
+            record["_desktop_work"] = work
         # Propagate the dispatching profile so the detached child resolves get_hermes_home() correctly.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:
             _records.pop(delegation_id, None)
+        if work is not None:
+            work.consume_async(delegation_id)
         with _DB_LOCK, _transaction() as conn:
             conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
         return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
@@ -685,14 +754,14 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
-    _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
+    published = _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
     with _records_lock:
         if delegation_id in _records:
-            _records[delegation_id]["status"] = status
+            _records[delegation_id]["status"] = status if published else "failed"
         _prune_completed_locked()
 
 
-def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], status: str) -> None:
+def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], status: str) -> bool:
     """Push a type='async_delegation' event onto the shared completion queue. Batch records
     (``is_batch``) carry the per-task ``results`` list (plus live transcript paths, the
     full-fidelity record of each child's run) instead of a single summary. Best-effort: failure
@@ -704,7 +773,10 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
     except Exception as exc:  # pragma: no cover
         logger.error(f"Async delegation{label} %s finished but process_registry import failed; "
                      "result lost: %s", record.get("delegation_id"), exc)
-        return
+        work = record.get("_desktop_work")
+        if work is not None:
+            work.abandon_async(str(record.get("delegation_id") or ""))
+        return False
     dispatched_at = record.get("dispatched_at") or time.time()
     completed_at = record.get("completed_at") or time.time()
     if is_batch:
@@ -731,12 +803,24 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
-    _persist_completion(evt, result)
+    # In-memory identity only: never JSON, task text, or display metadata.
+    if record.get("_desktop_work") is not None:
+        evt["_desktop_work"] = record["_desktop_work"]
+    try:
+        _persist_completion({k: v for k, v in evt.items() if k != "_desktop_work"}, result)
+    except Exception:
+        logger.error("Async delegation%s %s: failed to persist completion event",
+                     label, record.get("delegation_id"), exc_info=True)
+        abandon_desktop_completion(evt)
+        return False
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
         logger.error(f"Async delegation{label} %s: failed to enqueue completion event; "
                      "result lost: %s", record.get("delegation_id"), exc)
+        abandon_desktop_completion(evt)
+        return False
+    return True
 
 
 def push_task_failure_notice(delegation_id: str, entry: Dict[str, Any], *, n_tasks: int) -> None:

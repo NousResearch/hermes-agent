@@ -686,6 +686,11 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     Reuse the shared gateway See #48456, #50767.
     """
     _emit("approval.request", sid, _approval_request_payload(data))
+    from tui_gateway.desktop_work import current_work
+    work = current_work.get()
+    request_id = (data or {}).get("request_id")
+    if work is not None and work.sid == sid and isinstance(request_id, str) and request_id:
+        work.emit(_emit, "approval", request_id)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):

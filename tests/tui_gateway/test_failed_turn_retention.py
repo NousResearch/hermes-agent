@@ -95,6 +95,171 @@ def _events(captured, name):
     return [payload for event, _sid, payload in captured if event == name]
 
 
+@pytest.mark.parametrize("result,kind", [
+    ({"final_response": "done", "messages": [], "completed": True}, "completed"),
+    ({"error": "provider unavailable", "failed": True, "failure_reason": "rate_limit"}, "provider_failed"),
+    ({"interrupted": True}, "interrupted"),
+    ({"failed": True, "error": "unclassified local error"}, "interrupted"),
+])
+def test_desktop_human_work_terminal(emits, turn_env, result, kind):
+    agent = types.SimpleNamespace(
+        session_id="session-key", run_conversation=lambda *a, **k: result,
+        clear_interrupt=lambda: None)
+    session = _session(agent=agent, source="desktop", profile="default", running=True)
+    server._run_prompt_submit(
+        "rid", "sid", session, "human text",
+        desktop_work={"origin": "desktop_user", "root_id": "11111111-1111-4111-8111-111111111111"})
+    work = _events(emits, "desktop.work")
+    assert [e["kind"] for e in work] == ["started", kind]
+    assert all(e["schema_version"] == 1 and e["origin"] == "desktop_user" for e in work)
+    assert all(e["root_id"] == "11111111-1111-4111-8111-111111111111" for e in work)
+    assert all(e["stored_session_id"] == "session-key" and e["title"] == "Chat senza titolo" for e in work)
+    assert len({e["event_id"] for e in work}) == len(work)
+
+
+def test_goal_continuation_keeps_one_desktop_root_until_terminal(
+    emits, turn_env, monkeypatch
+):
+    calls = []
+
+    def run_conversation(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"final_response": "done", "messages": [], "completed": True}
+
+    followups = iter(["continue the goal", None])
+    monkeypatch.setattr(
+        server, "_goal_followup_after_turn", lambda *args, **kwargs: next(followups))
+    agent = types.SimpleNamespace(
+        session_id="session-key", run_conversation=run_conversation,
+        clear_interrupt=lambda: None)
+    session = _session(agent=agent, source="desktop", profile="default", running=True)
+
+    server._run_prompt_submit(
+        "rid", "sid", session, "human text",
+        desktop_work={
+            "origin": "desktop_user",
+            "root_id": "11111111-1111-4111-8111-111111111111",
+        })
+
+    work = _events(emits, "desktop.work")
+    assert len(calls) == 2
+    assert [event["kind"] for event in work] == ["started", "waiting", "completed"]
+    assert {event["root_id"] for event in work} == {
+        "11111111-1111-4111-8111-111111111111"}
+
+
+def test_ready_dispatch_preserves_explicit_human_admission(emits, turn_env, monkeypatch):
+    agent = types.SimpleNamespace(session_id="session-key", clear_interrupt=lambda: None,
+        run_conversation=lambda *a, **k: {"completed": True, "messages": [], "final_response": "ok"})
+    session = _session(agent=agent, source="desktop", running=True)
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *a: None)
+    proof = {"origin": "desktop_user", "root_id": "11111111-1111-4111-8111-111111111111"}
+    server._run_after_agent_ready(
+        "rid", "sid", session, "human", None, None, desktop_work=proof)
+    assert [p["kind"] for p in _events(emits, "desktop.work")] == ["started", "completed"]
+
+
+@pytest.mark.parametrize("wait_result,cancelled", [
+    ({"error": {"message": "agent initialization failed"}}, False),
+    (None, True),
+])
+def test_desktop_human_work_closes_before_agent_ready(
+    emits, turn_env, monkeypatch, wait_result, cancelled
+):
+    session = _session(
+        source="desktop", running=True, _turn_cancel_requested=cancelled)
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *a: wait_result)
+    proof = {"origin": "desktop_user", "root_id": "11111111-1111-4111-8111-111111111111"}
+
+    server._run_after_agent_ready(
+        "rid", "sid", session, "human", None, None, desktop_work=proof)
+
+    assert [p["kind"] for p in _events(emits, "desktop.work")] == ["started", "interrupted"]
+
+
+def test_desktop_human_work_closes_when_turn_thread_cannot_start(emits, turn_env, monkeypatch):
+    agent = types.SimpleNamespace(session_id="session-key", clear_interrupt=lambda: None)
+    session = _session(agent=agent, source="desktop", running=True)
+    proof = {"origin": "desktop_user", "root_id": "11111111-1111-4111-8111-111111111111"}
+
+    def race_after_admission(*args):
+        session["_closing"] = True
+        return [], agent
+
+    monkeypatch.setattr(server, "_admit_prompt_turn", race_after_admission)
+    accepted = server._run_prompt_submit(
+        "rid", "sid", session, "human", desktop_work=proof)
+
+    assert accepted is False
+    assert [p["kind"] for p in _events(emits, "desktop.work")] == ["started", "interrupted"]
+
+
+def test_deferred_desktop_work_closes_when_admission_is_lost(emits, monkeypatch):
+    agent = types.SimpleNamespace(session_id="session-key", clear_interrupt=lambda: None)
+    session = _session(agent=agent, source="desktop", running=True)
+    proof = {"origin": "desktop_user", "root_id": "11111111-1111-4111-8111-111111111111"}
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *args: None)
+    monkeypatch.setattr(server, "_admit_prompt_turn", lambda *args: None)
+
+    server._run_after_agent_ready(
+        "rid", "sid", session, "human", None, None, desktop_work=proof)
+
+    assert [p["kind"] for p in _events(emits, "desktop.work")] == ["started", "interrupted"]
+
+
+def test_human_approval_is_correlated_to_running_work(emits, turn_env):
+    def invoke(*a, **k):
+        server._emit_approval_request("sid", {"request_id": "approval-1", "command": "sensitive"})
+        server._emit_approval_request("sid", {"request_id": "approval-1", "command": "sensitive"})
+        return {"completed": True, "messages": [], "final_response": "ok"}
+    agent = types.SimpleNamespace(session_id="session-key", clear_interrupt=lambda: None, run_conversation=invoke)
+    session = _session(agent=agent, source="desktop", running=True)
+    server._run_prompt_submit("rid", "sid", session, "human", desktop_work={
+        "origin": "desktop_user", "root_id": "11111111-1111-4111-8111-111111111111"})
+    work = _events(emits, "desktop.work")
+    assert [p["kind"] for p in work] == ["started", "approval", "completed"]
+    assert work[1]["request_id"] == "approval-1"
+    server._emit_approval_request("sid", {"request_id": "after-turn"})
+    assert len(_events(emits, "desktop.work")) == 3
+
+
+def test_async_continuation_finishes_original_work(emits, turn_env):
+    from tui_gateway.desktop_work import admit
+    agent = types.SimpleNamespace(session_id="session-key", clear_interrupt=lambda: None,
+        run_conversation=lambda *a, **k: {"completed": True, "messages": [], "final_response": "ok"})
+    session = _session(agent=agent, source="desktop", running=True)
+    work = admit("sid", session, {"origin": "desktop_user", "root_id": "11111111-1111-4111-8111-111111111111"})
+    work.emit(server._emit, "started")
+    work.retain_async("batch")
+    server._run_prompt_submit("rid", "sid", session, "results", display_kind="async_delegation_complete",
+                              continued_desktop_work=work)
+    assert "completed" not in [p["kind"] for p in _events(emits, "desktop.work")]
+    work.consume_async("batch")
+    assert [p["kind"] for p in _events(emits, "desktop.work")] == ["started", "waiting", "completed"]
+
+
+@pytest.mark.parametrize("provider_error", [True, False])
+@pytest.mark.parametrize("next_admission", [True, False])
+def test_escaped_exception_has_terminal_work_classification(emits, turn_env, monkeypatch, provider_error, next_admission):
+    import httpx
+    from openai import AuthenticationError
+    error = (AuthenticationError("auth failed", response=httpx.Response(401,
+        request=httpx.Request("POST", "https://example.invalid")), body=None)
+        if provider_error else RuntimeError("local dispatcher failed"))
+    if next_admission:
+        # A new turn can replace the retained snapshot after running is released.
+        monkeypatch.setattr(server, "_emit_settled_session_info",
+            lambda sid, session, agent: session.update(inflight_turn=None))
+    def invoke(*a, **k):
+        raise error
+    agent = types.SimpleNamespace(session_id="session-key", clear_interrupt=lambda: None, run_conversation=invoke)
+    session = _session(agent=agent, source="desktop", running=True)
+    server._run_prompt_submit("rid", "sid", session, "human", desktop_work={
+        "origin": "desktop_user", "root_id": "11111111-1111-4111-8111-111111111111"})
+    assert [p["kind"] for p in _events(emits, "desktop.work")] == [
+        "started", "provider_failed" if provider_error else "interrupted"]
+
+
 # ── Unit: retention helpers ───────────────────────────────────────────
 
 

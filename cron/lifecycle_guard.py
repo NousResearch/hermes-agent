@@ -397,6 +397,69 @@ def _budget_exhausted(what: str, depth: int) -> bool:
 
 # --- shell tokenization -----------------------------------------------------------------------
 
+def _mask_shell_comments(text: str) -> str:
+    """Blank shell comments while preserving quoted and word-internal hashes.
+
+    The quote dialect intentionally matches :func:`_split_logical_lines`: it
+    models POSIX single and double quotes, not ANSI-C ``$'...'`` or locale
+    ``$\"...\"`` strings.  Keeping the two state machines aligned preserves
+    the conservative tokenization fallback for unsupported quote forms.
+
+    This is deliberately a conservative comment model rather than exact shell
+    emulation.  In particular, redirects are not treated as word boundaries,
+    so text after a redirect-adjacent ``#`` remains visible to the guard.
+    """
+    masked = list(text)
+    in_single = False
+    in_double = False
+    escaped = False
+    comment = False
+    word_start = True
+
+    for index, char in enumerate(text):
+        if comment:
+            if char == "\n":
+                comment = False
+                word_start = True
+            else:
+                masked[index] = " "
+            continue
+        if in_single:
+            if char == "'":
+                in_single = False
+            continue
+        if escaped:
+            escaped = False
+            word_start = False
+            continue
+        if char == "\\":
+            escaped = True
+            word_start = False
+            continue
+        if in_double:
+            if char == '"':
+                in_double = False
+            continue
+        if char == "'":
+            in_single = True
+            word_start = False
+            continue
+        if char == '"':
+            in_double = True
+            word_start = False
+            continue
+        if char == "#" and word_start:
+            masked[index] = " "
+            comment = True
+            continue
+        if char == "\n" or char.isspace() or char in _CONTROL_CHARS:
+            word_start = True
+        else:
+            word_start = False
+
+    return "".join(masked)
+
+
 def _split_logical_lines(text: str) -> list[str]:
     """Split on newlines outside quotes (a quoted newline is data, not a separator); honors
     escapes."""
@@ -422,11 +485,11 @@ def _split_logical_lines(text: str) -> list[str]:
     return lines
 
 
-def _shlex_tokens(line: str) -> list[str]:
+def _shlex_tokens(line: str, *, comments: bool = True) -> list[str]:
     """POSIX-tokenize one shell line, honoring quotes and `#` comments; raises ValueError."""
     lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
-    lexer.commenters = "#"
+    lexer.commenters = "#" if comments else ""
     return list(lexer)
 
 
@@ -450,13 +513,14 @@ def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterat
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments per logical line; a line shlex rejects (unbalanced
     quotes) falls back to per-physical-line tokenization."""
-    for line in _split_logical_lines(command.replace("\\\n", "")):
+    normalized = _mask_shell_comments(command.replace("\\\n", ""))
+    for line in _split_logical_lines(normalized):
         try:
-            tokens = _shlex_tokens(line)
+            tokens = _shlex_tokens(line, comments=False)
         except ValueError:
             for physical_line in line.splitlines():
                 try:
-                    yield from _split_segments(_shlex_tokens(physical_line))
+                    yield from _split_segments(_shlex_tokens(physical_line, comments=False))
                 except ValueError:
                     continue
             continue

@@ -804,7 +804,7 @@ def write_runtime_status(
     active_agents: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    clear_profile_platforms: bool = False,
+    ingress_url: Any = _UNSET, clear_profile_platforms: bool = False,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -842,6 +842,8 @@ def write_runtime_status(
             ("needs_attention", needs_attention, bool),
             # ISO start of the current retry episode; None clears it.
             ("retrying_since", retrying_since, None),
+            # Shared-listener secondaries: the /p/<profile>/ callback URL the vendor console must target.
+            ("ingress_url", ingress_url, None),
         ))
         # Per-entry writer provenance: top-level pid/start_time only identify the most recent
         # writer; /api/status tells "live" from "preserved" by exact (pid, start_time) equality.

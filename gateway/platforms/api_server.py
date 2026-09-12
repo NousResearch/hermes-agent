@@ -1485,6 +1485,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))
 
+    async def _handle_profile_ingress(self, request: "web.Request") -> "web.StreamResponse":
+        """``/p/<profile>/<tail>`` → the served profile's shared-listener adapter (already scoped by the
+        prefix middleware); a profile with no adapter for the path is a 404, never the default's."""
+        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        return await dispatch_profile_ingress(
+            self.gateway_runner, _api_request_profile.get(), request.match_info.get("tail", ""), request,
+            scoped=True)
+
     def _make_profile_prefix_middleware(self):
         """Reject unknown /p/<profile>/ prefixes and scope the request home."""
 
@@ -3894,6 +3902,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
+            # Registered LAST so every native mirror above wins: anything else under /p/<profile>/ is a
+            # secondary profile's inbound-port platform (Twilio, LINE, Teams, ...) served on this listener.
+            self._app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
             # After native routes: Relay bootstrap shims feature-detect on this key and must
             # no-op rather than shadow the native session-control handlers.
             self._app["api_server_adapter"] = self

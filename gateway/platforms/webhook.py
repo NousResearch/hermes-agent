@@ -215,6 +215,9 @@ class WebhookAdapter(BasePlatformAdapter):
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # /p/<profile>/ routes the event to that profile (honored only under gateway.multiplex_profiles).
         app.router.add_post("/p/{profile}/webhooks/{route_name}", self._handle_webhook)
+        # Without an api_server listener this port is the shared listener: forward a secondary's
+        # inbound-port platforms (Twilio, LINE, Teams, ...) registered in shared-listener mode.
+        app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         # SO_REUSEADDR: on macOS (BSD) two wildcard/specific sockets can silently split traffic while
@@ -371,6 +374,14 @@ class WebhookAdapter(BasePlatformAdapter):
                         ", ".join(self._dynamic_routes.keys()) or "(none)")
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
+
+    async def _handle_profile_ingress(self, request: "web.Request") -> "web.StreamResponse":
+        profile = self._resolve_request_profile(request)
+        if profile is _PROFILE_REJECTED or profile is None:
+            return _json_error("Unknown or unconfigured profile", 404)
+        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        return await dispatch_profile_ingress(
+            self.gateway_runner, profile, request.match_info.get("tail", ""), request)
 
     def _resolve_request_profile(self, request: "web.Request"):
         """Resolve + validate the /p/<profile>/ URL prefix: None (no prefix, or multiplexing off and the

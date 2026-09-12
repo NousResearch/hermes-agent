@@ -111,6 +111,33 @@ BootstrapLogContains(needle) {
     }
 }
 
+; Last "... bootstrap FAILED ..." line from the log, for a useful error
+; message. Best-effort: an empty result still leaves the generic message.
+BootstrapLogFailureLine() {
+    global bootstrapLog
+    if (bootstrapLog = "" or !FileExist(bootstrapLog)) {
+        return ""
+    }
+    try {
+        f := FileOpen(bootstrapLog, "r-d")
+        if !f {
+            return ""
+        }
+        content := f.Read()
+        f.Close()
+        lines := StrSplit(content, "`n")
+        loop lines.Length {
+            line := lines[lines.Length - A_Index + 1]
+            if InStr(line, "bootstrap FAILED") {
+                return Trim(line)
+            }
+        }
+    } catch {
+        return ""
+    }
+    return ""
+}
+
 installerWin := "ahk_exe " setupExe
 appWin := "ahk_exe Hermes.exe"
 
@@ -153,12 +180,27 @@ if !installClicked {
 ; -- Step 2: wait for the install to finish ------------------------------
 ; Primary: the "bootstrap complete" line in the installer's own log -- the
 ; authoritative done signal. Secondary: the Launch button template.
+;
+; A genuine install failure (bad clone, failed pip/npm install, etc.) is
+; ALSO logged, immediately, as "... bootstrap FAILED ...". Before this
+; check existed, a real failure was indistinguishable from "still working"
+; -- neither "bootstrap complete" nor the Launch button ever appears, so we
+; burned the entire 45-minute wait before reporting anything, and the
+; eventual error ("did not finish within 45 minutes") hid the real cause.
+; Check for it FIRST every poll so a failure a few seconds in is reported
+; a few seconds in, not 45 minutes later.
 launchX := 0, launchY := 0
 launchFound := false
 complete := false
+failed := false
 waitDeadline := A_TickCount + 1000 * 60 * 45
 Log("Waiting for install to finish (bootstrap log or Launch template) ...")
 while (A_TickCount < waitDeadline) {
+    if BootstrapLogContains("bootstrap FAILED") {
+        failed := true
+        Log("bootstrap-installer.log reports FAILURE")
+        break
+    }
     if BootstrapLogContains("bootstrap complete") {
         complete := true
         Log("bootstrap-installer.log reports completion")
@@ -172,6 +214,11 @@ while (A_TickCount < waitDeadline) {
         break
     }
     Sleep(2000)
+}
+if failed {
+    reason := BootstrapLogFailureLine()
+    Log(Format("Install FAILED: {}", reason))
+    throw Error(Format("install failed: {}", reason != "" ? reason : "see bootstrap-installer.log ('bootstrap FAILED')"))
 }
 if (!launchFound and !complete) {
     throw Error("install did not finish within 45 minutes (no completion log line, no Launch button)")

@@ -2748,9 +2748,15 @@ class TestAuxiliaryAuthRefreshRetry:
 
 
 
-    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
+    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch, tmp_path):
         stale_client = MagicMock()
         cache_key = ("anthropic", False, None, None, None)
+
+        # The refresh still acquires a real lock even when credential I/O is mocked.
+        monkeypatch.setattr(
+            "agent.anthropic_credentials.claude_code_credentials_path",
+            lambda: tmp_path / ".credentials.json",
+        )
 
         monkeypatch.setenv("ANTHROPIC_TOKEN", "")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")

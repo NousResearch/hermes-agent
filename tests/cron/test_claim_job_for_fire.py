@@ -265,6 +265,34 @@ def test_same_thread_fire_fence_reentrancy_preserves_ownership(temp_home):
     assert thread.is_alive() is False
 
 
+
+def test_fire_claim_heartbeat_does_not_deadlock_behind_its_own_fire_fence(temp_home, monkeypatch):
+    """The worker holds the fire fence across delivery while its heartbeat runs in another thread."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="heartbeat-fence")
+    claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
+    assert isinstance(claimed, dict)
+    owner = claimed["fire_claim"]["by"]
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.1)
+    completed = threading.Event()
+    result = {}
+
+    def heartbeat():
+        result["ok"] = jobs.heartbeat_fire_claim(job["id"], expected_owner=owner)
+        completed.set()
+
+    with jobs._fire_job_lock(job["id"]) as acquired:
+        assert acquired is True
+        thread = threading.Thread(target=heartbeat)
+        thread.start()
+        assert completed.wait(timeout=2), "heartbeat deadlocked behind its own fire fence"
+        assert result["ok"] is True
+
+    thread.join(timeout=2)
+    assert thread.is_alive() is False
+
+
 def test_manual_claim_does_not_stamp_a_future_occurrence(temp_home):
     """An off-tick run-now must not consume the NEXT scheduled slot.
 

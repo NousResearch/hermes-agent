@@ -2591,12 +2591,19 @@ def claim_job_for_fire(
 
 
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
-    """Refresh an active ``fire_claim`` without extending another owner's lease: an execution may
-    outlive the TTL, and the owner check stops a stale runner from refreshing a recovered claim."""
+    """Refresh an active ``fire_claim`` without extending another owner's lease.
+
+    This deliberately bypasses ``_fire_job_lock``. The fence is held by the
+    active worker across save/delivery, while this heartbeat runs on its helper
+    thread; taking the same per-job RLock would block the heartbeat behind its
+    own worker and falsely declare ownership lost after the lock timeout. The
+    jobs lock plus ``expected_owner`` is the actual CAS fence: completion clears
+    or replaces the claim, and a late heartbeat then returns False.
+    """
     def apply(jobs, _i, job):
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
-    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+    return _with_job(job_id, apply, False)
 
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by

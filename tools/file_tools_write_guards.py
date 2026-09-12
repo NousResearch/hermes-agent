@@ -106,6 +106,16 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
         return filepath
 
 
+def _symlink_target_or_raw(filepath: str, task_id: str) -> str:
+    """Fully symlink-resolved write target; the raw input when resolution fails.
+    The OS-level write follows the link, so suffix guards must check the target
+    as well as the supplied path."""
+    try:
+        return os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
+    except Exception:
+        return filepath
+
+
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
@@ -378,31 +388,38 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     plausibly believes it holds the file's contents and tries to write the edited text back with
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
+
+    The suffix check runs on the supplied path AND its symlink-resolved target (#108715):
+    the write follows the link, so a text-suffixed alias to a binary document corrupts
+    it just as directly (symlink lesson from #41351: always realpath before matching).
     """
-    if has_opaque_document_extension(filepath):
-        ext = filepath[filepath.rfind("."):].lower()
-        return (
-            f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
-            "A text write cannot produce a valid document container and would "
-            "corrupt the file (read_file showed you EXTRACTED text, not the real "
-            "bytes). Use the docx/xlsx/powerpoint skills or a library like "
-            "python-docx/openpyxl/python-pptx via the terminal to create or edit "
-            "this document.")
-    if is_pdf_path(filepath):
-        try:
-            resolved = Path(_resolve_path_for_task(filepath, task_id))
-        except Exception:
-            resolved = Path(_expand_tilde(filepath))
-        try:
-            if resolved.is_file():
-                return (
-                    f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
-                    "read_file showed you EXTRACTED text, not the real bytes — writing "
-                    "text back would destroy the document. Use the pdf skill or a PDF "
-                    "library via the terminal to modify it. (Creating a NEW .pdf file "
-                    "is allowed.)")
-        except OSError:
-            pass
+    real = _symlink_target_or_raw(filepath, task_id)
+    candidates = (filepath,) if real == filepath else (filepath, real)
+    for candidate in candidates:
+        if has_opaque_document_extension(candidate):
+            ext = candidate[candidate.rfind("."):].lower()
+            return (
+                f"Refusing to write plain text to binary document '{candidate}' ({ext}). "
+                "A text write cannot produce a valid document container and would "
+                "corrupt the file (read_file showed you EXTRACTED text, not the real "
+                "bytes). Use the docx/xlsx/powerpoint skills or a library like "
+                "python-docx/openpyxl/python-pptx via the terminal to create or edit "
+                "this document.")
+        if is_pdf_path(candidate):
+            try:
+                resolved = Path(_resolve_path_for_task(candidate, task_id))
+            except Exception:
+                resolved = Path(_expand_tilde(candidate))
+            try:
+                if resolved.is_file():
+                    return (
+                        f"Refusing to overwrite existing PDF '{candidate}' with plain text. "
+                        "read_file showed you EXTRACTED text, not the real bytes — writing "
+                        "text back would destroy the document. Use the pdf skill or a PDF "
+                        "library via the terminal to modify it. (Creating a NEW .pdf file "
+                        "is allowed.)")
+            except OSError:
+                pass
     return None
 
 

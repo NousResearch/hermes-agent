@@ -183,3 +183,67 @@ class TestPatchToolGuard:
         )
         assert not result.get("error")
         assert target.read_text() == "hello there"
+
+
+class TestSymlinkAliasBypass:
+    """A text-suffixed symlink must not smuggle a text write into the binary
+    document it points at — the OS write follows the link, so the guard checks
+    the resolved target too (#108715)."""
+
+    def test_guard_resolves_text_symlink_to_docx(self, tmp_path: Path):
+        docx = tmp_path / "report.docx"
+        _make_minimal_docx(docx)
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(docx)
+
+        err = _check_binary_document_write(str(alias))
+
+        assert err is not None, "symlink alias must trip the opaque-document guard"
+        assert "report.docx" in err
+
+    def test_guard_resolves_text_symlink_to_existing_pdf(self, tmp_path: Path):
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n1 0 obj\nendobj\n%%EOF\n")
+        alias = tmp_path / "notes.txt"
+        alias.symlink_to(pdf)
+
+        err = _check_binary_document_write(str(alias))
+
+        assert err is not None
+        assert "overwrite" in err.lower()
+
+    def test_text_symlink_to_text_file_allowed(self, tmp_path: Path):
+        target = tmp_path / "notes.txt"
+        target.write_text("hello")
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(target)
+
+        assert _check_binary_document_write(str(alias)) is None
+
+    def test_write_file_via_symlink_refused_and_target_intact(self, tmp_path: Path):
+        docx = tmp_path / "report.docx"
+        _make_minimal_docx(docx)
+        original = docx.read_bytes()
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(docx)
+
+        result = json.loads(write_file_tool(str(alias), "rewritten text"))
+
+        assert result.get("error"), "write via text-suffixed symlink must be refused"
+        assert docx.read_bytes() == original, "document bytes must be untouched"
+        assert zipfile.is_zipfile(docx), "document must remain a valid container"
+
+    def test_patch_replace_via_symlink_refused_and_target_intact(self, tmp_path: Path):
+        docx = tmp_path / "report.docx"
+        _make_minimal_docx(docx)
+        original = docx.read_bytes()
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(docx)
+
+        result = json.loads(
+            patch_tool(mode="replace", path=str(alias),
+                       old_string="good", new_string="great")
+        )
+
+        assert result.get("error"), "patch via text-suffixed symlink must be refused"
+        assert docx.read_bytes() == original, "document bytes must be untouched"

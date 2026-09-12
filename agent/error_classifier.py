@@ -443,13 +443,16 @@ _ACCOUNT_POLICY_BLOCK_PATTERNS = ("blocked for a previous policy violation",)
 # #32421, CommandCode gateway moderation #115218, Alibaba Model Studio
 # guardrail `data_inspection_failed`, input and output side) — never a generic
 # word like "policy" that collides with billing/auth.
-# "content_filter" deliberately excludes the space variant seen in echoed config.
+# "content_filter" deliberately excludes the space variant seen in echoed config;
+# the z-ai "Request blocked by content filter" 403 (2026-09-12, 61 misrouted
+# retries as auth-fallback) is caught by its full sentence instead.
 _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "flagged for possible cybersecurity risk", "trusted access for cyber",
     "violates our usage policies", "violates openai's usage policies", "your request was flagged by",
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
     "content exists risk", "data may contain inappropriate content", "data_inspection_failed",
+    "request blocked by content filter",
 )
 
 # Aggregator prompt-injection guardrails (OpenRouter Guardrails' regex detector): the platform

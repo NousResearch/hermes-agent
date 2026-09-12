@@ -2495,6 +2495,25 @@ def clear_run_claim(job_id: str) -> bool:
     return _with_job(job_id, apply, False)
 
 
+def release_fire_claim(job_id: str, *, expected_owner: str) -> bool:
+    """Clear a ``fire_claim`` owned by ``expected_owner``; no-op otherwise.
+
+    For abort paths that claimed but never ran (so ``mark_job_run`` never
+    fires): without this the fresh 300s claim blocks re-dispatch until the
+    TTL expires. The owner fence stops a loser from releasing a claim the
+    winner has since taken over.
+    """
+    def apply(jobs, _i, job):
+        claim = job.get("fire_claim")
+        if not isinstance(claim, dict) or claim.get("by") != expected_owner:
+            return False
+        job["fire_claim"] = None
+        save_jobs(jobs)
+        return True
+
+    return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
+
+
 def advance_next_runs(job_ids) -> int:
     """Batch form of :func:`advance_next_run`: one load + at most one save for the whole due set;
     one-shot/unknown ids are skipped. Returns the count advanced. Persisted once at the end, so a

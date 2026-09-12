@@ -281,6 +281,15 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # outlived by real jobs, so it alone cannot stop a manual run from double-firing a job the ticker
         # (or another manual run) is still executing.
         if not try_register_running_job(job_id):
+            # Lost the in-memory race after winning the durable claim: drop
+            # our own fresh claim so the next tick can dispatch instead of
+            # waiting out its 300s TTL. Owner-fenced — a winner's take-over
+            # is never released.
+            claim = job.get("fire_claim")
+            owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+            if owner:
+                from cron.jobs import release_fire_claim
+                release_fire_claim(job_id, expected_owner=owner)
             return {"claimed": True, "success": False, "error": _ALREADY_RUNNING_ERROR}
         _registered = True
 

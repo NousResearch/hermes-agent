@@ -1634,6 +1634,28 @@ class QQAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] send_typing failed: %s", self._log_tag, exc)
 
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the QQ "typing…" indicator immediately.
+
+        QQ's input_notify with ``input_type=1`` keeps the bubble visible for
+        ``input_second`` seconds even after the agent has replied.  Sending
+        ``input_type=0`` with the same message id cancels it right away so
+        the user doesn't see a stale "typing…" after the response lands.
+        """
+        msg_id = self._last_msg_id.get(chat_id)
+        if not self.is_connected or self._guess_chat_type(chat_id) != "c2c" or not msg_id:
+            return
+        try:
+            body = {
+                "msg_type": MSG_TYPE_INPUT_NOTIFY,
+                "msg_id": msg_id,
+                "input_notify": {"input_type": 0, "input_second": 0},
+                "msg_seq": self._next_msg_seq(chat_id)}
+            await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
+            self._typing_sent_at.pop(chat_id, None)
+        except Exception as exc:
+            logger.debug("[%s] stop_typing failed: %s", self._log_tag, exc)
+
     # ── Format / chat info / helpers ──
 
     def format_message(self, content: str) -> str:

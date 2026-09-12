@@ -1359,7 +1359,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     )
 
 
-def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
+def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None, tool_snapshot_epoch: int | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode.
 
     Wraps the per-api_mode builder so the OpenCode ``x-opencode-session``
@@ -1368,14 +1368,19 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     OpenCode models). No-op for every other provider.
     """
     from agent.opencode_affinity import merge_opencode_session_headers
+    from agent.tool_snapshot import capture_tool_request_snapshot, bind_tool_snapshot_epoch
 
+    captured_tools, captured_epoch = capture_tool_request_snapshot(agent)
+    if tools_for_api is None:
+        tools_for_api = captured_tools
+    if tool_snapshot_epoch is None:
+        tool_snapshot_epoch = captured_epoch
     kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
-    return merge_opencode_session_headers(
-        kwargs,
-        getattr(agent, "provider", None),
-        getattr(agent, "base_url", None),
+    kwargs = merge_opencode_session_headers(
+        kwargs, getattr(agent, "provider", None), getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
     )
+    return bind_tool_snapshot_epoch(kwargs, tool_snapshot_epoch)
 
 
 def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:

@@ -802,7 +802,8 @@ def _approval_observability(ids: _CallIds):
 
 
 def _execute_tool(function_name: str, function_args: Dict[str, Any], original_args: Dict[str, Any], ids: _CallIds,
-                  *, user_task: Optional[str], enabled_tools: Optional[List[str]], skip_tool_execution_middleware: bool) -> Any:
+                  *, user_task: Optional[str], enabled_tools: Optional[List[str]], skip_tool_execution_middleware: bool,
+                  tool_snapshot_agent=None, expected_tool_snapshot_epoch=None) -> Any:
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
     dispatch_kwargs: Dict[str, Any] = {"task_id": ids.task_id, "session_id": ids.session_id}
@@ -818,7 +819,13 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
         if is_connector_name(function_name):
             from model_tools_connectors import dispatch_connector_call
             return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
-        return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+        from agent.tool_snapshot import captured_tool_route, direct_tool_execution
+        with direct_tool_execution(tool_snapshot_agent, expected_tool_snapshot_epoch,
+                                   function_name):
+            route = captured_tool_route(function_name)
+            if route is not None and route[0] == "registry":
+                return registry.dispatch_entry(function_name, route[1], next_args, **dispatch_kwargs)
+            return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):
         if skip_tool_execution_middleware:
@@ -859,6 +866,7 @@ def handle_function_call(
     skip_pre_tool_call_hook: bool = False, skip_tool_request_middleware: bool = False,
     skip_tool_execution_middleware: bool = False, tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
+    tool_snapshot_agent=None, expected_tool_snapshot_epoch=None,
 ) -> str:
     """Route a tool call through hooks/middleware to the registry; returns a JSON string.
 
@@ -903,6 +911,8 @@ def handle_function_call(
             skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,
             skip_tool_execution_middleware=skip_tool_execution_middleware, tool_request_middleware_trace=list(trace),
             enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            tool_snapshot_agent=tool_snapshot_agent,
+            expected_tool_snapshot_epoch=expected_tool_snapshot_epoch,
         )
 
     from tools.tool_gateway.names import is_connector_name, parse_connector_name
@@ -936,12 +946,17 @@ def handle_function_call(
         # duration_ms (monotonic) is exposed to post_tool_call / transform_tool_result.
         start = time.monotonic()
         result = _execute_tool(function_name, function_args, original_args, ids, user_task=user_task,
-                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
+                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware,
+                               tool_snapshot_agent=tool_snapshot_agent,
+                               expected_tool_snapshot_epoch=expected_tool_snapshot_epoch)
         duration_ms = _elapsed_ms(start)
         _emit(result, duration_ms=duration_ms)
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
 
     except Exception as e:
+        from agent.tool_snapshot import ToolSnapshotChangedError
+        if isinstance(e, ToolSnapshotChangedError):
+            raise
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
         return _emit(tool_error(_sanitize_tool_error(error_msg)), duration_ms=_elapsed_ms(start),

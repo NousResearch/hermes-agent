@@ -31,10 +31,16 @@ def _defs(desc):
 
 class TestContentAwareRefresh(unittest.TestCase):
     def _agent_with(self, desc):
+        import tools.image_generation_tool  # noqa: F401 - register before route capture
+        from tools.registry import registry
+
         agent = _Agent()
         agent.tools = _defs(desc)
         agent.valid_tool_names = {"image_generate"}
-        agent._tool_snapshot_generation = 0
+        agent._tool_snapshot_generation = registry._generation
+        entry = registry.get_entry("image_generate")
+        self.assertIsNotNone(entry)
+        agent._tool_registry_routes = {"image_generate": entry}
         return agent
 
     def _refresh(self, agent, new_desc, **kw):
@@ -43,7 +49,7 @@ class TestContentAwareRefresh(unittest.TestCase):
         with patch("model_tools.get_tool_definitions",
                    return_value=_defs(new_desc)), \
              patch("tools.mcp_tool_agent._reinject_post_build_tools",
-                   return_value=set()):
+                   return_value=(set(), set())):
             return refresh_agent_mcp_tools(agent, **kw)
 
     def test_content_change_swaps_when_content_aware(self):

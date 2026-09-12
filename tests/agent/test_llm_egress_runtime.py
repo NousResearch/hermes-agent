@@ -10,6 +10,7 @@ import pytest
 
 from agent.llm_egress_firewall import EgressBlocked, SanitizedTextRejected
 from agent.llm_egress_runtime import (
+    _READ_FILE_REPLAY_ELISION,
     _restore_source_provenance_sidecar,
     _typed_payload_violation_locations,
     authorize_agent_sdk_kwargs,
@@ -4028,7 +4029,7 @@ def _real_codex_read_file_replay(
 def test_protected_codex_responses_rejects_stale_sidecar_before_source_replay(
     tmp_path, monkeypatch, non_scratch_source_root, mutation
 ):
-    """A matching hash cannot bypass source validation with a stale envelope."""
+    """A stale envelope is reduced to an outcome-only replay."""
 
     agent, _result, input_items, sidecar = _real_codex_read_file_replay(
         tmp_path,
@@ -4041,17 +4042,19 @@ def test_protected_codex_responses_rejects_stale_sidecar_before_source_replay(
     else:
         sidecar = [{**sidecar[0], "source_grant_digests": ["forged-grant"]}]
 
-    with pytest.raises(EgressBlocked) as exc_info:
-        authorize_agent_sdk_kwargs(
-            agent,
-            {
-                "model": agent.model,
-                "input": input_items,
-                "_hermes_source_provenance": sidecar,
-            },
-        )
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
 
-    assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+    assert receipt.allowed
+    assert authorized["input"][1]["output"] == _READ_FILE_REPLAY_ELISION
+    assert json.dumps(input_items[1]["output"]) not in json.dumps(authorized)
+    assert receipt.decision.source_segment_count == 0
 
 
 def test_real_read_file_responses_replays_one_input_text_with_source_segment(
@@ -4296,17 +4299,23 @@ def test_responses_read_file_fails_closed_for_unbound_or_changed_presentations(
         }
     ]
 
-    with pytest.raises(EgressBlocked) as exc_info:
-        authorize_agent_sdk_kwargs(
-            agent,
-            {
-                "model": agent.model,
-                "input": input_items,
-                "_hermes_source_provenance": sidecar,
-            },
-        )
+    authorized, receipt = authorize_agent_sdk_kwargs(
+        agent,
+        {
+            "model": agent.model,
+            "input": input_items,
+            "_hermes_source_provenance": sidecar,
+        },
+    )
 
-    assert "untrusted_provenance" in exc_info.value.decision.reason_codes
+    assert receipt.allowed
+    assert all(
+        item.get("output") == _READ_FILE_REPLAY_ELISION
+        for item in authorized["input"]
+        if item.get("type") == "function_call_output"
+    )
+    assert json.dumps(input_items[1]["output"]) not in json.dumps(authorized)
+    assert receipt.decision.source_segment_count == 0
 
 
 def test_responses_read_file_elides_after_sidecar_is_consumed(
@@ -4344,7 +4353,7 @@ def test_responses_read_file_elides_after_sidecar_is_consumed(
         "this protected route. Request only the needed narrow range again."
     )
     assert result not in json.dumps(authorized)
-    assert receipt.decision.source_segment_count == 0
+    assert receipt.decision.source_segment_count == 1
 
 
 @pytest.mark.parametrize(

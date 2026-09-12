@@ -1585,6 +1585,74 @@ def _init_cron_mcp_tools(job_id: str) -> None:
         logger.warning("Job '%s': MCP initialization failed (non-fatal): %s", job_id, _mcp_exc)
 
 
+def _verify_cron_mcp_toolsets(job: dict, job_id: str, job_name: str, cfg: dict) -> Optional[tuple]:
+    """Refuse a run whose per-job ``enabled_toolsets`` names an MCP server that resolves to zero
+    tools, routing it through the blocked_config path (#109050).
+
+    MCP registrations are keyed ``(owner_scope, name)`` under a profile multiplexer, so a server
+    named by the job can pass validate_toolset via its registry alias yet contribute no tools in
+    this run's scope (teardown/re-registration window, or another profile owning the only live
+    connection). The agent would run tool-less and improvise around the missing capability while
+    the scheduler records success — no incident, ``failure_streak`` stays 0. Runs AFTER
+    ``_init_cron_mcp_tools`` (the pre-dispatch preflight cannot see the registry, which fills only
+    after discovery) and blocks before any LLM call, mirroring ``_preflight_or_block``'s shape.
+    Only servers the job explicitly names are checked; ones layered in by the global MCP merge
+    are not the job's intent statement.
+    """
+    try:
+        if not _cron_preflight_enabled(cfg):
+            return None
+        per_job = job.get("enabled_toolsets") or []
+        if not per_job:
+            return None
+        from tools.registry import registry
+        from toolsets import resolve_toolset
+        named_servers = []
+        for name in per_job:
+            target = registry.get_toolset_alias_target(str(name))
+            if target and target.startswith("mcp-"):
+                named_servers.append(str(name))
+        if not named_servers:
+            return None
+        empty = sorted(name for name in named_servers if not resolve_toolset(name))
+        if not empty:
+            return None
+    except Exception:
+        # Fail open: the verifier must never take down a runnable job (mirrors _preflight_or_block).
+        logger.debug("Job '%s': MCP toolset verification errored — failing open", job_id, exc_info=True)
+        return None
+
+    logger.warning(
+        "Job '%s' (ID: %s): BLOCKED — per-job enabled_toolsets names MCP server(s) resolving to "
+        "zero tools: %s (no LLM call was made)", job_name, job_id, ", ".join(empty))
+    reason = (
+        "MCP server(s) named in enabled_toolsets resolve to zero tools in this run's scope: "
+        + ", ".join(f"'{name}'" for name in empty)
+        + ". The connection is not visible here (per-profile ledger: teardown/re-registration "
+        "window, or another profile owns the only live connection), so the agent would run "
+        "tool-less while the run is still recorded as success (#109050). Check the server with "
+        "`hermes mcp` or restart the gateway to re-register it."
+    )
+    # Alert-once without sharing the preflight bit: a job already parked in blocked_config
+    # re-blocks silently (dedup on last_status); the next healthy run clears that state for free.
+    marker = (
+        BLOCKED_CONFIG_SILENT_MARKER if job.get("last_status") == "blocked_config"
+        else BLOCKED_CONFIG_MARKER)
+    blocked_doc = (
+        f"# Cron Job: {job_name}\n\n"
+        f"**Job ID:** {job_id}\n"
+        f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"**Status:** BLOCKED (configuration)\n\n"
+        "Pre-dispatch validation found an MCP toolset problem and "
+        "the agent was NOT run (no tokens spent).\n\n"
+        f"**Reason:** {reason}\n\n"
+        "The job will stay blocked (without re-alerting) until the "
+        "MCP server is reachable again; the next healthy run clears this "
+        "state. Set `cron.preflight: false` in config.yaml to disable this validation."
+    )
+    return False, blocked_doc, "", f"{marker} {reason}"
+
+
 def _open_cron_session_db(job: dict):
     """Open the SQLite session store under its own timeout (HERMES_CRON_TIMEOUT only watches
     run_conversation). A wedged sqlite3.connect returns None (no session store) instead of
@@ -2146,6 +2214,11 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)
+    # #109050: a per-job enabled_toolsets entry can name an MCP server whose per-profile
+    # connection resolves to zero tools in this scope — the agent would run tool-less while the
+    # run records success. Verified after discovery (the registry fills only here) and refused
+    # into the blocked_config path; the opt-out shares cron.preflight with the pre-dispatch gate.
+    setup.blocked = _verify_cron_mcp_toolsets(job, job_id, job_name, _cfg)
     return setup
 
 

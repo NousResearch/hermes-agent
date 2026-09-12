@@ -564,8 +564,8 @@ export function ChatBar({
 
     event.preventDefault()
 
-    // ChatGPT Work-style large-paste handling: a paste past the threshold
-    // becomes a `.txt` attachment chip instead of flooding the composer.
+    // A paste past the large-paste threshold becomes a `.txt` attachment chip
+    // instead of flooding the composer.
     // The instruction the user types stays in the input; the pasted source
     // material rides along as a file. Falls back to inline insertion if the
     // attachment can't be created (missing bridge, write failure) so the

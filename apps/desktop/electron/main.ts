@@ -97,6 +97,7 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
   apiRequestRegistryConnectionId,
@@ -6294,20 +6295,6 @@ async function writeComposerImage(buffer, ext = '.png', name = '') {
   const fileName = safeName ? `${safeName}_${random}${safeExt}` : `composer_${stamp}_${random}${safeExt}`
   const filePath = path.join(dir, fileName)
   await fs.promises.writeFile(filePath, buffer)
-
-  return filePath
-}
-
-// Large plain-text pastes are persisted as .txt files so the composer can
-// show them as an attachment chip instead of flooding the input (ChatGPT
-// Work-style large-paste handling). Mirrors writeComposerImage above.
-async function writeComposerPaste(text) {
-  const dir = path.join(app.getPath('userData'), 'composer-pastes')
-  await fs.promises.mkdir(dir, { recursive: true })
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').replace('Z', '')
-  const random = crypto.randomBytes(3).toString('hex')
-  const filePath = path.join(dir, `pasted_content_${stamp}_${random}.txt`)
-  await fs.promises.writeFile(filePath, text, 'utf8')
 
   return filePath
 }
@@ -17038,7 +17025,7 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
     throw new Error('savePastedText: missing text')
   }
 
-  return writeComposerPaste(text)
+  return writeComposerPaste(app.getPath('userData'), text)
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {

@@ -1,15 +1,14 @@
 /**
  * Large-paste-to-attachment policy.
  *
- * Inspired by ChatGPT Work's composer behavior (OpenAI release notes,
- * Aug 4 2026): pasting more than ~10k characters converts the content into a
- * text attachment instead of inserting it inline, keeping the composer clean
- * and preventing a single paste from flooding the input. Short pastes stay
- * inline; the threshold lives here so every paste handler shares one policy.
+ * Pasting more than ~3k characters converts the content into a text
+ * attachment instead of inserting it inline, keeping the composer clean and
+ * preventing a single paste from flooding the input. Short pastes stay inline;
+ * the threshold lives here so every paste handler shares one policy.
  */
 
 /** Characters beyond which a plain-text paste becomes a `.txt` attachment. */
-export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 10_000
+export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 3_000
 
 /**
  * True when a plain-text paste should be converted into a text attachment

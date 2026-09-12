@@ -591,8 +591,8 @@ export function useComposerActions({
   )
 
   /**
-   * Convert a very large plain-text paste into a `.txt` attachment chip
-   * (ChatGPT Work-style). The exact pasted text is written to a
+   * Convert a very large plain-text paste into a `.txt` attachment chip.
+   * The trimmed, sanitized paste text is written to a
    * Hermes-managed composer-pastes file via the main process, then attached
    * through the same `@file:` pipeline as a manually attached text file.
    * Returns false (paste stays inline) when the desktop bridge is missing

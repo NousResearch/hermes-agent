@@ -31,6 +31,14 @@ Then configure Hermes:
 hermes memory setup    # select "openviking"
 ```
 
+Setup asks how the Hermes instance is used:
+
+- **Personal Agent** keeps the current Hermes session settings. Automatic
+  recall uses user-level memory and the current gateway peer only.
+- **Shared Agent** shares each group or thread session between its participants.
+  Automatic recall can use user-level memory and all peer memories. Setup shows
+  a privacy warning and requires confirmation before it changes session settings.
+
 The setup can link to an existing `~/.openviking/ovcli.conf`, copy its current
 connection values into Hermes, or create a minimal `ovcli.conf` when one does
 not exist.
@@ -73,6 +81,7 @@ profile's `.env`:
 | `OPENVIKING_ACCOUNT` | `default` | Tenant account for local/trusted mode |
 | `OPENVIKING_USER` | `default` | Tenant user for local/trusted mode |
 | `OPENVIKING_AGENT` | (none) | Optional peer ID for separate assistant context |
+| `OPENVIKING_RECALL_SCOPE` | `shared` | Automatic recall scope: `shared` or `peer` |
 
 When `OPENVIKING_API_KEY` is set, Hermes lets OpenViking derive account/user
 identity from the key. In local or trusted deployments without an API key,
@@ -80,6 +89,54 @@ Hermes sends `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` as identity headers.
 Hermes also sends `User-Agent: openviking-memory-hermes/<version>` on
 OpenViking requests. This standard harness identifier contains the Hermes
 version, but no per-user identifier, and does not add a separate request.
+
+### Gateway users and recall scope
+
+For gateway turns, Hermes assigns each human sender an OpenViking peer ID. The
+ID uses the platform and the stable alternate user ID when available. Otherwise,
+it uses the platform user ID. Examples are `telegram.182736` and
+`feishu.on_abc123`. Unsafe or long source IDs get a readable prefix and a short
+hash. This keeps IDs valid and prevents collisions.
+
+The peer ID is added to user messages during capture. It does not replace the
+OpenViking tenant user or the optional assistant peer. Gateway surfaces that do
+not provide both a platform and a sender ID keep the existing user-level capture
+behavior.
+
+Configure automatic recall in `config.yaml`:
+
+```yaml
+memory:
+  openviking:
+    recall_scope: shared  # shared or peer
+```
+
+The scopes have these effects:
+
+| Scope | Automatic recall |
+|-------|------------------|
+| `shared` | User-level memory and all peer memories |
+| `peer` | User-level memory and the current human peer only |
+
+If `peer` recall has no valid gateway sender, Hermes searches user-level memory
+only. It does not fall back to all peer memories. The scope applies to automatic
+recall. Explicit OpenViking tools keep their configured assistant identity and
+their existing scope arguments.
+
+The Shared Agent setup profile writes this complete preset:
+
+```yaml
+group_sessions_per_user: false
+thread_sessions_per_user: false
+memory:
+  openviking:
+    recall_scope: shared
+```
+
+Different groups still use different Hermes sessions. Committed OpenViking
+memories are available from other chats according to `recall_scope`. The
+Personal Agent profile sets `recall_scope: peer` and does not change the current
+Hermes session settings.
 
 ### Optional peer identity
 
@@ -104,10 +161,11 @@ Hermes session.
 
 Upgrades do not move or delete existing memories. Installations that relied
 on the old implicit `hermes` peer now use user memory for new writes. Without
-a peer ID, default OpenViking search covers user memory and existing peer
+a peer ID, shared OpenViking search covers user memory and existing peer
 memories under the same OpenViking user. Old peer memories stay at their
 existing paths and remain searchable. Ranking and result limits determine
-which memories are returned. Keep a peer ID if you need the narrower view.
+which memories are returned. Use `recall_scope: peer` for narrower automatic
+recall.
 
 Set `agent: hermes` to restore peer-scoped writes. Memories written at user
 scope before this change stay there and remain searchable. This setting

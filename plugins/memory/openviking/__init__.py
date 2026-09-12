@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import atexit
 import errno
+import hashlib
 import json
 import logging
 import math
@@ -71,6 +72,10 @@ _READ_BATCH_FULL_LIMIT = 2500
 _LEVEL_ENDPOINTS = {"abstract": "/api/v1/content/abstract", "overview": "/api/v1/content/overview", "full": "/api/v1/content/read"}
 _LEVEL_MAX_CHARS = {"abstract": 1200, "overview": 4000}
 _RECALL_SUMMARY_KEYS = ("abstract", "overview", "text", "content")
+_RECALL_SCOPES = ("shared", "peer")
+_DEFAULT_RECALL_SCOPE = "shared"
+_GATEWAY_PEER_ID_MAX_LENGTH = 128
+_GATEWAY_PEER_ID_HASH_LENGTH = 12
 
 
 def _cfg_field(key: str, description: str, **extra) -> dict:
@@ -87,6 +92,12 @@ _CONFIG_SCHEMA = [
     _cfg_field("account", "Advanced local identity override (leave blank for user API keys)"),
     _cfg_field("user", "Advanced local user override (leave blank for user API keys)"),
     _cfg_field("agent", "Optional peer ID for separate assistant context. Uses user memory when no peer is configured.", default=_DEFAULT_AGENT),
+    _cfg_field(
+        "recall_scope",
+        "Automatic recall scope. 'shared' searches all memory in the OpenViking user; 'peer' searches user memory and the current gateway peer only.",
+        default=_DEFAULT_RECALL_SCOPE,
+        choices=list(_RECALL_SCOPES),
+    ),
     _cfg_field("recall_limit", "Maximum memories injected by automatic recall", type="integer", minimum=1, maximum=100, default=6),
     _cfg_field("recall_score_threshold", "Minimum relevance score for automatic recall", type="number", minimum=0.0, maximum=1.0, step=0.01, default=0.15),
     _cfg_field("recall_max_injected_chars", "Maximum total characters injected by recall", type="integer", minimum=100, maximum=50000, default=4000),
@@ -189,6 +200,26 @@ def _derive_openviking_user_text(content: Any) -> str:
     """Strip Hermes slash-skill scaffolding before sending content to OpenViking
     (MemoryManager already does this for the fan-out; kept for direct hook callers)."""
     return extract_user_instruction_from_skill_message(content) or ""
+
+
+def _gateway_peer_id(*, platform: Any, user_id: Any = "", user_id_alt: Any = "") -> str:
+    """Return a safe, platform-scoped OpenViking peer ID for a gateway sender."""
+    platform_text = str(platform or "").strip().lower()
+    sender_text = str(user_id_alt or user_id or "").strip()
+    if not platform_text or not sender_text:
+        return ""
+
+    raw = f"{platform_text}.{sender_text}"
+    if len(raw) <= _GATEWAY_PEER_ID_MAX_LENGTH and re.fullmatch(r"[a-zA-Z0-9_.@-]+", raw) and raw not in {".", ".."} and raw.count("@") <= 1:
+        return raw
+
+    # Keep a readable prefix for Studio while the digest prevents two unsafe
+    # source IDs from collapsing to the same sanitized value.
+    safe = re.sub(r"[^a-zA-Z0-9_.@-]+", "-", raw)
+    safe = re.sub(r"@+", "-", safe).strip(".-") or "gateway-peer"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_GATEWAY_PEER_ID_HASH_LENGTH]
+    prefix_limit = _GATEWAY_PEER_ID_MAX_LENGTH - len(digest) - 1
+    return f"{safe[:prefix_limit].rstrip('.-') or 'gateway-peer'}-{digest}"
 
 
 def _preview(value: Any, limit: int = 160) -> str:
@@ -1166,11 +1197,17 @@ class _TurnUpload:
         if self.batch_messages and self.next_index == len(self.batch_messages):
             return
         # Plain-text fallback: one user + one assistant message.
+        user_message: Dict[str, Any] = {
+            "role": "user",
+            "parts": [{"type": "text", "text": self.user_content[:4000]}],
+        }
+        if self.provider._user_id:
+            user_message["peer_id"] = self.provider._user_id
         assistant_message: Dict[str, Any] = {"role": "assistant", "parts": [{"type": "text", "text": _message_text(self.assistant_content)[:4000]}]}
         if self.provider._agent:
             assistant_message["peer_id"] = self.provider._agent
         client.post(f"/api/v1/sessions/{self.sid}/messages/batch",
-                    {"messages": [{"role": "user", "parts": [{"type": "text", "text": self.user_content[:4000]}]}, assistant_message]})
+                    {"messages": [user_message, assistant_message]})
 
     def run(self) -> None:
         try:
@@ -1213,6 +1250,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def __init__(self):
         self._client: Optional[_VikingClient] = None
         self._endpoint = self._api_key = self._account = self._user = self._agent = ""
+        # The gateway sender is a peer inside the configured OpenViking user.
+        # It is not the OpenViking tenant identity stored in ``self._user``.
+        self._user_id = ""
         self._session_id, self._turn_count, self._hermes_home = "", 0, ""
         # (conn snapshot, user): keyed on the snapshot so every client built from it
         # shares the resolved user and a /reload invalidates it.
@@ -1411,6 +1451,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
+        self._user_id = _gateway_peer_id(
+            platform=kwargs.get("platform"),
+            user_id=kwargs.get("user_id"),
+            user_id_alt=kwargs.get("user_id_alt"),
+        )
         self._hermes_home = str(kwargs.get("hermes_home") or "").strip() or str(_hermes_home_path())
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()
@@ -1515,6 +1560,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         endpoint, api_key, account, user, agent = self._conn_snapshot or self._settings_tuple()
         return _VikingClient(endpoint, api_key, account=account, user=user, agent=agent)
 
+    def _new_recall_client(self, recall_scope: str) -> _VikingClient:
+        """Build a request client without changing capture or tool identity."""
+        endpoint, api_key, account, user, _agent = self._conn_snapshot or self._settings_tuple()
+        actor_peer = self._user_id if recall_scope == "peer" else ""
+        return _VikingClient(endpoint, api_key, account=account, user=user, agent=actor_peer)
+
     # -- prompt / prefetch ---------------------------------------------------
 
     def system_prompt_block(self) -> str:
@@ -1572,9 +1623,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     @classmethod
     def _post_prefetch_search(cls, client: _VikingClient, query: str, session_id: str, *, limit: int,
-                              context_type: str | List[str], deadline: float, request_timeout: float) -> dict:
+                              context_type: str | List[str], target_uri: Optional[str | List[str]] = None,
+                              deadline: float, request_timeout: float) -> dict:
         """Session-aware search first, falling back to search/find (budget errors propagate)."""
-        base_payload = {"query": query, "limit": limit, "score_threshold": 0, "context_type": context_type}
+        base_payload = {
+            "query": query, "limit": limit, "score_threshold": 0, "context_type": context_type,
+            **({"target_uri": target_uri} if target_uri else {}),
+        }
         if session_id:
             try:
                 return client.post("/api/v1/search/search", {**base_payload, "session_id": session_id},
@@ -1589,12 +1644,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         query_text = (query or "").strip()
         if len(query_text) < _RECALL_QUERY_MIN_CHARS:
             return ""
+        cfg = self._recall_config()
         try:
             if client is None:
-                if self._env_refresh_enabled:
-                    client = self._ensure_client()
-                elif self._client is not None:
-                    client = self._new_client()  # legacy/hand-wired path: no env baseline yet
+                if self._env_refresh_enabled and not self._ensure_client():
+                    return ""
+                if self._client is not None:
+                    client = self._new_recall_client(cfg["scope"])
         except Exception as e:
             logger.debug("OpenViking prefetch client build failed: %s", e)
             return ""
@@ -1602,11 +1658,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return ""
 
         try:
-            cfg = self._recall_config()
             deadline = time.monotonic() + cfg["timeout_seconds"]
+            target_uri = None
+            # Without an actor peer, OpenViking's default user-root search also
+            # includes all peers. Use exact roots to exclude peer directories.
+            if cfg["scope"] == "peer" and not self._user_id:
+                user = self._user_space(client, timeout=self._remaining_recall_timeout(deadline, cfg["request_timeout_seconds"]))
+                user_memory_uri = f"viking://user/{user}/memories"
+                target_uri = (
+                    [
+                        user_memory_uri,
+                        f"viking://user/{user}/resources",
+                        "viking://resources",
+                    ]
+                    if cfg["resources"]
+                    else user_memory_uri
+                )
             result = self._unwrap_result(self._post_prefetch_search(
                 client, query_text, session_id, limit=max(cfg["limit"] * 4, 20),
                 context_type=["memory", "resource"] if cfg["resources"] else "memory",
+                target_uri=target_uri,
                 deadline=deadline, request_timeout=cfg["request_timeout_seconds"],
             ))
             if not isinstance(result, dict):
@@ -1665,7 +1736,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def _recall_config(self) -> Dict[str, Any]:
         cfg = _load_hermes_openviking_config()
-        return {key.removeprefix("recall_"): self._setting(key, cfg) for key in _RECALL_SETTING_KEYS}
+        env_scope = os.environ.get("OPENVIKING_RECALL_SCOPE")
+        raw_scope = env_scope or cfg.get("recall_scope") or _DEFAULT_RECALL_SCOPE
+        scope = str(raw_scope).strip().lower()
+        if scope not in _RECALL_SCOPES:
+            source = "OPENVIKING_RECALL_SCOPE" if env_scope else "memory.openviking.recall_scope"
+            warning_key = (source, repr(raw_scope))
+            with _INVALID_SETTING_WARNINGS_LOCK:
+                first = warning_key not in _INVALID_SETTING_WARNINGS
+                _INVALID_SETTING_WARNINGS.add(warning_key)
+            if first:
+                logger.warning("Invalid %s value %r; using %r.", source, raw_scope, _DEFAULT_RECALL_SCOPE)
+            scope = _DEFAULT_RECALL_SCOPE
+        return {
+            "scope": scope,
+            **{key.removeprefix("recall_"): self._setting(key, cfg) for key in _RECALL_SETTING_KEYS},
+        }
 
     def _profile_token_budget(self) -> int:
         return self._setting("profile_token_budget", _load_hermes_openviking_config())
@@ -1966,7 +2052,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return [message for message in messages[start_idx : end_idx + 1] if isinstance(message, dict)]
 
     @staticmethod
-    def _messages_to_openviking_batch(messages: List[Dict[str, Any]], *, assistant_peer_id: str = "") -> List[Dict[str, Any]]:
+    def _messages_to_openviking_batch(
+        messages: List[Dict[str, Any]],
+        *,
+        assistant_peer_id: str = "",
+        user_peer_id: str = "",
+    ) -> List[Dict[str, Any]]:
         """Convert Hermes canonical messages into OpenViking batch payloads.
 
         Recall-tool calls/results are dropped (re-ingesting recalled memory would
@@ -1974,13 +2065,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
         whose result is in the slice is emitted only via its result part.
         """
         assistant_peer_id = str(assistant_peer_id or "").strip()
+        user_peer_id = str(user_peer_id or "").strip()
         dict_messages = [m for m in messages if isinstance(m, dict)]
         tool_calls_by_id, completed_tool_ids, skipped_tool_ids = _index_tool_calls(dict_messages)
         payload_messages: List[Dict[str, Any]] = []
         pending_tool_parts: List[Dict[str, Any]] = []
 
         def emit(role: str, parts: List[Dict[str, Any]]) -> None:
-            peer = {"peer_id": assistant_peer_id} if role == "assistant" and assistant_peer_id else {}
+            peer_id = assistant_peer_id if role == "assistant" else user_peer_id if role == "user" else ""
+            peer = {"peer_id": peer_id} if peer_id else {}
             payload_messages.append({"role": role, "parts": parts, **peer})
 
         def flush_tool_parts() -> None:
@@ -2034,7 +2127,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if message.get("role") == "user":
                 message["content"] = user_content  # first user message carries the skill-stripped text
                 break
-        batch_messages = self._messages_to_openviking_batch(turn_messages, assistant_peer_id=self._agent)
+        batch_messages = self._messages_to_openviking_batch(
+            turn_messages,
+            assistant_peer_id=self._agent,
+            user_peer_id=self._user_id,
+        )
         if env_var_enabled(_SYNC_TRACE_ENV):
             logger.info(
                 "OpenViking sync_turn trace: session_arg=%r cached_session=%r messages_param_supported=true messages_present=%s "

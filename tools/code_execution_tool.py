@@ -44,6 +44,19 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
+
+
+def _tool_call_limit_reached(counter: int, max_calls: int) -> bool:
+    """Return True when the tool call budget is exhausted. 0 means unlimited."""
+    return max_calls != 0 and counter >= max_calls
+
+
+def _configured_max_tool_calls(cfg: dict) -> int:
+    """Validate and return max_tool_calls from a config dict. Raises ValueError on negative."""
+    value = int(cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS))
+    if value < 0:
+        raise ValueError(f"max_tool_calls must be 0 (unlimited) or positive, got {value}")
+    return value
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 # Hard ceiling on the spilled file (as web_tools' MAX_STORED_TEXT_CHARS): a runaway print loop must not fill the disk.

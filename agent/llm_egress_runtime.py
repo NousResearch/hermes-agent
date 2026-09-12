@@ -3075,7 +3075,7 @@ def _typed_payload(
                     if isinstance(segment, UntrustedProvenanceSegment) and protected_kanban_context:
                         typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
                     else:
-                        typed[key] = segment
+                        typed[key] = _replace_structured_tool_output_text(item, segment)
                     continue
                 typed[key] = GeneratedContextSegment(_READ_FILE_REPLAY_ELISION)
                 continue
@@ -3640,6 +3640,16 @@ def _structured_tool_output_text(value: Any) -> str | None:
     return text
 
 
+def _replace_structured_tool_output_text(value: Any, text: Any) -> Any:
+    """Keep the Responses output container around a typed text segment."""
+
+    if _structured_tool_output_text(value) is None:
+        return text
+    copied = {"type": LiteralSegment(value[0]["type"])}
+    copied["text"] = text
+    return [copied]
+
+
 def _terminal_replay_command(arguments: str) -> str:
     """Replay a local command only after strict sensitive-text redaction."""
 
@@ -3998,11 +4008,14 @@ def _restore_source_provenance_sidecar(
     messages = restored.get("messages")
     if not isinstance(sidecar, list):
         return restored
+    consumed_entries: set[int] = set()
     if isinstance(messages, list):
         copied_messages = list(messages)
-        changed = False
-        for entry in sidecar:
+        matches: dict[int, list[int]] = {}
+        for entry_index, entry in enumerate(sidecar):
             if not isinstance(entry, Mapping):
+                continue
+            if entry_index in consumed_entries:
                 continue
             index = entry.get("message_index")
             if not isinstance(index, int) or isinstance(index, bool):
@@ -4021,7 +4034,14 @@ def _restore_source_provenance_sidecar(
                 != sha256(content.encode("utf-8")).hexdigest()
             ):
                 continue
-            copied = dict(message)
+            matches.setdefault(index, []).append(entry_index)
+        changed = False
+        for index, entry_indices in matches.items():
+            if len(entry_indices) != 1:
+                continue
+            entry_index = entry_indices[0]
+            entry = sidecar[entry_index]
+            copied = dict(copied_messages[index])
             copied["_source_provenance"] = {
                 key: entry[key]
                 for key in (
@@ -4034,6 +4054,7 @@ def _restore_source_provenance_sidecar(
             }
             copied_messages[index] = copied
             changed = True
+            consumed_entries.add(entry_index)
         if changed:
             restored["messages"] = copied_messages
 
@@ -4041,9 +4062,9 @@ def _restore_source_provenance_sidecar(
         if not isinstance(input_items, list):
             return input_items, False
         copied_input = list(input_items)
-        changed = False
-        for entry in sidecar:
-            if not isinstance(entry, Mapping):
+        matches: dict[int, list[int]] = {}
+        for entry_index, entry in enumerate(sidecar):
+            if not isinstance(entry, Mapping) or entry_index in consumed_entries:
                 continue
             expected_sha = entry.get("content_sha256")
             original_call_id = entry.get("tool_call_id")
@@ -4072,9 +4093,14 @@ def _restore_source_provenance_sidecar(
                     and sha256(output_text.encode("utf-8")).hexdigest() == expected_sha
                 ):
                     candidates.append(index)
-            if len(candidates) != 1:
+            if len(candidates) == 1:
+                matches.setdefault(candidates[0], []).append(entry_index)
+        changed = False
+        for index, entry_indices in matches.items():
+            if len(entry_indices) != 1:
                 continue
-            index = candidates[0]
+            entry_index = entry_indices[0]
+            entry = sidecar[entry_index]
             copied = dict(copied_input[index])
             copied["_source_provenance"] = {
                 key: entry[key]
@@ -4088,6 +4114,7 @@ def _restore_source_provenance_sidecar(
             }
             copied_input[index] = copied
             changed = True
+            consumed_entries.add(entry_index)
         return copied_input if changed else input_items, changed
 
     restored_input, input_changed = _restore_input_items(restored.get("input"))
@@ -4167,9 +4194,10 @@ def authorize_agent_sdk_kwargs(
         for key, value in kwargs.items()
         if key not in controls and key not in _INTERNAL_EGRESS_KEYS
     }
+    body = _restore_source_provenance_sidecar(body, sidecar)
+    classification_body = body
     if protected_kanban_remote:
         body = _sanitize_protected_kanban_body(body)
-    body = _restore_source_provenance_sidecar(body, sidecar)
     session_id = str(getattr(agent, "session_id", "") or "")
     turn_id = str(getattr(agent, "_current_turn_id", "") or "")
     request_id = str(getattr(agent, "_current_api_request_id", "") or "")
@@ -4273,7 +4301,7 @@ def authorize_agent_sdk_kwargs(
             else frozenset()
         ),
         scratch_read_file_tool_call_ids=(
-            _scratch_read_file_tool_call_ids(body)
+            _scratch_read_file_tool_call_ids(classification_body)
             if protected_kanban_remote and protected_provider_route
             else frozenset()
         ),

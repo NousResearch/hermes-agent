@@ -87,6 +87,25 @@ def _resolve_configured_cwd(*, override_is_final: bool) -> Path | None:
     return _existing_dir(raw, "TERMINAL_CWD") if raw else None
 
 
+def _terminal_cwd_env() -> str:
+    """Read TERMINAL_CWD through the active per-turn terminal scope.
+
+    An import failure may fall back to the process environment, but an active
+    refusal scope must propagate rather than silently using another profile's
+    launch-time working directory.
+    """
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return os.environ.get("TERMINAL_CWD", "")
+    return terminal_env("TERMINAL_CWD", "")
+
+
+def scope_terminal_cwd() -> str:
+    """Return the scope-aware TERMINAL_CWD value, which may be empty."""
+    return _terminal_cwd_env()
+
+
 def resolve_kanban_worker_cwd(
     candidate: str | None = None,
     *,

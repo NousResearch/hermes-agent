@@ -3204,6 +3204,12 @@ def _build_cli_parser():
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
 
+    try:
+        from hermes_cli.secure_worker_cli import register_cli as _sw_register
+        _sw_register(subparsers)
+    except Exception as _sw_err:
+        logger.debug("secure-worker CLI registration failed: %s", _sw_err)
+
     build_login_parser(subparsers, cmd_login=cmd_login)
     build_logout_parser(subparsers, cmd_logout=cmd_logout)
     build_auth_parser(subparsers, cmd_auth=cmd_auth)

@@ -51,7 +51,11 @@ class CustomProfile(ProviderProfile):
         api_kwargs.pop("reasoning_effort", None)
         extra_body = api_kwargs.get("extra_body")
         if isinstance(extra_body, dict):
-            for key in ("think", "thinking", "reasoning", "enable_thinking"):
+            # Preserve think=False — it's an explicit disable signal, not a stale enable.
+            # Strip think=True, think=None, and the other reasoning fields.
+            if extra_body.get("think") is not False:
+                extra_body.pop("think", None)
+            for key in ("thinking", "reasoning", "enable_thinking"):
                 extra_body.pop(key, None)
             if not extra_body:
                 api_kwargs.pop("extra_body", None)

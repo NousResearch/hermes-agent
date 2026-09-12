@@ -786,14 +786,16 @@ export function SkillsView({
     if (multiConnection && rosterData?.agents?.length) {
       const activeId = activeGatewayConnectionId() ?? 'local'
 
-      return rosterData.agents.map((agent: DesktopRosterAgent) => ({
-        key: `${agent.connectionId}::${agent.profile}`,
-        label:
-          agent.connectionId === activeId
-            ? `${agent.profile} — ${agent.connectionLabel} (current)`
-            : `${agent.profile} — ${agent.connectionLabel}`,
-        value: `${agent.connectionId}::${agent.profile}`
-      }))
+      return rosterData.agents.map((agent: DesktopRosterAgent) => {
+        const isDefault = agent.profile === 'default'
+        const displayLabel = isDefault ? agent.connectionLabel : `${agent.profile} — ${agent.connectionLabel}`
+        
+        return {
+          key: `${agent.connectionId}::${agent.profile}`,
+          label: displayLabel,
+          value: `${agent.connectionId}::${agent.profile}`
+        }
+      })
     }
 
     return (profilesData?.profiles ?? []).map(p => ({
@@ -841,7 +843,7 @@ export function SkillsView({
         )}
         <Select onValueChange={changeScope} value={scopeSelectValue}>
           <SelectTrigger className={cn('text-xs', compactSelector ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
-            <SelectValue />
+            <SelectValue className="min-w-0 truncate" />
           </SelectTrigger>
           <SelectContent>
             {scopeOptions.map(option => (

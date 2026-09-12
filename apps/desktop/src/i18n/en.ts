@@ -1636,7 +1636,7 @@ export const en: Translations = {
       agentTitle: 'Agent plugins',
       agentBlurb:
         'Extend the agent for the selected profile — tools, hooks, providers. Take effect after a gateway restart.',
-      pageBlurb: 'One row per plugin. A plugin can extend this app, the agent, or both — each half has its own switch.',
+      pageBlurb: 'Each plugin can have a Desktop half (this app) and an Agent half (the selected profile), each with its own switch.',
       halfDesktop: 'Desktop',
       halfDesktopHint: 'this app, same for every profile',
       halfAgent: 'Agent',

@@ -215,6 +215,8 @@ class TestDiscoveryShape:
             ("reasoning_content", "reasoning-only-beta", "reasoning-only-beta"),
             ("reasoning_details", [{"type": "reasoning.summary", "summary": "reasoning-only-gamma"}],
              "reasoning-only-gamma"),
+            ("reasoning_details", [{"type": "reasoning.summary", "summary": "仅推理可见标记"}],
+             "仅推理可见标记"),
         ],
     )
     def test_reasoning_search_is_opt_in_and_anchors_the_snippet(
@@ -230,6 +232,19 @@ class TestDiscoveryShape:
         result = json.loads(session_search(query=needle, include_reasoning=True, db=db))
         assert result["results"][0]["match_message_id"] == message_id
         assert needle in result["results"][0]["snippet"]
+
+    def test_reasoning_search_anchors_snippet_to_matching_or_alternative(self, db):
+        db.create_session("reasoning_or_session", source="cli")
+        message_id = db.append_message(
+            "reasoning_or_session", role="assistant", content="", reasoning="reasoning-only-beta"
+        )
+
+        result = json.loads(session_search(
+            query="missing OR reasoning-only-beta", include_reasoning=True, db=db
+        ))
+
+        assert result["results"][0]["match_message_id"] == message_id
+        assert "reasoning-only-beta" in result["results"][0]["snippet"]
 
     def test_discovery_field_plan_preserves_full_default_result(self, db, monkeypatch):
         _seed_modpack_sessions(db)

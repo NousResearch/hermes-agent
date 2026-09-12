@@ -67,6 +67,7 @@ import {
 import { upsertOptimisticSession } from '../session/hooks/use-session-actions/utils'
 
 import type { ComposerScope } from './composer/scope'
+import { clearDismissedErrorRows } from './failed-turn-dismissal'
 
 /**
  * List a tile's session in the sidebar/tab strip on its first send.
@@ -672,7 +673,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
   const dismissError = useCallback(
     (messageId: string) => {
-      update(state => ({ ...state, messages: state.messages.filter(m => m.id !== messageId) }))
+      update(state => ({ ...state, messages: clearDismissedErrorRows(state.messages, messageId) }))
     },
     [update]
   )

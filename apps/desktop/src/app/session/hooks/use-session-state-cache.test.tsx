@@ -2,6 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { type MutableRefObject, useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { clearDismissedErrorRows } from '@/app/chat/failed-turn-dismissal'
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   $activeSessionStoredIdRotation,
@@ -384,6 +385,19 @@ function assistantError(id: string, error: string): ChatMessage {
   return { id, role: 'assistant', parts: [], error, pending: false }
 }
 
+function assistantPartialError(id: string, error: string): ChatMessage {
+  return {
+    id,
+    role: 'assistant',
+    parts: [
+      { type: 'reasoning', text: 'failed turn thought' },
+      { type: 'text', text: 'failed turn partial result' }
+    ],
+    error,
+    pending: false
+  }
+}
+
 function transcriptForCache(id: string): ChatMessage[] {
   return [userMessage(`${id}-user`, id), assistantText(`${id}-assistant`, `reply ${id}`)]
 }
@@ -485,6 +499,76 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     })
 
     expect($messages.get().some(message => message.error === 'OpenRouter 403')).toBe(true)
+  })
+
+  it('does not restore a dismissed recovered failed turn on warm switch', () => {
+    $messages.set([])
+    let cache!: Cache
+    const { rerender } = render(<ViewHarness activeSessionId="thread-A" onReady={value => (cache = value)} />)
+
+    const authoritative = [
+      userMessage('user-a-before', 'before'),
+      assistantText('assistant-a-before', 'before answer'),
+      userMessage('user-a-after', 'after'),
+      assistantText('assistant-a-after', 'after answer')
+    ]
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: authoritative }), 'stored-A')
+    })
+
+    $messages.set([
+      authoritative[0],
+      authoritative[1],
+      userMessage('user-1723000000000-abc123', 'failed prompt'),
+      assistantPartialError('assistant-a-partial', 'Connection error.'),
+      authoritative[2],
+      authoritative[3]
+    ])
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, busy: false, messages: authoritative }))
+    })
+
+    const recoveredTail = $messages.get()
+    expect(recoveredTail.map(message => message.id)).toEqual([
+      'user-a-before',
+      'assistant-a-before',
+      'user-a-after',
+      'assistant-a-after',
+      'user-1723000000000-abc123',
+      'assistant-a-partial'
+    ])
+
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({ ...state, messages: recoveredTail }))
+    })
+
+    $messages.set(clearDismissedErrorRows($messages.get(), 'assistant-a-partial'))
+    act(() => {
+      cache.updateSessionState('thread-A', state => ({
+        ...state,
+        messages: clearDismissedErrorRows(state.messages, 'assistant-a-partial')
+      }))
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(authoritative.map(message => message.id))
+
+    rerender(<ViewHarness activeSessionId="thread-B" onReady={value => (cache = value)} />)
+    act(() => {
+      cache.updateSessionState('thread-B', state => ({
+        ...state,
+        busy: false,
+        messages: [userMessage('user-b', 'other thread'), assistantText('assistant-b', 'other answer')]
+      }))
+    })
+
+    rerender(<ViewHarness activeSessionId="thread-A" onReady={value => (cache = value)} />)
+    act(() => {
+      cache.syncSessionStateToView('thread-A', cache.sessionStateByRuntimeIdRef.current.get('thread-A')!)
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(authoritative.map(message => message.id))
   })
 
   it('evicts the oldest warm transcript with its reverse ownership while retaining lightweight state', () => {

@@ -71,7 +71,15 @@ async def resolve_image_source(
     # Everything else is a filesystem path — including bare relative names like "pic.png"
     # (a path-shape gate here regressed them once).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
-    p = Path(os.path.expanduser(candidate))
+    # Anchor relative paths exactly like the file tools do: on the task's terminal
+    # cwd, not the agent process cwd. A model that just wrote "out.png" with
+    # write_file could not then vision_analyze("out.png") — the resolver looked in
+    # the process cwd (e.g. the launch dir of a worktree session) and missed it.
+    # Resolve the way we are about to read: only a host read may follow host
+    # symlinks; a sandbox/ssh read gets the path lexically, untouched by host links.
+    from tools.file_tools_paths import _resolve_path_for_task
+    p = Path(_resolve_path_for_task(
+        candidate, ctx.task_id or "default", lexical=not _is_local_terminal_backend()))
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
         _guard_credential_read(host_target, s)

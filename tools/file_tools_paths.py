@@ -169,10 +169,17 @@ def _resolve_base_dir(
     return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+def _resolve_path_for_task(
+    filepath: str, task_id: str = "default", *, lexical: bool = False) -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory
-    (absolute inputs are returned resolved-but-unanchored)."""
-    container_paths = _uses_container_paths(task_id)
+    (absolute inputs are returned resolved-but-unanchored).
+
+    ``lexical=True`` forces pure-posix anchoring with no host symlink
+    dereferencing, for callers whose read happens on another machine (ssh): a
+    host ``/var/run -> /run`` link must not rewrite a path that only means
+    something remotely. Container backends already resolve this way.
+    """
+    container_paths = lexical or _uses_container_paths(task_id)
     return _anchor(_host_text(filepath, container_paths),
                    lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
 

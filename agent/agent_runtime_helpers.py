@@ -658,6 +658,71 @@ _USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
 _USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
 
 
+class ExpiryAwarePinnedSessionRecoveryError(RuntimeError):
+    """A pinned expiry-aware session cannot safely use ordinary failover."""
+
+
+def has_expiry_aware_pinned_session_credential(agent) -> bool:
+    """Whether this recovery attempt is constrained by an expiry-aware session pin."""
+    return getattr(agent, "_expiry_aware_session_credential", None) is not None
+
+
+def _pinned_session_credential(agent, pool):
+    if not has_expiry_aware_pinned_session_credential(agent):
+        return None
+    pinned = agent._expiry_aware_session_credential
+    entry_id = getattr(pinned, "id", None)
+    account_id = getattr(pinned, "account_id", None)
+    if not isinstance(entry_id, str) or not entry_id or not isinstance(account_id, str) or not account_id:
+        raise ExpiryAwarePinnedSessionRecoveryError(
+            "Expiry-aware session has an invalid pinned credential identity; "
+            "start a new session after re-authenticating the intended account."
+        )
+    try:
+        # The startup/resume binding uses this exact lookup too.  Never call select()
+        # here: selection could silently choose a different account after an entry was removed.
+        available = pool.select_exact(entry_id)
+    except Exception as exc:
+        raise ExpiryAwarePinnedSessionRecoveryError(
+            "Pinned expiry-aware credential entry {} cannot be verified; "
+            "start a new session after checking the credential pool.".format(entry_id)
+        ) from exc
+    if available is None:
+        raise ExpiryAwarePinnedSessionRecoveryError(
+            "Pinned expiry-aware credential entry {} is no longer available; "
+            "re-authenticate the same account or start a new session.".format(entry_id)
+        )
+    if getattr(available, "account_id", None) != account_id:
+        raise ExpiryAwarePinnedSessionRecoveryError(
+            "Pinned expiry-aware credential entry {} changed identity; "
+            "re-authenticate the same account or start a new session.".format(entry_id)
+        )
+    return pinned
+
+
+def _raise_for_pinned_quota_failure(pinned, reason) -> None:
+    if pinned is None or reason not in (FailoverReason.rate_limit, FailoverReason.billing):
+        return
+    label = "rate limit (429)" if reason == FailoverReason.rate_limit else "hard quota/billing failure"
+    raise ExpiryAwarePinnedSessionRecoveryError(
+        "Pinned expiry-aware session cannot recover from {} by rotating credentials "
+        "or falling back to another provider; wait for quota recovery or start a new session.".format(label)
+    )
+
+
+def _assert_refreshed_pinned_identity(pinned, refreshed) -> None:
+    if pinned is None:
+        return
+    if (
+        getattr(refreshed, "id", None) != getattr(pinned, "id", None)
+        or getattr(refreshed, "account_id", None) != getattr(pinned, "account_id", None)
+    ):
+        raise ExpiryAwarePinnedSessionRecoveryError(
+            "OAuth refresh changed identity for pinned expiry-aware credential entry {}; "
+            "re-authenticate the same account or start a new session.".format(getattr(pinned, "id", "?"))
+        )
+
+
 def _failed_credential_identity(agent, pool) -> Tuple[Optional[str], Optional[str]]:
     """``(api_key_hint, credential_id)`` of the key actually dispatched, not ``pool.current()``:
     the shared pointer often points at a different healthy entry, and marking it exhausted
@@ -714,7 +779,7 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     return False
 
 
-def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
+def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap, pinned=None):
     if _is_entitlement_403(agent, status_code, error_context):
         _ra().logger.info(
             "Credential %s — entitlement-shaped 403 from %s; "
@@ -730,8 +795,14 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
         refresh_kwargs["credential_id"] = credential_id
     refreshed = pool.try_refresh_matching(**refresh_kwargs)
     if refreshed is None:
+        if pinned is not None:
+            raise ExpiryAwarePinnedSessionRecoveryError(
+                "Pinned expiry-aware credential entry {} could not be OAuth-refreshed; "
+                "re-authenticate the same account or start a new session.".format(getattr(pinned, "id", "?"))
+            )
         # Refresh failed; rotate (the failed entry is already marked exhausted).
         return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
+    _assert_refreshed_pinned_identity(pinned, refreshed)
     # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry
     # refreshes so a single-entry pool falls through to fallback.
     refreshed_id = getattr(refreshed, "id", None)
@@ -742,6 +813,11 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
         refresh_key = (agent.provider, refreshed_id)
         refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
         if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
+            if pinned is not None:
+                raise ExpiryAwarePinnedSessionRecoveryError(
+                    "Pinned expiry-aware credential entry {} still fails after OAuth refresh; "
+                    "re-authenticate the same account or start a new session.".format(refreshed_id)
+                )
             _ra().logger.warning(
                 "Credential auth failure persists after %s refreshes for "
                 "pool entry %s — treating as unrecoverable and allowing "
@@ -821,6 +897,8 @@ def recover_with_credential_pool(
     effective_reason = classified_reason
     if effective_reason is None:
         effective_reason = _STATUS_TO_FAILOVER_REASON.get(status_code)
+    pinned = _pinned_session_credential(agent, pool)
+    _raise_for_pinned_quota_failure(pinned, effective_reason)
 
     def _rotate_and_swap(default_status: int, label: str) -> bool:
         """Rotate away from the failed credential; True when a new entry was swapped in."""
@@ -877,7 +955,7 @@ def recover_with_credential_pool(
         return _recover_auth_failure(
             agent, pool, status_code=status_code, has_retried_429=has_retried_429,
             error_context=error_context, api_key_hint=api_key_hint, credential_id=credential_id,
-            rotate_and_swap=_rotate_and_swap,
+            rotate_and_swap=_rotate_and_swap, pinned=pinned,
         )
     return False, has_retried_429
 

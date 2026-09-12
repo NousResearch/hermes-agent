@@ -159,8 +159,61 @@ credential_pool_strategies:
 | `round_robin` | Cycle through keys evenly, rotating after each selection |
 | `least_used` | Always pick the key with the lowest request count |
 | `random` | Random selection among healthy keys |
+| `expiry_aware` (opt-in, Codex only) | Earliest usable weekly reset for admission, then an exact credential pin for the logical session |
+
+### Expiry-aware Codex sessions
+
+Enable through `hermes auth` → **Set rotation strategy**, or in `config.yaml`:
+
+```yaml
+credential_pool_strategies:
+  openai-codex: expiry_aware
+```
+
+This is **first-expiring-first-out (FEFO)**, not load balancing. New sessions
+prefer the earliest future weekly reset with positive remaining allowance in
+fresh, account-bound usage data. An exhausted short window makes an account
+ineligible. Equal weekly resets are ordered by remaining weekly allowance
+(descending), then stable entry ID. A reset replenishes a quota window; it is
+not token expiration or a promise that unused allowance transfers.
+
+Missing, stale, malformed, account-mismatched, or unavailable usage does not
+guess remaining allowance. With no trustworthy FEFO candidate, admission uses
+fill-first order, excluding known exhausted accounts. No eligible account is
+an explicit admission error, not provider fallback. For other providers,
+`expiry_aware` behaves as fill-first; the four existing strategies are unchanged.
+
+The selected identity is persisted atomically in the session database as only
+`provider`, `entry_id`, and `account_id`, never access or refresh tokens.
+Concurrent admissions of one session converge on the first committed binding.
+Further messages, resume, compaction, auxiliary calls and delegated children
+retain it. A persistent session database is required. Changing the strategy
+affects new sessions only and does not unpin existing sessions.
+
+**Pinned sessions do not rotate accounts or fall back to another provider.**
+A 429, hard quota exhaustion, removed credential or account mismatch produces
+an explicit failure. OAuth refresh may update only the same entry and account.
+Restore the credential, wait for quota reset, or explicitly start a new session
+to select another account. Auxiliary and child routes must honor the inherited
+Codex binding rather than bypass it with an independently configured route.
+
+Usage reads are admission-only; resume and normal turns do not re-run FEFO.
+Admission has a shared five-second budget and at most two concurrent probes.
+Observations are cached in memory for at most 60 seconds and expire at either
+window's reset. HTTP probes run before selection acquires the pool lock.
+Existing Codex OAuth entries derive their account identity from the token's
+account claim; conflicting stored metadata is rejected rather than repaired.
+The authorization-bearing admission probe is fixed to
+`https://chatgpt.com/backend-api/codex`; configured custom endpoints, ports,
+userinfo, path variants, query strings, fragments, and redirects are never
+used for that request.
+Secrets remain within the existing auth store and runtime clients, not usage
+snapshots or session bindings.
 
 ## Error Recovery
+
+The table below describes the original strategies and unbound sessions. The
+fail-closed rules above take precedence for pinned `expiry_aware` sessions.
 
 The pool handles different errors differently:
 
@@ -223,6 +276,9 @@ Borrowed runtime secrets (for example env vars, Bitwarden/Vault/keyring/systemd 
 ## Delegation & Subagent Sharing
 
 When the agent spawns subagents via `delegate_task`, the parent's credential pool is automatically shared with children:
+
+For a pinned `expiry_aware` session, children inherit the exact identity;
+they do not re-run FEFO or use the rotation behavior described below.
 
 - **Same provider** — the child receives the parent's full pool, enabling key rotation on rate limits
 - **Different provider** — the child loads that provider's own pool (if configured)

@@ -478,6 +478,23 @@ def recover_after_classification(
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
     from agent.conversation_loop import _is_nous_inference_route
 
+    # An expiry-aware session is atomically bound to one provider/entry/account.  Run
+    # its pool recovery before any provider-specific entitlement refresh: the helper
+    # deliberately raises an actionable error for quota, missing-entry, and identity
+    # changes instead of allowing the ordinary rotation/fallback chain to continue.
+    from agent.agent_runtime_helpers import has_expiry_aware_pinned_session_credential
+    if (
+        has_expiry_aware_pinned_session_credential(agent)
+        and classified.reason in (FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.auth)
+    ):
+        recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
+            status_code=status_code, has_retried_429=_retry.has_retried_429,
+            classified_reason=classified.reason, error_context=error_context,
+            billing_unverified=classified.billing_unverified,
+        )
+        if recovered_with_pool:
+            return True, recovered_with_pool
+
     if (
         classified.reason == FailoverReason.billing
         and _is_nous_inference_route(

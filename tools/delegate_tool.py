@@ -229,7 +229,9 @@ def _build_child_agent(
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
     parent_sid = getattr(parent_agent, "session_id", None)
     child_session_db = _open_child_session_db(parent_agent)
-    with delegated_child_context():
+    parent_config = getattr(parent_agent, "_session_init_model_config", None)
+    binding = parent_config.get("credential_binding") if isinstance(parent_config, dict) else None
+    with delegated_child_context(credential_binding=binding):
         try:
             child = AIAgent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),

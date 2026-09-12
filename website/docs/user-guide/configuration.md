@@ -1272,9 +1272,15 @@ When you have multiple API keys or OAuth tokens for the same provider, configure
 credential_pool_strategies:
   openrouter: round_robin    # cycle through keys evenly
   anthropic: least_used      # always pick the least-used key
+  openai-codex: expiry_aware  # opt-in FEFO admission with a durable session pin
 ```
 
-Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Credential Pools](/user-guide/features/credential-pools) for full documentation.
+Options: `fill_first` (default), `round_robin`, `least_used`, `random`, and
+`expiry_aware` (Codex-only FEFO admission). The last option pins the logical
+session, including resume, compaction, auxiliary calls and children, to one
+credential. It fails explicitly on unavailable or exhausted pins rather than
+rotating accounts or providers. Strategy changes affect new sessions only.
+See [Credential Pools](/user-guide/features/credential-pools) for details.
 
 ## Prompt caching
 

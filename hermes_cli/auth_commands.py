@@ -14,9 +14,9 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _exhausted_until,
-    _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
-    load_pool)
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, STRATEGY_EXPIRY_AWARE, PooledCredential,
+    REFRESHABLE_OAUTH_PROVIDERS, _exhausted_until, _normalize_custom_pool_name,
+    get_pool_strategy, label_from_token, list_custom_pool_providers, load_pool)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
@@ -749,7 +749,8 @@ _STRATEGY_DESCRIPTIONS = {
     STRATEGY_FILL_FIRST: "Use first key until exhausted, then next",
     STRATEGY_ROUND_ROBIN: "Cycle through keys evenly",
     STRATEGY_LEAST_USED: "Always pick the least-used key",
-    STRATEGY_RANDOM: "Random selection"}
+    STRATEGY_RANDOM: "Random selection",
+    STRATEGY_EXPIRY_AWARE: "Codex: earliest usable weekly reset, pinned for the session"}
 
 
 def _interactive_strategy() -> None:
@@ -761,11 +762,14 @@ def _interactive_strategy() -> None:
     print()
     for i, s in enumerate(strategies, 1):
         print(f"  {i}. {s:15s} — {_STRATEGY_DESCRIPTIONS[s]}{' ←' if s == current else ''}")
-    raw = _ask("\nStrategy [1-4]: ")
+    raw = _ask(f"\nStrategy [1-{len(strategies)}]: ")
     if not raw:
         return
     try:
-        strategy = strategies[int(raw) - 1]
+        index = int(raw) - 1
+        if index < 0:
+            raise ValueError("Strategy index must be positive")
+        strategy = strategies[index]
     except (ValueError, IndexError):
         print("Invalid choice.")
         return

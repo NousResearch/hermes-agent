@@ -436,6 +436,9 @@ def _publish_runtime_main(agent: Any) -> None:
                 "requested_provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id"
             )},
             cache_scope=_cache_scope,
+            credential_binding=(getattr(agent, "_session_init_model_config", None) or {}).get(
+                "credential_binding"
+            ),
         )
 
 

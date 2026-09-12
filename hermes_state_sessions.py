@@ -701,6 +701,88 @@ class SessionSessionsMixin:
         session = self.get_session(session_id) or {}
         return _parse_model_config(session.get("model_config")).get(key, default)
 
+    def get_or_bind_session_credential(
+        self, session_id: str, *, provider: str, entry_id: str, account_id: str,
+    ) -> Dict[str, str]:
+        """Return a session's durable credential identity, binding it on first use.
+
+        The binding intentionally contains only provider, pool entry, and account identifiers.
+        A write transaction plus compare-and-set prevents a competing process from replacing the
+        first selected credential. Missing sessions are an explicit error rather than a silent no-op.
+        """
+        values = {"provider": provider, "entry_id": entry_id, "account_id": account_id}
+        if (
+            not session_id
+            or any(
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+                for value in values.values()
+            )
+        ):
+            raise ValueError(
+                "Session credential binding requires non-empty literal session, provider, entry, and account IDs"
+            )
+        candidate = dict(values)
+
+        def _binding_config(raw: Any) -> Dict[str, Any]:
+            """Strict local decode for credential binding; leave global config parsing tolerant."""
+            if raw is None or raw == "":
+                return {}
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    raise ValueError(
+                        f"Invalid credential binding or model config for session: {session_id}"
+                    ) from None
+            if not isinstance(raw, dict):
+                raise ValueError(
+                    f"Invalid credential binding or model config for session: {session_id}"
+                )
+            return dict(raw)
+
+        def _existing_binding(value: Any) -> Dict[str, str]:
+            if not isinstance(value, dict) or set(value) != set(candidate):
+                raise ValueError(f"Invalid credential binding for session: {session_id}")
+            binding = {key: value[key] for key in candidate}
+            if any(
+                not isinstance(item, str) or not item or item != item.strip()
+                for item in binding.values()
+            ):
+                raise ValueError(f"Invalid credential binding for session: {session_id}")
+            return binding
+
+        def _do(conn) -> Dict[str, str]:
+            # _execute_write holds the database write transaction. The CAS is deliberately retained
+            # as a second guard if this write convention ever changes to a deferred transaction.
+            for _attempt in range(2):
+                row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                if row is None:
+                    raise ValueError(f"Session not found: {session_id}")
+                original = row[0]
+                config = _binding_config(original)
+                if "credential_binding" in config:
+                    return _existing_binding(config["credential_binding"])
+                config["credential_binding"] = candidate
+                serialized = json.dumps(config)
+                changed = conn.execute(
+                    "UPDATE sessions SET model_config = ? WHERE id = ? AND model_config IS ?",
+                    (serialized, session_id, original),
+                ).rowcount
+                if changed:
+                    return candidate
+            # A CAS retry can only fail here if another writer won outside this transaction.
+            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Session not found: {session_id}")
+            config = _binding_config(row[0])
+            if "credential_binding" in config:
+                return _existing_binding(config["credential_binding"])
+            raise RuntimeError(f"Could not bind credential for session: {session_id}")
+
+        return self._execute_write(_do)
+
     def update_session_runtime_lock(
         self, session_id: str, *, model: Optional[str] = None, provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route_source: Optional[str] = None,

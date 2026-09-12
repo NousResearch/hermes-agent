@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional, Tuple, TYPE_CHECKING, cast
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.codex_headers import (
@@ -2577,7 +2577,7 @@ def _runtime_main_value(field: str) -> Any:
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "",
+    cache_scope: str = "", credential_binding: Optional[Dict[str, str]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2589,7 +2589,7 @@ def set_runtime_main(
     agent/prompt_cache_scope.py) resolved once per turn by turn_context; auxiliary Responses calls prefer it
     over ``session_id`` for prompt_cache_key derivation (#79017).
     """
-    runtime = {
+    runtime: Dict[str, Any] = {
         "provider": (provider or "").strip().lower(),
         "requested_provider": (requested_provider or "").strip().lower(),
         "model": (model or "").strip(),
@@ -2600,6 +2600,8 @@ def set_runtime_main(
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
     }
+    if credential_binding is not None:
+        runtime["credential_binding"] = _normalize_credential_binding(credential_binding)
     # Publish authoritative context before updating the locked mirrors.
     token = _RUNTIME_MAIN_CONTEXT.set(runtime)
     _publish_runtime_main_mirrors(tuple(runtime[field] for field in _MAIN_RUNTIME_FIELDS))
@@ -2892,7 +2894,26 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider",
+    "credential_binding",
+)
+
+
+def _normalize_credential_binding(
+    credential_binding: object,
+) -> Optional[Dict[str, str]]:
+    """Keep only the non-secret identity fields of a session credential binding."""
+    if not isinstance(credential_binding, Mapping):
+        raise ValueError("Invalid session credential binding")
+    normalized: Dict[str, str] = {}
+    source = cast(Mapping[str, Any], credential_binding)
+    for field in ("provider", "entry_id", "account_id"):
+        value = source.get(field)
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError("Invalid session credential identity")
+        normalized[field] = value
+    return normalized
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2911,7 +2932,13 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
         value = main_runtime.get(field)
-        if field == "api_key" and callable(value) and not isinstance(value, str):
+        if field == "credential_binding":
+            if field not in main_runtime:
+                continue
+            credential_binding = _normalize_credential_binding(value)
+            if credential_binding is not None:
+                normalized[field] = credential_binding
+        elif field == "api_key" and callable(value) and not isinstance(value, str):
             normalized[field] = value
         elif isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
@@ -6690,6 +6717,33 @@ def _resolve_call_client(
 ) -> _ResolvedAuxRoute:
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
+    binding = (main_runtime or {}).get("credential_binding")
+    if binding is not None:
+        from agent.agent_init import (
+            SessionCredentialBindingError, _resolve_pinned_session_credential,
+            _expiry_aware_client_settings,
+        )
+
+        if binding.get("provider") != "openai-codex" or resolved_provider not in {
+            "auto", "openai-codex",
+        }:
+            raise SessionCredentialBindingError("Auxiliary provider conflicts with the session credential")
+        if resolved_api_key or resolved_base_url:
+            raise SessionCredentialBindingError("Auxiliary credential overrides conflict with the session pin")
+        final_model = resolved_model or model or (main_runtime or {}).get("model")
+        if not final_model:
+            raise SessionCredentialBindingError("Pinned auxiliary call requires an explicit model")
+        pool = load_pool("openai-codex")
+        entry = _resolve_pinned_session_credential(pool, "auxiliary", binding)
+        token, endpoint = _expiry_aware_client_settings(entry, "auxiliary")
+        real_client = _create_openai_client(
+            api_key=token, base_url=endpoint,
+            default_headers=_codex_cloudflare_headers(token, base_url=endpoint),
+        )
+        client = CodexAuxiliaryClient(real_client, final_model)
+        if async_mode:
+            client, final_model = _to_async_client(client, final_model, is_vision=(task == "vision"))
+        return _ResolvedAuxRoute(client, final_model, "openai-codex", "openai-codex")
     effective_provider = resolved_provider
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -7322,6 +7376,12 @@ def _start_recovery_ladder(
     task: Optional[str], async_mode: bool, route_info: Optional[Dict[str, str]],
 ):
     """Build the recovery-ladder generator for a failed primary request."""
+    if (retry_kwargs.get("main_runtime") or {}).get("credential_binding") is not None:
+        from agent.agent_init import SessionCredentialBindingError
+
+        raise SessionCredentialBindingError(
+            "Pinned auxiliary request failed; automatic credential/provider fallback is disabled"
+        ) from first_err
     return _aux_recovery_ladder(
         first_err, client=req.client, kwargs=req.kwargs, task=task, async_mode=async_mode,
         base_info=req.base_info, resolved_provider=req.resolved_provider,

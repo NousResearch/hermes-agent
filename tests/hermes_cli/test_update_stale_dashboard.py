@@ -320,6 +320,24 @@ class TestDashboardUpdateCleanup:
 
         assert "stopped during update" not in capsys.readouterr().out
 
+    def test_failed_respawn_pids_returned_for_the_receipt(self):
+        """The respawn-failure PIDs feed the receipt's runtime reconciliation — the
+        console already knows; the receipt must not claim success. See #109290."""
+        with patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value={"matched": [12345], "killed": [12345], "failed": [],
+                          "unrecovered": [12345], "failed_respawn_pids": [12345]},
+        ):
+            assert _finish_dashboard_update_cleanup([]) == {12345}
+
+    def test_clean_cleanup_returns_no_failed_respawn_pids(self):
+        with patch(
+            "hermes_cli.main._kill_stale_dashboard_processes",
+            return_value={"matched": [12345], "killed": [12345], "failed": [],
+                          "unrecovered": []},
+        ):
+            assert _finish_dashboard_update_cleanup([]) == set()
+
 
 class TestWindowsWmicEncoding:
     """Regression tests for #17049 — the Windows wmic branch must not crash
@@ -487,6 +505,35 @@ class TestManualBackendRespawn:
 
         respawn.assert_called_once_with([argv])
         assert "when you're ready" not in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_failed_respawn_surfaces_in_result(self, capsys):
+        """A respawn that raised is reported as both unrecovered and a failed respawn in
+        the result dict, so the update receipt can record the runtime as ``failed`` —
+        the incarnation probe would otherwise read the killed pid as "restarted".
+        See #109290."""
+        live = self._live()
+        argv = ["hermes", "dashboard", "--port", "8300"]
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[6001]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes", return_value=[argv]) as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        respawn.assert_called_once_with([argv])
+        assert result["unrecovered"] == [6001]
+        assert result["failed_respawn_pids"] == [6001]
+        assert "Restart anything not auto-restarted" in capsys.readouterr().out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_port_zero_serves_killed_without_respawn(self, capsys):

@@ -1573,12 +1573,30 @@ class TurnRunner:
                 _final_for_stream = fr
         if _final_for_stream is None:
             stream_consumer.finish()
-            return
-        # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().
-        try:
-            stream_consumer.finish(_final_for_stream)
-        except TypeError:
-            stream_consumer.finish()
+        else:
+            # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().
+            try:
+                stream_consumer.finish(_final_for_stream)
+            except TypeError:
+                stream_consumer.finish()
+        # The outer gateway starts the consumer only after this method returns and the
+        # persistence result has been accepted.  Release only on an explicit positive
+        # receipt; missing/unknown results remain fail-closed.  This method runs in
+        # run_sync's executor, so the Event must be mutated on its owning loop.
+        if (
+            isinstance(result, dict)
+            and result.get("persistence_confirmed") is True
+            and result.get("completed") is True
+            and not result.get("failed")
+            and not result.get("interrupted")
+        ):
+            release_event = ctx.stream_release_event
+            release_loop = ctx._loop_for_step
+            if release_event is not None and release_loop is not None and not release_loop.is_closed():
+                try:
+                    release_loop.call_soon_threadsafe(release_event.set)
+                except Exception:
+                    logger.debug("Failed to schedule stream release on gateway loop", exc_info=True)
 
     def _restore_telegram_thread_id_after_split(self, agent_session_id) -> None:
         """Telegram DM whose source.thread_id was lost in the session split (synthetic/recovered

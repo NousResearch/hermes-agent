@@ -68,6 +68,7 @@ class _LimitAgent:
 
     def _persist_session(self, messages, conversation_history):
         self.persisted_messages = list(messages)
+        return True
 
     def _file_mutation_verifier_enabled(self):
         return False

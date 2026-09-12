@@ -2558,8 +2558,12 @@ class GatewayTurnMixin:
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
-        _stream_consumer = self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
-        stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
+        # Proxy streaming is intentionally disabled here until it has the same
+        # persistence-release contract as the local-agent path.  The complete
+        # response is returned to the caller, which persists it before normal
+        # final delivery.  Starting a consumer here would bypass that gate.
+        _stream_consumer = None
+        stream_task = None
 
         _adapter = self._adapter_for_source(source)
         if _adapter:
@@ -2975,14 +2979,15 @@ class GatewayTurnMixin:
             )
             if _stts_consumer.active:
                 streaming_tts_consumer_holder[0] = _stts_consumer
-                _stts_consumer.start()
         except Exception as _stts_err:
             logger.debug("Could not set up streaming TTS consumer: %s", _stts_err)
 
-    async def _run_agent_stream_consumer_task(self, stream_consumer_holder: list) -> None:
-        """Wait (up to 10s) for the stream consumer to be created inside run_sync, then run it."""
+    async def _run_agent_stream_consumer_task(self, stream_consumer_holder: list, release_event=None) -> None:
+        """Wait for consumer creation and persistence release before external delivery."""
         for _ in range(200):
             if stream_consumer_holder[0] is not None:
+                if release_event is not None:
+                    await release_event.wait()
                 await stream_consumer_holder[0].run()
                 return
             await asyncio.sleep(0.05)
@@ -3332,13 +3337,29 @@ class GatewayTurnMixin:
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 
-    async def _run_agent_finalize_streaming_tts(self, turn_ctx: TurnContext, adapter: Any) -> None:
+    async def _run_agent_finalize_streaming_tts(
+        self, turn_ctx: TurnContext, adapter: Any, result: Any = None,
+    ) -> None:
         """Finalize the streaming-TTS consumer on the outer event-loop thread (covers early returns
         from run_sync). On drain timeout abort to free the task — audible streams keep whole-file
         suppression, silent streams stay eligible for the whole-file fallback."""
         _stts = turn_ctx.streaming_tts_consumer_holder[0]
         if _stts is None:
             return
+        # Deltas are queued before start(); do not open an external audio stream
+        # until the turn result carries an explicit positive persistence receipt.
+        # Missing/unknown/failed/interrupted results are all fail-closed.
+        if not (
+            isinstance(result, dict)
+            and result.get("persistence_confirmed") is True
+            and result.get("completed") is True
+            and not result.get("failed")
+            and not result.get("interrupted")
+        ):
+            _stts.abort("canonical persistence not confirmed before streaming TTS start")
+            return
+        if _stts._task is None:
+            _stts.start()
         _stts.finish()
         try:
             await _stts.wait_complete(timeout=10.0)
@@ -3902,6 +3923,7 @@ class GatewayTurnMixin:
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
+        turn_ctx.stream_release_event = asyncio.Event()
         self._run_agent_start_streaming_tts(
             source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
         )
@@ -3911,7 +3933,9 @@ class GatewayTurnMixin:
         progress_task = spawn(turn_runner.send_progress_messages()) if disp.needs_progress_queue else None
         log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
         # The stream consumer is created inside run_sync; this task polls for it.
-        stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))
+        stream_task = spawn(self._run_agent_stream_consumer_task(
+            turn_ctx.stream_consumer_holder, turn_ctx.stream_release_event,
+        ))
         tracking_task = spawn(self._run_agent_track_agent(turn_ctx))
         _interrupt_detected = asyncio.Event()  # shared with backup check
         interrupt_monitor = spawn(self._run_agent_monitor_for_interrupt(turn_ctx, _interrupt_detected))
@@ -3929,7 +3953,7 @@ class GatewayTurnMixin:
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]
             adapter = self._adapter_for_source(source)
-            await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
+            await self._run_agent_finalize_streaming_tts(turn_ctx, adapter, result)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
                 return await self._run_agent_queued_followup(

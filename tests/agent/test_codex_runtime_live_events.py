@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from agent.codex_runtime import (
     _codex_item_completion_payload,
     make_codex_app_server_event_bridge,
+    _persist_projected_messages,
 )
 from agent.transports.codex_event_projector import _deterministic_call_id
 
@@ -45,6 +46,24 @@ def _recording_agent():
         show_commentary=True,
     )
     return agent, calls
+
+
+def test_projected_message_flush_failure_is_reported_to_gateway():
+    agent = SimpleNamespace(
+        _session_db=object(),
+        session_id="session-1",
+        _flush_messages_to_session_db=lambda _messages: False,
+    )
+    turn = SimpleNamespace(projected_messages=[{"role": "assistant", "content": "answer"}])
+
+    assert _persist_projected_messages(agent, turn, []) is False
+
+
+def test_projected_message_flush_requires_a_session_database():
+    agent = SimpleNamespace(_session_db=None)
+    turn = SimpleNamespace(projected_messages=[{"role": "assistant", "content": "answer"}])
+
+    assert _persist_projected_messages(agent, turn, []) is False
 
 
 

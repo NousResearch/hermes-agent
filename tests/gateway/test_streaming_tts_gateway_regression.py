@@ -25,6 +25,7 @@ import pytest
 import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.turn_context import TurnContext
 from gateway.session import SessionSource
 
 
@@ -152,5 +153,36 @@ def test_run_agent_voice_turn_no_name_error(monkeypatch, tmp_path):
 
     result = asyncio.new_event_loop().run_until_complete(_run())
     assert result["final_response"] == "Hello from the agent."
+
+
+def test_streaming_tts_aborts_when_turn_result_is_unavailable():
+    """An executor timeout must not let an absent result start external TTS."""
+    runner = object.__new__(gateway_run.GatewayRunner)
+
+    class _Consumer:
+        _task = None
+        done = False
+
+        def __init__(self):
+            self.aborted = []
+            self.started = False
+
+        def abort(self, reason):
+            self.aborted.append(reason)
+
+        def start(self):
+            self.started = True
+
+    consumer = _Consumer()
+    turn_ctx = TurnContext(streaming_tts_consumer_holder=[consumer])
+
+    async def _run():
+        await runner._run_agent_finalize_streaming_tts(turn_ctx, adapter=None, result=None)
+
+    asyncio.run(_run())
+    assert consumer.started is False
+    assert consumer.aborted == [
+        "canonical persistence not confirmed before streaming TTS start"
+    ]
 
 

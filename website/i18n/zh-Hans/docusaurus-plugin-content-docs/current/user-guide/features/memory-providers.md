@@ -462,7 +462,7 @@ hermes config set memory.provider byterover
 
 ### Supermemory
 
-语义长期记忆，具备 profile 召回、语义搜索、显式记忆工具，以及通过 Supermemory graph API 进行会话结束时的对话导入。
+语义长期记忆，具备 profile 召回、语义搜索、显式记忆工具，以及逐轮对话捕获（每个会话每 4 小时一个文档）。
 
 | | |
 |---|---|

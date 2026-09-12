@@ -87,3 +87,24 @@ def test_poisoned_key_self_repairs(clean_cache, monkeypatch):
     client, _ = ac._get_cached_client(**kwargs)
     assert client is sentinel
     assert clean_cache[key][0] is sentinel
+
+
+class _HostileLazyProxy:
+    """Mimics a provider lazy proxy rejecting unknown private attributes."""
+
+    def __init__(self):
+        self.api_key = "k"
+        self.base_url = "https://example.invalid/v1"
+
+    def __getattr__(self, name):
+        raise RuntimeError(f"unsupported private attribute {name!r}")
+
+
+def test_hostile_lazy_proxy_is_not_a_stub(clean_cache, monkeypatch):
+    """A lookup failure proves nothing: cache the client normally (review)."""
+    proxy = _HostileLazyProxy()
+    assert not ac._is_probe_stub_client(proxy)
+    monkeypatch.setattr(ac, "resolve_provider_client", lambda *a, **k: (proxy, "m"))
+    client, _ = ac._get_cached_client(**_resolve_kwargs())
+    assert client is proxy
+    assert len(clean_cache) == 1  # cached, not skipped

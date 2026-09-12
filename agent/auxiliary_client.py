@@ -5357,9 +5357,10 @@ def _is_probe_stub_client(client: Any, *, _depth: int = 0) -> bool:
         return False
     try:
         inner = getattr(client, "_real_client", None)
-    except RuntimeError:
-        return True
     except Exception:
+        # A failed lookup proves nothing: lazy proxies may reject unknown
+        # private attributes with RuntimeError too. Only a successful lookup
+        # implicating the leaf counts.
         return False
     return _is_probe_stub_client(inner, _depth=_depth + 1) if inner is not None else False
 

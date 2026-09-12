@@ -83,6 +83,7 @@ _CAPABILITY_ENDPOINTS = (
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
+    ("run_unknown_resolution", ("POST", "/v1/runs/{run_id}/resolve-unknown")),
     ("run_stop", ("POST", "/v1/runs/{run_id}/stop")), ("skills", ("GET", "/v1/skills")),
     ("toolsets", ("GET", "/v1/toolsets")), ("sessions", ("GET", "/api/sessions")),
     ("session_create", ("POST", "/api/sessions")),
@@ -2274,6 +2275,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_require_auth
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
+        runner = getattr(self, "gateway_runner", None)
+        canonical_authority = getattr(runner, "session_authority", None) is not None
         return web.json_response({
             "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
             "model": self._model_name,
@@ -2289,6 +2292,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "responses_api": True, "responses_streaming": True, "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
+                "run_unknown_resolution": canonical_authority,
                 "cors": bool(self._cors_origins),
                 # Always advertised for feature-detection; enabled follows config.
                 "browser_extension_control": {
@@ -2309,7 +2313,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "transports": {
                         "local_vps": "websocket-subprotocol-ticket",
                         "cloud": "authenticated-gateway-rpc"}}},
-            "endpoints": {name: {"method": m, "path": p} for name, (m, p) in _CAPABILITY_ENDPOINTS},
+            "endpoints": {
+                name: {"method": m, "path": p}
+                for name, (m, p) in _CAPABILITY_ENDPOINTS
+                if name != "run_unknown_resolution" or canonical_authority},
         })
 
     # -- Browser-extension control (authenticated local/VPS API) ----------------------
@@ -3863,6 +3870,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     _handle_run_approval = _run_route_delegate("_handle_run_approval")
     _handle_run_clarify = _run_route_delegate("_handle_run_clarify")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
+    _handle_resolve_unknown_run = _run_route_delegate("_handle_resolve_unknown_run")
     _handle_stop_run = _run_route_delegate("_handle_stop_run")
 
     async def _sweep_orphaned_runs(self) -> None:

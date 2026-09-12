@@ -2,7 +2,9 @@
 import asyncio
 from contextvars import ContextVar
 from contextlib import contextmanager
+import hmac
 import json
+import re
 import uuid
 
 from gateway.config import Platform
@@ -16,6 +18,7 @@ _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provid
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
                  'session_history_delivery')
+_OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
 def api_settings(authority, ref):
@@ -34,15 +37,20 @@ def check_api_turn(authority, ref, payload):
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
-        if (set(data) - {'history', 'settings', 'turn_author', 'media'}
+        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope'}
                 or not {'history', 'settings'} <= set(data)
-                or (data['history'] is not None and not isinstance(data['history'], list))):
+                or (data['history'] is not None and not isinstance(data['history'], list))
+                or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))):
             raise RuntimeStoreError('invalid_params')
         if set(data['settings']) - set(_SETTING_KEYS):
             raise RuntimeStoreError('invalid_params')
     settings = payload.get('api_turn_v1', {}).get('settings') or api_settings(authority, ref)
     check_api_settings(adapter, settings)
     return adapter
+
+
+def _valid_owner_scope(value):
+    return isinstance(value, str) and _OWNER_SCOPE_RE.fullmatch(value) is not None
 
 
 def check_api_settings(adapter, settings):
@@ -101,6 +109,13 @@ def admit_api_turn(adapter, **kwargs):
         settings['route'] = {k: v for k, v in route.items() if k != 'api_key'}
     payload = json.loads(_json({'text': kwargs['user_message'], 'api_turn_v1': {
         'history': None if kwargs.get('history_from_session') else kwargs['conversation_history'], 'settings': settings}}))
+    run_owner_scope = kwargs.get('run_owner_scope')
+    if run_owner_scope is not None:
+        if not _valid_owner_scope(run_owner_scope):
+            raise RuntimeStoreError('invalid_params')
+        # This opaque namespace is persisted in the same row/transaction as
+        # admission. It is never a bearer credential or execution input.
+        payload['api_turn_v1']['run_owner_scope'] = run_owner_scope
     if isinstance(kwargs['user_message'], list):
         from gateway.session_api_media import commit_api_images
         payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
@@ -123,6 +138,27 @@ def admit_api_turn(adapter, **kwargs):
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
                               session_id=sid, request_id=request_id, payload=payload)
     return authority, ref, row
+
+
+def owns_api_run(adapter, run_id, owner_scope):
+    """Match a caller scope against one canonical API admission, failing closed."""
+    if not _valid_owner_scope(owner_scope):
+        return False
+    from gateway.session_authorities import active_authority
+    authority = active_authority(adapter.gateway_runner)
+    if authority is None:
+        return False
+    with authority.db._read_ctx() as conn:
+        rows = conn.execute(
+            "SELECT payload_json FROM session_admissions "
+            "WHERE principal_id='api' AND request_id=?", (run_id,)).fetchall()
+    if len(rows) != 1:
+        return False
+    try:
+        stored = json.loads(rows[0][0])['api_turn_v1']['run_owner_scope']
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return _valid_owner_scope(stored) and hmac.compare_digest(stored, owner_scope)
 
 
 def recover_api_turns(adapter):

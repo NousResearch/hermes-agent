@@ -1,4 +1,5 @@
 """Private API ingress preserves caller content and conversation authority."""
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -97,3 +98,29 @@ def test_api_author_is_admission_scoped_not_session_identity(api, owner):
         finally:
             api_execution.reset(token)
     assert seen == [row['payload']['api_turn_v1']['turn_author'], None]
+
+
+def test_persisted_owner_scope_is_private_strict_and_legacy_safe(api, owner):
+    from gateway.platforms.api_server_authority_runs import run_projection
+    from gateway.session_api_turn import owns_api_run, prepare_api_execution
+    from hermes_state_runtime import RuntimeStoreError
+
+    scope = 'a' * 64
+    authority, ref, row = admit_api_turn(
+        api, session_id='private-owner', active_run_id='run_private_owner',
+        user_message='hello', conversation_history=[], run_owner_scope=scope)
+    assert row['payload']['api_turn_v1']['run_owner_scope'] == scope
+    assert 'run_owner_scope' not in prepare_api_execution(authority, ref, row['payload'])
+    assert 'run_owner_scope' not in json.dumps(run_projection(api, 'run_private_owner'))
+    assert owns_api_run(api, 'run_private_owner', scope)
+
+    for malformed in ('A' * 64, 'a' * 63, 'g' * 64, 7):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            admit_api_turn(
+                api, session_id='invalid-owner', user_message='x',
+                conversation_history=[], run_owner_scope=malformed)
+
+    admit_api_turn(
+        api, session_id='legacy-ownerless', active_run_id='run_legacy_ownerless',
+        user_message='old', conversation_history=[])
+    assert not owns_api_run(api, 'run_legacy_ownerless', scope)

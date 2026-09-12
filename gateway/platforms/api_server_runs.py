@@ -736,8 +736,14 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
         return _run_not_found(_api_server._openai_error, run_id)
     q = self._run_streams[run_id]
     self._run_stream_subscribers.add(run_id)
-    response = web.StreamResponse(status=200, headers={
-        "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    # The CORS middleware can't inject headers after prepare() flushes them, so resolve
+    # the origin's CORS headers up front (same pattern as the chat/responses SSE paths).
+    sse_headers = {
+        "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    origin = request.headers.get("Origin", "")
+    if origin:
+        sse_headers.update(self._cors_headers_for_origin(origin) or {})
+    response = web.StreamResponse(status=200, headers=sse_headers)
     await response.prepare(request)
     try:
         while True:

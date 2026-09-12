@@ -331,6 +331,15 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+        # F1 tool-level denials: agent.disabled_toolsets may name INDIVIDUAL
+        # tools inside composites (e.g. `terminal` inside the enabled `file`
+        # toolset). Those are not toolset names, so _apply_toolset_selection
+        # skips them as unknown — subtract the bare tool names directly, or
+        # display paths re-advertise denied tools (r5 blocker).
+        tools.difference_update(
+            name for name in disabled_toolsets
+            if not validate_toolset(name) and name not in _LEGACY_TOOLSET_MAP
+        )
     return tools
 
 

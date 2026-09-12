@@ -7,6 +7,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
+from agent.redact import redact_credential_url
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
@@ -291,10 +292,13 @@ class MCPServerTransportMixin:
         if not _non_mcp_2xx(resp):
             return
         ct_base = _content_type_base(resp)
-        raise NonMcpEndpointError(f"MCP server '{self.name}' at {url} returned Content-Type '{ct_base}', not an MCP "
-            f"response (expected one of: {', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
-            "points at a web page rather than an MCP endpoint — check it resolves to a Streamable "
-            "HTTP / SSE endpoint (e.g. https://host/mcp, not https://host/).")
+        raise NonMcpEndpointError(
+            f"MCP server '{self.name}' at {redact_credential_url(url)} returned Content-Type "
+            f"'{ct_base}', not an MCP response (expected one of: "
+            f"{', '.join(self._MCP_CONTENT_TYPES)}). The URL most likely "
+            "points at a web page rather than an MCP endpoint — check it "
+            "resolves to a Streamable HTTP / SSE endpoint (e.g. https://host/mcp, "
+            "not https://host/).")
 
     def _reconnect_or_reraise_group(self, eg: BaseExceptionGroup) -> str:
         """Map an SDK transport TaskGroup failure to a clean ``"reconnect"``: HTTP/SSE stream pumps run in an anyio
@@ -333,7 +337,7 @@ class MCPServerTransportMixin:
             from tools.mcp_oauth_manager import get_manager
             return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
         except Exception as exc:
-            logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+            logger.warning("MCP OAuth setup failed for '%s': %s", self.name, redact_credential_url(exc))
             raise
 
     def _sse_transport(self, url: str, headers: dict, connect_timeout: float,

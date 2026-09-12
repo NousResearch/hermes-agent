@@ -10,6 +10,7 @@ import os
 import re
 from typing import Any, List, Optional
 from urllib.parse import urlparse
+from agent.redact import redact_credential_url
 from tools.mcp_tool_common import _sanitize_error, _core
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -105,16 +106,17 @@ def _validate_remote_mcp_url(server_name: str, url: Any) -> str:
     stripped = url.strip()
     if not stripped:
         raise _bad("empty url")
+    safe = redact_credential_url(stripped)
     try:
         parsed = urlparse(stripped)
     except Exception as exc:  # urlparse is very permissive — belt and braces
-        raise _bad(f"{stripped!r} ({exc})") from exc
+        raise _bad(f"{safe!r} ({redact_credential_url(exc)})") from exc
     if parsed.scheme.lower() not in {"http", "https"}:
-        raise _bad(f"scheme must be http or https, got {parsed.scheme!r} ({stripped!r})")
+        raise _bad(f"scheme must be http or https, got {parsed.scheme!r} ({safe!r})")
     if not parsed.netloc:
-        raise _bad(f"missing host ({stripped!r})")
+        raise _bad(f"missing host ({safe!r})")
     if not parsed.hostname:  # ``urlparse`` accepts ``http://:8080`` (empty host, explicit port)
-        raise _bad(f"missing hostname ({stripped!r})")
+        raise _bad(f"missing hostname ({safe!r})")
     return stripped
 
 

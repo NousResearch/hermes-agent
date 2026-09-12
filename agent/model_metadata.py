@@ -915,29 +915,49 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
     ``/props`` for older builds). In router mode the bare endpoint 400s, so each LOADED child is read
     via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
     base = request_candidate.rstrip("/").replace("/v1", "")
-    def _props(params=None):
-        resp = requests.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
-        if not resp.ok:
-            resp = requests.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
-        return resp
+
     def _n_ctx(props: Dict[str, Any]) -> Any:
+        if not isinstance(props, dict):
+            return None
         return (props.get("default_generation_settings") or {}).get("n_ctx")
-    props_resp = _props()
-    if props_resp.ok:
-        props = props_resp.json()
-        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
+
+    def _safe_json(resp) -> Optional[Dict[str, Any]]:
+        try:
+            return resp.json() if resp.ok else None
+        except Exception:
+            return None
+
+    def _fetch_valid_props(params=None) -> Optional[Dict[str, Any]]:
+        """Try /v1/props then /props; return first payload that contains n_ctx, else None."""
+        for path in ("/v1/props", "/props"):
+            try:
+                resp = requests.get(base + path, params=params, headers=headers, timeout=5, verify=verify)
+            except Exception:
+                continue
+            payload = _safe_json(resp)
+            if payload is not None and _n_ctx(payload):
+                return payload
+        return None
+
+    payload = _fetch_valid_props()
+    if payload is not None:
+        n_ctx, model_alias = _n_ctx(payload), payload.get("model_alias", "")
         if n_ctx and model_alias and model_alias in cache:
             cache[model_alias]["context_length"] = n_ctx
         return
     native = requests.get(base + "/models", headers=headers, timeout=5, verify=verify)
     if not native.ok:
         return
-    for child in (native.json() or {}).get("data", [])[:16]:
+    try:
+        data = (native.json() or {}).get("data", [])
+    except Exception:
+        return
+    for child in data[:16]:
         child_id = child.get("id") if isinstance(child, dict) else None
         if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
             continue
-        pr = _props({"model": child_id})
-        child_ctx = _n_ctx(pr.json()) if pr.ok else None
+        child_payload = _fetch_valid_props({"model": child_id})
+        child_ctx = _n_ctx(child_payload) if child_payload is not None else None
         if child_ctx:
             cache[child_id]["context_length"] = child_ctx
 

@@ -43,7 +43,8 @@ def test_unscoped_liveness_in_a_served_profile_process_matches_the_scoped_answer
     scoped = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
     unscoped = resolve_gateway_liveness(health_probe=None, use_cache=False)
     assert (unscoped.running, unscoped.pid, unscoped.source) == (scoped.running, scoped.pid, "multiplexer")
-    assert profile_platforms_from_multiplexer(unscoped.runtime, "alpha") == {"telegram": {"state": "connected"}}
+    plats = profile_platforms_from_multiplexer(unscoped.runtime, "alpha")
+    assert plats["telegram"] == {"state": "connected"} and plats["api_server"]["state"] == "connected"
 
 
 def test_unscoped_lifecycle_verbs_in_a_served_profile_process_address_the_multiplexer(pooled_served_process):

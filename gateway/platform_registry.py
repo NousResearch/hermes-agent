@@ -7,6 +7,7 @@ registry first, then the legacy built-in path. Plugin side: ``platform_registry
 .register(PlatformEntry(...))``; gateway side: ``create_adapter("irc", platform_config)``.
 """
 
+import asyncio
 import logging
 import sys
 import threading
@@ -349,6 +350,20 @@ class PlatformRegistry:
     def create_adapter(self, name: str, config: Any) -> Optional[Any]:
         """Create an adapter instance for *name*; None when no entry exists, deps are missing
         and cannot be installed, ``validate_config`` fails, or the factory raises."""
+        return self._construct_adapter(self._prepare_adapter(name), config)
+
+    async def create_adapter_async(self, name: str, config: Any) -> Optional[Any]:
+        """Prepare SDK dependencies off-loop, then construct on the caller's loop.
+
+        Deferred plugin imports and installers can block on disk/network I/O. Keep
+        their profile ContextVars via to_thread, while factories may bind asyncio
+        resources to the gateway loop and must stay on it.
+        """
+        entry = await asyncio.to_thread(self._prepare_adapter, name)
+        return self._construct_adapter(entry, config)
+
+    def _prepare_adapter(self, name: str) -> Optional[PlatformEntry]:
+        """Resolve the plugin and make its dependencies available before construction."""
         entry = self.get(name)
         if entry is None:
             return None
@@ -367,6 +382,12 @@ class PlatformRegistry:
         if not deps_ok:
             hint = f" ({entry.install_hint})" if entry.install_hint else ""
             logger.warning("Platform '%s' requirements not met%s", entry.label, hint)
+            return None
+        return entry
+
+    @staticmethod
+    def _construct_adapter(entry: Optional[PlatformEntry], config: Any) -> Optional[Any]:
+        if entry is None:
             return None
         if entry.validate_config is not None:
             try:

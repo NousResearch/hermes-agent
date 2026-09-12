@@ -710,7 +710,7 @@ class GatewayAdapterLifecycleMixin:
         logger.info("Reconnecting %s (attempt %d)...", platform.value, attempt)
         adapter = None
         try:
-            adapter = self._create_adapter(platform, platform_config)
+            adapter = await self._create_adapter(platform, platform_config)
             if not adapter:
                 self._drop_from_reconnect_queue(platform, "adapter creation returned None")
                 return
@@ -991,7 +991,7 @@ class GatewayAdapterLifecycleMixin:
                 platform.value, exc_info=True,
             ):
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-                    adapter = self._create_adapter(platform, platform_config)
+                    adapter = await self._create_adapter(platform, platform_config)
                 if not adapter:
                     logger.warning(
                         "[MULTIPLEX] Profile '%s': skipping platform '%s' - adapter creation returned None",
@@ -1109,7 +1109,7 @@ class GatewayAdapterLifecycleMixin:
                     platform.value, profile_name,
                 )
                 return None, None
-            adapter = self._create_adapter(platform, profile_config)
+            adapter = await self._create_adapter(platform, profile_config)
             if adapter is None:
                 logger.warning(
                     "Secondary %s reconnect skipped: adapter unavailable (profile: %s)",
@@ -1470,15 +1470,15 @@ class GatewayAdapterLifecycleMixin:
                 return hashlib.sha256(("hermes-mux:" + val.strip()).encode("utf-8")).hexdigest()[:16]
         return None
 
-    def _create_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
+    async def _create_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Create an adapter bound to this runner (every lifecycle path goes through here so
         adapters can resolve inbound profile routes before handlers or connect())."""
-        adapter = self._instantiate_adapter(platform, config)
+        adapter = await self._instantiate_adapter(platform, config)
         if adapter is not None:
             adapter.gateway_runner = self
         return adapter
 
-    def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
+    async def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""
         from gateway.run import _instantiate_builtin_adapter
         if hasattr(config, "extra") and isinstance(config.extra, dict):
@@ -1489,7 +1489,7 @@ class GatewayAdapterLifecycleMixin:
         with _log_suppressed(logging.DEBUG, "Platform registry lookup for '%s' failed: %s", platform.value):
             from gateway.platform_registry import platform_registry
             if platform_registry.is_registered(platform.value):
-                adapter = platform_registry.create_adapter(platform.value, config)
+                adapter = await platform_registry.create_adapter_async(platform.value, config)
                 if adapter is None:  # registered but failed — never fall through to built-ins
                     logger.error(
                         "Platform '%s' is registered but adapter creation failed "

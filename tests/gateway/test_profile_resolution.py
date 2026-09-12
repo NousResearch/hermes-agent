@@ -246,7 +246,8 @@ class TestGatewayRunnerInjection:
         assert hasattr(BasePlatformAdapter, "gateway_runner")
         assert BasePlatformAdapter.gateway_runner is None
 
-    def test_factory_binds_every_adapter_to_runner(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_factory_binds_every_adapter_to_runner(self, monkeypatch):
         """``_create_adapter`` binds the runner regardless of which branch
         built the adapter (plugin registry OR built-in if/elif) — every
         lifecycle path (startup, reconnect, secondary profiles) goes through
@@ -256,11 +257,11 @@ class TestGatewayRunnerInjection:
 
         runner = object.__new__(GatewayRunner)
         adapter = MagicMock(spec=BasePlatformAdapter)
-        monkeypatch.setattr(runner, "_instantiate_adapter", lambda platform, config: adapter)
-        assert runner._create_adapter(Platform.SIGNAL, PlatformConfig(enabled=True)) is adapter
+        monkeypatch.setattr(runner, "_instantiate_adapter", AsyncMock(side_effect=lambda platform, config: adapter))
+        assert await runner._create_adapter(Platform.SIGNAL, PlatformConfig(enabled=True)) is adapter
         assert adapter.gateway_runner is runner
-        monkeypatch.setattr(runner, "_instantiate_adapter", lambda platform, config: None)
-        assert runner._create_adapter(Platform.SIGNAL, PlatformConfig(enabled=True)) is None
+        monkeypatch.setattr(runner, "_instantiate_adapter", AsyncMock(side_effect=lambda platform, config: None))
+        assert await runner._create_adapter(Platform.SIGNAL, PlatformConfig(enabled=True)) is None
 
     @pytest.mark.asyncio
     async def test_real_signal_factory_routes_inbound_group_event(self, monkeypatch):
@@ -278,7 +279,7 @@ class TestGatewayRunnerInjection:
                 ProfileRoute(name="signal", platform="signal", profile="ops", chat_id=f"group:{group_id}"),
             ],
         )
-        adapter = runner._create_adapter(
+        adapter = await runner._create_adapter(
             Platform.SIGNAL,
             PlatformConfig(enabled=True, extra={"http_url": "http://127.0.0.1:18080", "account": "+15555550123"}),
         )
@@ -444,5 +445,4 @@ class TestMultiplexGate:
         discord_source.profile = None
 
         assert mock_runner._profile_name_for_source(discord_source) is None
-
 

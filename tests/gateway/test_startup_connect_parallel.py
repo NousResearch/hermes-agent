@@ -25,6 +25,7 @@ resolution -- ``time.monotonic()`` has only ~15 ms resolution on Windows
 wall-clock comparison. Event ordering cannot be defeated by a coarse clock.
 """
 
+from unittest.mock import AsyncMock
 import asyncio
 
 import pytest
@@ -105,7 +106,7 @@ async def test_startup_connects_platforms_concurrently(monkeypatch, tmp_path):
         sleep = 0.3 if platform is Platform.TELEGRAM else 0.0
         return _TimingAdapter(platform, sleep)
 
-    monkeypatch.setattr(runner, "_create_adapter", _make_adapter)
+    monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=_make_adapter))
     # Keep the rest of startup lightweight / non-fatal.
     monkeypatch.setattr(runner, "_start_secondary_profile_adapters", lambda: 0)
 
@@ -172,7 +173,7 @@ async def test_startup_one_failing_platform_does_not_block_others(monkeypatch, t
             return _FailingSlowAdapter()
         return _TimingAdapter(platform, 0.0)
 
-    monkeypatch.setattr(runner, "_create_adapter", _make_adapter)
+    monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=_make_adapter))
     monkeypatch.setattr(runner, "_start_secondary_profile_adapters", lambda: 0)
 
     await runner.start()
@@ -277,7 +278,7 @@ class TestTelegramColdStartCap:
                 return _WedgedAdapter()
             return _TimingAdapter(platform, 0.0)
 
-        monkeypatch.setattr(runner, "_create_adapter", _make_adapter)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=_make_adapter))
         monkeypatch.setattr(runner, "_start_secondary_profile_adapters", lambda: 0)
 
         await asyncio.wait_for(runner.start(), timeout=30)

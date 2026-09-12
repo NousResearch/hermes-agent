@@ -255,7 +255,7 @@ def _install_secondary_reconnect_context(
             },
         ),
     )
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: adapter)
+    monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda platform, config: adapter))
 
 
 class TestSecondaryProfileFatalRecovery:
@@ -447,7 +447,7 @@ class TestSecondaryStartupFailureRecovery:
         # Startup creates `failed`; the reconnect runner creates `replacement`.
         created = [failed, replacement]
         monkeypatch.setattr(
-            runner, "_create_adapter", lambda platform, config: created.pop(0)
+            runner, "_create_adapter", AsyncMock(side_effect=lambda platform, config: created.pop(0))
         )
 
         async def fail_initial_connect(adapter, platform):
@@ -512,7 +512,7 @@ class TestSecondaryStartupFailureRecovery:
 
         created = [failed, replacement]
         monkeypatch.setattr(
-            runner, "_create_adapter", lambda platform, config: created.pop(0)
+            runner, "_create_adapter", AsyncMock(side_effect=lambda platform, config: created.pop(0))
         )
 
         async def explode(adapter, platform):
@@ -559,7 +559,7 @@ class TestSecondaryStartupFailureRecovery:
         _install_secondary_reconnect_context(
             monkeypatch, runner, _SecondaryRecoveryAdapter()
         )
-        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failed)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda platform, config: failed))
 
         async def fail_initial_connect(adapter, platform):
             return False
@@ -592,7 +592,7 @@ class TestSecondaryStartupFailureRecovery:
         _install_secondary_reconnect_context(
             monkeypatch, runner, _SecondaryRecoveryAdapter()
         )
-        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failed)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda platform, config: failed))
         statuses = []
         monkeypatch.setattr(
             runner,
@@ -635,7 +635,7 @@ class TestSecondaryStartupFailureRecovery:
         _install_secondary_reconnect_context(
             monkeypatch, runner, _SecondaryRecoveryAdapter()
         )
-        monkeypatch.setattr(runner, "_create_adapter", lambda platform, config: failed)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda platform, config: failed))
 
         async def fail_initial_connect(adapter, platform):
             return False
@@ -736,7 +736,7 @@ class TestSecondaryProfileConfigHandling:
         writes = []
 
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
-        monkeypatch.setattr(runner, "_create_adapter", lambda _p, _c: adapter)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda _p, _c: adapter))
         monkeypatch.setattr(
             runner,
             "_update_platform_runtime_status",
@@ -784,7 +784,7 @@ class TestSecondaryProfileConfigHandling:
         writes = []
 
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
-        monkeypatch.setattr(runner, "_create_adapter", lambda _p, _c: adapter)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda _p, _c: adapter))
         monkeypatch.setattr(
             runner,
             "_update_platform_runtime_status",
@@ -935,7 +935,7 @@ class TestSecondaryProfileConfigHandling:
             return True
 
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
-        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: secondary)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda p, c: secondary))
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
         monkeypatch.setattr(
             runner, "_make_adapter_auth_check", lambda p, **kwargs: None
@@ -993,7 +993,7 @@ class TestSecondaryProfileConfigHandling:
             return adapter.should_connect
 
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
-        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: next(adapters))
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda p, c: next(adapters)))
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", _connect)
         monkeypatch.setattr(
             runner, "_make_adapter_auth_check", lambda p, **kwargs: None
@@ -1058,7 +1058,7 @@ class TestSecondaryProfileConfigHandling:
         async def _connect(adapter, platform):
             return True
 
-        monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=_create_adapter))
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
 
         connected = await runner._start_one_profile_adapters("clientbot", "/tmp/x", {})
@@ -1136,7 +1136,7 @@ class TestFeishuPortBindingConditional:
             ),
         }
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
-        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: None)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda p, c: None))
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert connected == 0  # no error, just nothing connected
@@ -1168,7 +1168,7 @@ class TestSecondarySkipsCredentiallessPlatforms:
             return _FakeAdapter(token=platform_config.token or None)
 
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
-        monkeypatch.setattr(runner, "_create_adapter", fake_create)
+        monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=fake_create))
         monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a, **k: None)
         monkeypatch.setattr(
             runner,

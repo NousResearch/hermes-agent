@@ -357,7 +357,7 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
 
     # Simulate _create_adapter returning None for ALL platforms (missing library /
     # missing credentials — no connection attempt ever made).
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
+    monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda platform, cfg: None))
 
     import logging
     with caplog.at_level(logging.WARNING):
@@ -414,7 +414,7 @@ async def test_runner_exits_with_ex_config_on_nonretryable_startup_error(monkeyp
     )
     runner = GatewayRunner(config)
 
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _NonRetryableFailureAdapter())
+    monkeypatch.setattr(runner, "_create_adapter", AsyncMock(side_effect=lambda platform, platform_config: _NonRetryableFailureAdapter()))
 
     ok = await runner.start()
 
@@ -514,7 +514,7 @@ async def test_live_foreign_token_lock_at_startup_exits_ex_config(monkeypatch, t
     )
     runner = GatewayRunner(config)
     monkeypatch.setattr(
-        runner, "_create_adapter", lambda platform, platform_config: _ForeignTokenLockAdapter()
+        runner, "_create_adapter", AsyncMock(side_effect=lambda platform, platform_config: _ForeignTokenLockAdapter())
     )
 
     ok = await runner.start()
@@ -558,9 +558,9 @@ async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path)
     monkeypatch.setattr(
         runner,
         "_create_adapter",
-        lambda platform, cfg: (
+        AsyncMock(side_effect=lambda platform, cfg: (
             _ForeignTokenLockAdapter() if platform is Platform.TELEGRAM else _DiscordBlip()
-        ),
+        )),
     )
 
     ok = await runner.start()

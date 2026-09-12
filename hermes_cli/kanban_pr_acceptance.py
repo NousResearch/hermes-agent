@@ -8,10 +8,43 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from typing import Any
 from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+
+
+class _GitHubRulesUnavailable(RuntimeError):
+    """The rules endpoint could not be read (as opposed to no rules existing)."""
+
+
+def _rules_endpoint_has_no_required_checks(exc: subprocess.CalledProcessError) -> bool:
+    """Recognize GitHub's plan-gated rules response without masking auth errors.
+
+    GitHub returns HTTP 403 for private repositories whose plan cannot expose
+    the rules endpoint.  That is an auditable lack of rules data, not proof of
+    required checks; unlike a real permission failure, the response explicitly
+    identifies the unavailable feature (usually with an upgrade hint).
+    """
+    detail = " ".join(filter(None, (exc.stderr, exc.stdout))).lower()
+    return (
+        "upgrade to github pro" in detail
+        or "feature unavailable" in detail
+        or "branch protection rules are not available" in detail
+    )
+
+
+def _rules_endpoint_reports_unprotected_branch(exc: subprocess.CalledProcessError) -> bool:
+    """Recognize the rules API's explicit no-rules 404 response.
+
+    A generic 404 is deliberately not enough: GitHub also uses it when a
+    repository or branch is inaccessible.  The rules endpoint documents
+    ``Branch not protected`` as the no-protection response, so only that
+    explicit message may be treated as an empty policy result.
+    """
+    detail = " ".join(filter(None, (exc.stderr, exc.stdout))).lower()
+    return "branch not protected" in detail
 
 
 def validate_contract(value: str | None) -> str:
@@ -22,15 +55,28 @@ def validate_contract(value: str | None) -> str:
     return value
 
 
-def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
+def _api(endpoint: str, *, query: str | None = None, paginate: bool = False) -> Any:
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
-        command += ["--paginate", "--slurp"]
+        # Do not use --slurp: older and vendor-patched gh releases reject it.
+        # gh emits one complete JSON document per page without that flag.
+        command += ["--paginate"]
     result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                             text=True, timeout=30, check=True)
-    value = json.loads(result.stdout)
+    if paginate:
+        decoder = json.JSONDecoder()
+        value, index = [], 0
+        while index < len(result.stdout):
+            while index < len(result.stdout) and result.stdout[index].isspace():
+                index += 1
+            if index == len(result.stdout):
+                break
+            page, index = decoder.raw_decode(result.stdout, index)
+            value.append(page)
+    else:
+        value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
@@ -38,7 +84,7 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
 
 def collect_acceptance(contract: str, published_pr: str | None) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
-               "pr_url": published_pr, "checks": [],
+               "merge_sha": None, "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "
                            "Use kanban_block if human input is needed; receipts remain on the task event log."}
     try:
@@ -61,21 +107,55 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        except subprocess.CalledProcessError as exc:
+            # Only GitHub's explicit no-protection response is evidence of an
+            # empty policy.  Generic 404s can mean an inaccessible repository
+            # or branch and must remain infrastructure failures.
+            if _rules_endpoint_reports_unprotected_branch(exc):
+                rules = []
+            elif _rules_endpoint_has_no_required_checks(exc):
+                # The rules API is plan-gated for some private repositories.
+                # Treat only its explicit feature-unavailable response as a
+                # no-required-checks result; generic 403 remains infra.
+                rules = []
+            else:
+                raise _GitHubRulesUnavailable from exc
         for page in rules:
-            for rule in page:
+            page_rules = page if isinstance(page, list) else [page]
+            for rule in page_rules:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
-            receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
+            # A merged PR is immutable evidence even when the repository has
+            # no required-check policy. Open PRs still need required checks.
+            current = _api(f"repos/{repo}/pulls/{number}")
+            if (current.get("head", {}).get("sha") != sha
+                    or current.get("base", {}).get("ref") != branch
+                    or (current.get("state") == "closed" and not current.get("merged"))):
+                receipt.update(classification="stale",
+                               detail="PR head/base changed while collecting evidence; retry.")
+                return receipt
+            merge_sha = current.get("merge_commit_sha")
+            if current.get("merged") and re.fullmatch(r"[0-9a-f]{40}", merge_sha or ""):
+                receipt.update(ok=True, classification="no_required_checks",
+                               merge_sha=merge_sha,
+                               detail="PR merged; repository has no required status-check policy.")
+                return receipt
+            receipt["classification"] = "no_required_checks"
+            receipt["detail"] = "No repository-required checks are configured; merge evidence is required."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
-        runs = [run for page in pages for run in page["check_runs"]]
-        if len({r["id"] for r in runs}) != pages[0]["total_count"]:
+        runs = [run for page in pages
+                for run in (page["check_runs"] if isinstance(page, dict) else page[0]["check_runs"])]
+        first_page = pages[0] if isinstance(pages[0], dict) else pages[0][0]
+        if len({r["id"] for r in runs}) != first_page["total_count"]:
             raise ValueError("Incomplete check-run pagination")
-        statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100", paginate=True) for s in page]
+        statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100", paginate=True)
+                    for s in (page if isinstance(page, list) else [page])]
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
@@ -100,10 +180,16 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
+        if current.get("merged"):
+            receipt["merge_sha"] = current.get("merge_commit_sha")
+            if not re.fullmatch(r"[0-9a-f]{40}", receipt["merge_sha"] or ""):
+                receipt.update(classification="infra", detail="Merged PR has no immutable merge SHA.")
+                return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
         return receipt
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError,
+            _GitHubRulesUnavailable):
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
         receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
         return receipt

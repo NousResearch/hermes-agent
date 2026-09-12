@@ -291,6 +291,23 @@ _AUTH_PATTERNS = (
     "forbidden", "invalid token", "token expired", "token revoked", "access denied",
 )
 
+# A subprocess transport (ACP bridge and friends) that died before answering,
+# naming a missing/revoked subscription credential on stderr. The wording comes
+# from the launcher, not from the provider — no request was ever made, so there
+# is no status code and none of the provider-side verdicts apply.
+#
+# Left unmatched these land in ``unknown``: retryable with no credential
+# rotation, so the retry loop re-spawns the transport against the same empty
+# credential and the turn fails with a taxonomy that tells the caller nothing.
+# ``auth`` is the honest verdict, but with ``retryable=True`` (unlike the
+# status-code auth paths): every spawn re-resolves the credential, so a
+# transient refresh failure genuinely can differ on the next attempt.
+_TRANSPORT_CREDENTIAL_MISSING_PATTERNS = (
+    "no subscription token",
+    "revoked or missing subscription token",
+    "missing subscription token",
+)
+
 # Empty-response advisories (OpenRouter / nano-gpt). Checked before overflow
 # because the text often mentions "max_tokens" (caused compression spirals).
 _EMPTY_PROVIDER_RESPONSE_PATTERNS = (
@@ -371,6 +388,11 @@ _V_BILLING = _v(_R.billing, retryable=False, **_ROTATE_FALLBACK)
 _V_RATE_LIMIT = _v(_R.rate_limit, **_ROTATE_FALLBACK)
 _V_AUTH_ROTATE = _v(_R.auth, retryable=False, **_ROTATE_FALLBACK)
 _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
+# Transport could not obtain a credential: retry (the next spawn re-resolves it)
+# and rotate, but do NOT fall back to another model — one credential serves every
+# model behind a subscription, so the backup model meets the identical wall and
+# the downgrade only hides the cause.
+_V_AUTH_RETRY_NO_FALLBACK = _v(_R.auth, should_rotate_credential=True, should_fallback=False)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
@@ -434,10 +456,15 @@ _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
 _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
                        (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE)) + _IMAGE_TOOL_RULES
 
-# Status-less tail. Overload before rate_limit/billing so "overloaded" backs off
-# instead of rotating; policy block before model_not_found; timeout/connection
-# wording last, classified as transport (never compression).
+# Status-less tail. A transport that never obtained a credential comes first:
+# nothing reached the provider, so no provider-side verdict can be true, and it
+# must outrank the generic _AUTH_PATTERNS entry below (same reason, but that one
+# is retryable=False + fallback). Then overload before rate_limit/billing so
+# "overloaded" backs off instead of rotating; policy block before
+# model_not_found; timeout/connection wording last, classified as transport
+# (never compression).
 _MESSAGE_TAIL_RULES = (
+    (_TRANSPORT_CREDENTIAL_MISSING_PATTERNS, _V_AUTH_RETRY_NO_FALLBACK),
     (_OVERLOADED_PATTERNS, _V_OVERLOADED), (_BILLING_PATTERNS, _billing_hints),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW), (_AUTH_PATTERNS, _V_AUTH_ROTATE),

@@ -231,6 +231,46 @@ def _ensure_discord_mock() -> None:
         def clear_items(self):
             self.children.clear()
 
+    # ── Components V2 layout primitives ──────────────────────────────────────
+    # Structural fakes: enough to count components and read back text, so the v2
+    # render path is exercised without the real library.
+    class _FakeTextDisplay:
+        def __init__(self, content, **_):
+            self.content = content
+        def to_component_dict(self):
+            return {"type": 10, "content": self.content}
+
+    class _FakeSeparator:
+        def __init__(self, **_):
+            pass
+        def to_component_dict(self):
+            return {"type": 14}
+
+    class _FakeContainer:
+        def __init__(self, *children, accent_colour=None, **_):
+            self.accent_colour = accent_colour
+            self.children = list(children)
+        def add_item(self, item):
+            self.children.append(item)
+            return self
+        def to_component_dict(self):
+            return {"type": 17, "components": [c.to_component_dict() for c in self.children]}
+
+    class _FakeLayoutView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+        def add_item(self, item):
+            self.children.append(item)
+            return self
+        @property
+        def _total_children(self):
+            return sum(1 + len(getattr(c, "children", [])) for c in self.children)
+        def has_components_v2(self):
+            return True
+        def to_components(self):
+            return [c.to_component_dict() for c in self.children]
+
     class _FakeSelect:
         def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
             self.placeholder = placeholder
@@ -276,6 +316,12 @@ def _ensure_discord_mock() -> None:
         Select=_FakeSelect,
         Button=_FakeButton,
         button=lambda *a, **k: (lambda fn: fn),
+        # Components V2 layout primitives. Real enough to assert structure and the
+        # 40-component budget without requiring the genuine library.
+        LayoutView=_FakeLayoutView,
+        Container=_FakeContainer,
+        TextDisplay=_FakeTextDisplay,
+        Separator=_FakeSeparator,
     )
     discord_mod.ButtonStyle = SimpleNamespace(
         success=1, primary=2, secondary=2, danger=3,

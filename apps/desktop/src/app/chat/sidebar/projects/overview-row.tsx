@@ -22,6 +22,7 @@ import {
   SidebarRowNest,
   SidebarRowShell
 } from '../chrome'
+import type { ShellDragProps } from '../reorderable-list'
 
 import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
@@ -82,7 +83,12 @@ interface ProjectOverviewRowProps {
   previewSessions?: SessionInfo[]
   reorderable?: boolean
   dragging?: boolean
+  /** Full dnd-kit handle (role/tabIndex + keyboard + pointer activators) —
+   *  spread ONLY on SidebarRowGrab. The shell must use shellDragProps. */
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Pointer-only dnd listeners for the row SHELL — never the keyboard
+   *  activator or role/tabIndex (see session-row for the full rationale). */
+  shellDragProps?: ShellDragProps
   ref?: React.Ref<HTMLDivElement>
   style?: React.CSSProperties
 }
@@ -98,6 +104,7 @@ export function ProjectOverviewRow({
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  shellDragProps,
   ref,
   style
 }: ProjectOverviewRowProps) {
@@ -188,13 +195,12 @@ export function ProjectOverviewRow({
       // listeners, minus the controls that keep their own gestures. A project
       // row has no rival drag (its title navigates on CLICK), so the sortable
       // owns the press outright.
-      {...dragHandleProps}
       onPointerDown={event => {
         if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
           return
         }
 
-        dragHandleProps?.onPointerDown?.(event)
+        shellDragProps?.onPointerDown?.(event)
       }}
       ref={rowRef}
       toggle={

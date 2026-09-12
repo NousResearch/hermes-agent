@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -499,7 +500,7 @@ class TestTaskStore:
         # Second sweep does nothing (already terminal).
         assert store.fail_orphans(timeout_seconds=300) == []
 
-    def test_watchdog_preserves_live_waiters_and_reply_window(self, monkeypatch):
+    def test_watchdog_preserves_active_requests_and_reply_window(self, monkeypatch):
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "600")
         adapter, _base = _make_live_adapter(monkeypatch)
         now = time.time()
@@ -509,12 +510,67 @@ class TestTaskStore:
             adapter.tasks._tasks[task_id]["created_at"] = now - age
 
         adapter._add_pending("t-live", "c1")
-        assert adapter._fail_orphans_once() == ["t-orphan"]
+        agent = {"slug": "dev", "tenant": "dev", "profile": "dev", "local": False, "timeout": 900}
+
+        def fake_forward(*_args):
+            forwarded_id = next(tid for tid in adapter.tasks._tasks if tid not in {
+                "t-live", "t-orphan", "t-within-reply-window"
+            })
+            adapter.tasks._tasks[forwarded_id]["created_at"] = now - 700
+            assert adapter._fail_orphans_once() == ["t-orphan"]
+            return "forwarded reply", protocol.STATE_COMPLETED
+
+        monkeypatch.setattr(adapter, "_forward_to_profile", fake_forward)
+        terminal, pending = adapter._prepare_task(
+            {"message": protocol.text_message(protocol.ROLE_USER, "hello", context_id="forwarded")},
+            "peer", agent=agent,
+        )
+
+        assert pending is None
+        assert adapter.tasks.get(terminal["id"])["state"] == protocol.STATE_COMPLETED
         assert adapter.tasks.get("t-live")["state"] == protocol.STATE_WORKING
         assert adapter.tasks.get("t-within-reply-window")["state"] == protocol.STATE_WORKING
 
         adapter._pop_pending("t-live")
         assert adapter._fail_orphans_once() == ["t-live"]
+
+    def test_watchdog_cannot_race_local_finalization(self, monkeypatch):
+        adapter, _base = _make_live_adapter(monkeypatch)
+        rec = adapter.tasks.create("t-live", "c1", "peer")
+        adapter.tasks.set_state("t-live", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-live"]["created_at"] = time.time() - 700
+        future = adapter._add_pending("t-live", "c1")
+        future.set_result((protocol.STATE_COMPLETED, "reply"))
+        pending = {
+            "task_id": "t-live", "context_id": "c1", "peer": "peer",
+            "future": future, "created_iso": rec["created_iso"], "started": time.time(),
+        }
+
+        original_redact = security.redact_outbound
+        finalizing = threading.Event()
+        resume = threading.Event()
+        result = []
+
+        def pause_while_finalizing(reply):
+            finalizing.set()
+            assert resume.wait(timeout=1)
+            return original_redact(reply)
+
+        monkeypatch.setattr(security, "redact_outbound", pause_while_finalizing)
+        thread = threading.Thread(
+            target=lambda: result.append(adapter._finalize_task(pending, *adapter._await_reply(pending)))
+        )
+        thread.start()
+        assert finalizing.wait(timeout=1)
+        try:
+            assert adapter._fail_orphans_once() == []
+        finally:
+            resume.set()
+            thread.join(timeout=1)
+
+        assert not thread.is_alive()
+        assert result == [(protocol.STATE_COMPLETED, "reply")]
+        assert adapter.tasks.get("t-live")["state"] == protocol.STATE_COMPLETED
 
     def test_list_newest_first_with_filters(self):
         store = protocol.TaskStore()

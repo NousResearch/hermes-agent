@@ -127,5 +127,7 @@ def retitle_session(session_db, session_id: str, history: Any) -> Optional[str]:
 
     title = generate_retitle(context)
     if not title:
-        return None
-    return title if session_db.set_session_title(session_id, title) else None
+        raise RuntimeError("title generation returned no title")
+    if not session_db.set_session_title(session_id, title):
+        raise RuntimeError(f"session {session_id} not found while storing title")
+    return title

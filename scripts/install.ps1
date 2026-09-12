@@ -16,6 +16,9 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [switch]$SkipComputerUse,
+    # Force the cua-driver pre-install where it is otherwise opt-in only
+    # (re-running install.ps1 over an existing install). See #104413.
+    [switch]$WithComputerUse,
     [string]$Branch = "main",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
     # who need reproducible installs (desktop installer pinning, CI, release
@@ -3821,27 +3824,67 @@ function Test-CuaDriverRuntimeContract {
     }
 }
 
+# Locate an installed cua-driver the way the Hermes runtime does
+# (tools/computer_use/cua_backend_driver.py): PATH first, then the upstream
+# installer's canonical locations. A fresh PowerShell session inherits a stale
+# PATH, so a bare Get-Command misses a driver that IS installed -- which made
+# every install.ps1 run re-download it and made an existing install look fresh.
+function Find-CuaDriver {
+    $found = Get-Command cua-driver -ErrorAction SilentlyContinue
+    if ($found) { return $found }
+    $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $env:USERPROFILE "AppData\Local" }
+    foreach ($candidate in @(
+        (Join-Path $localAppData "Programs\Cua\cua-driver\bin\cua-driver.exe"),
+        (Join-Path $env:USERPROFILE ".local\bin\cua-driver.exe")
+    )) {
+        if (Test-Path $candidate) {
+            $found = Get-Command $candidate -ErrorAction SilentlyContinue
+            if ($found) { return $found }
+        }
+    }
+    return $null
+}
+
 # cua-driver powers the computer_use toolset (background desktop control).
 # Provision it at install time so enabling the tool later -- via `hermes
 # tools`, the dashboard, or the desktop app -- is a config flip, not a
 # surprise multi-minute binary fetch. Best-effort and non-fatal: the enable
 # paths still lazy-install via install_cua_driver() (hermes_cli/tools_config)
 # when this step was skipped or failed.
+#
+# The pre-install is a convenience for FRESH installs. Re-running install.ps1
+# over an existing install is an *update*: like `hermes update`, it repairs a
+# driver that is already present but never introduces a new one (#104413) --
+# enabling the toolset is the consent that installs it. -WithComputerUse forces
+# the pre-install. (install.sh additionally skips headless Linux hosts; a
+# Windows session always has a desktop, so there is no equivalent gate here.)
 function Install-CuaDriver {
     if ($SkipComputerUse) {
         Write-Info "Skipping Computer Use (cua-driver) install (-SkipComputerUse)"
         return
     }
-    $existingCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+    $existingCuaDriver = Find-CuaDriver
     if ($existingCuaDriver) {
         if (Test-CuaDriverRuntimeContract -DriverPath $existingCuaDriver.Source) {
             Write-Success "Computer Use driver (cua-driver) already installed and compatible"
             return
         }
-        Write-Warn "Existing cua-driver is old or incomplete; repairing it"
+        Write-Warn "Existing cua-driver ($($existingCuaDriver.Source)) is old or incomplete; repairing it"
+    } elseif (-not $WithComputerUse) {
+        # .hermes-bootstrap-complete is the Windows completion stamp (install.sh
+        # uses the older .install_method stamp for the same check).
+        if (Test-Path (Join-Path $InstallDir ".hermes-bootstrap-complete")) {
+            Write-Info "Skipping Computer Use driver (cua-driver): updates never add it to an existing install."
+            Write-Info "  Install it with: hermes computer-use install  (or enable Computer Use in 'hermes tools')"
+            return
+        }
     }
 
+    # Say up front what the upstream installer writes OUTSIDE $HermesHome, so
+    # nobody discovers %USERPROFILE%\.cua-driver by accident weeks later (#104413).
     Write-Info "Installing Computer Use driver (cua-driver)..."
+    Write-Info "  Writes $env:USERPROFILE\.cua-driver (packages) and $env:LOCALAPPDATA\Programs\Cua\cua-driver -- outside HERMES_HOME;"
+    Write-Info "  'hermes uninstall' lists them and how to remove them."
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
@@ -3849,13 +3892,21 @@ function Install-CuaDriver {
         # via a background job: the upstream installer serializes with its own
         # lock (600s stale window), so the ceiling sits above that -- matching
         # Hermes' _CUA_INSTALLER_TIMEOUT (660s).
+        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 mirrors install.sh and the Python
+        # installer: the upstream install-event is default-on; Hermes' policy
+        # is opt-in (computer_use.cua_telemetry). Set inside the job so it
+        # reaches the installer regardless of how the job process is spawned.
         $job = Start-Job -ScriptBlock {
+            $env:CUA_DRIVER_RS_TELEMETRY_ENABLED = "0"
             Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1" | Invoke-Expression
         }
         if (Wait-Job $job -Timeout 660) {
             Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
             Remove-Job $job -Force -ErrorAction SilentlyContinue
             $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+            # The installer edits the User PATH, not this process's -- fall back
+            # to the canonical install locations before calling it a failure.
+            if (-not $installedCuaDriver) { $installedCuaDriver = Find-CuaDriver }
             if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
                 Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
             } else {

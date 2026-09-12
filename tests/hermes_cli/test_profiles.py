@@ -741,6 +741,19 @@ class TestRenameProfile:
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
 
+    def test_rename_tombstones_old_identity_against_stale_directory(self, profile_env):
+        old_dir = create_profile("oldname", no_alias=True)
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("oldname", "newname")
+
+        old_dir.mkdir()
+
+        listed = {profile.name for profile in list_profiles() if not profile.is_default}
+        served = {name for name, _path in profiles_to_serve(multiplex=True) if name != "default"}
+        assert listed == {"newname"}
+        assert served == {"newname"}
+
     def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
         tmp_path = profile_env
         create_profile("ssi_health", no_alias=True)
@@ -1159,5 +1172,4 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
 

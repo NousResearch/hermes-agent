@@ -1657,8 +1657,15 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
 
-    # 2. Rename directory
-    old_dir.rename(new_dir)
+    # 2. Retire the old identity before moving its directory so stale activity cannot
+    # recreate a shell that profile enumeration mistakes for a live profile.
+    mark_named_profile_deleted(old_dir)
+    try:
+        old_dir.rename(new_dir)
+    except Exception:
+        clear_named_profile_deleted(old_dir)
+        raise
+    clear_named_profile_deleted(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity

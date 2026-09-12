@@ -94,7 +94,7 @@ When enabled, Hermes can:
 
 - prefetch relevant memory context before each turn
 - write each completed user/assistant turn to **one document per session per 4-hour window** (`customId` = `<session>_<date>_b<0-5>`, so the API appends deltas), like the Codex and OpenClaw plugins
-- retry failed turn writes on the next turn, session end, `/reset`, or shutdown
+- retry failed turn writes on the next turn, session end, `/reset`, or shutdown (at-least-once: if the API accepted a write but the response was lost, the same turn is appended again)
 - route every SDK and probe request through the configured hosted or self-hosted endpoint
 - expose explicit tools for search, store, forget, and profile access
 

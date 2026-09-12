@@ -741,6 +741,49 @@ class TestRenameProfile:
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
 
+    def test_multiplexed_rename_unroutes_old_name_before_move(self, profile_env):
+        from hermes_constants import named_profile_is_deleted
+
+        create_profile("oldname", no_alias=True)
+        old_dir = get_profile_dir("oldname")
+        new_dir = get_profile_dir("newname")
+        notifications = []
+
+        def notify(name):
+            notifications.append(name)
+            if name == "oldname":
+                assert old_dir.is_dir()
+                assert named_profile_is_deleted(old_dir)
+            else:
+                assert not old_dir.exists()
+                assert new_dir.is_dir()
+                assert not named_profile_is_deleted(new_dir)
+
+        with patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer", side_effect=notify), \
+             patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("oldname", "newname")
+
+        assert notifications == ["oldname", "newname"]
+        assert named_profile_is_deleted(old_dir)
+
+    def test_failed_multiplexed_rename_restores_old_route(self, profile_env):
+        from hermes_constants import named_profile_is_deleted
+
+        create_profile("oldname", no_alias=True)
+        old_dir = get_profile_dir("oldname")
+        notifications = []
+
+        with patch("hermes_cli.profiles._served_by_running_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer", side_effect=notifications.append), \
+             patch.object(Path, "rename", side_effect=OSError("busy")):
+            with pytest.raises(OSError, match="busy"):
+                rename_profile("oldname", "newname")
+
+        assert old_dir.is_dir()
+        assert not named_profile_is_deleted(old_dir)
+        assert notifications == ["oldname", "oldname"]
+
     def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
         tmp_path = profile_env
         create_profile("ssi_health", no_alias=True)

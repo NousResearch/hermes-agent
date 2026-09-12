@@ -1652,14 +1652,30 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise FileExistsError(f"Profile '{new_canon}' already exists.")
 
-    # 1. Stop gateway if running
+    # 1. Stop a dedicated gateway, or unroute this name from the live multiplexer before
+    # moving its home. Multiplexed profiles have no gateway.pid of their own; without the
+    # tombstone their still-live writers can recreate the old directory before reconcile.
+    multiplexed = _served_by_running_multiplexer(old_canon)
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
+    if multiplexed:
+        mark_named_profile_deleted(old_dir)
+        _notify_multiplexer(old_canon)
 
     # 2. Rename directory
-    old_dir.rename(new_dir)
+    try:
+        old_dir.rename(new_dir)
+    except Exception:
+        if multiplexed:
+            clear_named_profile_deleted(old_dir)
+            _notify_multiplexer(old_canon)
+        raise
+    clear_named_profile_deleted(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
+
+    if multiplexed:
+        _notify_multiplexer(new_canon)
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
     _migrate_honcho_profile_host(old_canon, new_canon, new_dir)

@@ -676,6 +676,8 @@ export const zh = defineLocale({
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       reasoningCollapsedTitle: '默认折叠推理过程',
       reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
+      trajectoryCollapsedTitle: '将执行轨迹折叠为摘要',
+      trajectoryCollapsedDesc: '最终回复开始后，将思考与工具步骤收成一行「已完成 N 步」。',
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
@@ -3930,6 +3932,8 @@ export const zh = defineLocale({
       thought: '已思考',
       thoughtBriefly: '思考了片刻',
       thoughtFor: duration => `思考了 ${duration}`,
+      completedSteps: count => `已完成 ${count} 步`,
+      completedStepsIn: (count, duration) => `已完成 ${count} 步，用时 ${duration}`,
       turnDuration: duration => `本轮耗时 ${duration}`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,

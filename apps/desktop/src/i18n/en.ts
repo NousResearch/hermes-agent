@@ -701,6 +701,9 @@ export const en: Translations = {
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
+      trajectoryCollapsedTitle: 'Collapse execution trajectory into summary',
+      trajectoryCollapsedDesc:
+        'Fold thoughts and tool steps into one "Completed N steps" line once the final reply starts.',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
@@ -3802,6 +3805,8 @@ export const en: Translations = {
       thought: 'Thought',
       thoughtBriefly: 'Thought briefly',
       thoughtFor: duration => `Thought for ${duration}`,
+      completedSteps: count => `Completed ${count} steps`,
+      completedStepsIn: (count, duration) => `Completed ${count} steps in ${duration}`,
       turnDuration: duration => `This turn took ${duration}`,
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,

@@ -471,6 +471,8 @@ export const zhHant = defineLocale({
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
       reasoningCollapsedTitle: '預設摺疊推理過程',
       reasoningCollapsedDesc: '保留串流推理內容，但在您開啟前維持摺疊。',
+      trajectoryCollapsedTitle: '將執行軌跡摺疊為摘要',
+      trajectoryCollapsedDesc: '最終回覆開始後，將思考與工具步驟收成一行「已完成 N 步」。',
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
@@ -3137,6 +3139,8 @@ export const zhHant = defineLocale({
       thought: '已思考',
       thoughtBriefly: '思考了片刻',
       thoughtFor: duration => `思考了 ${duration}`,
+      completedSteps: count => `已完成 ${count} 步`,
+      completedStepsIn: (count, duration) => `已完成 ${count} 步，用時 ${duration}`,
       turnDuration: duration => `本輪耗時 ${duration}`,
       today: time => `今天，${time}`,
       yesterday: time => `昨天，${time}`,

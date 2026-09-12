@@ -1684,14 +1684,31 @@ def _(rid, params: dict, session: dict) -> dict:
     model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
     project = _project_info_for_cwd(_display_session_cwd(session))
     title = (meta.get("title") or "").strip()
+    usage = _session_usage_snapshot(session)
     lines = [
         "Hermes TUI Status", "", f"Session ID: {key}", f"Path: {display_hermes_home()}",
         *([f"Project: {project['name']}"] if project else []), *([f"Title: {title}"] if title else []),
         f"Model: {model} ({provider})", f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
         f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
-        f"Tokens: {int(_session_usage_snapshot(session).get('total') or 0):,}",
+        f"Tokens: {int(usage.get('total') or 0):,}",
         f"Agent Running: {'Yes' if session.get('running') else 'No'}"]
-    return _ok(rid, {"output": "\n".join(lines)})
+    return _ok(rid, {
+        # Older clients still consume the English projection. Ink uses the
+        # structured values so its locale pack owns labels and grammar.
+        "output": "\n".join(lines),
+        "details": {
+            "session_id": str(key),
+            "path": display_hermes_home(),
+            "project": project["name"] if project else "",
+            "title": title,
+            "model": str(model),
+            "provider": str(provider),
+            "created": created.isoformat(),
+            "last_activity": updated.isoformat(),
+            "tokens": int(usage.get("total") or 0),
+            "agent_running": bool(session.get("running")),
+        },
+    })
 
 
 @_session_method("session.history")

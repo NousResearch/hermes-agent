@@ -1,17 +1,19 @@
+import { type Locale, translate } from '../i18n/index.js'
 import type { PanelSection } from '../types.js'
 
-export const SETUP_REQUIRED_TITLE = 'Setup Required'
+export const setupRequiredTitle = (locale: Locale = 'en') => translate(locale, 'setup.title')
+export const SETUP_REQUIRED_TITLE = setupRequiredTitle()
 
-export const buildSetupRequiredSections = (): PanelSection[] => [
+export const buildSetupRequiredSections = (locale: Locale = 'en'): PanelSection[] => [
   {
-    text: 'Hermes needs a model provider before the TUI can start a session.'
+    text: translate(locale, 'setup.body')
   },
   {
     rows: [
-      ['/model', 'configure provider + model in-place'],
-      ['/setup', 'run full first-time setup wizard in-place'],
-      ['Ctrl+C', 'exit and run `hermes setup` manually']
+      ['/model', translate(locale, 'setup.action.configureModel')],
+      ['/setup', translate(locale, 'setup.action.runWizard')],
+      ['Ctrl+C', translate(locale, 'setup.action.exitSetup')]
     ],
-    title: 'Actions'
+    title: translate(locale, 'setup.actions')
   }
 ]

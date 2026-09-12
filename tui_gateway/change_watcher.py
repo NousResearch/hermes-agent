@@ -25,6 +25,16 @@ def resolve_skin() -> dict:
         return {}
 
 
+def resolve_language() -> str:
+    """Resolve the session presentation locale without rebuilding agent state."""
+    try:
+        from agent.i18n import get_language
+
+        return get_language()
+    except Exception:
+        return "en"
+
+
 # (name, user-file mtime) of the last skin broadcast: ``skin.changed`` fires on a name
 # switch OR a live color edit of the active skin, and nothing else.
 _last_skin_sig: tuple[str, float | None] | None = None

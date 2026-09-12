@@ -1,5 +1,6 @@
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
+import { translate } from '../i18n/index.js'
 import type { Msg } from '../types.js'
 
 import { turnController } from './turnController.js'
@@ -53,9 +54,11 @@ export function submitPrompt(
   opts: { skipDetectDrop?: boolean } = {}
 ): void {
   const sid = getUiState().sid
+  const tr = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) =>
+    translate(getUiState().locale, key, vars)
 
   if (!sid) {
-    return deps.sys('session not ready yet')
+    return deps.sys(tr('submission.sessionNotReady'))
   }
 
   // Close the async-busy gap up front, before the detect_drop round-trip.
@@ -65,7 +68,7 @@ export function submitPrompt(
     const liveSid = getUiState().sid
 
     if (!liveSid) {
-      return deps.sys('session not ready yet')
+      return deps.sys(tr('submission.sessionNotReady'))
     }
 
     turnController.clearStatusTimer()
@@ -98,10 +101,14 @@ export function submitPrompt(
           deps.enqueue(submitText)
           patchUiState({ busy: true, status: 'queued for next turn' })
 
-          return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+          return deps.sys(
+            tr('submission.queued', {
+              text: `${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}`
+            })
+          )
         }
 
-        deps.sys(`error: ${e.message}`)
+        deps.sys(tr('errors.rpc', { message: e.message }))
         patchUiState({ busy: false, status: 'ready' })
       })
   }

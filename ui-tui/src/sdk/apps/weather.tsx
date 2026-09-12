@@ -2,6 +2,7 @@ import { Box, Text } from '@hermes/ink'
 
 import { ShimmerRows } from '../../components/loaders.js'
 import { Dialog } from '../../components/overlay.js'
+import { useI18n } from '../../i18n/index.js'
 import { mix } from '../../lib/color.js'
 import type { Theme } from '../../theme.js'
 import { updateWidget } from '../host.js'
@@ -107,8 +108,8 @@ async function fetchReport(location: string): Promise<Report> {
   }
 
   return {
-    area: [area?.areaName?.[0]?.value, area?.country?.[0]?.value].filter(Boolean).join(', ') || location || 'here',
-    condition: now.weatherDesc?.[0]?.value ?? 'unknown',
+    area: [area?.areaName?.[0]?.value, area?.country?.[0]?.value].filter(Boolean).join(', ') || location,
+    condition: now.weatherDesc?.[0]?.value ?? '',
     feelsC: now.FeelsLikeC ?? '?',
     humidity: now.humidity ?? '?',
     tempC: now.temp_C ?? '?',
@@ -131,8 +132,10 @@ function load(location: string): void {
 export const weatherApp = defineWidgetApp<WeatherState>({
   id: 'weather',
   help: 'current conditions with themed ASCII art (wttr.in)',
+  helpKey: 'widget.weather.help',
   mode: 'ambient',
   usage: USAGE,
+  usageKey: 'widget.weather.usage',
 
   init(arg) {
     const location = arg.trim()
@@ -159,26 +162,34 @@ export const weatherApp = defineWidgetApp<WeatherState>({
   // Ambient: renders IN the dock (host owns placement) — a compact card
   // that sits above the status bar while the composer stays live.
   render({ cols, state, t }) {
-    const { phase } = state
-    const title = phase.kind === 'ready' ? phase.report.area : 'Weather'
-
-    return (
-      <Dialog title={title} width={Math.min(42, cols - 4)}>
-        {phase.kind === 'loading' && (
-          <ShimmerRows
-            color={mix(t.color.muted, t.color.completionBg, 0.5)}
-            highlight={t.color.label}
-            rows={LOADING_ROWS}
-          />
-        )}
-        {phase.kind === 'error' && <Text color={t.color.error}>{phase.message}</Text>}
-        {phase.kind === 'ready' && <ReadyBody report={phase.report} t={t} />}
-      </Dialog>
-    )
+    return <WeatherCard cols={cols} state={state} t={t} />
   }
 })
 
+function WeatherCard({ cols, state, t }: { cols: number; state: WeatherState; t: Theme }) {
+  const { t: ti } = useI18n()
+  const { phase } = state
+  const title = phase.kind === 'ready' ? phase.report.area || ti('widget.weather.here') : ti('widget.weather.title')
+
+  return (
+    <Dialog title={title} width={Math.min(42, cols - 4)}>
+      {phase.kind === 'loading' && (
+        <ShimmerRows
+          color={mix(t.color.muted, t.color.completionBg, 0.5)}
+          highlight={t.color.label}
+          rows={LOADING_ROWS}
+        />
+      )}
+      {phase.kind === 'error' && (
+        <Text color={t.color.error}>{ti('widget.weather.error', { message: phase.message })}</Text>
+      )}
+      {phase.kind === 'ready' && <ReadyBody report={phase.report} t={t} />}
+    </Dialog>
+  )
+}
+
 function ReadyBody({ report, t }: { report: Report; t: Theme }) {
+  const { t: ti } = useI18n()
   const art = artFor(report.weatherCode)
 
   return (
@@ -191,12 +202,13 @@ function ReadyBody({ report, t }: { report: Report; t: Theme }) {
         ))}
       </Box>
       <Box flexDirection="column">
-        <Text color={t.color.label}>{report.condition}</Text>
+        <Text color={t.color.label}>{report.condition || ti('widget.weather.unknown')}</Text>
         <Text color={t.color.text}>
-          {report.tempC}°C <Text color={t.color.muted}>(feels {report.feelsC}°C)</Text>
+          {report.tempC}°C{' '}
+          <Text color={t.color.muted}>{ti('widget.weather.feels', { temperature: `${report.feelsC}°C` })}</Text>
         </Text>
-        <Text color={t.color.muted}>wind {report.windKmph} km/h</Text>
-        <Text color={t.color.muted}>humidity {report.humidity}%</Text>
+        <Text color={t.color.muted}>{ti('widget.weather.wind', { speed: `${report.windKmph} km/h` })}</Text>
+        <Text color={t.color.muted}>{ti('widget.weather.humidity', { percent: report.humidity })}</Text>
       </Box>
     </Box>
   )

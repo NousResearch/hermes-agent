@@ -55,6 +55,24 @@ describe('toTranscriptMessages', () => {
     ])
   })
 
+  it('projects auto_continue as a localized event', () => {
+    const rows = [{ role: 'user', text: '[System note: interrupted]', display_kind: 'auto_continue' }]
+
+    expect(toTranscriptMessages(rows, 'en')[0]).toMatchObject({
+      kind: 'event',
+      role: 'system',
+      text: 'resumed interrupted turn'
+    })
+    expect(toTranscriptMessages(rows, 'zh')[0]?.text).toBe('已恢复中断的轮次')
+  })
+
+  it('projects personality_switch as a localized event', () => {
+    const rows = [{ role: 'user', text: '[System: personality changed]', display_kind: 'personality_switch' }]
+
+    expect(toTranscriptMessages(rows, 'en')[0]?.text).toBe('personality changed')
+    expect(toTranscriptMessages(rows, 'zh')[0]?.text).toBe('个性已更换')
+  })
+
   it('projects async_delegation_complete with task_count metadata', () => {
     const rows = [
       { role: 'user', text: 'do work' },

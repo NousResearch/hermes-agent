@@ -1,12 +1,5 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useState,
-  useCallback,
-  useRef,
-} from "react";
-import { useNavigate } from "react-router";
+import { useEffect, useLayoutEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -30,182 +23,156 @@ import {
   Upload,
   Pencil,
   Check,
-  Archive,
-} from "lucide-react";
-import { api } from "@/lib/api";
-import { formatSessionPruneResult } from "@/lib/session-prune";
-import { shouldRefreshSessions } from "@/lib/session-refresh";
-import {
-  importSummary,
-  parseImportSessions,
-} from "@/lib/session-import";
-import type {
-  SessionInfo,
-  SessionMessage,
-  SessionSearchResult,
-  SessionStoreStats,
-  StatusResponse,
-} from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
-import { Markdown } from "@/components/Markdown";
-import { PlatformsCard } from "@/components/PlatformsCard";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
-import { Segmented } from "@nous-research/ui/ui/components/segmented";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
-import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
-import { Input } from "@nous-research/ui/ui/components/input";
+  Archive
+} from 'lucide-react'
+import { api } from '@/lib/api'
+import { formatSessionPruneResult } from '@/lib/session-prune'
+import { shouldRefreshSessions } from '@/lib/session-refresh'
+import { importSummary, parseImportSessions, SessionImportParseError } from '@/lib/session-import'
+import type { SessionInfo, SessionMessage, SessionSearchResult, SessionStoreStats, StatusResponse } from '@/lib/api'
+import { timeAgo } from '@/lib/utils'
+import { Markdown } from '@/components/Markdown'
+import { PlatformsCard } from '@/components/PlatformsCard'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { Checkbox } from '@nous-research/ui/ui/components/checkbox'
+import { ListItem } from '@nous-research/ui/ui/components/list-item'
+import { Segmented } from '@nous-research/ui/ui/components/segmented'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { Card, CardContent, CardHeader, CardTitle } from '@nous-research/ui/ui/components/card'
+import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog'
+import { useConfirmDelete } from '@nous-research/ui/hooks/use-confirm-delete'
+import { Input } from '@nous-research/ui/ui/components/input'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
-} from "@nous-research/ui/ui/components/dialog";
-import { useSystemActions } from "@/contexts/useSystemActions";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { useI18n } from "@/i18n";
-import { usePageHeader } from "@/contexts/usePageHeader";
-import { PluginSlot } from "@/plugins";
-import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+  DialogTitle
+} from '@nous-research/ui/ui/components/dialog'
+import { useSystemActions } from '@/contexts/useSystemActions'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { useI18n } from '@/i18n'
+import type { Translations } from '@/i18n'
+import { usePageHeader } from '@/contexts/usePageHeader'
+import { PluginSlot } from '@/plugins'
+import { isDashboardEmbeddedChatEnabled } from '@/lib/dashboard-flags'
 
-const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
-  {
-    cli: { icon: Terminal, color: "text-primary" },
-    tui: { icon: Terminal, color: "text-primary" },
-    telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-    discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
-    slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-    whatsapp: { icon: Globe, color: "text-success" },
-    whatsapp_cloud: { icon: Globe, color: "text-success" },
-    signal: { icon: MessageCircle, color: "text-success" },
-    matrix: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-    email: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-    sms: { icon: MessageCircle, color: "text-success" },
-    cron: { icon: Clock, color: "text-warning" },
-    tool: { icon: Play, color: "text-warning" },
-    api_server: { icon: Globe, color: "text-muted-foreground" },
-    acp: { icon: Database, color: "text-muted-foreground" },
-    hermes_flow: { icon: Play, color: "text-warning" },
-    vulcan_delegate: { icon: Play, color: "text-warning" },
-    webhook: { icon: Globe, color: "text-warning" },
-  };
+const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> = {
+  cli: { icon: Terminal, color: 'text-primary' },
+  tui: { icon: Terminal, color: 'text-primary' },
+  telegram: { icon: MessageCircle, color: 'text-[oklch(0.65_0.15_250)]' },
+  discord: { icon: Hash, color: 'text-[oklch(0.65_0.15_280)]' },
+  slack: { icon: MessageSquare, color: 'text-[oklch(0.7_0.15_155)]' },
+  whatsapp: { icon: Globe, color: 'text-success' },
+  whatsapp_cloud: { icon: Globe, color: 'text-success' },
+  signal: { icon: MessageCircle, color: 'text-success' },
+  matrix: { icon: MessageCircle, color: 'text-[oklch(0.65_0.15_250)]' },
+  email: { icon: MessageSquare, color: 'text-[oklch(0.7_0.15_155)]' },
+  sms: { icon: MessageCircle, color: 'text-success' },
+  cron: { icon: Clock, color: 'text-warning' },
+  tool: { icon: Play, color: 'text-warning' },
+  api_server: { icon: Globe, color: 'text-muted-foreground' },
+  acp: { icon: Database, color: 'text-muted-foreground' },
+  hermes_flow: { icon: Play, color: 'text-warning' },
+  vulcan_delegate: { icon: Play, color: 'text-warning' },
+  webhook: { icon: Globe, color: 'text-warning' }
+}
 
-const AUTOMATION_SESSION_SOURCES = [
-  "cron",
-  "tool",
-  "api_server",
-  "acp",
-  "hermes_flow",
-  "vulcan_delegate",
-  "webhook",
-];
-const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES);
-const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source__";
+const AUTOMATION_SESSION_SOURCES = ['cron', 'tool', 'api_server', 'acp', 'hermes_flow', 'vulcan_delegate', 'webhook']
+const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES)
+const NO_MATCHING_SESSION_SOURCE = '__hermes_dashboard_no_matching_source__'
 
-type SessionFilterCategory = "chats" | "automation" | "all";
-type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>;
+type SessionFilterCategory = 'chats' | 'automation' | 'all'
+type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>
 
 function isAutomationSource(source: string): boolean {
-  return AUTOMATION_SESSION_SOURCE_SET.has(source);
+  return AUTOMATION_SESSION_SOURCE_SET.has(source)
 }
 
-function sourceBelongsToCategory(
-  source: string,
-  category: SessionFilterCategory,
-): boolean {
-  if (category === "all") return true;
-  if (category === "automation") return isAutomationSource(source);
-  return !isAutomationSource(source);
+function sourceBelongsToCategory(source: string, category: SessionFilterCategory): boolean {
+  if (category === 'all') return true
+  if (category === 'automation') return isAutomationSource(source)
+  return !isAutomationSource(source)
 }
 
-function sourceLabel(source: string): string {
+function sourceLabel(source: string, translations: Translations['sessions']): string {
   switch (source) {
-    case "api_server":
-      return "API server";
-    case "acp":
-      return "ACP";
-    case "cli":
-      return "CLI";
-    case "tui":
-      return "TUI";
-    case "telegram":
-      return "Telegram";
-    case "discord":
-      return "Discord";
-    case "slack":
-      return "Slack";
-    case "whatsapp":
-      return "WhatsApp";
-    case "whatsapp_cloud":
-      return "WhatsApp Cloud";
-    case "sms":
-      return "SMS";
-    case "cron":
-      return "Cron";
-    case "tool":
-      return "Tool";
-    case "hermes_flow":
-      return "Hermes Flow";
-    case "vulcan_delegate":
-      return "Vulcan delegate";
-    case "webhook":
-      return "Webhook";
+    case 'api_server':
+      return translations.sourceApiServer
+    case 'acp':
+      return 'ACP'
+    case 'cli':
+      return 'CLI'
+    case 'tui':
+      return 'TUI'
+    case 'telegram':
+      return 'Telegram'
+    case 'discord':
+      return 'Discord'
+    case 'slack':
+      return 'Slack'
+    case 'whatsapp':
+      return 'WhatsApp'
+    case 'whatsapp_cloud':
+      return 'WhatsApp Cloud'
+    case 'sms':
+      return 'SMS'
+    case 'cron':
+      return translations.sourceCron
+    case 'tool':
+      return translations.sourceTool
+    case 'hermes_flow':
+      return translations.sourceHermesFlow
+    case 'vulcan_delegate':
+      return translations.sourceVulcanDelegate
+    case 'webhook':
+      return 'Webhook'
     default:
       return source
-        .split("_")
+        .split('_')
         .filter(Boolean)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" ");
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ')
   }
 }
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
 function SnippetHighlight({ snippet }: { snippet: string }) {
-  const parts: React.ReactNode[] = [];
-  const regex = />>>(.*?)<<</g;
-  let last = 0;
-  let match: RegExpExecArray | null;
-  let i = 0;
+  const parts: React.ReactNode[] = []
+  const regex = />>>(.*?)<<</g
+  let last = 0
+  let match: RegExpExecArray | null
+  let i = 0
   while ((match = regex.exec(snippet)) !== null) {
     if (match.index > last) {
-      parts.push(snippet.slice(last, match.index));
+      parts.push(snippet.slice(last, match.index))
     }
     parts.push(
       <mark key={i++} className="bg-warning/30 text-warning px-0.5">
         {match[1]}
-      </mark>,
-    );
-    last = regex.lastIndex;
+      </mark>
+    )
+    last = regex.lastIndex
   }
   if (last < snippet.length) {
-    parts.push(snippet.slice(last));
+    parts.push(snippet.slice(last))
   }
   return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">
-      {parts}
-    </p>
-  );
+    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">{parts}</p>
+  )
 }
 
-function ToolCallBlock({
-  toolCall,
-}: {
-  toolCall: { id: string; function: { name: string; arguments: string } };
-}) {
-  const [open, setOpen] = useState(false);
-  const { t } = useI18n();
+function ToolCallBlock({ toolCall }: { toolCall: { id: string; function: { name: string; arguments: string } } }) {
+  const [open, setOpen] = useState(false)
+  const { format, t } = useI18n()
 
-  let args = toolCall.function.arguments;
+  let args = toolCall.function.arguments
   try {
-    args = JSON.stringify(JSON.parse(args), null, 2);
+    args = JSON.stringify(JSON.parse(args), null, 2)
   } catch {
     // keep as-is
   }
@@ -214,18 +181,15 @@ function ToolCallBlock({
     <div className="mt-2 border border-warning/20 bg-warning/5">
       <ListItem
         onClick={() => setOpen(!open)}
-        aria-label={`${open ? t.common.collapse : t.common.expand} tool call ${toolCall.function.name}`}
+        aria-label={format(t.sessions.toolCallAria, {
+          action: open ? t.common.collapse : t.common.expand,
+          name: toolCall.function.name
+        })}
         aria-expanded={open}
         className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
       >
-        {open ? (
-          <ChevronDown className="h-3 w-3" />
-        ) : (
-          <ChevronRight className="h-3 w-3" />
-        )}
-        <span className="font-mono-ui font-medium">
-          {toolCall.function.name}
-        </span>
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <span className="font-mono-ui font-medium">{toolCall.function.name}</span>
         <span className="text-warning/50 ml-auto">{toolCall.id}</span>
       </ListItem>
       {open && (
@@ -234,7 +198,7 @@ function ToolCallBlock({
         </pre>
       )}
     </div>
-  );
+  )
 }
 
 // Context-compaction handoff blocks are persisted as ``role="user"`` or
@@ -251,10 +215,10 @@ function ToolCallBlock({
 // ``SUMMARY_PREFIX`` / ``LEGACY_SUMMARY_PREFIX`` and the
 // merge-into-tail marker in ``agent/context_compressor.py``.
 const COMPACTION_PREFIXES = [
-  "[CONTEXT COMPACTION — REFERENCE ONLY]",
-  "[CONTEXT COMPACTION - REFERENCE ONLY]",
-  "[CONTEXT SUMMARY]:",
-] as const;
+  '[CONTEXT COMPACTION — REFERENCE ONLY]',
+  '[CONTEXT COMPACTION - REFERENCE ONLY]',
+  '[CONTEXT SUMMARY]:'
+] as const
 
 // Marker the compressor inserts between a merged summary and the
 // original tail message content. When the summary role would collide
@@ -265,74 +229,61 @@ const COMPACTION_PREFIXES = [
 // assistant reply as its own readable bubble — otherwise the merged
 // row reads as a single opaque "Context compaction" block and the
 // user can't see the reply (#29824).
-const COMPACTION_END_MARKER =
-  "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
+const COMPACTION_END_MARKER = '--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---'
 
 interface CompactionSplit {
   /** Summary text (header + body, without the end marker). */
-  summary: string;
+  summary: string
   /** Original message content that came after the end marker. */
-  remainder: string;
+  remainder: string
 }
 
 function splitCompactionContent(content: string): CompactionSplit | null {
-  const head = content.trimStart();
-  if (!COMPACTION_PREFIXES.some((p) => head.startsWith(p))) return null;
-  const markerIdx = content.indexOf(COMPACTION_END_MARKER);
+  const head = content.trimStart()
+  if (!COMPACTION_PREFIXES.some(p => head.startsWith(p))) return null
+  const markerIdx = content.indexOf(COMPACTION_END_MARKER)
   if (markerIdx < 0) {
-    return { summary: content, remainder: "" };
+    return { summary: content, remainder: '' }
   }
   return {
     summary: content.slice(0, markerIdx),
-    remainder: content
-      .slice(markerIdx + COMPACTION_END_MARKER.length)
-      .replace(/^\s+/, ""),
-  };
+    remainder: content.slice(markerIdx + COMPACTION_END_MARKER.length).replace(/^\s+/, '')
+  }
 }
 
+function MessageBubble({ msg, highlight }: { msg: SessionMessage; highlight?: string }) {
+  const { locale, t } = useI18n()
 
-function MessageBubble({
-  msg,
-  highlight,
-}: {
-  msg: SessionMessage;
-  highlight?: string;
-}) {
-  const { t } = useI18n();
-
-  const ROLE_STYLES: Record<
-    string,
-    { bg: string; text: string; label: string }
-  > = {
+  const ROLE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
     user: {
-      bg: "bg-primary/10",
-      text: "text-primary",
-      label: t.sessions.roles.user,
+      bg: 'bg-primary/10',
+      text: 'text-primary',
+      label: t.sessions.roles.user
     },
     assistant: {
-      bg: "bg-success/10",
-      text: "text-success",
-      label: t.sessions.roles.assistant,
+      bg: 'bg-success/10',
+      text: 'text-success',
+      label: t.sessions.roles.assistant
     },
     system: {
-      bg: "bg-muted",
-      text: "text-muted-foreground",
-      label: t.sessions.roles.system,
+      bg: 'bg-muted',
+      text: 'text-muted-foreground',
+      label: t.sessions.roles.system
     },
     tool: {
-      bg: "bg-warning/10",
-      text: "text-warning",
-      label: t.sessions.roles.tool,
+      bg: 'bg-warning/10',
+      text: 'text-warning',
+      label: t.sessions.roles.tool
     },
     // Compaction handoffs render as faded system-style metadata with a
     // distinctive label so they can't be mistaken for real assistant
     // replies during a scroll-back review (#29824).
     compaction: {
-      bg: "bg-muted/50",
-      text: "text-muted-foreground italic",
-      label: "Context handoff",
-    },
-  };
+      bg: 'bg-muted/50',
+      text: 'text-muted-foreground italic',
+      label: t.sessions.roles.compaction
+    }
+  }
 
   // When a compaction handoff is merged into the front of the first
   // tail message (the compressor's double-collision path —
@@ -341,22 +292,16 @@ function MessageBubble({
   // + <original assistant reply>``. We split it back into two visual
   // rows here so the operator's actual answer survives as a readable
   // bubble next to the (clearly-labelled) handoff metadata (#29824).
-  const compactionSplit =
-    typeof msg.content === "string"
-      ? splitCompactionContent(msg.content)
-      : null;
+  const compactionSplit = typeof msg.content === 'string' ? splitCompactionContent(msg.content) : null
 
   if (compactionSplit && compactionSplit.remainder) {
     return (
       <>
-        <MessageBubble
-          msg={{ ...msg, content: compactionSplit.summary }}
-          highlight={highlight}
-        />
+        <MessageBubble msg={{ ...msg, content: compactionSplit.summary }} highlight={highlight} />
         <MessageBubble
           msg={{
             ...msg,
-            content: compactionSplit.remainder,
+            content: compactionSplit.remainder
             // The remainder is the original assistant reply that the
             // compressor pre-pended the summary to — render with the
             // normal assistant styling, NOT the muted handoff style.
@@ -366,36 +311,30 @@ function MessageBubble({
           highlight={highlight}
         />
       </>
-    );
+    )
   }
 
-  const isCompaction = compactionSplit !== null;
-  const style = isCompaction
-    ? ROLE_STYLES.compaction
-    : ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
+  const isCompaction = compactionSplit !== null
+  const style = isCompaction ? ROLE_STYLES.compaction : (ROLE_STYLES[msg.role] ?? ROLE_STYLES.system)
   const label = isCompaction
     ? ROLE_STYLES.compaction.label
     : msg.tool_name
       ? `${t.sessions.roles.tool}: ${msg.tool_name}`
-      : style.label;
+      : style.label
 
   // Check if any search term appears as a prefix of any word in content
   const isHit = (() => {
-    if (!highlight || !msg.content) return false;
-    const content = msg.content.toLowerCase();
-    const terms = highlight.toLowerCase().split(/\s+/).filter(Boolean);
-    return terms.some((term) => content.includes(term));
-  })();
+    if (!highlight || !msg.content) return false
+    const content = msg.content.toLowerCase()
+    const terms = highlight.toLowerCase().split(/\s+/).filter(Boolean)
+    return terms.some(term => content.includes(term))
+  })()
 
   // Split search query into terms for inline highlighting
-  const highlightTerms =
-    isHit && highlight ? highlight.split(/\s+/).filter(Boolean) : undefined;
+  const highlightTerms = isHit && highlight ? highlight.split(/\s+/).filter(Boolean) : undefined
 
   return (
-    <div
-      className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
-      data-search-hit={isHit || undefined}
-    >
+    <div className={`${style.bg} p-3 ${isHit ? 'ring-1 ring-warning/40' : ''}`} data-search-hit={isHit || undefined}>
       <div className="flex items-center gap-2 mb-1">
         <span className={`text-xs font-semibold ${style.text}`}>{label}</span>
         {isHit && (
@@ -403,63 +342,48 @@ function MessageBubble({
             {t.common.match}
           </Badge>
         )}
-        {msg.timestamp && (
-          <span className="text-xs text-text-tertiary">
-            {timeAgo(msg.timestamp)}
-          </span>
-        )}
+        {msg.timestamp && <span className="text-xs text-text-tertiary">{timeAgo(msg.timestamp, locale)}</span>}
       </div>
       {msg.content &&
-        (msg.role === "system" ? (
-          <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-            {msg.content}
-          </div>
+        (msg.role === 'system' ? (
+          <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{msg.content}</div>
         ) : (
           <Markdown content={msg.content} highlightTerms={highlightTerms} />
         ))}
       {msg.tool_calls && msg.tool_calls.length > 0 && (
         <div className="mt-1">
-          {msg.tool_calls.map((tc) => (
+          {msg.tool_calls.map(tc => (
             <ToolCallBlock key={tc.id} toolCall={tc} />
           ))}
         </div>
       )}
     </div>
-  );
+  )
 }
 
 /** Message list with auto-scroll to first search hit. */
-function MessageList({
-  messages,
-  highlight,
-}: {
-  messages: SessionMessage[];
-  highlight?: string;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
+function MessageList({ messages, highlight }: { messages: SessionMessage[]; highlight?: string }) {
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!highlight || !containerRef.current) return;
+    if (!highlight || !containerRef.current) return
     // Scroll to first hit after render
     const timer = setTimeout(() => {
-      const hit = containerRef.current?.querySelector("[data-search-hit]");
+      const hit = containerRef.current?.querySelector('[data-search-hit]')
       if (hit) {
-        hit.scrollIntoView({ behavior: "smooth", block: "center" });
+        hit.scrollIntoView({ behavior: 'smooth', block: 'center' })
       }
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [messages, highlight]);
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [messages, highlight])
 
   return (
-    <div
-      ref={containerRef}
-      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
-    >
+    <div ref={containerRef} className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2">
       {messages.map((msg, i) => (
         <MessageBubble key={i} msg={msg} highlight={highlight} />
       ))}
     </div>
-  );
+  )
 }
 
 function SessionRow({
@@ -473,59 +397,59 @@ function SessionRow({
   onDelete,
   onRename,
   onExport,
-  resumeInChatEnabled,
+  resumeInChatEnabled
 }: SessionRowProps) {
-  const [messages, setMessages] = useState<SessionMessage[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(session.title ?? "");
-  const [renameSaving, setRenameSaving] = useState(false);
-  const { t } = useI18n();
-  const navigate = useNavigate();
+  const [messages, setMessages] = useState<SessionMessage[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState(false)
+  const [renameValue, setRenameValue] = useState(session.title ?? '')
+  const [renameSaving, setRenameSaving] = useState(false)
+  const { locale, t } = useI18n()
+  const navigate = useNavigate()
 
   useEffect(() => {
-    if (!isExpanded || messages !== null) return;
-    let cancelled = false;
+    if (!isExpanded || messages !== null) return
+    let cancelled = false
     api
       .getSessionMessages(session.id, session.profile)
-      .then((resp) => {
-        if (!cancelled) setMessages(resp.messages);
+      .then(resp => {
+        if (!cancelled) setMessages(resp.messages)
       })
-      .catch((err) => {
-        if (!cancelled) setError(String(err));
-      });
+      .catch(err => {
+        if (!cancelled) setError(String(err))
+      })
     return () => {
-      cancelled = true;
-    };
-  }, [isExpanded, session.id, session.profile, messages]);
+      cancelled = true
+    }
+  }, [isExpanded, session.id, session.profile, messages])
 
-  const sourceKey = session.source?.split(":")[0];
+  const sourceKey = session.source?.split(':')[0]
   const sourceInfo = (session.source
-    ? SOURCE_CONFIG[session.source] ?? (sourceKey ? SOURCE_CONFIG[sourceKey] : null)
-    : null) ?? { icon: Globe, color: "text-muted-foreground" };
-  const SourceIcon = sourceInfo.icon;
-  const hasTitle = session.title && session.title !== "Untitled";
+    ? (SOURCE_CONFIG[session.source] ?? (sourceKey ? SOURCE_CONFIG[sourceKey] : null))
+    : null) ?? { icon: Globe, color: 'text-muted-foreground' }
+  const SourceIcon = sourceInfo.icon
+  const hasTitle = session.title && session.title !== 'Untitled'
 
   const submitRename = async () => {
-    const value = renameValue.trim();
+    const value = renameValue.trim()
     if (!value || value === session.title) {
-      setRenaming(false);
-      return;
+      setRenaming(false)
+      return
     }
-    setRenameSaving(true);
+    setRenameSaving(true)
     try {
-      await onRename(session.id, value);
-      setRenaming(false);
+      await onRename(session.id, value)
+      setRenaming(false)
     } finally {
-      setRenameSaving(false);
+      setRenameSaving(false)
     }
-  };
+  }
 
   const actionButtons = (
     <>
       <Badge tone="outline" className="text-xs">
         <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
-        {session.source ? sourceLabel(session.source) : "local"}
+        {session.source ? sourceLabel(session.source, t.sessions) : t.sessions.sourceLocal}
       </Badge>
 
       {resumeInChatEnabled && (
@@ -535,9 +459,9 @@ function SessionRow({
           className="text-muted-foreground hover:text-success"
           aria-label={t.sessions.resumeInChat}
           title={t.sessions.resumeInChat}
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+          onClick={e => {
+            e.stopPropagation()
+            navigate(`/chat?resume=${encodeURIComponent(session.id)}`)
           }}
         >
           <Play />
@@ -548,16 +472,12 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
-        onClick={(e) => {
-          e.stopPropagation();
-          setRenameValue(
-            session.title && session.title !== "Untitled"
-              ? session.title
-              : "",
-          );
-          setRenaming(true);
+        aria-label={t.sessions.rename}
+        title={t.sessions.rename}
+        onClick={e => {
+          e.stopPropagation()
+          setRenameValue(session.title && session.title !== 'Untitled' ? session.title : '')
+          setRenaming(true)
         }}
       >
         <Pencil />
@@ -567,11 +487,11 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
-        onClick={(e) => {
-          e.stopPropagation();
-          onExport(session.id);
+        aria-label={t.sessions.export}
+        title={t.sessions.exportJson}
+        onClick={e => {
+          e.stopPropagation()
+          onExport(session.id)
         }}
       >
         <Download />
@@ -582,25 +502,25 @@ function SessionRow({
         destructive
         size="icon"
         aria-label={t.sessions.deleteSession}
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
+        onClick={e => {
+          e.stopPropagation()
+          onDelete()
         }}
       >
         <Trash2 />
       </Button>
     </>
-  );
+  )
 
   // Selected rows get a stronger left-edge accent + tinted background so the
   // selection state is unambiguous even when scrolling past the bulk-action
   // bar at the top. Beat the is_active styling — explicit user selection
   // takes priority over "this session is live".
   const containerClasses = isSelected
-    ? "border-primary/40 bg-primary/[0.06]"
+    ? 'border-primary/40 bg-primary/[0.06]'
     : session.is_active
-      ? "border-success/30 bg-success/[0.03]"
-      : "border-border";
+      ? 'border-success/30 bg-success/[0.03]'
+      : 'border-border'
 
   // Clicking the checkbox must NOT toggle row expansion; selection and
   // expansion are independent gestures. We bind ``onClick`` directly on
@@ -611,24 +531,18 @@ function SessionRow({
   // synthesises a click on <button> for Space, so one handler covers
   // mouse + keyboard cleanly.
   const handleSelectClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onSelectClick(e);
-  };
+    e.stopPropagation()
+    onSelectClick(e)
+  }
 
   return (
-    <div
-      className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}
-    >
+    <div className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}>
       <div
         className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
         onClick={onToggle}
       >
         <span className="flex shrink-0 items-center pt-0.5">
-          <Checkbox
-            checked={isSelected}
-            onClick={handleSelectClick}
-            aria-label={t.sessions.selectSession}
-          />
+          <Checkbox checked={isSelected} onClick={handleSelectClick} aria-label={t.sessions.selectSession} />
         </span>
         <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
           <SourceIcon className="h-4 w-4" />
@@ -638,19 +552,16 @@ function SessionRow({
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <div className="flex min-w-0 items-center gap-2">
                 {renaming ? (
-                  <div
-                    className="flex min-w-0 flex-1 items-center gap-1.5"
-                    onClick={(e) => e.stopPropagation()}
-                  >
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5" onClick={e => e.stopPropagation()}>
                     <Input
                       autoFocus
                       value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void submitRename();
-                        else if (e.key === "Escape") setRenaming(false);
+                      onChange={e => setRenameValue(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') void submitRename()
+                        else if (e.key === 'Escape') setRenaming(false)
                       }}
-                      placeholder="Session title"
+                      placeholder={t.sessions.titlePlaceholder}
                       className="h-7 min-w-0 flex-1 py-0 text-sm"
                       disabled={renameSaving}
                     />
@@ -658,23 +569,19 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-success"
-                      aria-label="Save title"
-                      title="Save title"
+                      aria-label={t.sessions.saveTitle}
+                      title={t.sessions.saveTitle}
                       disabled={renameSaving}
                       onClick={() => void submitRename()}
                     >
-                      {renameSaving ? (
-                        <Spinner className="text-sm" />
-                      ) : (
-                        <Check />
-                      )}
+                      {renameSaving ? <Spinner className="text-sm" /> : <Check />}
                     </Button>
                     <Button
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-foreground"
-                      aria-label="Cancel rename"
-                      title="Cancel rename"
+                      aria-label={t.sessions.cancelRename}
+                      title={t.sessions.cancelRename}
                       disabled={renameSaving}
                       onClick={() => setRenaming(false)}
                     >
@@ -683,7 +590,7 @@ function SessionRow({
                   </div>
                 ) : (
                   <span
-                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? 'font-medium' : 'text-muted-foreground italic'}`}
                   >
                     {hasTitle
                       ? session.title
@@ -703,7 +610,7 @@ function SessionRow({
                 {session.model && (
                   <>
                     <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
-                      {session.model.split("/").pop()}
+                      {session.model.split('/').pop()}
                     </span>
                     <span className="text-border">&#183;</span>
                   </>
@@ -720,19 +627,15 @@ function SessionRow({
                   </>
                 )}
                 <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active)}</span>
+                <span className="shrink-0">{timeAgo(session.last_active, locale)}</span>
               </div>
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
 
-            <div className="hidden shrink-0 items-center gap-2 sm:flex">
-              {actionButtons}
-            </div>
+            <div className="hidden shrink-0 items-center gap-2 sm:flex">{actionButtons}</div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 sm:hidden">
-            {actionButtons}
-          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:hidden">{actionButtons}</div>
         </div>
       </div>
 
@@ -743,45 +646,32 @@ function SessionRow({
               <Spinner className="text-xl text-primary" />
             </div>
           )}
-          {error && (
-            <p className="text-sm text-destructive py-4 text-center">{error}</p>
-          )}
+          {error && <p className="text-sm text-destructive py-4 text-center">{error}</p>}
           {messages && messages.length === 0 && (
-            <p className="text-sm text-muted-foreground py-4 text-center">
-              {t.sessions.noMessages}
-            </p>
+            <p className="text-sm text-muted-foreground py-4 text-center">{t.sessions.noMessages}</p>
           )}
-          {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
-          )}
+          {messages && messages.length > 0 && <MessageList messages={messages} highlight={searchQuery} />}
         </div>
       )}
     </div>
-  );
+  )
 }
 
-type SessionsView = "list" | "overview";
+type SessionsView = 'list' | 'overview'
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 20
 
-function SessionsPagination({
-  className,
-  compact = false,
-  onPageChange,
-  page,
-  total,
-}: SessionsPaginationProps) {
-  const { t } = useI18n();
-  const pageCount = Math.ceil(total / PAGE_SIZE);
+function SessionsPagination({ className, compact = false, onPageChange, page, total }: SessionsPaginationProps) {
+  const { t } = useI18n()
+  const pageCount = Math.ceil(total / PAGE_SIZE)
 
   return (
     <div
-      className={`flex items-center ${compact ? "gap-1" : "justify-between pt-2"}${className ? ` ${className}` : ""}`}
+      className={`flex items-center ${compact ? 'gap-1' : 'justify-between pt-2'}${className ? ` ${className}` : ''}`}
     >
       {!compact && (
         <span className="text-xs text-muted-foreground">
-          {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}{" "}
-          {t.common.of} {total}
+          {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} {t.common.of} {total}
         </span>
       )}
 
@@ -809,37 +699,33 @@ function SessionsPagination({
         </Button>
       </div>
     </div>
-  );
+  )
 }
 
 export default function SessionsPage() {
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [searchResults, setSearchResults] = useState<
-    SessionSearchResult[] | null
-  >(null);
-  const [searching, setSearching] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
-  const importInputRef = useRef<HTMLInputElement | null>(null);
-  const logScrollRef = useRef<HTMLPreElement | null>(null);
-  const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
-  const [view, setView] = useState<SessionsView>("overview");
-  const [sessionCategory, setSessionCategory] =
-    useState<SessionFilterCategory>("chats");
-  const [sourceSelectionsByCategory, setSourceSelectionsByCategory] =
-    useState<SourceSelectionsByCategory>({
-      chats: null,
-      automation: null,
-      all: null,
-    });
-  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
-  const sourceMenuRef = useRef<HTMLDivElement | null>(null);
-  const sessionsRequestRef = useRef(0);
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null)
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+  const logScrollRef = useRef<HTMLPreElement | null>(null)
+  const [status, setStatus] = useState<StatusResponse | null>(null)
+  const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([])
+  const [view, setView] = useState<SessionsView>('overview')
+  const [sessionCategory, setSessionCategory] = useState<SessionFilterCategory>('chats')
+  const [sourceSelectionsByCategory, setSourceSelectionsByCategory] = useState<SourceSelectionsByCategory>({
+    chats: null,
+    automation: null,
+    all: null
+  })
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
+  const sourceMenuRef = useRef<HTMLDivElement | null>(null)
+  const sessionsRequestRef = useRef(0)
   // Count of empty (no-message, ended, non-archived) sessions across the
   // entire DB, populated by /api/sessions/empty/count. Used to:
   //   • hide the "Delete empty" button when there's nothing to clean up
@@ -848,300 +734,280 @@ export default function SessionsPage() {
   // Refreshed on mount, after single-session deletes, and after the bulk
   // delete itself — none of those code paths can update the global empty
   // count from local state alone (per-page list != global DB count).
-  const [emptyCount, setEmptyCount] = useState(0);
-  const [deleteEmptyOpen, setDeleteEmptyOpen] = useState(false);
-  const [deletingEmpty, setDeletingEmpty] = useState(false);
+  const [emptyCount, setEmptyCount] = useState(0)
+  const [deleteEmptyOpen, setDeleteEmptyOpen] = useState(false)
+  const [deletingEmpty, setDeletingEmpty] = useState(false)
   // Bulk-select-then-delete state. ``selectedIds`` is a Set so per-row
   // checkbox toggles and ``has()`` lookups are O(1); we wrap mutations
   // in a fresh Set so React notices the change (mutating in place
   // wouldn't trigger a re-render).
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   // Index of the last row whose checkbox was clicked WITHOUT shift,
   // resolved against the currently visible (post-search) ``filtered``
   // list. Used as the anchor for shift-click range select — matches the
   // Gmail / Notion / file-explorer convention. ``null`` means "no
   // anchor yet", in which case shift-click degrades to a plain toggle.
-  const lastClickedIndexRef = useRef<number | null>(null);
-  const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
-  const [deletingSelected, setDeletingSelected] = useState(false);
-  const [stats, setStats] = useState<SessionStoreStats | null>(null);
-  const [pruneOpen, setPruneOpen] = useState(false);
-  const [pruneDays, setPruneDays] = useState("90");
-  const [pruning, setPruning] = useState(false);
-  const [importingSessions, setImportingSessions] = useState(false);
-  const { toast, showToast } = useToast();
-  const { t } = useI18n();
-  const { setAfterTitle, setEnd } = usePageHeader();
-  const { activeAction, actionStatus, dismissLog } = useSystemActions();
-  const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
-  const selectedSources = sourceSelectionsByCategory[sessionCategory];
+  const lastClickedIndexRef = useRef<number | null>(null)
+  const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false)
+  const [deletingSelected, setDeletingSelected] = useState(false)
+  const [stats, setStats] = useState<SessionStoreStats | null>(null)
+  const [pruneOpen, setPruneOpen] = useState(false)
+  const [pruneDays, setPruneDays] = useState('90')
+  const [pruning, setPruning] = useState(false)
+  const [importingSessions, setImportingSessions] = useState(false)
+  const { toast, showToast } = useToast()
+  const { format, locale, t } = useI18n()
+  const { setAfterTitle, setEnd } = usePageHeader()
+  const { activeAction, actionStatus, dismissLog } = useSystemActions()
+  const resumeInChatEnabled = isDashboardEmbeddedChatEnabled()
+  const selectedSources = sourceSelectionsByCategory[sessionCategory]
 
   const pinnedSourceSelections = useMemo(
-    () =>
-      Object.values(sourceSelectionsByCategory).flatMap(
-        (selection) => selection ?? [],
-      ),
-    [sourceSelectionsByCategory],
-  );
+    () => Object.values(sourceSelectionsByCategory).flatMap(selection => selection ?? []),
+    [sourceSelectionsByCategory]
+  )
 
   const allSourceOptions = useMemo(() => {
     const entries = Object.entries(stats?.by_source ?? {}).sort(
       ([aSource, aCount], [bSource, bCount]) =>
-        bCount - aCount || sourceLabel(aSource).localeCompare(sourceLabel(bSource)),
-    );
-    const seen = new Set(entries.map(([source]) => source));
+        bCount - aCount || sourceLabel(aSource, t.sessions).localeCompare(sourceLabel(bSource, t.sessions))
+    )
+    const seen = new Set(entries.map(([source]) => source))
     for (const source of pinnedSourceSelections) {
       if (!seen.has(source)) {
-        entries.unshift([source, 0]);
-        seen.add(source);
+        entries.unshift([source, 0])
+        seen.add(source)
       }
     }
-    return entries;
-  }, [pinnedSourceSelections, stats]);
+    return entries
+  }, [pinnedSourceSelections, stats, t.sessions])
 
-  const allSourceNames = useMemo(
-    () => allSourceOptions.map(([source]) => source),
-    [allSourceOptions],
-  );
+  const allSourceNames = useMemo(() => allSourceOptions.map(([source]) => source), [allSourceOptions])
 
   const sessionQueryOptions = useMemo(() => {
     if (selectedSources !== null) {
       if (selectedSources.length === 0) {
-        return allSourceNames.length > 0
-          ? { excludeSources: allSourceNames }
-          : { source: NO_MATCHING_SESSION_SOURCE };
+        return allSourceNames.length > 0 ? { excludeSources: allSourceNames } : { source: NO_MATCHING_SESSION_SOURCE }
       }
       if (selectedSources.length === 1) {
-        return { source: selectedSources[0] };
+        return { source: selectedSources[0] }
       }
-      const selected = new Set(selectedSources);
-      const excludedSources = allSourceNames.filter(
-        (source) => !selected.has(source),
-      );
-      return excludedSources.length > 0 ? { excludeSources: excludedSources } : {};
+      const selected = new Set(selectedSources)
+      const excludedSources = allSourceNames.filter(source => !selected.has(source))
+      return excludedSources.length > 0 ? { excludeSources: excludedSources } : {}
     }
-    if (sessionCategory === "chats") {
-      return { excludeSources: AUTOMATION_SESSION_SOURCES };
+    if (sessionCategory === 'chats') {
+      return { excludeSources: AUTOMATION_SESSION_SOURCES }
     }
-    if (sessionCategory === "automation") {
-      const excludedSources = allSourceNames.filter(
-        (source) => !isAutomationSource(source),
-      );
-      return excludedSources.length > 0
-        ? { excludeSources: excludedSources }
-        : { sources: AUTOMATION_SESSION_SOURCES };
+    if (sessionCategory === 'automation') {
+      const excludedSources = allSourceNames.filter(source => !isAutomationSource(source))
+      return excludedSources.length > 0 ? { excludeSources: excludedSources } : { sources: AUTOMATION_SESSION_SOURCES }
     }
-    return {};
-  }, [selectedSources, sessionCategory, allSourceNames]);
+    return {}
+  }, [selectedSources, sessionCategory, allSourceNames])
 
   const categoryDefaultSources = useMemo(() => {
-    return allSourceNames.filter((source) =>
-      sourceBelongsToCategory(source, sessionCategory),
-    );
-  }, [sessionCategory, allSourceNames]);
+    return allSourceNames.filter(source => sourceBelongsToCategory(source, sessionCategory))
+  }, [sessionCategory, allSourceNames])
 
   const sourceOptions = useMemo(() => {
-    const selected = new Set(selectedSources ?? []);
+    const selected = new Set(selectedSources ?? [])
     return allSourceOptions.filter(
-      ([source]) =>
-        sourceBelongsToCategory(source, sessionCategory) || selected.has(source),
-    );
-  }, [allSourceOptions, selectedSources, sessionCategory]);
+      ([source]) => sourceBelongsToCategory(source, sessionCategory) || selected.has(source)
+    )
+  }, [allSourceOptions, selectedSources, sessionCategory])
 
-  const effectiveSelectedSources = selectedSources ?? categoryDefaultSources;
+  const effectiveSelectedSources = selectedSources ?? categoryDefaultSources
 
-  const selectedSourceSet = useMemo(
-    () => new Set(effectiveSelectedSources),
-    [effectiveSelectedSources],
-  );
+  const selectedSourceSet = useMemo(() => new Set(effectiveSelectedSources), [effectiveSelectedSources])
 
   const defaultSourceFilterLabel = useMemo(() => {
-    if (sessionCategory === "chats") return "Any chat source";
-    if (sessionCategory === "automation") return "Any automation source";
-    return t.sessions.anySource;
-  }, [sessionCategory, t.sessions.anySource]);
+    if (sessionCategory === 'chats') return t.sessions.anyChatSource
+    if (sessionCategory === 'automation') return t.sessions.anyAutomationSource
+    return t.sessions.anySource
+  }, [sessionCategory, t.sessions])
 
   const sourceMenuTitle = useMemo(() => {
-    if (sessionCategory === "chats") return "Chat sources";
-    if (sessionCategory === "automation") return "Automation sources";
-    return t.sessions.sourceFilter;
-  }, [sessionCategory, t.sessions.sourceFilter]);
+    if (sessionCategory === 'chats') return t.sessions.chatSources
+    if (sessionCategory === 'automation') return t.sessions.automationSources
+    return t.sessions.sourceFilter
+  }, [sessionCategory, t.sessions])
 
   const sourceFilterLabel = useMemo(() => {
     if (selectedSources === null) {
-      return defaultSourceFilterLabel;
+      return defaultSourceFilterLabel
     }
     if (selectedSources.length === 0) {
-      return "No sources";
+      return t.sessions.noSources
     }
     if (selectedSources.length === 1) {
-      return sourceLabel(selectedSources[0]);
+      return sourceLabel(selectedSources[0], t.sessions)
     }
-    return `${selectedSources.length} sources`;
-  }, [defaultSourceFilterLabel, selectedSources]);
+    return format(t.sessions.sourceCount, { count: selectedSources.length })
+  }, [defaultSourceFilterLabel, format, selectedSources, t.sessions])
 
   const refreshEmptyCount = useCallback(() => {
     api
       .getEmptySessionsCount()
-      .then((r) => setEmptyCount(r.count))
-      .catch(() => {});
-  }, []);
+      .then(r => setEmptyCount(r.count))
+      .catch(() => {})
+  }, [])
 
   const clearSelection = useCallback(() => {
-    setSelectedIds(new Set());
-    lastClickedIndexRef.current = null;
-  }, []);
+    setSelectedIds(new Set())
+    lastClickedIndexRef.current = null
+  }, [])
 
   useLayoutEffect(() => {
     if (loading) {
-      setAfterTitle(null);
-      return;
+      setAfterTitle(null)
+      return
     }
     setAfterTitle(
       <Badge tone="secondary" className="text-xs tabular-nums">
         {total}
-      </Badge>,
-    );
+      </Badge>
+    )
     return () => {
-      setAfterTitle(null);
-    };
-  }, [loading, setAfterTitle, total]);
+      setAfterTitle(null)
+    }
+  }, [loading, setAfterTitle, total])
 
   useEffect(() => {
     setEnd(
-      <Button
-        outlined
-        size="sm"
-        onClick={() => setPruneOpen(true)}
-        prefix={<Archive />}
-      >
-        Prune old sessions
-      </Button>,
-    );
+      <Button outlined size="sm" onClick={() => setPruneOpen(true)} prefix={<Archive />}>
+        {t.sessions.pruneOld}
+      </Button>
+    )
     return () => {
-      setEnd(null);
-    };
-  }, [setEnd]);
+      setEnd(null)
+    }
+  }, [setEnd, t.sessions.pruneOld])
 
   useEffect(() => {
-    if (!sourceMenuOpen) return;
+    if (!sourceMenuOpen) return
 
     const handlePointerDown = (event: PointerEvent) => {
       if (!sourceMenuRef.current?.contains(event.target as Node)) {
-        setSourceMenuOpen(false);
+        setSourceMenuOpen(false)
       }
-    };
+    }
 
-    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener('pointerdown', handlePointerDown)
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-    };
-  }, [sourceMenuOpen]);
+      document.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [sourceMenuOpen])
 
-  const loadSessions = useCallback((p: number, silent = false) => {
-    // ``silent`` skips the loading spinner so background refreshes
-    // (triggered when the overview poll detects a new session from
-    // another process) don't flicker the whole page or drop the user's
-    // scroll position.
-    const requestId = silent
-      ? sessionsRequestRef.current
-      : sessionsRequestRef.current + 1;
-    if (!silent) sessionsRequestRef.current = requestId;
-    if (!silent) setLoading(true);
-    api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE, sessionQueryOptions)
-      .then((resp) => {
-        if (requestId !== sessionsRequestRef.current) return;
-        setSessions(resp.sessions);
-        setTotal(resp.total);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (requestId !== sessionsRequestRef.current) return;
-        if (!silent) setLoading(false);
-      });
-  }, [sessionQueryOptions]);
+  const loadSessions = useCallback(
+    (p: number, silent = false) => {
+      // ``silent`` skips the loading spinner so background refreshes
+      // (triggered when the overview poll detects a new session from
+      // another process) don't flicker the whole page or drop the user's
+      // scroll position.
+      const requestId = silent ? sessionsRequestRef.current : sessionsRequestRef.current + 1
+      if (!silent) sessionsRequestRef.current = requestId
+      if (!silent) setLoading(true)
+      api
+        .getSessions(PAGE_SIZE, p * PAGE_SIZE, sessionQueryOptions)
+        .then(resp => {
+          if (requestId !== sessionsRequestRef.current) return
+          setSessions(resp.sessions)
+          setTotal(resp.total)
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (requestId !== sessionsRequestRef.current) return
+          if (!silent) setLoading(false)
+        })
+    },
+    [sessionQueryOptions]
+  )
 
   const loadStats = useCallback(() => {
     api
       .getSessionStats()
       .then(setStats)
-      .catch(() => {});
-  }, []);
+      .catch(() => {})
+  }, [])
 
   const handleImportSessions = useCallback(
     async (files: FileList | null) => {
-      const file = files?.[0];
-      if (!file) return;
-      setImportingSessions(true);
+      const file = files?.[0]
+      if (!file) return
+      setImportingSessions(true)
       try {
-        const text = await file.text();
-        const importedSessions = parseImportSessions(text);
-        const result = await api.importSessions(importedSessions);
-        showToast(`Import complete: ${importSummary(result)}`, "success");
-        clearSelection();
-        loadSessions(page, true);
-        loadStats();
-        refreshEmptyCount();
+        const text = await file.text()
+        const importedSessions = parseImportSessions(text)
+        const result = await api.importSessions(importedSessions)
+        const summary = importSummary(result, {
+          imported: t.sessions.importCount,
+          skipped: t.sessions.importSkippedCount,
+          detached: t.sessions.importDetachedCount
+        })
+        showToast(t.sessions.importComplete.replace('{summary}', summary), 'success')
+        clearSelection()
+        loadSessions(page, true)
+        loadStats()
+        refreshEmptyCount()
       } catch (error) {
-        showToast(`Import failed: ${error}`, "error");
+        const message =
+          error instanceof SessionImportParseError
+            ? error.code === 'empty'
+              ? t.sessions.importFileEmpty
+              : t.sessions.importInvalidFormat
+            : t.sessions.importFailed
+        showToast(message, 'error')
       } finally {
-        setImportingSessions(false);
-        if (importInputRef.current) importInputRef.current.value = "";
+        setImportingSessions(false)
+        if (importInputRef.current) importInputRef.current.value = ''
       }
     },
-    [
-      clearSelection,
-      loadSessions,
-      loadStats,
-      page,
-      refreshEmptyCount,
-      showToast,
-    ],
-  );
+    [clearSelection, loadSessions, loadStats, page, refreshEmptyCount, showToast, t]
+  )
 
   useEffect(() => {
-    loadStats();
-  }, [loadStats]);
+    loadStats()
+  }, [loadStats])
 
   // Refs for the overview poll's new-session detection. The poll effect
   // below is mounted once with stable deps, so it reads the current page
   // and the last-seen newest session id through refs instead of capturing
   // stale values. ``newestSeenRef`` starts null so the first poll sets a
   // baseline without triggering a redundant reload (mount already loads).
-  const newestSeenRef = useRef<string | null>(null);
-  const pageRef = useRef(page);
+  const newestSeenRef = useRef<string | null>(null)
+  const pageRef = useRef(page)
 
   useEffect(() => {
-    pageRef.current = page;
-  }, [page]);
+    pageRef.current = page
+  }, [page])
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
     queueMicrotask(() => {
-      if (cancelled) return;
-      loadSessions(page);
-      refreshEmptyCount();
-    });
+      if (cancelled) return
+      loadSessions(page)
+      refreshEmptyCount()
+    })
     return () => {
-      cancelled = true;
-    };
-  }, [loadSessions, page, refreshEmptyCount]);
+      cancelled = true
+    }
+  }, [loadSessions, page, refreshEmptyCount])
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
     const loadOverview = () => {
       api
         .getStatus()
-        .then((nextStatus) => {
-          if (!cancelled) setStatus(nextStatus);
+        .then(nextStatus => {
+          if (!cancelled) setStatus(nextStatus)
         })
-        .catch(() => {});
+        .catch(() => {})
       api
         .getSessions(50, 0, sessionQueryOptions)
-        .then((r) => {
-          if (cancelled) return;
-          setOverviewSessions(r.sessions);
+        .then(r => {
+          if (cancelled) return
+          setOverviewSessions(r.sessions)
           // The dashboard server and a terminal CLI are separate
           // processes sharing one session DB — there is no push channel,
           // so we detect sessions created in another process here. The
@@ -1149,26 +1015,26 @@ export default function SessionsPage() {
           // reuse its head id as a cheap change signal: when it changes,
           // silently refresh the paginated list so the new session shows
           // up in real time without a visible loading flicker.
-          const newest = r.sessions[0]?.id ?? null;
+          const newest = r.sessions[0]?.id ?? null
           if (shouldRefreshSessions(newestSeenRef.current, newest)) {
-            loadSessions(pageRef.current, true);
+            loadSessions(pageRef.current, true)
           }
-          newestSeenRef.current = newest;
+          newestSeenRef.current = newest
         })
-        .catch(() => {});
-    };
-    loadOverview();
-    const id = setInterval(loadOverview, 5000);
+        .catch(() => {})
+    }
+    loadOverview()
+    const id = setInterval(loadOverview, 5000)
     return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [loadSessions, sessionQueryOptions]);
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [loadSessions, sessionQueryOptions])
 
   useEffect(() => {
-    const el = logScrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [actionStatus?.lines]);
+    const el = logScrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [actionStatus?.lines])
 
   // Wrapped setters that ALSO clear the bulk selection. The user's
   // mental model is "I'm selecting what I can see" — carrying a
@@ -1180,99 +1046,99 @@ export default function SessionsPage() {
   // re-render it warns about.
   const goToPage = useCallback(
     (p: number) => {
-      setPage(p);
-      clearSelection();
+      setPage(p)
+      clearSelection()
     },
-    [clearSelection],
-  );
+    [clearSelection]
+  )
   const updateSearch = useCallback(
     (value: string) => {
-      setSearch(value);
-      if (value.trim()) setView("list");
-      clearSelection();
+      setSearch(value)
+      if (value.trim()) setView('list')
+      clearSelection()
     },
-    [clearSelection],
-  );
+    [clearSelection]
+  )
   const switchView = useCallback(
     (next: SessionsView) => {
-      setView(next);
-      clearSelection();
+      setView(next)
+      clearSelection()
     },
-    [clearSelection],
-  );
+    [clearSelection]
+  )
 
   const updateSessionCategory = useCallback(
     (value: string) => {
-      setSessionCategory(value as SessionFilterCategory);
-      setSourceMenuOpen(false);
-      setPage(0);
-      setExpandedId(null);
-      clearSelection();
+      setSessionCategory(value as SessionFilterCategory)
+      setSourceMenuOpen(false)
+      setPage(0)
+      setExpandedId(null)
+      clearSelection()
     },
-    [clearSelection],
-  );
+    [clearSelection]
+  )
 
   const toggleSourceFilter = useCallback(
     (source: string) => {
-      setSourceSelectionsByCategory((currentByCategory) => {
-        const current = currentByCategory[sessionCategory];
-        const next = new Set(current ?? categoryDefaultSources);
+      setSourceSelectionsByCategory(currentByCategory => {
+        const current = currentByCategory[sessionCategory]
+        const next = new Set(current ?? categoryDefaultSources)
         if (next.has(source)) {
-          next.delete(source);
+          next.delete(source)
         } else {
-          next.add(source);
+          next.add(source)
         }
         const nextSelection = sourceOptions
           .map(([optionSource]) => optionSource)
-          .filter((optionSource) => next.has(optionSource));
+          .filter(optionSource => next.has(optionSource))
         return {
           ...currentByCategory,
-          [sessionCategory]: nextSelection,
-        };
-      });
-      setPage(0);
-      setExpandedId(null);
-      clearSelection();
+          [sessionCategory]: nextSelection
+        }
+      })
+      setPage(0)
+      setExpandedId(null)
+      clearSelection()
     },
-    [categoryDefaultSources, clearSelection, sessionCategory, sourceOptions],
-  );
+    [categoryDefaultSources, clearSelection, sessionCategory, sourceOptions]
+  )
 
   const clearSourceFilters = useCallback(() => {
-    setSourceSelectionsByCategory((currentByCategory) => ({
+    setSourceSelectionsByCategory(currentByCategory => ({
       ...currentByCategory,
-      [sessionCategory]: null,
-    }));
-    setPage(0);
-    setExpandedId(null);
-    clearSelection();
-  }, [clearSelection, sessionCategory]);
+      [sessionCategory]: null
+    }))
+    setPage(0)
+    setExpandedId(null)
+    clearSelection()
+  }, [clearSelection, sessionCategory])
 
   // Debounced FTS search
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (debounceRef.current) clearTimeout(debounceRef.current)
 
     if (!search.trim()) {
       debounceRef.current = setTimeout(() => {
-        setSearchResults(null);
-        setSearching(false);
-      }, 0);
-      return;
+        setSearchResults(null)
+        setSearching(false)
+      }, 0)
+      return
     }
 
     debounceRef.current = setTimeout(() => {
-      setSearching(true);
-      setSearchResults(null);
+      setSearching(true)
+      setSearchResults(null)
       api
         .searchSessions(search.trim(), sessionQueryOptions)
-        .then((resp) => setSearchResults(resp.results))
+        .then(resp => setSearchResults(resp.results))
         .catch(() => setSearchResults(null))
-        .finally(() => setSearching(false));
-    }, 300);
+        .finally(() => setSearching(false))
+    }, 300)
 
     return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-  }, [search, sessionQueryOptions]);
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+    }
+  }, [search, sessionQueryOptions])
 
   // The profile a listed row was read from — the store that owns it. Every
   // per-row request (delete, rename, export, messages) must go there, not to
@@ -1280,36 +1146,33 @@ export default function SessionsPage() {
   // sticky active profile equals the dashboard process's own, so the request
   // hits the process store — a delete then "succeeds" as already_absent).
   // Search rows carry no stamp: undefined falls back to the management profile.
-  const rowProfile = useCallback(
-    (id: string) => sessions.find((s) => s.id === id)?.profile,
-    [sessions],
-  );
+  const rowProfile = useCallback((id: string) => sessions.find(s => s.id === id)?.profile, [sessions])
 
   const sessionDelete = useConfirmDelete({
     onDelete: useCallback(
       async (id: string) => {
         try {
-          await api.deleteSession(id, rowProfile(id));
-          setSessions((prev) => prev.filter((s) => s.id !== id));
-          setTotal((prev) => prev - 1);
-          if (expandedId === id) setExpandedId(null);
+          await api.deleteSession(id, rowProfile(id))
+          setSessions(prev => prev.filter(s => s.id !== id))
+          setTotal(prev => prev - 1)
+          if (expandedId === id) setExpandedId(null)
           // Drop the deleted ID from any active bulk-select set — it
           // can't bulk-delete a row that's already gone.
-          setSelectedIds((prev) => {
-            if (!prev.has(id)) return prev;
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
+          setSelectedIds(prev => {
+            if (!prev.has(id)) return prev
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
           // A single-session delete might have been an empty one — re-fetch
           // the global empty count so the button hides itself / its badge
           // ticks down without waiting for the next page navigation.
-          refreshEmptyCount();
-          showToast(t.sessions.sessionDeleted, "success");
-          loadStats();
+          refreshEmptyCount()
+          showToast(t.sessions.sessionDeleted, 'success')
+          loadStats()
         } catch {
-          showToast(t.sessions.failedToDelete, "error");
-          throw new Error("delete failed");
+          showToast(t.sessions.failedToDelete, 'error')
+          throw new Error('delete failed')
         }
       },
       [
@@ -1319,10 +1182,10 @@ export default function SessionsPage() {
         showToast,
         loadStats,
         t.sessions.sessionDeleted,
-        t.sessions.failedToDelete,
-      ],
-    ),
-  });
+        t.sessions.failedToDelete
+      ]
+    )
+  })
 
   /** Toggle one row's selection. When ``event.shiftKey`` is true AND we
    *  have a previous anchor, every row between the anchor and the
@@ -1331,90 +1194,77 @@ export default function SessionsPage() {
    *  be the currently rendered list (post-search), since indices are
    *  resolved against what the user is actually looking at.
    */
-  const handleSelectClick = useCallback(
-    (event: React.MouseEvent, index: number, visibleList: SessionInfo[]) => {
-      const id = visibleList[index]?.id;
-      if (!id) return;
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        const wasSelected = next.has(id);
-        const willSelect = !wasSelected;
+  const handleSelectClick = useCallback((event: React.MouseEvent, index: number, visibleList: SessionInfo[]) => {
+    const id = visibleList[index]?.id
+    if (!id) return
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      const wasSelected = next.has(id)
+      const willSelect = !wasSelected
 
-        const anchor = lastClickedIndexRef.current;
-        // Shift-click extends the selection from the anchor to here.
-        // Skip if there's no anchor or the anchor is outside the
-        // visible list — in those cases fall through to a plain toggle
-        // (the click also resets the anchor below).
-        if (event.shiftKey && anchor !== null && anchor < visibleList.length) {
-          const [lo, hi] =
-            anchor <= index ? [anchor, index] : [index, anchor];
-          for (let i = lo; i <= hi; i++) {
-            const rowId = visibleList[i]?.id;
-            if (!rowId) continue;
-            if (willSelect) next.add(rowId);
-            else next.delete(rowId);
-          }
-        } else if (willSelect) {
-          next.add(id);
-        } else {
-          next.delete(id);
+      const anchor = lastClickedIndexRef.current
+      // Shift-click extends the selection from the anchor to here.
+      // Skip if there's no anchor or the anchor is outside the
+      // visible list — in those cases fall through to a plain toggle
+      // (the click also resets the anchor below).
+      if (event.shiftKey && anchor !== null && anchor < visibleList.length) {
+        const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor]
+        for (let i = lo; i <= hi; i++) {
+          const rowId = visibleList[i]?.id
+          if (!rowId) continue
+          if (willSelect) next.add(rowId)
+          else next.delete(rowId)
         }
-        return next;
-      });
-      // Always update the anchor to the most recent click — even when
-      // it was a shift-click that extended a range, the user's next
-      // shift-click should anchor from here, not from two steps back.
-      lastClickedIndexRef.current = index;
-    },
-    [],
-  );
+      } else if (willSelect) {
+        next.add(id)
+      } else {
+        next.delete(id)
+      }
+      return next
+    })
+    // Always update the anchor to the most recent click — even when
+    // it was a shift-click that extended a range, the user's next
+    // shift-click should anchor from here, not from two steps back.
+    lastClickedIndexRef.current = index
+  }, [])
 
   const selectAllOnPage = useCallback((visibleList: SessionInfo[]) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      for (const s of visibleList) next.add(s.id);
-      return next;
-    });
-  }, []);
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      for (const s of visibleList) next.add(s.id)
+      return next
+    })
+  }, [])
 
   const handleDeleteSelected = useCallback(async () => {
-    const ids = Array.from(selectedIds);
+    const ids = Array.from(selectedIds)
     if (ids.length === 0) {
-      setDeleteSelectedOpen(false);
-      return;
+      setDeleteSelectedOpen(false)
+      return
     }
-    setDeletingSelected(true);
+    setDeletingSelected(true)
     try {
       // The selection comes from one listed page, so its rows share one
       // owning profile; a mixed selection falls back to the management profile.
-      const owners = new Set(ids.map(rowProfile));
-      const resp = await api.bulkDeleteSessions(
-        ids,
-        owners.size === 1 ? [...owners][0] : undefined,
-      );
-      showToast(
-        t.sessions.selectedSessionsDeleted.replace(
-          "{count}",
-          String(resp.deleted),
-        ),
-        "success",
-      );
-      setDeleteSelectedOpen(false);
+      const owners = new Set(ids.map(rowProfile))
+      const resp = await api.bulkDeleteSessions(ids, owners.size === 1 ? [...owners][0] : undefined)
+      showToast(t.sessions.selectedSessionsDeleted.replace('{count}', String(resp.deleted)), 'success')
+      setDeleteSelectedOpen(false)
       // Drop deleted rows out of the visible list immediately rather
       // than waiting for the reload. The reload still runs so total /
       // pagination stays correct, and so any rows the reload pulls in
       // from later pages render in place.
-      const deletedSet = new Set(ids);
-      setSessions((prev) => prev.filter((s) => !deletedSet.has(s.id)));
-      setTotal((prev) => Math.max(0, prev - resp.deleted));
-      if (expandedId && deletedSet.has(expandedId)) setExpandedId(null);
-      clearSelection();
-      loadSessions(page);
-      refreshEmptyCount();
+      const deletedSet = new Set(ids)
+      setSessions(prev => prev.filter(s => !deletedSet.has(s.id)))
+      setTotal(prev => Math.max(0, prev - resp.deleted))
+      if (expandedId && deletedSet.has(expandedId)) setExpandedId(null)
+      clearSelection()
+      loadSessions(page)
+      refreshEmptyCount()
     } catch {
-      showToast(t.sessions.failedToDeleteSelected, "error");
+      showToast(t.sessions.failedToDeleteSelected, 'error')
     } finally {
-      setDeletingSelected(false);
+      setDeletingSelected(false)
     }
   }, [
     clearSelection,
@@ -1426,35 +1276,29 @@ export default function SessionsPage() {
     selectedIds,
     showToast,
     t.sessions.failedToDeleteSelected,
-    t.sessions.selectedSessionsDeleted,
-  ]);
+    t.sessions.selectedSessionsDeleted
+  ])
 
   const handleDeleteEmpty = useCallback(async () => {
-    setDeletingEmpty(true);
+    setDeletingEmpty(true)
     try {
-      const resp = await api.deleteEmptySessions();
+      const resp = await api.deleteEmptySessions()
       // Show count in the toast so users get confirmation of the actual
       // number removed (which may differ slightly from `emptyCount` if a
       // session entered/left the "empty" set between the count fetch and
       // the delete — e.g. an active session just ended without sending
       // any messages).
-      showToast(
-        t.sessions.emptySessionsDeleted.replace(
-          "{count}",
-          String(resp.deleted),
-        ),
-        "success",
-      );
-      setDeleteEmptyOpen(false);
+      showToast(t.sessions.emptySessionsDeleted.replace('{count}', String(resp.deleted)), 'success')
+      setDeleteEmptyOpen(false)
       // Reload the current page so any newly-vanished empty sessions
       // drop out of the visible list, and re-fetch the empty count so
       // the button hides itself.
-      loadSessions(page);
-      refreshEmptyCount();
+      loadSessions(page)
+      refreshEmptyCount()
     } catch {
-      showToast(t.sessions.failedToDeleteEmpty, "error");
+      showToast(t.sessions.failedToDeleteEmpty, 'error')
     } finally {
-      setDeletingEmpty(false);
+      setDeletingEmpty(false)
     }
   }, [
     loadSessions,
@@ -1462,123 +1306,114 @@ export default function SessionsPage() {
     refreshEmptyCount,
     showToast,
     t.sessions.emptySessionsDeleted,
-    t.sessions.failedToDeleteEmpty,
-  ]);
+    t.sessions.failedToDeleteEmpty
+  ])
 
   const handleRename = useCallback(
     async (id: string, title: string) => {
       try {
-        await api.renameSession(id, title, rowProfile(id));
-        setSessions((prev) =>
-          prev.map((s) => (s.id === id ? { ...s, title } : s)),
-        );
-        setOverviewSessions((prev) =>
-          prev.map((s) => (s.id === id ? { ...s, title } : s)),
-        );
-        showToast("Session renamed", "success");
-        loadStats();
+        await api.renameSession(id, title, rowProfile(id))
+        setSessions(prev => prev.map(s => (s.id === id ? { ...s, title } : s)))
+        setOverviewSessions(prev => prev.map(s => (s.id === id ? { ...s, title } : s)))
+        showToast(t.sessions.renamed, 'success')
+        loadStats()
       } catch {
-        showToast("Failed to rename session", "error");
+        showToast(t.sessions.renameFailed, 'error')
       }
     },
-    [rowProfile, showToast, loadStats],
-  );
+    [loadStats, rowProfile, showToast, t.sessions.renameFailed, t.sessions.renamed]
+  )
 
   const handleExport = useCallback(
     async (id: string) => {
       try {
         const res = await fetch(api.exportSessionUrl(id, rowProfile(id)), {
-          credentials: "include",
+          credentials: 'include',
           headers: {
-            "X-Hermes-Session-Token":
-              (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
-                .__HERMES_SESSION_TOKEN__ ?? "",
-          },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `session-${id}.json`;
-        a.click();
-        URL.revokeObjectURL(url);
+            'X-Hermes-Session-Token':
+              (window as unknown as { __HERMES_SESSION_TOKEN__?: string }).__HERMES_SESSION_TOKEN__ ?? ''
+          }
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `session-${id}.json`
+        a.click()
+        URL.revokeObjectURL(url)
       } catch {
-        showToast("Failed to export session", "error");
+        showToast(t.sessions.exportFailed, 'error')
       }
     },
-    [rowProfile, showToast],
-  );
+    [rowProfile, showToast, t.sessions.exportFailed]
+  )
 
   const handlePrune = useCallback(async () => {
-    const days = parseInt(pruneDays, 10);
+    const days = parseInt(pruneDays, 10)
     if (!Number.isFinite(days) || days < 0) {
-      showToast("Enter a valid number of days", "error");
-      return;
+      showToast(t.sessions.invalidPruneDays, 'error')
+      return
     }
-    setPruning(true);
+    setPruning(true)
     try {
-      const resp = await api.pruneSessions(days);
-      showToast(formatSessionPruneResult(resp), "success");
-      setPruneOpen(false);
-      loadSessions(0);
-      setPage(0);
-      loadStats();
+      const resp = await api.pruneSessions(days)
+      showToast(
+        formatSessionPruneResult(resp, {
+          removed: count => format(t.sessions.pruned, { count }),
+          skippedOpen: count => format(t.sessions.pruneSkippedOpen, { count })
+        }),
+        'success'
+      )
+      setPruneOpen(false)
+      loadSessions(0)
+      setPage(0)
+      loadStats()
     } catch {
-      showToast("Failed to prune sessions", "error");
+      showToast(t.sessions.pruneFailed, 'error')
     } finally {
-      setPruning(false);
+      setPruning(false)
     }
-  }, [pruneDays, showToast, loadSessions, loadStats]);
+  }, [format, loadSessions, loadStats, pruneDays, showToast, t.sessions])
 
-  const pendingSession = sessionDelete.pendingId
-    ? sessions.find((s) => s.id === sessionDelete.pendingId)
-    : null;
+  const pendingSession = sessionDelete.pendingId ? sessions.find(s => s.id === sessionDelete.pendingId) : null
 
   // Build snippet map from search results (session_id → snippet)
-  const snippetMap = new Map<string, string>();
+  const snippetMap = new Map<string, string>()
   if (searchResults) {
     for (const r of searchResults) {
-      snippetMap.set(r.session_id, r.snippet);
-      snippetMap.set(r.id, r.snippet);
+      snippetMap.set(r.session_id, r.snippet)
+      snippetMap.set(r.id, r.snippet)
     }
   }
 
-  const filtered = searchResults ?? sessions;
+  const filtered = searchResults ?? sessions
 
-  const platformEntries = status
-    ? Object.entries(status.gateway_platforms ?? {})
-    : [];
-  const recentSessions = overviewSessions
-    .filter((s) => !s.is_active)
-    .slice(0, 5);
+  const platformEntries = status ? Object.entries(status.gateway_platforms ?? {}) : []
+  const recentSessions = overviewSessions.filter(s => !s.is_active).slice(0, 5)
 
-  const isSearching = Boolean(search.trim());
-  const showOverviewTab =
-    platformEntries.length > 0 || recentSessions.length > 0;
-  const showList = view === "list" || isSearching || !showOverviewTab;
-  const showPagination = showList && !isSearching && total > PAGE_SIZE;
+  const isSearching = Boolean(search.trim())
+  const showOverviewTab = platformEntries.length > 0 || recentSessions.length > 0
+  const showList = view === 'list' || isSearching || !showOverviewTab
+  const showPagination = showList && !isSearching && total > PAGE_SIZE
 
-  const alerts: { message: string; detail?: string }[] = [];
+  const alerts: { message: string; detail?: string }[] = []
   if (status) {
-    if (status.gateway_state === "startup_failed") {
+    if (status.gateway_state === 'startup_failed') {
       alerts.push({
         message: t.status.gatewayFailedToStart,
-        detail: status.gateway_exit_reason ?? undefined,
-      });
+        detail: status.gateway_exit_reason ?? undefined
+      })
     }
     const failedPlatformEntries = platformEntries.filter(
-      ([, info]) => info.state === "fatal" || info.state === "disconnected",
-    );
+      ([, info]) => info.state === 'fatal' || info.state === 'disconnected'
+    )
     for (const [name, info] of failedPlatformEntries) {
-      const stateLabel =
-        info.state === "fatal"
-          ? t.status.platformError
-          : t.status.platformDisconnected;
+      const stateLabel = info.state === 'fatal' ? t.status.platformError : t.status.platformDisconnected
       alerts.push({
         message: `${name.charAt(0).toUpperCase() + name.slice(1)} ${stateLabel}`,
-        detail: info.error_message ?? undefined,
-      });
+        detail: info.error_message ?? undefined
+      })
     }
   }
 
@@ -1587,7 +1422,7 @@ export default function SessionsPage() {
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
       </div>
-    );
+    )
   }
 
   return (
@@ -1599,7 +1434,7 @@ export default function SessionsPage() {
         type="file"
         accept=".json,.jsonl,application/json,application/x-ndjson"
         className="hidden"
-        onChange={(event) => void handleImportSessions(event.currentTarget.files)}
+        onChange={event => void handleImportSessions(event.currentTarget.files)}
       />
 
       <DeleteConfirmDialog
@@ -1608,7 +1443,7 @@ export default function SessionsPage() {
         onConfirm={sessionDelete.confirm}
         title={t.sessions.confirmDeleteTitle}
         description={
-          pendingSession?.title && pendingSession.title !== "Untitled"
+          pendingSession?.title && pendingSession.title !== 'Untitled'
             ? `"${pendingSession.title}" — ${t.sessions.confirmDeleteMessage}`
             : t.sessions.confirmDeleteMessage
         }
@@ -1620,10 +1455,7 @@ export default function SessionsPage() {
         onCancel={() => setDeleteEmptyOpen(false)}
         onConfirm={handleDeleteEmpty}
         title={t.sessions.deleteEmptyConfirmTitle}
-        description={t.sessions.deleteEmptyConfirmMessage.replace(
-          "{count}",
-          String(emptyCount),
-        )}
+        description={t.sessions.deleteEmptyConfirmMessage.replace('{count}', String(emptyCount))}
         loading={deletingEmpty}
       />
 
@@ -1631,66 +1463,45 @@ export default function SessionsPage() {
         open={deleteSelectedOpen}
         onCancel={() => setDeleteSelectedOpen(false)}
         onConfirm={handleDeleteSelected}
-        title={t.sessions.deleteSelectedConfirmTitle.replace(
-          "{count}",
-          String(selectedIds.size),
-        )}
-        description={t.sessions.deleteSelectedConfirmMessage.replace(
-          "{count}",
-          String(selectedIds.size),
-        )}
+        title={t.sessions.deleteSelectedConfirmTitle.replace('{count}', String(selectedIds.size))}
+        description={t.sessions.deleteSelectedConfirmMessage.replace('{count}', String(selectedIds.size))}
         loading={deletingSelected}
       />
 
       <Dialog
         open={pruneOpen}
-        onOpenChange={(open) => {
-          if (!pruning) setPruneOpen(open);
+        onOpenChange={open => {
+          if (!pruning) setPruneOpen(open)
         }}
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Prune old sessions</DialogTitle>
-            <DialogDescription>
-              Permanently remove archived sessions whose last activity is older
-              than the given number of days. Active sessions are never pruned.
-            </DialogDescription>
+            <DialogTitle>{t.sessions.pruneOld}</DialogTitle>
+            <DialogDescription>{t.sessions.pruneDescription}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="prune-days"
-              className="text-xs font-medium text-muted-foreground"
-            >
-              Older than (days)
+            <label htmlFor="prune-days" className="text-xs font-medium text-muted-foreground">
+              {t.sessions.olderThanDays}
             </label>
             <Input
               id="prune-days"
               type="number"
               min={0}
               value={pruneDays}
-              onChange={(e) => setPruneDays(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void handlePrune();
+              onChange={e => setPruneDays(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') void handlePrune()
               }}
               disabled={pruning}
             />
           </div>
           <DialogFooter>
-            <Button
-              outlined
-              onClick={() => setPruneOpen(false)}
-              disabled={pruning}
-            >
+            <Button outlined onClick={() => setPruneOpen(false)} disabled={pruning}>
               {t.common.cancel}
             </Button>
-            <Button
-              destructive
-              onClick={() => void handlePrune()}
-              disabled={pruning}
-              className="gap-1.5"
-            >
+            <Button destructive onClick={() => void handlePrune()} disabled={pruning} className="gap-1.5">
               {pruning && <Spinner className="text-sm" />}
-              Prune
+              {t.sessions.prune}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1699,35 +1510,27 @@ export default function SessionsPage() {
       {stats && (
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border border-border bg-background-base/40 px-4 py-3">
           <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.total}
-            </span>
-            <span className="text-xs text-muted-foreground">Total</span>
+            <span className="text-lg font-semibold tabular-nums leading-none">{stats.total}</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.total}</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none text-success">
-              {stats.active_store}
-            </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-lg font-semibold tabular-nums leading-none text-success">{stats.active_store}</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.activeInStore}</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.archived}
-            </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
+            <span className="text-lg font-semibold tabular-nums leading-none">{stats.archived}</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.archived}</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-lg font-semibold tabular-nums leading-none">
-              {stats.messages}
-            </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
+            <span className="text-lg font-semibold tabular-nums leading-none">{stats.messages}</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.messages}</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
             <div className="flex flex-col">
               <span className="text-lg font-semibold tabular-nums leading-none">
                 {Object.keys(stats.by_source).length}
               </span>
-              <span className="text-xs text-muted-foreground">Sources</span>
+              <span className="text-xs text-muted-foreground">{t.sessions.sources}</span>
             </div>
           )}
         </div>
@@ -1740,14 +1543,8 @@ export default function SessionsPage() {
             <div className="flex flex-col gap-2 min-w-0">
               {alerts.map((alert, i) => (
                 <div key={i}>
-                  <p className="text-sm font-medium text-destructive">
-                    {alert.message}
-                  </p>
-                  {alert.detail && (
-                    <p className="text-xs text-destructive/70 mt-0.5">
-                      {alert.detail}
-                    </p>
-                  )}
+                  <p className="text-sm font-medium text-destructive">{alert.message}</p>
+                  {alert.detail && <p className="text-xs text-destructive/70 mt-0.5">{alert.detail}</p>}
                 </div>
               ))}
             </div>
@@ -1770,20 +1567,18 @@ export default function SessionsPage() {
               )}
 
               <span className="text-xs font-mondwest tracking-[0.12em] truncate">
-                {activeAction === "restart"
-                  ? t.status.restartGateway
-                  : t.status.updateHermes}
+                {activeAction === 'restart' ? t.status.restartGateway : t.status.updateHermes}
               </span>
 
               <Badge
                 tone={
                   actionStatus?.running
-                    ? "warning"
+                    ? 'warning'
                     : actionStatus?.exit_code === 0
-                      ? "success"
+                      ? 'success'
                       : actionStatus
-                        ? "destructive"
-                        : "outline"
+                        ? 'destructive'
+                        : 'outline'
                 }
                 className="text-xs shrink-0"
               >
@@ -1792,7 +1587,7 @@ export default function SessionsPage() {
                   : actionStatus?.exit_code === 0
                     ? t.status.actionFinished
                     : actionStatus
-                      ? `${t.status.actionFailed} (${actionStatus.exit_code ?? "?"})`
+                      ? `${t.status.actionFailed} (${actionStatus.exit_code ?? '?'})`
                       : t.common.loading}
               </Badge>
             </div>
@@ -1813,7 +1608,7 @@ export default function SessionsPage() {
             className="max-h-72 overflow-auto px-3 py-2 font-mono-ui text-xs leading-relaxed whitespace-pre-wrap break-all"
           >
             {actionStatus?.lines && actionStatus.lines.length > 0
-              ? actionStatus.lines.join("\n")
+              ? actionStatus.lines.join('\n')
               : t.status.waitingForOutput}
           </pre>
         </div>
@@ -1828,9 +1623,9 @@ export default function SessionsPage() {
               value={sessionCategory}
               onChange={updateSessionCategory}
               options={[
-                { value: "chats", label: t.sessions.filterChats },
-                { value: "automation", label: t.sessions.filterAutomation },
-                { value: "all", label: t.sessions.filterAll },
+                { value: 'chats', label: t.sessions.filterChats },
+                { value: 'automation', label: t.sessions.filterAutomation },
+                { value: 'all', label: t.sessions.filterAll }
               ]}
             />
 
@@ -1839,49 +1634,33 @@ export default function SessionsPage() {
                 outlined
                 size="sm"
                 prefix={<ListFilter />}
-                suffix={
-                  <ChevronDown
-                    className={`transition-transform ${sourceMenuOpen ? "rotate-180" : ""}`}
-                  />
-                }
+                suffix={<ChevronDown className={`transition-transform ${sourceMenuOpen ? 'rotate-180' : ''}`} />}
                 className="h-8 min-w-[10rem] max-w-[14rem] justify-between text-xs"
                 aria-label={t.sessions.sourceFilter}
                 aria-expanded={sourceMenuOpen}
-                onClick={() => setSourceMenuOpen((open) => !open)}
+                onClick={() => setSourceMenuOpen(open => !open)}
               >
                 <span className="min-w-0 truncate">{sourceFilterLabel}</span>
               </Button>
 
               {sourceMenuOpen && (
-                <div
-                  className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
-                >
+                <div className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg">
                   <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">
-                      {sourceMenuTitle}
-                    </span>
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">{sourceMenuTitle}</span>
                     {selectedSources !== null && (
-                      <Button
-                        ghost
-                        size="xs"
-                        onClick={clearSourceFilters}
-                        className="shrink-0"
-                      >
+                      <Button ghost size="xs" onClick={clearSourceFilters} className="shrink-0">
                         {t.common.clear}
                       </Button>
                     )}
                   </div>
                   <div className="max-h-64 overflow-y-auto p-1">
                     {sourceOptions.length === 0 ? (
-                      <div className="px-2 py-2 text-xs text-muted-foreground">
-                        {sourceMenuTitle}
-                      </div>
+                      <div className="px-2 py-2 text-xs text-muted-foreground">{sourceMenuTitle}</div>
                     ) : (
                       sourceOptions.map(([source, count]) => {
-                        const selected = selectedSourceSet.has(source);
-                        const SourceIcon = SOURCE_CONFIG[source]?.icon ?? Terminal;
-                        const sourceColor =
-                          SOURCE_CONFIG[source]?.color ?? "text-muted-foreground";
+                        const selected = selectedSourceSet.has(source)
+                        const SourceIcon = SOURCE_CONFIG[source]?.icon ?? Terminal
+                        const sourceColor = SOURCE_CONFIG[source]?.color ?? 'text-muted-foreground'
 
                         return (
                           <div
@@ -1890,11 +1669,11 @@ export default function SessionsPage() {
                           >
                             <Checkbox
                               checked={selected}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleSourceFilter(source);
+                              onClick={event => {
+                                event.stopPropagation()
+                                toggleSourceFilter(source)
                               }}
-                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source)}`}
+                              aria-label={`${t.sessions.sourceFilter}: ${sourceLabel(source, t.sessions)}`}
                             />
                             <button
                               type="button"
@@ -1902,15 +1681,11 @@ export default function SessionsPage() {
                               onClick={() => toggleSourceFilter(source)}
                             >
                               <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
-                              <span className="min-w-0 flex-1 truncate">
-                                {sourceLabel(source)}
-                              </span>
-                              <span className="shrink-0 tabular-nums text-muted-foreground">
-                                {count}
-                              </span>
+                              <span className="min-w-0 flex-1 truncate">{sourceLabel(source, t.sessions)}</span>
+                              <span className="shrink-0 tabular-nums text-muted-foreground">{count}</span>
                             </button>
                           </div>
-                        );
+                        )
                       })
                     )}
                   </div>
@@ -1925,8 +1700,8 @@ export default function SessionsPage() {
                 value={view}
                 onChange={switchView}
                 options={[
-                  { value: "overview", label: t.sessions.overview },
-                  { value: "list", label: t.sessions.history },
+                  { value: 'overview', label: t.sessions.overview },
+                  { value: 'list', label: t.sessions.history }
                 ]}
               />
             )}
@@ -1941,7 +1716,7 @@ export default function SessionsPage() {
                 <Input
                   placeholder={t.sessions.searchPlaceholder}
                   value={search}
-                  onChange={(e) => updateSearch(e.target.value)}
+                  onChange={e => updateSearch(e.target.value)}
                   className="h-8 py-0 pr-7 pl-8 text-xs leading-none"
                 />
                 {search && (
@@ -1949,7 +1724,7 @@ export default function SessionsPage() {
                     ghost
                     size="xs"
                     className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    onClick={() => updateSearch("")}
+                    onClick={() => updateSearch('')}
                     aria-label={t.common.clear}
                   >
                     <X />
@@ -1982,13 +1757,11 @@ export default function SessionsPage() {
                 className="shrink-0"
                 disabled={importingSessions}
                 onClick={() => importInputRef.current?.click()}
-                aria-label="Import exported sessions"
-                title="Import exported session JSON or JSONL"
+                aria-label={t.sessions.importSessions}
+                title={t.sessions.importSessionsTitle}
                 prefix={importingSessions ? <Spinner /> : <Upload />}
               >
-                <span className="font-mondwest normal-case text-xs">
-                  Import sessions
-                </span>
+                <span className="font-mondwest normal-case text-xs">{t.sessions.importSessions}</span>
               </Button>
             )}
           </div>
@@ -2009,18 +1782,12 @@ export default function SessionsPage() {
         <div
           className="flex flex-wrap items-center gap-2 border border-primary/30 bg-primary/[0.06] px-3 py-2"
           role="region"
-          aria-label={t.sessions.selectedCount.replace(
-            "{count}",
-            String(selectedIds.size),
-          )}
+          aria-label={t.sessions.selectedCount.replace('{count}', String(selectedIds.size))}
         >
           <span className="font-mondwest normal-case text-xs text-primary tabular-nums">
-            {t.sessions.selectedCount.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
+            {t.sessions.selectedCount.replace('{count}', String(selectedIds.size))}
           </span>
-          {filtered.some((s) => !selectedIds.has(s.id)) && (
+          {filtered.some(s => !selectedIds.has(s.id)) && (
             <Button
               ghost
               size="sm"
@@ -2028,9 +1795,7 @@ export default function SessionsPage() {
               aria-label={t.sessions.selectAllOnPage}
               title={t.sessions.selectAllOnPage}
             >
-              <span className="font-mondwest normal-case text-xs">
-                {t.sessions.selectAllOnPage}
-              </span>
+              <span className="font-mondwest normal-case text-xs">{t.sessions.selectAllOnPage}</span>
             </Button>
           )}
           <Button
@@ -2040,9 +1805,7 @@ export default function SessionsPage() {
             aria-label={t.sessions.clearSelection}
             title={t.sessions.clearSelection}
           >
-            <span className="font-mondwest normal-case text-xs">
-              {t.sessions.clearSelection}
-            </span>
+            <span className="font-mondwest normal-case text-xs">{t.sessions.clearSelection}</span>
           </Button>
           <Button
             outlined
@@ -2050,21 +1813,12 @@ export default function SessionsPage() {
             size="sm"
             className="ml-auto"
             onClick={() => setDeleteSelectedOpen(true)}
-            aria-label={t.sessions.deleteSelected.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
-            title={t.sessions.deleteSelected.replace(
-              "{count}",
-              String(selectedIds.size),
-            )}
+            aria-label={t.sessions.deleteSelected.replace('{count}', String(selectedIds.size))}
+            title={t.sessions.deleteSelected.replace('{count}', String(selectedIds.size))}
             prefix={<Trash2 />}
           >
             <span className="font-mondwest normal-case text-xs">
-              {t.sessions.deleteSelected.replace(
-                "{count}",
-                String(selectedIds.size),
-              )}
+              {t.sessions.deleteSelected.replace('{count}', String(selectedIds.size))}
             </span>
           </Button>
         </div>
@@ -2077,14 +1831,12 @@ export default function SessionsPage() {
             <p className="text-sm font-medium">
               {search
                 ? t.sessions.noMatch
-                : selectedSources !== null || sessionCategory !== "chats"
+                : selectedSources !== null || sessionCategory !== 'chats'
                   ? t.sessions.noSessionsInFilter
                   : t.sessions.noSessions}
             </p>
-            {!search && sessionCategory === "chats" && selectedSources === null && (
-              <p className="text-xs mt-1 text-text-tertiary">
-                {t.sessions.startConversation}
-              </p>
+            {!search && sessionCategory === 'chats' && selectedSources === null && (
+              <p className="text-xs mt-1 text-text-tertiary">{t.sessions.startConversation}</p>
             )}
           </div>
         ) : (
@@ -2098,12 +1850,8 @@ export default function SessionsPage() {
                   searchQuery={search || undefined}
                   isExpanded={expandedId === s.id}
                   isSelected={selectedIds.has(s.id)}
-                  onToggle={() =>
-                    setExpandedId((prev) => (prev === s.id ? null : s.id))
-                  }
-                  onSelectClick={(event) =>
-                    handleSelectClick(event, index, filtered)
-                  }
+                  onToggle={() => setExpandedId(prev => (prev === s.id ? null : s.id))}
+                  onSelectClick={event => handleSelectClick(event, index, filtered)}
                   onDelete={() => sessionDelete.requestDelete(s.id)}
                   onRename={handleRename}
                   onExport={handleExport}
@@ -2112,59 +1860,42 @@ export default function SessionsPage() {
               ))}
             </div>
 
-            {showPagination && (
-              <SessionsPagination
-                page={page}
-                total={total}
-                onPageChange={goToPage}
-              />
-            )}
+            {showPagination && <SessionsPagination page={page} total={total} onPageChange={goToPage} />}
           </>
         )
       ) : (
         <div className="flex min-w-0 flex-col gap-4">
-          {platformEntries.length > 0 && status && (
-            <PlatformsCard platforms={platformEntries} />
-          )}
+          {platformEntries.length > 0 && status && <PlatformsCard platforms={platformEntries} />}
 
           {recentSessions.length > 0 && (
             <Card className="min-w-0 max-w-full overflow-hidden">
               <CardHeader className="min-w-0">
                 <div className="flex min-w-0 items-center gap-2">
                   <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
-                    {t.status.recentSessions}
-                  </CardTitle>
+                  <CardTitle className="min-w-0 truncate text-base">{t.status.recentSessions}</CardTitle>
                 </div>
               </CardHeader>
 
               <CardContent className="grid min-w-0 gap-3">
-                {recentSessions.map((s) => (
+                {recentSessions.map(s => (
                   <div
                     key={s.id}
                     className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
                       <span
-                        className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? "font-medium" : "text-muted-foreground italic"}`}
+                        className={`font-mondwest normal-case min-w-0 truncate text-sm ${s.title ? 'font-medium' : 'text-muted-foreground italic'}`}
                       >
-                        {s.title ??
-                          (s.preview
-                            ? s.preview.slice(0, 60)
-                            : t.common.untitled)}
+                        {s.title ?? (s.preview ? s.preview.slice(0, 60) : t.common.untitled)}
                       </span>
 
                       <span className="min-w-0 break-words text-xs text-muted-foreground">
                         {s.model && (
                           <>
-                            <span className="font-mono-ui">
-                              {s.model.split("/").pop()}
-                            </span>{" "}
-                            ·{" "}
+                            <span className="font-mono-ui">{s.model.split('/').pop()}</span> ·{' '}
                           </>
                         )}
-                        {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
+                        {s.message_count} {t.common.msgs} · {timeAgo(s.last_active, locale)}
                       </span>
 
                       {s.preview && s.title && (
@@ -2174,12 +1905,9 @@ export default function SessionsPage() {
                       )}
                     </div>
 
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
-                    >
+                    <Badge tone="outline" className="shrink-0 self-start text-xs sm:self-center">
                       <Database className="mr-1 h-3 w-3" />
-                      {s.source ? sourceLabel(s.source) : "local"}
+                      {s.source ? sourceLabel(s.source, t.sessions) : t.sessions.sourceLocal}
                     </Badge>
                   </div>
                 ))}
@@ -2191,27 +1919,27 @@ export default function SessionsPage() {
 
       <PluginSlot name="sessions:bottom" />
     </div>
-  );
+  )
 }
 
 interface SessionRowProps {
-  isExpanded: boolean;
-  isSelected: boolean;
-  onDelete: () => void;
-  onExport: (id: string) => void;
-  onRename: (id: string, title: string) => Promise<void>;
-  onSelectClick: (event: React.MouseEvent) => void;
-  onToggle: () => void;
-  resumeInChatEnabled: boolean;
-  searchQuery?: string;
-  session: SessionInfo;
-  snippet?: string;
+  isExpanded: boolean
+  isSelected: boolean
+  onDelete: () => void
+  onExport: (id: string) => void
+  onRename: (id: string, title: string) => Promise<void>
+  onSelectClick: (event: React.MouseEvent) => void
+  onToggle: () => void
+  resumeInChatEnabled: boolean
+  searchQuery?: string
+  session: SessionInfo
+  snippet?: string
 }
 
 interface SessionsPaginationProps {
-  className?: string;
-  compact?: boolean;
-  onPageChange: (page: number) => void;
-  page: number;
-  total: number;
+  className?: string
+  compact?: boolean
+  onPageChange: (page: number) => void
+  page: number
+  total: number
 }

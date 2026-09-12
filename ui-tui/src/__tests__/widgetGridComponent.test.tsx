@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 import { GridStreamsDemo, STREAM_DEFS } from '../components/gridStreamsDemo.js'
 import { GridAreas, type GridAreaWidget, WidgetGrid, type WidgetGridWidget } from '../components/widgetGrid.js'
+import { translate } from '../i18n/index.js'
 import { stripAnsi } from '../lib/text.js'
 import { GRID_STREAM_COUNT, type GridTestState } from '../sdk/apps/gridTestState.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -134,7 +135,7 @@ describe('GridStreamsDemo', () => {
     expect(output).toContain('hermes mission control')
 
     for (const def of STREAM_DEFS) {
-      expect(output).toContain(def.title)
+      expect(output).toContain(translate('en', def.titleKey))
     }
 
     // streamMain: 2 → the memory panel owns the promoted slot.

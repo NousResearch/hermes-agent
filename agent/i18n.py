@@ -1,12 +1,38 @@
-"""Lightweight i18n for Hermes' static user-facing strings (approval prompts, a few gateway replies).
+"""Lightweight internationalization (i18n) for Hermes static user-facing messages.
 
-Catalogs are ``locales/<lang>.yaml`` flattened to dotted keys. Missing keys
-fall back to English, then to the key itself, so a broken catalog never crashes.
-Language resolution: explicit ``lang=`` > ``HERMES_LANGUAGE`` > ``display.language`` > ``en``.
+Scope (thin slice, by design): only the highest-impact static strings shown
+to the user by Hermes itself -- approval prompts, a handful of gateway slash
+command replies, and restart-drain notices. Agent-generated output, log lines,
+error tracebacks, and tool outputs stay outside this catalog; each UI owns its
+additional presentation catalog and uses the same locale normalization contract.
+
+Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
+catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
+``gateway.approval_expired``).  Missing keys fall back to English; if English
+is missing too, the key path itself is returned so a broken catalog never
+crashes the agent.
+
+Usage::
+
+    from agent.i18n import t
+    print(t("approval.choose_long"))                       # current lang
+    print(t("gateway.draining", count=3))                  # {count} formatted
+    print(t("approval.choose_long", lang="zh"))            # explicit override
+
+Language resolution order:
+    1. Explicit ``lang=`` argument passed to :func:`t`
+    2. ``HERMES_LANGUAGE`` environment variable (for tests / quick override)
+    3. ``display.language`` from config.yaml
+    4. ``"en"`` (baseline)
+
+Supported language identities, aliases, and picker metadata are declared once
+in ``locales/registry.json`` and shared by Python, Ink TUI, and Dashboard.
+Unknown values fall back to the registered default language.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -16,120 +42,181 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
-)
-DEFAULT_LANGUAGE = "en"
+def _locales_dir() -> Path:
+    """Return the directory containing locale catalogs and registry data.
 
-# Natural aliases so "chinese" / "zh-CN" / "jp" hit the right catalog instead of
-# silently falling back to English. Bare "chinese" defaults to Simplified;
-# Taiwan/HK/Macau tags route to the distinct Traditional catalog. pt-br shares
-# the pt catalog (no separate br one).
-_LANGUAGE_ALIASES: dict[str, str] = {
-    "english": "en", "en-us": "en", "en-gb": "en",
-    "chinese": "zh", "mandarin": "zh", "zh-cn": "zh", "zh-hans": "zh", "zh-sg": "zh",
-    "traditional-chinese": "zh-hant", "traditional_chinese": "zh-hant",
-    "zh-tw": "zh-hant", "zh-hk": "zh-hant", "zh-mo": "zh-hant",
-    "japanese": "ja", "jp": "ja", "ja-jp": "ja",
-    "german": "de", "deutsch": "de", "de-de": "de", "de-at": "de", "de-ch": "de",
-    "spanish": "es", "español": "es", "espanol": "es", "es-es": "es", "es-mx": "es", "es-ar": "es",
-    "french": "fr", "français": "fr", "france": "fr", "fr-fr": "fr", "fr-be": "fr", "fr-ca": "fr", "fr-ch": "fr",
-    "ukrainian": "uk", "ukrainisch": "uk", "українська": "uk", "uk-ua": "uk", "ua": "uk",
-    "turkish": "tr", "türkçe": "tr", "tr-tr": "tr",
-    "afrikaans": "af", "af-za": "af",
-    "korean": "ko", "한국어": "ko", "ko-kr": "ko",
-    "italian": "it", "italiano": "it", "it-it": "it", "it-ch": "it",
-    "irish": "ga", "gaeilge": "ga", "ga-ie": "ga",
-    "portuguese": "pt", "português": "pt", "portugues": "pt",
-    "pt-pt": "pt", "pt-br": "pt", "brazilian": "pt", "brasileiro": "pt",
-    "russian": "ru", "русский": "ru", "ru-ru": "ru",
-    "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
-    "arabic": "ar", "العربية": "ar",
-    "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
-}
+    Resolution order, first existing wins:
+
+    1. ``HERMES_BUNDLED_LOCALES`` env var -- set by the Nix wrapper (or any
+       sealed-packaging system) to point at the installed catalog directory.
+    2. ``<repo-root>/locales`` -- source checkouts and editable installs,
+       where the working tree sits next to ``agent/``.
+
+    Falling through to the source-style path (even when missing) keeps
+    ``_load_catalog`` error messages informative -- it logs the path it
+    looked at -- rather than raising.
+    """
+    override = os.getenv("HERMES_BUNDLED_LOCALES", "").strip()
+    if override:
+        candidate = Path(override)
+        if candidate.is_dir():
+            return candidate
+        logger.warning(
+            "HERMES_BUNDLED_LOCALES points to a non-directory path (%s); "
+            "falling back to bundled/source locale resolution",
+            override,
+        )
+
+    # agent/i18n.py -> agent/ -> repo root (source checkout, editable install)
+    source_dir = Path(__file__).resolve().parent.parent / "locales"
+    return source_dir
+
+
+def _load_locale_registry() -> dict[str, Any]:
+    """Load and validate the cross-runtime language identity registry."""
+    path = _locales_dir() / "registry.json"
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            registry = json.load(f)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Failed to load locale registry {path}: {exc}") from exc
+
+    locales = registry.get("locales")
+    default = registry.get("default")
+    if not isinstance(locales, dict) or not locales:
+        raise RuntimeError(f"Locale registry {path} must define a non-empty locales object")
+    if default not in locales:
+        raise RuntimeError(f"Locale registry {path} default {default!r} is not registered")
+
+    for section in ("aliases", "compatibilityAliases"):
+        entries = registry.get(section)
+        if not isinstance(entries, dict):
+            raise RuntimeError(f"Locale registry {path} must define {section}")
+        invalid = {key: value for key, value in entries.items() if value not in locales}
+        if invalid:
+            raise RuntimeError(f"Locale registry {path} has invalid {section}: {invalid}")
+    return registry
+
+
+_LOCALE_REGISTRY = _load_locale_registry()
+SUPPORTED_LANGUAGES: tuple[str, ...] = tuple(_LOCALE_REGISTRY["locales"])
+DEFAULT_LANGUAGE: str = _LOCALE_REGISTRY["default"]
+_LANGUAGE_ALIASES: dict[str, str] = dict(_LOCALE_REGISTRY["aliases"])
+
+# External protocols and historical configuration may supply region-tagged
+# locale values. Keep that compatibility isolated from the canonical product
+# language registry and user-facing language choices.
+_INTERNAL_COMPATIBILITY_ALIASES: dict[str, str] = dict(
+    _LOCALE_REGISTRY["compatibilityAliases"]
+)
 
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
 
 
-def _locales_dir() -> Path:
-    """Locale dir: ``HERMES_BUNDLED_LOCALES`` (sealed packaging, e.g. Nix) if it exists, else ``<repo-root>/locales``.
+def normalize_language(value: Any) -> str:
+    """Normalize a user-supplied language value to a supported code.
 
-    The source path is returned even when missing so ``_load_catalog`` can log
-    the path it looked at rather than raise.
+    Accepts supported codes directly plus registry-owned aliases and
+    compatibility inputs. Primary-subtag fallback is allowed only when one
+    registered product language owns that family; ambiguous families require
+    an explicit registry mapping. Returns the default language for unknown
+    values.
     """
-    override = os.getenv("HERMES_BUNDLED_LOCALES", "").strip()
-    if override and Path(override).is_dir():
-        return Path(override)
-    if override:
-        logger.warning(
-            "HERMES_BUNDLED_LOCALES points to a non-directory path (%s); "
-            "falling back to bundled/source locale resolution", override,
-        )
-    return Path(__file__).resolve().parent.parent / "locales"
-
-
-def _normalize_lang(value: Any) -> str:
-    """Map a user-supplied value (code, alias, or regional tag like ``zh-CN``) to a supported code, else default."""
-    key = value.strip().lower() if isinstance(value, str) else ""
+    if not isinstance(value, str):
+        return DEFAULT_LANGUAGE
+    key = "-".join(value.strip().lower().replace("_", "-").split())
+    if not key:
+        return DEFAULT_LANGUAGE
     if key in SUPPORTED_LANGUAGES:
         return key
     if key in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[key]
-    base = key.split("-", 1)[0]  # strip region suffix
-    return base if base in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
+    if key in _INTERNAL_COMPATIBILITY_ALIASES:
+        return _INTERNAL_COMPATIBILITY_ALIASES[key]
+    # Strip a region suffix only when the registry has no sibling product pack
+    # in the same language family. This stays language-neutral as new locales
+    # are registered and prevents an arbitrary pack from becoming privileged.
+    base = key.split("-", 1)[0]
+    if base in SUPPORTED_LANGUAGES:
+        has_sibling_pack = any(
+            locale != base and locale.startswith(f"{base}-")
+            for locale in SUPPORTED_LANGUAGES
+        )
+        if has_sibling_pack:
+            return DEFAULT_LANGUAGE
+        return base
+    return DEFAULT_LANGUAGE
+
+
+# Backward-compatible private name retained for existing internal tests and
+# callers while cross-module consumers use the public boundary above.
+_normalize_lang = normalize_language
 
 
 def _cache_catalog(lang: str, flat: dict[str, str]) -> dict[str, str]:
+    """Publish one fully-built catalog under the cache lock."""
     with _catalog_lock:
         _catalog_cache[lang] = flat
     return flat
 
 
 def _load_catalog(lang: str) -> dict[str, str]:
-    """Load one locale YAML flattened to dotted keys; cached per language (empty dict on any failure)."""
+    """Load and flatten one locale YAML file into a dotted-key dict.
+
+    YAML files can be nested for human readability; this produces the flat
+    key space :func:`t` expects.  Cached per-language for the process.
+    """
     with _catalog_lock:
         cached = _catalog_cache.get(lang)
         if cached is not None:
             return cached
 
     path = _locales_dir() / f"{lang}.yaml"
-    flat: dict[str, str] = {}
     if not path.is_file():
         logger.debug("i18n catalog missing for %s at %s", lang, path)
-        return _cache_catalog(lang, flat)
+        return _cache_catalog(lang, {})
+
     try:
-        import yaml
+        import yaml  # PyYAML is already a hermes dependency
         with path.open("r", encoding="utf-8") as f:
-            _flatten_into(yaml.safe_load(f) or {}, "", flat)
+            raw = yaml.safe_load(f) or {}
     except Exception as exc:
         logger.warning("Failed to load i18n catalog %s: %s", path, exc)
-        flat = {}
+        return _cache_catalog(lang, {})
+
+    flat: dict[str, str] = {}
+    _flatten_into(raw, "", flat)
     return _cache_catalog(lang, flat)
 
 
 def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
-    # Non-string, non-dict leaves are ignored -- catalogs are text-only.
     if isinstance(node, dict):
         for key, value in node.items():
-            _flatten_into(value, f"{prefix}.{key}" if prefix else str(key), out)
+            child_key = f"{prefix}.{key}" if prefix else str(key)
+            _flatten_into(value, child_key, out)
     elif isinstance(node, str):
         out[prefix] = node
+    # Non-string, non-dict leaves are ignored -- catalogs are text-only.
 
 
 @lru_cache(maxsize=8)
 def _config_language_cached(hermes_home: str) -> str | None:
-    """``display.language`` from config.yaml, read once per profile home (``t()`` is a hot path).
-    Keyed by home so a multiplexed gateway serving several profiles doesn't freeze the first
-    profile's language for every other profile."""
+    """Read ``display.language`` once per profile home (``t()`` is a hot path).
+
+    Dashboard and Ink own their live locale refresh independently. The shared
+    Python catalog remains stable within each profile while multiplexed gateways
+    can still resolve different configured languages for different profiles.
+    """
     try:
         from hermes_cli.config import load_config_readonly
-        lang = (load_config_readonly().get("display") or {}).get("language")
-        return _normalize_lang(lang) if lang else None
+        cfg = load_config_readonly()
+        lang = (cfg.get("display") or {}).get("language")
+        if lang:
+            return _normalize_lang(lang)
     except Exception as exc:
         logger.debug("Could not read display.language from config: %s", exc)
-        return None
+    return None
 
 
 def _config_language() -> str | None:
@@ -138,7 +225,11 @@ def _config_language() -> str | None:
 
 
 def reset_language_cache() -> None:
-    """Invalidate cached language resolution and catalogs (call after ``save_config`` changes ``display.language``)."""
+    """Invalidate cached language resolution and locale catalogs.
+
+    Call after a deliberate shared-Python language update or in tests. The
+    Dashboard and Ink live-refresh paths do not depend on this cache.
+    """
     _config_language_cached.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
@@ -149,6 +240,7 @@ def get_language() -> str:
     per-profile ``.env`` value, so it is read through the secret scope: under multiplexing a raw
     environ read would impose the default profile's language on every other profile."""
     from agent.secret_scope import UnscopedSecretError, get_secret
+
     try:
         env_lang = get_secret("HERMES_LANGUAGE")
     except UnscopedSecretError:
@@ -157,25 +249,54 @@ def get_language() -> str:
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
-    """Translate a dotted catalog key to the active (or explicit ``lang``) language.
+    """Translate a dotted key to the active language.
 
-    ``format_kwargs`` are applied with ``str.format``. Falls back to English,
-    then to the bare key; a format failure returns the unformatted string.
+    Parameters
+    ----------
+    key
+        Dotted path into the catalog, e.g. ``"approval.choose_long"``.
+    lang
+        Explicit language override.  Takes precedence over env + config.
+    **format_kwargs
+        ``str.format`` substitution arguments (``t("gateway.drain", count=3)``
+        expects a catalog entry with a ``{count}`` placeholder).
+
+    Returns
+    -------
+    The translated string, or the English fallback if the key is missing in
+    the target language, or the bare key if English is also missing.
     """
     target = _normalize_lang(lang) if lang else get_language()
-    value = _load_catalog(target).get(key)
+    catalog = _load_catalog(target)
+    value = catalog.get(key)
+
     if value is None and target != DEFAULT_LANGUAGE:
+        # Fall through to English rather than showing a key path to the user.
         value = _load_catalog(DEFAULT_LANGUAGE).get(key)
+
     if value is None:
+        # Last-ditch: return the key itself.  A broken catalog should not
+        # crash anything; it just looks ugly until someone fixes it.
         logger.debug("i18n miss: key=%r lang=%r", key, target)
         value = key
-    if not format_kwargs:
-        return value
-    try:
-        return value.format(**format_kwargs)
-    except (KeyError, IndexError, ValueError) as exc:
-        logger.warning("i18n format failed for key=%r lang=%r kwargs=%r: %s", key, target, format_kwargs, exc)
-        return value
+
+    if format_kwargs:
+        try:
+            return value.format(**format_kwargs)
+        except (KeyError, IndexError, ValueError) as exc:
+            logger.warning(
+                "i18n format failed for key=%r lang=%r kwargs=%r: %s",
+                key, target, format_kwargs, exc,
+            )
+            return value
+    return value
 
 
-__all__ = ["SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache"]
+__all__ = [
+    "SUPPORTED_LANGUAGES",
+    "DEFAULT_LANGUAGE",
+    "normalize_language",
+    "t",
+    "get_language",
+    "reset_language_cache",
+]

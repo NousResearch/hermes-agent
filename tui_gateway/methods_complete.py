@@ -19,9 +19,37 @@ _SLASH_EXTRAS = [
     ("/logs", "Show recent gateway log lines"),
     ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]
 
+_COMPLETION_META_KEYS = {
+    "@diff": "completion.gitDiff",
+    "@staged": "completion.stagedDiff",
+    "@file:": "completion.attachFile",
+    "@folder:": "completion.attachFolder",
+    "@url:": "completion.fetchUrl",
+    "@git:": "completion.gitLog",
+    "/density": "density",
+    "/details": "details",
+    "/logs": "logs",
+    "/mouse": "mouse",
+}
 
-def _item(text: str, meta: str, display: str | None = None) -> dict:
-    return {"text": text, "display": display if display is not None else text, "meta": meta}
+
+def _item(
+    text: str,
+    meta: str,
+    display: str | None = None,
+    *,
+    meta_key: str | None = None,
+    meta_vars: dict | None = None,
+) -> dict:
+    item = {"text": text, "display": display if display is not None else text, "meta": meta}
+    presentation_key = meta_key or _COMPLETION_META_KEYS.get(text)
+    if presentation_key:
+        item["meta_key"] = presentation_key
+    elif meta == "dir":
+        item["meta_key"] = "completion.directory"
+    if meta_vars:
+        item["meta_vars"] = meta_vars
+    return item
 
 
 def _catch(fail_code: int):
@@ -231,21 +259,38 @@ def _(rid, params: dict) -> dict:
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_skill_commands
     from agent.skill_bundles import get_skill_bundles
+    from hermes_cli.commands import COMMAND_REGISTRY
     completer = SlashCommandCompleter(
         skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles())
     # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
     # skills/bundles are the only completions for an inline `/skill` typed mid-message.
     skill_names = {key.lstrip("/").lower() for key in (*get_skill_commands(), *get_skill_bundles())}
+    command_keys = {
+        f"/{key}": cmd.name
+        for cmd in COMMAND_REGISTRY
+        for key in (cmd.name, *cmd.aliases)
+    }
 
     def to_items(doc: Document) -> list[dict]:
         # display/display_meta are FormattedText; the TUI contract is a plain string
         # (the raw list trips Ink's row layout into 1-char truncation).
-        return [
-            {
-                "text": c.text, "display": to_plain_text(c.display) if c.display else c.text,
-                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
-                "kind": "skill" if c.text.strip().lstrip("/").lower() in skill_names else "command"}
-            for c in completer.get_completions(doc, None)]
+        items = []
+        for completion in completer.get_completions(doc, None):
+            item = {
+                "text": completion.text,
+                "display": to_plain_text(completion.display) if completion.display else completion.text,
+                "meta": to_plain_text(completion.display_meta) if completion.display_meta else "",
+                "kind": (
+                    "skill"
+                    if completion.text.strip().lstrip("/").lower() in skill_names
+                    else "command"
+                ),
+            }
+            token = completion.text if completion.text.startswith("/") else f"/{completion.text}"
+            if description_key := command_keys.get(token):
+                item["meta_key"] = description_key
+            items.append(item)
+        return items
     items = to_items(Document(text, len(text)))
     # Rank + bound while a `/token` is under the cursor (the one stage skills are
     # offered at); an argument stage (`/personality `) keeps its command's order.

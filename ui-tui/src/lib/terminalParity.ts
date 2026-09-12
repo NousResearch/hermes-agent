@@ -1,3 +1,5 @@
+import { type Locale, translate } from '../i18n/index.js'
+
 import {
   detectVSCodeLikeTerminal,
   type FileOps,
@@ -31,10 +33,11 @@ export function detectMacTerminalContext(env: NodeJS.ProcessEnv = process.env): 
 
 export async function terminalParityHints(
   env: NodeJS.ProcessEnv = process.env,
-  options?: { fileOps?: Partial<FileOps>; homeDir?: string }
+  options?: { fileOps?: Partial<FileOps>; homeDir?: string; locale?: Locale }
 ): Promise<MacTerminalHint[]> {
   const ctx = detectMacTerminalContext(env)
   const hints: MacTerminalHint[] = []
+  const locale = options?.locale ?? 'en'
 
   if (
     ctx.vscodeLike &&
@@ -43,7 +46,7 @@ export async function terminalParityHints(
     hints.push({
       key: 'ide-setup',
       tone: 'info',
-      message: `Detected ${ctx.vscodeLike} terminal · run /terminal-setup for best Cmd+Enter / undo parity`
+      message: translate(locale, 'terminal.hint.ide', { terminal: ctx.vscodeLike })
     })
   }
 
@@ -51,8 +54,7 @@ export async function terminalParityHints(
     hints.push({
       key: 'apple-terminal',
       tone: 'warn',
-      message:
-        'Apple Terminal detected · use /paste for image-only clipboard fallback, and try Ctrl+A / Ctrl+E / Ctrl+U if Cmd+←/→/⌫ gets rewritten'
+      message: translate(locale, 'terminal.hint.apple')
     })
   }
 
@@ -60,8 +62,7 @@ export async function terminalParityHints(
     hints.push({
       key: 'tmux',
       tone: 'warn',
-      message:
-        'tmux detected · clipboard copy/paste uses passthrough when available; allow-passthrough improves OSC52 reliability'
+      message: translate(locale, 'terminal.hint.tmux')
     })
   }
 
@@ -69,8 +70,7 @@ export async function terminalParityHints(
     hints.push({
       key: 'remote',
       tone: 'warn',
-      message:
-        'SSH session detected · text clipboard can bridge via OSC52, but image clipboard and local screenshot paths still depend on the machine running Hermes'
+      message: translate(locale, 'terminal.hint.remote')
     })
   }
 

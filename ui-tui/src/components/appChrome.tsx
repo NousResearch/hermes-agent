@@ -9,9 +9,9 @@ import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
-import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { getThinkingVerbs, type I18nApi, LOCALES, shouldEllipsisVerb, useI18n } from '../i18n/index.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
@@ -23,10 +23,42 @@ import { scrollbarColors } from './overlayPrimitives.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Terminal display width: ASCII=1, CJK/fullwidth=2
+const charDispWidth = (c: string) => {
+  const code = c.codePointAt(0) ?? 0
+
+  return (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe10 && code <= 0xfe19) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6)
+    ? 2
+    : 1
+}
+
+export const displayWidth = (s: string) => {
+  let w = 0
+
+  for (const c of s) {
+    w += charDispWidth(c)
+  }
+
+  return w
+}
+
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const VERB_PAD_LEN = Math.max(...LOCALES.flatMap(l => getThinkingVerbs(l)).map(v => displayWidth(v))) + 1 // + ellipsis
+
+export const padVerb = (verb: string) => {
+  const text = `${verb}…`
+  const pad = Math.max(0, VERB_PAD_LEN - displayWidth(text))
+
+  return text + ' '.repeat(pad)
+}
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -110,9 +142,9 @@ export const MAX_DURATION_WIDTH = Math.max(
 // `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
+export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean, hasVerbOverride = false): number => {
   const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+  const verb = showVerb || hasVerbOverride ? 1 + VERB_PAD_LEN : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
@@ -130,8 +162,9 @@ function FaceTicker({
   style: IndicatorStyle
   verbOverride?: string
 }) {
+  const { locale, verbs } = useI18n()
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * verbs.length))
   const [now, setNow] = useState(() => Date.now())
   const isOccluded = useStore($isStatusRuleOccluded)
 
@@ -176,8 +209,8 @@ function FaceTicker({
   }, [displayVerb, freezeVerb, intervalMs, isOccluded])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
+  const verb = verbOverride ?? verbs[verbTick % verbs.length] ?? ''
+  const verbSegment = displayVerb ? ` ${shouldEllipsisVerb(locale) ? `${verb}…` : padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -213,8 +246,8 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
   return t.color.statusGood
 }
 
-function statusSessionCountLabel(count: number) {
-  return `${count} ${count === 1 ? 'session' : 'sessions'}`
+function statusSessionCountLabel(count: number, i18n: I18nApi) {
+  return i18n.t(count === 1 ? 'sessions.count.liveOne' : 'sessions.count.liveMany', { count })
 }
 
 // Colour the battery read-out by its (Python-computed) category. Inverted vs
@@ -483,7 +516,13 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
-export function StatusRule({
+export function StatusRule(props: StatusRuleProps) {
+  const i18n = useI18n()
+
+  return <StatusRuleView {...props} i18n={i18n} />
+}
+
+export function StatusRuleView({
   battery,
   focusView,
   cwdLabel,
@@ -505,10 +544,14 @@ export function StatusRule({
   sessionTitle,
   sessionStartedAt,
   turnStartedAt,
-  voiceLabel,
+  voiceRecording,
+  voiceProcessing,
+  voiceEnabled,
+  voiceTts,
   onSessionCountClick,
+  i18n,
   t
-}: StatusRuleProps) {
+}: StatusRuleProps & { i18n: I18nApi }) {
   const pct = usage.context_percent
   const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
@@ -524,15 +567,26 @@ export function StatusRule({
     ok('context_detail') || ok('context_pct')
       ? usage.context_max
         ? segs.compactCtx
-          ? `${contextMark}${fmtK(usage.context_used ?? 0)} tok`
+          ? `${contextMark}${fmtK(usage.context_used ?? 0)} ${i18n.t('usage.tokensShort')}`
           : `${contextMark}${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
         : usage.total > 0
-          ? `${fmtK(usage.total)} tok`
+          ? `${fmtK(usage.total)} ${i18n.t('usage.tokensShort')}`
           : ''
       : ''
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const statusText = i18n.tStatus(status)
+  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
+  const compressionText = `${i18n.t('usage.compressionsShort')} ${compressions}`
+  const bgText = `${bgCount} ${i18n.t('background.short')}`
+
+  const voiceLabel = voiceRecording
+    ? `● ${i18n.t('voice.recordingShort')}`
+    : voiceProcessing
+      ? `◉ ${i18n.t('voice.transcribingShort')}`
+      : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) +
+        (voiceTts ? ' [tts]' : '')
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
@@ -558,10 +612,10 @@ export function StatusRule({
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
   const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
+    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null, compacting)
     : showNotice
       ? noticeReserve
-      : stringWidth(status)
+      : stringWidth(statusText)
 
   const essentialWidth =
     stringWidth('─ ') +
@@ -576,9 +630,8 @@ export function StatusRule({
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
-  // mid-segment, so status/model/context are never crushed.
+  // descending priority order. Lower-priority segments drop first and nothing
+  // truncates mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
@@ -592,9 +645,7 @@ export function StatusRule({
     return false
   }
 
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
-  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
-
+  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount, i18n) : ''
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
@@ -614,7 +665,7 @@ export function StatusRule({
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
   const showCompressions =
-    segs.compressions && ok('compressions') && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
+    segs.compressions && ok('compressions') && compressions > 0 && fits(SEP + stringWidth(compressionText))
 
   // Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic
   // CLI bar (PR #98250). The server omits the keys when no data exists (zero
@@ -628,9 +679,8 @@ export function StatusRule({
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(bgText))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
-
   const showSubagents =
     segs.subagents && ok('bg_subagents') && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
 
@@ -641,8 +691,9 @@ export function StatusRule({
   // Width-budgeted like every tail segment, so it drops first on a tight
   // terminal where ⛓ already carries the signal.
   const resumeHintText =
-    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
-
+    subagentCount === 1
+      ? i18n.t('background.resumeWhenSubagentFinishes')
+      : i18n.t('background.resumeWhenSubagentsFinish', { count: String(subagentCount) })
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
@@ -686,11 +737,11 @@ export function StatusRule({
               color={statusColor}
               startedAt={turnStartedAt}
               style={indicatorStyle}
-              verbOverride={compacting ? 'compacting' : undefined}
+              verbOverride={compacting ? i18n.tStatus('compacting') : undefined}
             />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
-              {status}
+              {statusText}
             </Text>
           )}
         </Box>
@@ -708,7 +759,7 @@ export function StatusRule({
         <Box flexDirection="row" flexShrink={0}>
           {DEV_CREDITS_MODE ? (
             <Text color={t.color.warn} wrap="truncate-end">
-              {' (dev credits)'}
+              {i18n.t('status.devCredits')}
             </Text>
           ) : null}
           <Text color={t.color.muted} wrap="truncate-end">
@@ -725,7 +776,7 @@ export function StatusRule({
         {showFocus ? (
           <Box flexDirection="row" flexShrink={0}>
             <Text color={t.color.muted}>{' │ '}</Text>
-            <Text color={t.color.warn}>◉ focus</Text>
+            <Text color={t.color.warn}>◉ {i18n.t('focus.badge')}</Text>
           </Box>
         ) : null}
         {showBar ? (
@@ -751,7 +802,7 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
-              cmp {compressions}
+              {compressionText}
             </Text>
           </Text>
         ) : null}
@@ -798,7 +849,7 @@ export function StatusRule({
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            {bgCount} bg
+            {bgText}
           </Text>
         ) : null}
         {showSubagents ? (
@@ -855,8 +906,9 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
 }
 
 export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: StickyPromptTrackerProps) {
+  const { locale } = useI18n()
   const { atBottom, bottom, top } = useViewportSnapshot(scrollRef)
-  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom)
+  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom, locale)
 
   useEffect(() => onChange(text), [onChange, text])
 
@@ -959,7 +1011,10 @@ interface StatusRuleProps {
   t: Theme
   turnStartedAt?: null | number
   usage: Usage
-  voiceLabel?: string
+  voiceRecording: boolean
+  voiceProcessing: boolean
+  voiceEnabled: boolean
+  voiceTts: boolean
   onSessionCountClick?: () => void
 }
 

@@ -459,13 +459,13 @@ export const api = {
     fetchJSON<{ ok: boolean; removed: number; skipped_open: number }>(
       "/api/sessions/prune",
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           older_than_days,
           source,
           profile: profile || undefined,
-        }),
+    }),
       },
     ),
   listFiles: (path?: string) => {
@@ -521,6 +521,10 @@ export const api = {
     ),
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
+  getConfigRevision: (profile = getManagementProfile()) =>
+    fetchJSON<ConfigRevisionResponse>(
+      appendProfileParam("/api/config/revision", profile),
+    ),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
@@ -1924,6 +1928,12 @@ export interface StatusResponse {
   version: string;
 }
 
+export interface ConfigRevisionResponse {
+  mtime_ns: number;
+  path: string;
+  size: number;
+}
+
 /** NS-656: coarse memory telemetry served by /api/status. */
 export interface MemoryPressureStatus {
   pressure: "ok" | "elevated" | "critical" | "unknown";
@@ -2358,7 +2368,9 @@ export interface SkillWriteResult {
 export interface ToolsetInfo {
   name: string;
   label: string;
+  labelKey?: string;
   description: string;
+  descriptionKey?: string;
   platform: string;
   platform_label: string;
   enabled: boolean;
@@ -2612,7 +2624,9 @@ export interface DashboardFontResponse {
 export interface PluginManifestResponse {
   name: string;
   label: string;
+  labelKey?: string;
   description: string;
+  descriptionKey?: string;
   icon: string;
   version: string;
   tab: {

@@ -13,6 +13,8 @@ export interface GatewayCompletionItem {
    *  skill bundles — the only kind offered for an inline `/skill` reference. */
   kind?: string
   meta?: string
+  meta_key?: string
+  meta_vars?: Record<string, string | number>
   text: string
 }
 
@@ -30,6 +32,7 @@ export interface GatewayTranscriptMessage {
 export interface CommandsCatalogResponse {
   canon?: Record<string, string>
   categories?: SlashCategory[]
+  description_keys?: Record<string, string>
   pairs?: [string, string][]
   skill_count?: number
   sub?: Record<string, string[]>
@@ -85,6 +88,7 @@ export interface ConfigDisplayConfig {
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean
+  language?: string
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean
@@ -164,6 +168,7 @@ export interface ConfigSetResponse {
   deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
+  scope?: 'global' | 'once' | 'session'
   value?: string
   warning?: string
 }
@@ -300,6 +305,18 @@ export interface SessionUsageResponse {
 }
 
 export interface SessionStatusResponse {
+  details?: {
+    agent_running: boolean
+    created: string
+    last_activity: string
+    model: string
+    path: string
+    project?: string
+    provider: string
+    session_id: string
+    title?: string
+    tokens: number
+  }
   output?: string
 }
 
@@ -312,6 +329,14 @@ export interface SessionCompressResponse {
   messages?: GatewayTranscriptMessage[]
   removed?: number
   summary?: {
+    aborted?: boolean
+    after_count?: number
+    after_tokens?: number
+    before_count?: number
+    before_tokens?: number
+    dropped_count?: number
+    failure_reason?: null | string
+    fallback_used?: boolean
     headline?: string
     noop?: boolean
     note?: null | string
@@ -381,6 +406,7 @@ export interface ClipboardPasteResponse {
   count?: number
   height?: number
   message?: string
+  reason?: 'empty' | 'extract_failed' | string
   token_estimate?: number
   width?: number
 }
@@ -651,13 +677,31 @@ export interface SpawnTreeLoadResponse {
 }
 
 export type GatewayEvent =
-  | { payload?: { heartbeat?: boolean; skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
+  | {
+      payload?: {
+        heartbeat?: boolean
+        language?: string
+        replay_epoch?: string
+        skin?: GatewaySkin
+      }
+      session_id?: string
+      type: 'gateway.ready'
+    }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
   | { payload?: { kind?: string }; session_id?: string; type: 'reaction' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
-  | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
+  | {
+      payload?: {
+        kind?: string
+        text?: string
+        text_key?: string
+        text_vars?: Record<string, string | number>
+      }
+      session_id?: string
+      type: 'status.update'
+    }
   | {
       payload?: {
         id?: string
@@ -665,6 +709,8 @@ export type GatewayEvent =
         kind?: 'sticky' | 'ttl'
         level?: 'error' | 'info' | 'success' | 'warn'
         text?: string
+        text_key?: string
+        text_vars?: Record<string, string | number>
         ttl_ms?: null | number
       }
       session_id?: string

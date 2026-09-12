@@ -3,6 +3,7 @@ import { Text, useInput } from '@hermes/ink'
 import { type ReactNode, useState } from 'react'
 
 import type { UsageModelData } from '../gatewayTypes.js'
+import { type Locale, translate } from '../i18n/index.js'
 import { liftForContrast, mix } from '../lib/color.js'
 import type { Theme } from '../theme.js'
 
@@ -161,7 +162,7 @@ export function barCells(ratio: number, cells: number = BAR_CELLS): { bar: strin
  *   `Plus    [██████░░░░]  $14.00 of $20.00 · 30% used`
  * Renders nothing for a free account (no bars to draw — caller shows upsell).
  */
-export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: Theme }) {
+export function UsageBars({ locale, model, t }: { locale: Locale; model: undefined | UsageModelData; t: Theme }) {
   if (!model || !model.available) {
     return null
   }
@@ -169,12 +170,12 @@ export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: 
   const rows: ReactNode[] = []
   // Label the plan bar with the plan name (padded for column alignment with the
   // top-up row). Falls back to 'plan' when the name is absent.
-  const planLabel = (model.plan_name || 'plan').padEnd(8).slice(0, 8)
+  const planLabel = (model.plan_name || translate(locale, 'usage.bar.planFallback')).padEnd(8).slice(0, 8)
 
   if (model.plan_bar) {
     const b = model.plan_bar
     const { bar } = barCells(b.fill_fraction)
-    const pct = b.pct_used == null ? '' : ` · ${b.pct_used}% used`
+    const pct = b.pct_used == null ? '' : ` · ${translate(locale, 'usage.bar.percentUsed', { percent: b.pct_used })}`
 
     rows.push(
       <Text color={t.color.text} key="plan">
@@ -182,7 +183,11 @@ export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: 
         <Text color={t.color.muted}>[</Text>
         <Text color={t.color.accent}>{bar}</Text>
         <Text color={t.color.muted}>]</Text>
-        {`  ${b.remaining_display} left of ${b.total_display}${pct}`}
+        {`  ${translate(locale, 'usage.bar.remainingOfTotal', {
+          percent: pct,
+          remaining: b.remaining_display,
+          total: b.total_display
+        })}`}
       </Text>
     )
   }
@@ -193,11 +198,11 @@ export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: 
 
     rows.push(
       <Text color={t.color.text} key="topup">
-        {'top-up  '}
+        {`${translate(locale, 'usage.bar.topUpLabel').padEnd(8).slice(0, 8)}`}
         <Text color={t.color.muted}>[</Text>
         <Text color={t.color.ok}>{bar}</Text>
         <Text color={t.color.muted}>]</Text>
-        {`  ${b.remaining_display} · never expires`}
+        {`  ${translate(locale, 'usage.bar.neverExpires', { remaining: b.remaining_display })}`}
       </Text>
     )
   }
@@ -214,31 +219,43 @@ export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: 
  * /usage transcript panel). Returns one string per line: a plan bar, a top-up
  * bar, and a total-spendable summary, whichever apply. Dollars only.
  */
-export function usageBarsText(model: undefined | UsageModelData): string[] {
+export function usageBarsText(model: undefined | UsageModelData, locale: Locale = 'en'): string[] {
   if (!model || !model.available) {
     return []
   }
 
   const lines: string[] = []
-  const planLabel = (model.plan_name || 'plan').padEnd(8).slice(0, 8)
+  const planLabel = (model.plan_name || translate(locale, 'usage.bar.planFallback')).padEnd(8).slice(0, 8)
 
   if (model.plan_bar) {
     const b = model.plan_bar
     const { bar } = barCells(b.fill_fraction)
-    const pct = b.pct_used == null ? '' : ` · ${b.pct_used}% used`
+    const pct = b.pct_used == null ? '' : ` · ${translate(locale, 'usage.bar.percentUsed', { percent: b.pct_used })}`
 
-    lines.push(`${planLabel}[${bar}]  ${b.remaining_display} left of ${b.total_display}${pct}`)
+    lines.push(
+      `${planLabel}[${bar}]  ${translate(locale, 'usage.bar.remainingOfTotal', {
+        percent: pct,
+        remaining: b.remaining_display,
+        total: b.total_display
+      })}`
+    )
   }
 
   if (model.topup_bar) {
     const b = model.topup_bar
     const { bar } = barCells(1)
 
-    lines.push(`top-up  [${bar}]  ${b.remaining_display} · never expires`)
+    lines.push(
+      `${translate(locale, 'usage.bar.topUpLabel').padEnd(8).slice(0, 8)}[${bar}]  ${translate(
+        locale,
+        'usage.bar.neverExpires',
+        { remaining: b.remaining_display }
+      )}`
+    )
   }
 
   if (model.total_spendable_display && model.has_topup) {
-    lines.push(`Total spendable: ${model.total_spendable_display}`)
+    lines.push(translate(locale, 'usage.bar.totalSpendable', { total: model.total_spendable_display }))
   }
 
   return lines

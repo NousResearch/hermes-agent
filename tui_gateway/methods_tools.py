@@ -338,12 +338,27 @@ class _Catalog:
         self.pairs: list[list[str]] = []
         self.canon: dict[str, str] = {}
         self.commands: dict[str, dict[str, str | None]] = {}
+        self.description_keys: dict[str, str] = {}
         self.cat_map: dict[str, list[list[str]]] = {}  # insertion order = category order
 
-    def add(self, key: str, desc: str, cat: str) -> None:
+    def add(self, key: str, desc: str, cat: str, *, description_key: str | None = None) -> None:
         self.canon[key.lower()] = key
         self.pairs.append([key, desc])
+        self.description_keys[key] = description_key or key.lstrip("/")
         self.cat_map.setdefault(cat, []).append([key, desc])
+
+
+def _command_category_key(category: str) -> str:
+    """Stable presentation id; clients own localized category copy."""
+    return {
+        "Session": "session",
+        "Configuration": "configuration",
+        "Tools & Skills": "tools",
+        "Info": "info",
+        "Exit": "exit",
+        "TUI": "tui",
+        "User commands": "userCommands",
+    }.get(category, "")
 
 
 def _catalog_registry(cat: _Catalog) -> None:
@@ -353,7 +368,12 @@ def _catalog_registry(cat: _Catalog) -> None:
         cat.commands.update({f"/{key}": dict(meta) for key in (cmd.name, *cmd.aliases)})
         if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
             continue
-        cat.add(f"/{cmd.name}", commands._build_description(cmd), cmd.category)
+        cat.add(
+            f"/{cmd.name}",
+            commands._build_description(cmd),
+            cmd.category,
+            description_key=cmd.name,
+        )
         for a in cmd.aliases:
             cat.canon[f"/{a}".lower()] = f"/{cmd.name}"
     for name, desc, category in _TUI_EXTRA:
@@ -424,7 +444,11 @@ def _(rid, params: dict) -> dict:
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
         "commands": cat.commands,
-        "categories": [{"name": c, "pairs": rows} for c, rows in cat.cat_map.items()],
+        "categories": [
+            {"name": c, "key": _command_category_key(c), "pairs": rows}
+            for c, rows in cat.cat_map.items()
+        ],
+        "description_keys": cat.description_keys,
         "skills": skills, "skill_count": len(skills), "warning": warning})
 
 

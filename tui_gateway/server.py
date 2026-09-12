@@ -866,6 +866,7 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
             notified_slow = True  # one keyed, replace-in-place notice (toast / status bar)
             _emit("notification.show", sid, {
                 "text": "Still starting the agent (tool discovery / model setup) — your message will be sent as soon as it's ready.",
+                "text_key": "notification.agentStartingSlow",
                 "level": "info", "kind": "agent", "ttl_ms": None,
                 "key": _AGENT_BUILD_SLOW_NOTICE_KEY, "id": _AGENT_BUILD_SLOW_NOTICE_KEY})
     if notified_slow:

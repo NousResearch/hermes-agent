@@ -21,7 +21,7 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
 
   const currentDashboardLabel = useMemo(
     () =>
-      (t.app.currentProfileOption ?? "this dashboard ({name})").replace(
+      t.app.currentProfileOption.replace(
         "{name}",
         currentProfile || "default",
       ),
@@ -32,7 +32,7 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
 
   const managed = profile || currentProfile || "default";
   const isOther = !!profile && profile !== currentProfile;
-  const managingLabel = t.app.managingProfile ?? "Managing profile";
+  const managingLabel = t.app.managingProfile;
 
   return (
     <div

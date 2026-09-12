@@ -34,4 +34,14 @@ describe('billingDialogCopy', () => {
     expect(copy.title).toContain('DeepSeek')
     expect(copy.confirmLabel).toBe('Switch provider')
   })
+
+  it('uses the active locale without adding locale-specific control flow', () => {
+    const copy = billingDialogCopy(
+      makeBlock({ billing_url: null, provider_label: 'DeepSeek' }),
+      'zh'
+    )
+    expect(copy.title).toBe('额度已用尽 · DeepSeek')
+    expect(copy.confirmLabel).toBe('切换服务商')
+    expect(copy.cancelLabel).toBe('关闭')
+  })
 })

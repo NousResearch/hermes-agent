@@ -5,7 +5,7 @@ import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
-import { PreviewPane } from './preview-pane'
+import { guestWindowOpenTarget, installGuestWindowOpenHandler, PreviewPane } from './preview-pane'
 
 // The consent dialog has its own test file and needs a QueryClientProvider;
 // these tests exercise the pane's console/watch/webview wiring, not the
@@ -639,5 +639,56 @@ describe('PreviewPane console state', () => {
       path: `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
       profile: 'macmini'
     })
+  })
+
+  // target=_blank links were silently dropped: without `allowpopups` Chromium
+  // blocks the popup before any handler runs, and the removed `new-window`
+  // event (gone in Electron 40) never fires (#101190).
+  it('allows guest popups so target=_blank reaches the window-open handler', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'http://localhost:5174', url: 'http://localhost:5174' }}
+        />
+      )
+    })
+
+    expect(rendered.container.querySelector('webview')?.getAttribute('allowpopups')).not.toBeNull()
+  })
+
+  it.each([
+    ['passes an https link through', 'https://example.com/docs', 'https://example.com/docs'],
+    ['trims the URL', '  https://example.com  ', 'https://example.com'],
+    ['rejects an empty URL', '   ', null],
+    ['rejects javascript: URLs', 'javascript:alert(1)', null],
+    ['rejects data: URLs', 'data:text/html,<h1>x</h1>', null]
+  ])('guestWindowOpenTarget %s', (_case, input, expected) => {
+    expect(guestWindowOpenTarget(input)).toBe(expected)
+  })
+
+  it('routes guest window-opens in place and never opens an OS popup', () => {
+    const navigate = vi.fn()
+    let handler!: (details: { url: string }) => { action: 'deny' }
+
+    const webview = {
+      setWindowOpenHandler: vi.fn((next: typeof handler) => {
+        handler = next
+      })
+    }
+
+    installGuestWindowOpenHandler(webview as never, navigate)
+
+    expect(webview.setWindowOpenHandler).toHaveBeenCalledOnce()
+    expect(handler({ url: 'https://example.com/new' })).toEqual({ action: 'deny' })
+    expect(navigate).toHaveBeenCalledWith('https://example.com/new')
+
+    navigate.mockClear()
+    expect(handler({ url: 'javascript:alert(1)' })).toEqual({ action: 'deny' })
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('installGuestWindowOpenHandler is a no-op without the Electron API', () => {
+    expect(() => installGuestWindowOpenHandler({} as never, vi.fn())).not.toThrow()
   })
 })

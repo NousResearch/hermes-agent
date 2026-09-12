@@ -210,18 +210,24 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
                              overlay.base_url_override, "", "hermes")
     # Plugin-registered profiles (plugins/model-providers/<name>/) absent from models.dev and
     # HERMES_OVERLAYS would otherwise be "Unknown provider" in /model, --provider and model-switch
-    # even though the picker lists them. Only profiles with a concrete endpoint resolve here:
+    # even though the picker lists them. Profiles may declare a literal or env-configured endpoint:
     # placeholder profiles like ``custom`` (aliases ollama/local/vllm) ship an empty base_url and
     # are completed by config.yaml custom_providers — resolving them would preempt
     # resolve_provider_full's custom step and collapse keyed ``custom:<name>`` ids to bare custom.
     try:
         from providers import get_provider_profile as _profile
         _prof = _profile(canonical)
-        if _prof is not None and (_prof.base_url or "").strip():
+        if _prof is not None:
+            _env_vars = tuple(_prof.env_vars or ())
+            _url_vars = tuple(v for v in _env_vars if v.endswith(("_BASE_URL", "_URL")))
+            _key_vars = tuple(v for v in _env_vars if v not in _url_vars)
+            if not ((_prof.base_url or "").strip() or (_prof.auth_type == "api_key" and _key_vars and _url_vars)):
+                return None
             _api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
-            return ProviderDef(id=canonical, name=_prof.display_name or _prof.name or canonical,
+            return ProviderDef(id=_prof.name, name=_prof.display_name or _prof.name or canonical,
                                transport=_api_mode_to_transport.get(_prof.api_mode, "openai_chat"),
-                               api_key_env_vars=tuple(_prof.env_vars or ()), base_url=_prof.base_url or "",
+                               api_key_env_vars=_key_vars, base_url=_prof.base_url or "",
+                               base_url_env_var=next(iter(_url_vars), ""),
                                auth_type=_prof.auth_type or "api_key", source="plugin-profile")
     except Exception:
         pass
@@ -495,6 +501,10 @@ def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = 
             return pdef
     pdef = get_provider(canonical)
     if pdef is not None:
+        if pdef.source == "plugin-profile" and user_providers:
+            user_pdef = resolve_user_provider(pdef.id, user_providers)
+            if user_pdef is not None:
+                return user_pdef
         return pdef
     if user_providers:
         for candidate in (canonical, raw):

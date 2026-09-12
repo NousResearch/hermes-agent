@@ -2408,6 +2408,166 @@ export function useSessionActions({
     [copy, forkBranch]
   )
 
+  const resetCurrentSession = useCallback(async (): Promise<boolean> => {
+    const storedSessionId = selectedStoredSessionIdRef.current
+
+    // A reset must never race an in-flight turn: that turn can still persist
+    // messages or update the old row after its replacement is made durable.
+    if (!storedSessionId || busyRef.current) {
+      return false
+    }
+
+    // The selected row is the authoritative source of the durable presentation
+    // state that /clear carries forward. Do not create a replacement when that
+    // source cannot be resolved: an ownerless reset is worse than keeping the
+    // chat the user can still see.
+    const listed = findListedSession(storedSessionId)
+    const original = listed?.session ?? (await resolveStoredSession(storedSessionId))
+
+    if (!original) {
+      notifyError(new Error('Session could not be resolved'), copy.createSessionFailed)
+
+      return false
+    }
+
+    const ownerRoute = getSessionOwnerHint(storedSessionId) ?? sessionOwnerRouteFromRow(original)
+    const owner: SessionOwnerScope = ownerRoute ?? original.profile
+    const profile = ownerRoute?.targetProfile || ownerRoute?.profile || original.profile?.trim() || 'default'
+    const cwd = original.cwd?.trim() || ''
+    const title = original.title ?? null
+    const originalPinId = sessionPinId(original)
+    const previousPinned = $pinnedSessionIds.get()
+    const previousMessages = $messages.get()
+    const previousRuntimeId = activeSessionIdRef.current
+    let replacementId: string | null = null
+    let originalDeleted = false
+
+    try {
+      // This request is the reset linearization point. `persist: true` makes
+      // the gateway commit the empty successor (and title) before *any* delete,
+      // list, pin, selection, or route mutation can touch the original.
+      if (ownerRoute) {
+        await ensureGatewayAgent(ownerRoute.connectionId, ownerRoute.profile)
+      } else {
+        await ensureGatewayProfile(profile)
+      }
+
+      const created = await requestForSessionProfile<SessionCreateResponse>(owner, requestGateway, 'session.create', {
+        cols: 96,
+        source: 'desktop',
+        persist: true,
+        ...(cwd ? { cwd } : {}),
+        ...(profile ? { profile } : {}),
+        ...(title ? { title } : {})
+      })
+
+      const persistedReplacementId = created.stored_session_id
+
+      if (!persistedReplacementId) {
+        throw new Error('Gateway did not return a persisted replacement session')
+      }
+
+      replacementId = persistedReplacementId
+
+      if (ownerRoute) {
+        setSessionOwnerHint(replacementId, ownerRoute)
+      }
+
+      // The original is still selected/listed/pinned until the replacement is
+      // durable AND its delete succeeds. A failed delete therefore leaves the
+      // old conversation exactly intact; best-effort cleanup only removes the
+      // unused durable successor.
+      const deleted = await deleteSession(storedSessionId, owner)
+
+      if (!deleted.ok) {
+        throw new Error('Gateway did not delete the original session')
+      }
+
+      originalDeleted = true
+
+      const originalIds = [storedSessionId, original.id, original._lineage_root_id].filter(
+        (id): id is string => Boolean(id)
+      )
+
+      tombstoneSessions(originalIds)
+      beginSessionMutation(originalIds)
+
+      try {
+        dropListedSession(storedSessionId)
+        $archivedSessions.set($archivedSessions.get().filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+        upsertOptimisticSession(created, persistedReplacementId, title, null, null, undefined, ownerRoute)
+        $pinnedSessionIds.set(previousPinned.map(pinId => (pinId === originalPinId ? persistedReplacementId : pinId)))
+
+        resetViewSync()
+        activeSessionIdRef.current = created.session_id
+        selectedStoredSessionIdRef.current = persistedReplacementId
+        ensureSessionState(created.session_id, persistedReplacementId)
+        setActiveSessionId(created.session_id)
+        setSelectedStoredSessionId(persistedReplacementId)
+        setMessages([])
+        setBusy(false)
+        setAwaitingResponse(false)
+        setFreshDraftReady(false)
+        setSessionStartedAt(Date.now())
+        setTurnStartedAt(null)
+        setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
+        setYoloActive(false)
+
+        const runtimeInfo = applyRuntimeInfo(created.info)
+
+        if (runtimeInfo) {
+          updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), persistedReplacementId)
+        }
+
+        navigate(sessionRoute(persistedReplacementId), { replace: true })
+        broadcastSessionsChanged()
+      } finally {
+        endSessionMutation(originalIds)
+      }
+
+      // Closing after the durable delete means a delete failure never leaves
+      // the original selected but backed by a deliberately closed runtime.
+      if (previousRuntimeId) {
+        await requestForSessionProfile(owner, requestGateway, 'session.close', { session_id: previousRuntimeId }).catch(
+          () => undefined
+        )
+      }
+
+      dropTranscriptTailEverywhere(storedSessionId)
+      forgetSessionUnread(originalIds, profile)
+      clearQueuedPrompts(storedSessionId)
+      clearSessionControl(previousRuntimeId ?? storedSessionId)
+
+      return true
+    } catch (error) {
+      // No original mutation occurs before deleteSession succeeds. If creation
+      // or delete fails, leave its selection, sidebar row and pin untouched.
+      if (replacementId && !originalDeleted) {
+        await deleteSession(replacementId, owner).catch(() => undefined)
+      }
+
+      setSelectedStoredSessionId(storedSessionId)
+      selectedStoredSessionIdRef.current = storedSessionId
+      activeSessionIdRef.current = previousRuntimeId
+      setActiveSessionId(previousRuntimeId)
+      setMessages(previousMessages)
+      $pinnedSessionIds.set(previousPinned)
+      notifyError(error, copy.createSessionFailed)
+
+      return false
+    }
+  }, [
+    activeSessionIdRef,
+    busyRef,
+    copy,
+    ensureSessionState,
+    navigate,
+    requestGateway,
+    resetViewSync,
+    selectedStoredSessionIdRef,
+    updateSessionState
+  ])
+
   const removeSession = useCallback(
     async (storedSessionId: string) => {
       clearNotifications()
@@ -2643,6 +2803,7 @@ export function useSessionActions({
     openNewSessionTile,
     openSettings,
     removeSession,
+    resetCurrentSession,
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft

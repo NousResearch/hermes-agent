@@ -64,6 +64,33 @@ def test_parentless_seed_survives_a_restart_and_hides_its_runbook(monkeypatch, t
         db.close()
 
 
+def test_explicit_persist_keeps_an_empty_replacement_row(monkeypatch, tmp_path):
+    """A reset successor is durable before the client deletes its original row."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _quiet_create(monkeypatch, db)
+    sid = None
+    try:
+        result = _create({
+            "cols": 96,
+            "cwd": str(tmp_path),
+            "persist": True,
+            "source": "desktop",
+            "title": "Keep this title"
+        })
+        sid, key = result["session_id"], result["stored_session_id"]
+
+        row = db.get_session(key)
+        assert row is not None
+        assert row["title"] == "Keep this title"
+        assert row["cwd"] == str(tmp_path)
+        assert db.get_messages_as_conversation(key) == []
+        assert server._sessions[sid]["pending_title"] is None
+    finally:
+        if sid:
+            server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_branch_child_seed_is_written_once(monkeypatch, tmp_path):
     """A seeded branch child persists its copied transcript at create (#93959); the first prompt's seed
     persist is the fallback for a failed create-time copy, not a second copy."""

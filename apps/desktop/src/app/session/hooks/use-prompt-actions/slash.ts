@@ -148,6 +148,7 @@ interface SlashCommandDeps {
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
   requestGateway: GatewayRequest
+  resetCurrentSession?: () => Promise<boolean>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -175,6 +176,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     openMemoryGraph,
     refreshSessions,
     requestGateway,
+    resetCurrentSession,
     resumeStoredSession,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
@@ -495,6 +497,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
         new: async () => {
           startFreshSessionDraft()
+        },
+        clear: async () => {
+          await resetCurrentSession?.()
         },
         branch: async () => {
           await branchCurrentSession()
@@ -1231,6 +1236,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       openMemoryGraph,
       refreshSessions,
       requestGateway,
+      resetCurrentSession,
       resumeStoredSession,
       selectedStoredSessionIdRef,
       startFreshSessionDraft,

@@ -1358,6 +1358,7 @@ class TestKillProcess:
                 raise psutil.AccessDenied(self.pid)
 
         monkeypatch.setattr(ProcessRegistry, "_host_pid_is_ours", lambda *_args: True)
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds", lambda: 0.0)
         monkeypatch.setattr(psutil, "Process", lambda _pid: _InaccessibleProcess())
         monkeypatch.setattr(
             pr.subprocess,

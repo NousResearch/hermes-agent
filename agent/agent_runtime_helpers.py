@@ -2864,10 +2864,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return _realign_tool_result_names(messages)
 
 
-_ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")
+_ACK_FUTURE_RE = re.compile(
+    r"\b(i['’]ll|i will|let me|i can do that|i can help with that"
+    r"|i am now|i'm now|i am currently|i'm currently)\b")
 _ACK_ACTION_MARKERS = (
     "look into", "look at", "inspect", "scan", "check", "analyz", "review", "explore", "read", "open",
     "run", "test", "fix", "debug", "search", "find", "walkthrough", "report back", "summarize",
+    "compiling", "writing", "generating", "creating", "building", "preparing", "assembling",
+    "putting together",
 )
 _ACK_WORKSPACE_MARKERS = (
     "directory", "current directory", "current dir", "cwd", "repo", "repository", "codebase",

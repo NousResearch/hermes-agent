@@ -344,6 +344,8 @@ No additional credential is required when `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_O
 
 **No `[TRUNCATED]` footers here:** `web.extract_char_limit` and the head+tail window described [above](#how-web_extract-handles-long-pages) bound results that pass through Hermes, and the native fetch never does — it runs inside the Messages API request, so the ~25 000-token server-side cap is what bounds it instead.
 
+**No result caching either:** the [result cache](#result-caching) covers calls Hermes executes, so `web.cache_enabled`, `web.cache_ttl_minutes` and `web.cache_exempt_hosts` have no effect on this backend — a repeated search runs, and is billed, again.
+
 ---
 
 ### xAI (Grok) {#xai-grok}

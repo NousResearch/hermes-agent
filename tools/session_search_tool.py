@@ -473,8 +473,12 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               around_message_id, window, sort, profile, detail, owned_dbs) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
-    # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
-    # split on it and adopt the embedded profile only when none was passed.
+    # Accept raw links as well as already-split ids/profile paths.
+    if isinstance(session_id, str) and session_id.startswith("@session:"):
+        session_id = session_id.removeprefix("@session:")
+        if not session_id.strip():
+            return tool_error("Empty session id in @session: link", success=False)
+    # Ids never contain "/"; an explicit profile takes precedence over the link.
     if isinstance(session_id, str) and "/" in session_id:
         emb_profile, _, emb_id = session_id.partition("/")
         if emb_id:
@@ -542,7 +546,7 @@ SESSION_SEARCH_SCHEMA = {
         "(top-N matching sessions, top result fully hydrated); `session_id` + "
         "`around_message_id` = scroll (window of messages around an anchor); "
         "`session_id` alone = read a whole session — how you resolve an "
-        "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
+        "`@session:[<profile>/]<id>` link (pass it verbatim as session_id); no "
         "args = browse recent sessions. Results are actual DB messages, no LLM. "
         "Searches conversation history ONLY — when the user gave a direct "
         "source (URL, file, contact, live system), inspect that first; never "
@@ -595,9 +599,9 @@ SESSION_SEARCH_SCHEMA = {
             "session_id": {
                 "type": "string",
                 "description": (
-                    "Scroll shape. Session to read inside. Use the session_id returned "
-                    "from a prior discovery call. Must be paired with "
-                    "around_message_id."
+                    "Read or scroll shape. Session id, <profile>/<id>, or raw "
+                    "@session:[<profile>/]<id> link. Add around_message_id to "
+                    "scroll; omit it to read the session."
                 ),
             },
             "around_message_id": {
@@ -629,9 +633,8 @@ SESSION_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Optional. Read sessions from another Hermes profile's database "
-                    "(read-only). Use when resolving an `@session:<profile>/<id>` link: "
-                    "pass the profile segment here with session_id as the id segment. "
-                    "Omit to use the current profile."
+                    "(read-only). For a raw @session: link, pass the complete link "
+                    "as session_id; no separate profile argument is needed."
                 ),
             },
         },

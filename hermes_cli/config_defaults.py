@@ -483,7 +483,7 @@ DEFAULT_CONFIG = {
     # when a server is still connecting. Turn-1 latency knob only: a server that misses it is picked
     # up by the between-turns refresh (agent/turn_context.py), so keep it small — a dead server adds
     # this much to first-response latency.
-    "mcp_discovery_timeout": 1.5,
+    "mcp_discovery_timeout": 5.0,
     # Same bound for single-query mode (``hermes -q/-z``). With only ONE turn there is no
     # between-turns refresh, so a server that misses the window is invisible for the whole session;
     # the larger bound lets slow cold-start servers (npx, uvx, remote HTTP) land. Reachable servers

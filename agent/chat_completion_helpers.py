@@ -3038,6 +3038,9 @@ class _StreamingCall(StreamingWaitMonitor):
                         has_tool_use = True
                         if getattr(block, "name", None):
                             self._emit_tool_started(block.name)
+                            # Same as the chat_completions wire: a stream that dies inside the
+                            # tool args is retried (no tool has run yet) instead of stubbed.
+                            self.result["partial_tool_names"].append(block.name)
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     delta_type = getattr(delta, "type", None) if delta else None
@@ -3080,6 +3083,9 @@ class _StreamingCall(StreamingWaitMonitor):
         OpenAI primary is replaced lazily."""
         self.agent._emit_stream_drop(
             error=e, attempt=attempt + 2, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
+        if self.agent._is_provider_stream_parse_error(e):
+            from agent.anthropic_adapter import buffer_anthropic_tool_input
+            buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None) or self.agent.base_url)
         self._cancel_current_stream_attempt(reason)
         self.clients.close_once(reason)
 

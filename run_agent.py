@@ -485,7 +485,8 @@ class AIAgent(
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
         return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
                 and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and "expected ident at line" in str(error).strip().lower())
+                and any(marker in str(error).strip().lower() for marker in (
+                    "expected ident at line", "expected value at line")))
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")

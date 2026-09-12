@@ -986,8 +986,8 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None)
     assume_yes = bool(getattr(args, "yes", False))
-    # --keep-stash (desktop updater): never re-apply the autostash; only when an update
-    # landed — abort/no-op paths still restore since the tree is unchanged.
+    # --keep-stash (desktop updater): never re-apply the autostash after a successful
+    # update or no-op repair; failed updates leave it preserved without further action.
     keep_stash = bool(getattr(args, "keep_stash", False))
     # --switch-branch: prefer switching over an in-place merge so an update never writes the
     # branch's history; only meaningful with parked_branch_strategy "update_in_place".
@@ -1174,17 +1174,23 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, assume_yes: bool, gateway_mode: bool,
     gw_input_fn, pre_update_snapshot_id, desktop_dir, had_desktop_app_before_update: bool,
-    active_lazy_features, active_tool_dependencies, _windows_gateway_resume) -> None:
-    """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
+    active_lazy_features, active_tool_dependencies, discard_local_changes: bool,
+    keep_stash: bool, _windows_gateway_resume) -> None:
+    """"Already up to date" path: resolve stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
     _invalidate_update_cache()
 
     # Restore stash and switch back if we moved. EXCEPTION: a parked branch verified clean +
     # fully merged stays on the target — re-parking on the stale branch recreates the incident.
     if _plan.auto_stash_ref is not None:
-        _m()._restore_stashed_changes(
-            git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
-            input_fn=gw_input_fn)
+        if discard_local_changes:
+            _m()._discard_stashed_changes(git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref)
+        elif keep_stash:
+            _m()._park_stashed_changes(_plan.auto_stash_ref)
+        else:
+            _m()._restore_stashed_changes(
+                git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
+                input_fn=gw_input_fn)
     if _plan.parked_branch_switched:
         if _plan.switch_block_reason.startswith("unmerged:"):
             _count = _plan.switch_block_reason.split(":", 1)[1]
@@ -1377,6 +1383,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 had_desktop_app_before_update=had_desktop_app_before_update,
                 active_lazy_features=opts.active_lazy_features,
                 active_tool_dependencies=opts.active_tool_dependencies,
+                discard_local_changes=opts.discard_local_changes,
+                keep_stash=opts.keep_stash,
                 _windows_gateway_resume=_windows_gateway_resume)
             return
 

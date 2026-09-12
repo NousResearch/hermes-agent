@@ -1012,6 +1012,55 @@ class GatewayShutdownMixin:
                 **({"metadata": metadata} if metadata else {}),
             ):
                 notified.add(dedup_key)
+        # Secondary multiplex profiles run their OWN gateway config (own home directory, own
+        # config.yaml) — ``self.config`` above is the default/root profile's only. Without this,
+        # a secondary profile's home channel never learns the gateway is shutting down, even
+        # though its bot is live in ``self._profile_adapters``. Resolve each profile's config the
+        # same way the handoff watcher does (``_handoff_resolve_scope`` / ``_handoff_watcher``):
+        # scope into that profile's home and reload fresh — never guess with the root config,
+        # which would (at best) look at the wrong platform entry, or (at worst) notify the WRONG
+        # chat under the secondary's bot identity.
+        _profile_adapters = getattr(self, "_profile_adapters", None) or {}
+        if _profile_adapters:
+            from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes, load_gateway_config
+            for profile_name, profile_home in _handoff_watch_scopes(self):
+                if profile_name is None:
+                    continue  # root/default profile already handled by the loop above
+                profile_adapter_map = _profile_adapters.get(profile_name)
+                if not profile_adapter_map:
+                    continue
+                try:
+                    async with _async_profile_runtime_scope(profile_home):
+                        profile_config = load_gateway_config()
+                except Exception as e:
+                    logger.debug(
+                        "Could not load config for profile %s shutdown home-channel notice: %s",
+                        profile_name, e,
+                    )
+                    continue
+                for platform, adapter in list(profile_adapter_map.items()):
+                    home = profile_config.get_home_channel(platform)
+                    if not home or not home.chat_id:
+                        continue
+                    if not self._notice_allowed(platform, "home channel"):
+                        continue
+                    dedup_key = _notice_target_key(platform.value, home.chat_id, home.thread_id)
+                    if dedup_key in notified:
+                        continue
+                    try:
+                        metadata = self._thread_metadata_for_target(
+                            platform, home.chat_id, home.thread_id, adapter=adapter)
+                    except Exception as e:
+                        logger.debug(
+                            "Failed to send shutdown notification to profile %s home channel %s:%s: %s",
+                            profile_name, platform.value, home.chat_id, e,
+                        )
+                        continue
+                    if await self._send_shutdown_notice(
+                        adapter, str(home.chat_id), msg, "home channel", platform.value,
+                        **({"metadata": metadata} if metadata else {}),
+                    ):
+                        notified.add(dedup_key)
 
     # Agent finalization / resource cleanup
     @staticmethod

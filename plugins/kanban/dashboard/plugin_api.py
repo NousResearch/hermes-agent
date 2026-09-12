@@ -166,7 +166,7 @@ def _errors_to_500(prefix: str) -> Iterator[None]:
 
 # Dashboard columns, left-to-right ("archived" is a filter toggle, not a column). Keep in
 # sync with kanban_db.VALID_STATUSES — a status missing here gets mis-bucketed into ``todo``.
-BOARD_COLUMNS: list[str] = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"]
+BOARD_COLUMNS: list[str] = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "approved", "done"]
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
@@ -498,6 +498,8 @@ class UpdateTaskBody(BaseModel):
     # Handoff fields forwarded to complete_task on -> 'done' (parity with ``hermes kanban complete``).
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    # Who approved (status='approved' only); defaults to "dashboard" like comment authorship.
+    approved_by: Optional[str] = None
     # In a PATCH ``None`` means "field not sent", so ``clear_*=True`` is the explicit clear signal.
     # ``reasoning_effort="none"`` is a VALUE (thinking off); it is cleared separately so
     # dropping a model override doesn't silently reset the depth.
@@ -545,15 +547,45 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
     return _set_status_direct(conn, task_id, s)
 
 
+def _approve_task(conn, task_id: str, p) -> bool:
+    """Move a card through the human-facing APPROVED gate: writes the inert approval
+    record (status + a distinct ``approved`` event with actor + timestamp — the audit
+    trail @analyst required), then, in the SAME transaction, checks dependencies via
+    the existing ``_parents_satisfied`` guard (the identical check ``ready`` already
+    uses) and promotes straight to ``ready`` so the dispatcher picks it up normally.
+    APPROVED is the only human go-action; ``ready`` remains dispatcher-internal state
+    — no second human control, no separate dispatch-trigger code path to get wrong
+    (that duplication is what broke 5ed3e32). If parents aren't satisfied yet, the
+    card lands on 'approved' and stays there — a human blessed it, but the system
+    correctly won't dispatch a task whose upstream work isn't done."""
+    now = int(time.time())
+    with kanban_db.write_txn(conn):
+        cur = conn.execute("UPDATE tasks SET status = 'approved' WHERE id = ?", (task_id,))
+        if cur.rowcount != 1:
+            return False
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'approved', ?, ?)",
+            (task_id, json.dumps({"approved_by": getattr(p, "approved_by", None) or "dashboard"}), now))
+        if kanban_db._parents_satisfied(conn, task_id):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (task_id,))
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'status', ?, ?)",
+                (task_id, json.dumps({"status": "ready", "requested_status": "ready", "reason": "approved"}), now))
+    return True
+
+
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
 # detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
+# ``approved`` is a pure status/event write (see ``_approve_task``) — deliberately NOT wired to
+# any dispatcher/worker-start path (that coupling is what caused the earlier approval-gate outage).
 _STATUS_HANDLERS: dict[str, Any] = {
     "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(
         conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
+    "approved": lambda conn, tid, p: _approve_task(conn, tid, p),
     "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
     "todo": lambda conn, tid, p: _drag_to(conn, tid, "todo"),
     "triage": lambda conn, tid, p: _drag_to(conn, tid, "triage")}

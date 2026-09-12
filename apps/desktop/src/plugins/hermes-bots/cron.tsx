@@ -45,7 +45,7 @@ import { labeled } from './dialog-parts'
 import { botsText, useBots } from './i18n'
 import { displayName } from './labels'
 import { botConnectionRoute, botRosterMeta, requestForBot } from './routing'
-import { ScreenPortal } from './screen-portal'
+import { ScreenHero } from './screen-hero'
 import { ID } from './shared'
 import type { BotMeta, RosterRow, RoutineJob } from './types'
 
@@ -1241,6 +1241,9 @@ export function RoutinesPane() {
 
   return (
     <div className="flex h-full flex-col">
+      <div className="px-3 pt-3">
+        <ScreenHero bot={owner} meta={meta} />
+      </div>
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <BotFace color={avatarColor(color, bot)} image={image} name={bot} shape={shape} size={22} />
         <div className="min-w-0 flex-1">
@@ -1266,9 +1269,6 @@ export function RoutinesPane() {
         </Tip>
       </div>
       <div className="mx-3 border-t border-(--ui-stroke-secondary)" />
-      <div className="px-3 pt-2">
-        <ScreenPortal bot={owner} meta={meta} />
-      </div>
       {staleNotice ? (
         <div className="mx-3 mt-2 rounded-md bg-(--chrome-action-hover) px-2 py-1.5 text-[0.6875rem] text-(--ui-text-tertiary)">
           {staleNotice}

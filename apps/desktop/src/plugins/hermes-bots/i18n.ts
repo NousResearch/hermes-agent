@@ -239,6 +239,12 @@ type BotsMessages = {
     noPackageManager: string
     portalTitle: string
     portalOpen: string
+    heroStopped: string
+    heroNotInstalled: string
+    heroConnecting: string
+    heroOpenLive: string
+    heroInstall: string
+    heroStart: string
     portalWatching: string
     portalYouControl: string
     portalOtherControls: string
@@ -499,6 +505,12 @@ const en: BotsMessages = {
     noPackageManager: 'No supported package manager (apt, dnf, pacman) was found on the gateway host.',
     portalTitle: 'Screen',
     portalOpen: 'Open',
+    heroStopped: 'Screen is off',
+    heroNotInstalled: 'Not installed on this host',
+    heroConnecting: 'Checking the screen…',
+    heroOpenLive: 'Open live',
+    heroInstall: 'Install',
+    heroStart: 'Start',
     portalWatching: 'Live · bot in control',
     portalYouControl: 'Live · you are in control',
     portalOtherControls: 'Live · another viewer in control',
@@ -754,6 +766,12 @@ const ja: BotsMessages = {
     noPackageManager: 'ゲートウェイホストに対応するパッケージマネージャー (apt, dnf, pacman) が見つかりません。',
     portalTitle: 'スクリーン',
     portalOpen: '開く',
+    heroStopped: '画面は停止中',
+    heroNotInstalled: 'このホストには未インストール',
+    heroConnecting: '画面を確認中…',
+    heroOpenLive: 'ライブで開く',
+    heroInstall: 'インストール',
+    heroStart: '開始',
     portalWatching: 'ライブ · ボットが操作中',
     portalYouControl: 'ライブ · あなたが操作中',
     portalOtherControls: 'ライブ · 別のビューアーが操作中',
@@ -1004,6 +1022,12 @@ const zh: BotsMessages = {
     noPackageManager: '网关主机上未找到受支持的包管理器（apt、dnf、pacman）。',
     portalTitle: '屏幕',
     portalOpen: '打开',
+    heroStopped: '屏幕已关闭',
+    heroNotInstalled: '此主机未安装',
+    heroConnecting: '正在检查屏幕…',
+    heroOpenLive: '实时打开',
+    heroInstall: '安装',
+    heroStart: '启动',
     portalWatching: '直播 · 机器人控制中',
     portalYouControl: '直播 · 你在控制',
     portalOtherControls: '直播 · 其他查看者控制中',
@@ -1254,6 +1278,12 @@ const zhHant: BotsMessages = {
     noPackageManager: '閘道主機上找不到受支援的套件管理器（apt、dnf、pacman）。',
     portalTitle: '螢幕',
     portalOpen: '開啟',
+    heroStopped: '螢幕已關閉',
+    heroNotInstalled: '此主機未安裝',
+    heroConnecting: '正在檢查螢幕…',
+    heroOpenLive: '即時開啟',
+    heroInstall: '安裝',
+    heroStart: '啟動',
     portalWatching: '直播 · 機器人控制中',
     portalYouControl: '直播 · 您在控制',
     portalOtherControls: '直播 · 其他檢視者控制中',

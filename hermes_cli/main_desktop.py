@@ -7,6 +7,7 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 import logging
 import contextlib
 import argparse
+import json
 import os
 import re
 import shlex
@@ -45,6 +46,41 @@ def _desktop_stamp_path() -> Path:
     return get_hermes_home() / "desktop-build-stamp.json"
 
 
+def _desktop_resources_dir(executable: Path) -> Path:
+    """Resources dir of a packaged app: ``…/Hermes.app/Contents/Resources`` (macOS) else
+    ``<exe dir>/resources``."""
+    return (
+        executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
+    )
+
+
+def _desktop_artifact_id(desktop_dir: Path) -> Optional[str]:
+    """Identity of the packaged Desktop artifact: ``app.asar`` mtime+size, or ``None``.
+
+    ``apps/desktop/release/`` is git-ignored, so the artifact is outside the content hash by
+    construction — the stamp can be "current" while the packaged UI is weeks old. Recording this
+    id in the stamp is what lets ``_desktop_build_needed`` tell "the source is the one that was
+    built" from "the artifact still IS that build". See #106670.
+    """
+    executable = _desktop_packaged_executable(desktop_dir)
+    if executable is None:
+        return None
+    try:
+        stat_result = (_desktop_resources_dir(executable) / "app.asar").stat()
+    except OSError:
+        return None
+    return f"{stat_result.st_mtime_ns}:{stat_result.st_size}"
+
+
+def _desktop_stamp_artifact() -> Optional[str]:
+    """The artifact id recorded in the desktop build stamp, or ``None`` (missing/legacy stamp)."""
+    try:
+        data = json.loads(_desktop_stamp_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data.get("artifact") if isinstance(data, dict) else None
+
+
 def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Path]:
     """The renderer ``dist`` a launch loads: ``apps/desktop/dist`` in source mode, else the
     ``app.asar.unpacked/dist`` copy (the only real directory, and the one an interrupted replace tears)."""
@@ -56,10 +92,7 @@ def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Pa
         return None
 
     # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
-    resources = (
-        executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
-    )
-    return resources / "app.asar.unpacked" / "dist"
+    return _desktop_resources_dir(executable) / "app.asar.unpacked" / "dist"
 
 
 # The module files the renderer fetches before any app code runs: Vite emits
@@ -109,16 +142,35 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         print(f"  ⚠ A previous update left the desktop bundle incomplete ({dist_dir}); rebuilding it")
         return True
 
-    return not _stamp_is_current(
+    if not _stamp_is_current(
         _desktop_stamp_path(), lambda: _compute_desktop_content_hash(project_root), sourceMode=source_mode
-    )
+    ):
+        return True
+
+    # A matching source stamp is NOT proof the packaged UI is that build: release/ is git-ignored,
+    # so the hash never sees app.asar — a stamp can be current while the packed artifact is weeks
+    # old (restored/replaced tree, a pack that never landed). That reported "✓ Desktop app up to
+    # date" over a 3-week-old UI whose renderer fix was never live (#106670). Bind the two.
+    if not source_mode:
+        live_artifact = _desktop_artifact_id(desktop_dir)
+        if live_artifact is None or live_artifact != _desktop_stamp_artifact():
+            print("  ⚠ The packaged desktop app is not the last recorded build "
+                  "(stale or missing app.asar); rebuilding it")
+            return True
+
+    return False
 
 
 def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None:
-    """Write the desktop build stamp after a successful build."""
+    """Write the desktop build stamp after a successful build, bound to the artifact it produced.
+
+    In packaged mode the stamp also records the ``app.asar`` identity: the content hash alone only
+    ever proves WHICH SOURCE was built, never that the packaged UI still IS that build — the gap a
+    3-week-old ``app.asar`` hid behind while ``hermes update`` reported "up to date" (#106670)."""
     _write_build_stamp(
         _desktop_stamp_path(), "desktop",
-        lambda: _compute_desktop_content_hash(project_root), sourceMode=source_mode)
+        lambda: _compute_desktop_content_hash(project_root), sourceMode=source_mode,
+        **({} if source_mode else {"artifact": _desktop_artifact_id(project_root / "apps" / "desktop")}))
 
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:

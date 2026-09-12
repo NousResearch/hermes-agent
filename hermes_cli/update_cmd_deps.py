@@ -821,8 +821,14 @@ def _rebuild_desktop_after_update(
     # The release tree is git-ignored and can vanish mid-update; pre-update presence suffices.
     # Never make people who never used Desktop pay for an Electron build.
     has_desktop_app = had_desktop_app_before_update or _desktop_app_present(desktop_dir)
-    if not (
-        (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app):
+    if not ((desktop_dir / "package.json").exists() and has_desktop_app):
+        return True
+    if not _m()._resolve_node_runtime_npm():
+        # A Desktop app IS installed but nothing here can rebuild it. Returning through the
+        # "nothing to do" door is indistinguishable from "up to date" to the caller, and that
+        # silence is how a 3-week-old packaged UI rode along with "✓ Update complete!" (#106670).
+        print("  ⚠ A Desktop app is installed but no usable Node.js/npm was found to rebuild it;")
+        print("    the packaged UI may be stale. Fix Node, then run: hermes desktop --build-only")
         return True
 
     print("→ Checking if desktop app needs rebuilding...")

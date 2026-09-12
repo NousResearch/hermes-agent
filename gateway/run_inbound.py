@@ -595,6 +595,13 @@ class GatewayInboundMixin:
                     return
             except Exception as exc:
                 logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
+        # ``agent.interrupt()`` carries text only. Stage the complete event first so the recursive
+        # drain retains its source, inbound message id, media and routing metadata. This is normally
+        # done by the adapter busy handler, but trusted pre-busy skill events dispatch inline and
+        # reach this runner fast-path directly.
+        self._queue_or_replace_pending_event(  # pyright: ignore[reportAttributeAccessIssue]
+            _quick_key, event
+        )
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
         _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
@@ -604,8 +611,6 @@ class GatewayInboundMixin:
             )
         elif not _interrupt_text and getattr(event, "media_urls", None):
             _interrupt_text = _build_media_placeholder(event)
-        # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
-        # — that copy was never consumed and grew unbounded.
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_handle_running_session_message(
@@ -1126,6 +1131,22 @@ class GatewayInboundMixin:
             logger.debug("Skill command check failed (non-fatal): %s", e)
         return None
 
+    def _hm_pre_busy_skill_rewrite(
+        self, event: "MessageEvent", source: SessionSource, quick_key: str
+    ) -> Optional[str]:
+        """Expand a trusted adapter-generated skill command before busy routing.
+
+        Busy sessions bypass idle slash dispatch, so leaving the synthetic
+        command untouched would steer/queue raw ``/<skill>`` text instead of
+        loading the configured skill.
+        """
+        if getattr(event, "preprocess_skill_command_before_busy", False) is not True:
+            return None
+        command = event.get_command()
+        if not command:
+            return None
+        return self._hm_skill_slash_rewrite(event, source, quick_key, command)
+
     async def _hm_pending_reply_intercepts(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
@@ -1209,9 +1230,16 @@ class GatewayInboundMixin:
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
-        _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
-        if _reply is not None:
-            return _reply
+        _preprocess_before_busy = bool(
+            getattr(event, "preprocess_skill_command_before_busy", False)
+        )
+        _rewrite_reply = self._hm_pre_busy_skill_rewrite(event, source, _quick_key)
+        if _rewrite_reply is not None:
+            return _rewrite_reply
+        if not _preprocess_before_busy:
+            _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
+            if _reply is not None:
+                return _reply
 
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)

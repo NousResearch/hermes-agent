@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 import types
+from io import StringIO
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,61 @@ def test_cprint_no_app_direct_print(monkeypatch):
     cli._cprint("hello")
 
     assert calls == [("pt_print", ("ANSI", "hello"))]
+
+
+def test_cprint_keeps_piped_output_plain(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_pt_print", lambda value, **kwargs: calls.append((value, kwargs)))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: ("ANSI", t))
+
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: None
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    cli._cprint("colored")
+
+    assert calls == [(('ANSI', 'colored'), {})]
+
+
+def test_piped_term_dumb_output_contains_no_ansi(monkeypatch):
+    from prompt_toolkit import print_formatted_text
+
+    output = StringIO()
+    monkeypatch.setattr(cli, "_pt_print", lambda value, **kwargs: print_formatted_text(
+        value, file=output, **kwargs))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: __import__(
+        "prompt_toolkit.formatted_text", fromlist=["ANSI"]).ANSI(t))
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: None
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+    monkeypatch.setenv("TERM", "dumb")
+
+    cli._cprint("\033[38;2;21;28;47mplain\033[0m")
+
+    assert output.getvalue().replace("\r\n", "\n") == "plain\n"
+
+
+def test_cprint_requests_truecolor_only_for_running_tui(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_pt_print", lambda value, **kwargs: calls.append((value, kwargs)))
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: ("ANSI", t))
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+    fake_loop = FakeLoop()
+    fake_app = types.SimpleNamespace(_is_running=True, loop=fake_loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+    fake_asyncio = types.ModuleType("asyncio")
+    fake_asyncio.get_running_loop = lambda: fake_loop
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    cli._cprint("colored")
+
+    assert calls == [(('ANSI', 'colored'), {"color_depth": "DEPTH_24_BIT"})]
 
 
 def test_cprint_app_not_running_direct_print(monkeypatch):

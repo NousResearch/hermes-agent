@@ -375,6 +375,7 @@ class CLITuiMixin:
         (wrappers normally override ``_get_extra_tui_widgets`` instead)."""
         ordered = [
             Window(height=0),
+            getattr(self, "_markdown_preview_widget", None),
             sudo_widget,
             secret_widget,
             approval_widget,
@@ -1420,6 +1421,7 @@ class CLITuiMixin:
         multimodal follow-ups, or a turn that finished in the race). queue → next turn.
         """
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
+        from hermes_cli.cli_conversation_display import print_notification
         _effective_mode = self.busy_input_mode
         redirected = False
         if _effective_mode == "steer":
@@ -1435,13 +1437,16 @@ class CLITuiMixin:
                     accepted = False
                 if accepted:
                     preview = text[:80] + ("..." if len(text) > 80 else "")
-                    _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
+                    if not print_notification(self, "Steered", preview):
+                        _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
                 else:
                     _effective_mode = "queue"
         if _effective_mode == "queue":
             self._pending_input.put(payload)
             preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-            _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+            detail = preview[:80] + ('...' if len(preview) > 80 else '')
+            if not print_notification(self, "Queued for next turn", detail):
+                _cprint(f"  Queued for the next turn: {detail}")
         elif _effective_mode == "interrupt":
             if not images and text:
                 try:
@@ -1454,7 +1459,8 @@ class CLITuiMixin:
                     redirected = False
             if redirected:
                 preview = text[:80] + ("..." if len(text) > 80 else "")
-                _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
+                if not print_notification(self, "Redirected current turn", preview):
+                    _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
             else:
                 self._interrupt_queue.put(payload)
                 try:
@@ -2045,6 +2051,8 @@ class CLITuiMixin:
         from hermes_cli.cli_subagent_monitor import install_dock
         install_dock(self)
         input_area = self._tui_build_input_area()
+        from hermes_cli.cli_markdown_stream import preview_window
+        self._markdown_preview_widget = preview_window(self)
         spinner_widget = Window(
             content=FormattedTextControl(self._tui_spinner_text),
             height=self._tui_spinner_height,

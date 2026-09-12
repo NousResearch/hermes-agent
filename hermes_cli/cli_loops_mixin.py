@@ -267,19 +267,22 @@ class CLILoopsMixin:
 
     def _cmd_queue(self, cmd_original: str):
         from cli import _cprint, _slash_args
+        from hermes_cli.cli_conversation_display import print_notification
         payload = self._expand_paste_references(_slash_args(cmd_original))
         if not payload:
             _cprint("  Usage: /queue <prompt>")
         else:
             self._pending_input.put(payload)
             when = " for the next turn" if self._agent_running else ""
-            _cprint(f"  Queued{when}: {_preview(payload)}")
+            if not print_notification(self, "Queued for next turn" if when else "Queued", _preview(payload)):
+                _cprint(f"  Queued{when}: {_preview(payload)}")
 
     def _cmd_steer(self, cmd_original: str):
         # Inject a message after the next tool call without interrupting: while the
         # agent runs, push into its pending_steer slot (drained by _execute_tool_calls_*
         # into the next tool result); otherwise fall back to /queue semantics.
         from cli import _cprint, _slash_args
+        from hermes_cli.cli_conversation_display import print_notification
         payload = _slash_args(cmd_original)
         if not payload:
             _cprint("  Usage: /steer <prompt>")
@@ -290,12 +293,14 @@ class CLILoopsMixin:
                 _cprint(f"  Steer failed: {exc}")
             else:
                 if accepted:
-                    _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {_preview(payload)}")
+                    if not print_notification(self, "Steering queued after next tool call", _preview(payload)):
+                        _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {_preview(payload)}")
                 else:
                     _cprint("  Steer rejected (empty payload).")
         else:
             self._pending_input.put(payload)
-            _cprint(f"  No agent running; queued as next turn: {_preview(payload)}")
+            if not print_notification(self, "No active turn · queued for next turn", _preview(payload)):
+                _cprint(f"  No agent running; queued as next turn: {_preview(payload)}")
 
     # ────────────────────────────────────────────────────────────────
     # Session-bound managers: /goal (Ralph-style loop), /heartbeat, /loop

@@ -213,12 +213,31 @@ class CLIStreamMixin:
         if isinstance(user_input, SubagentNotification):
             ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]")
             return
+        if getattr(self, "final_response_markdown", "strip") == "render":
+            from hermes_cli.cli_conversation_display import print_reflowing, render_user_preview
+            from cli import datetime
+            timestamp = (datetime.now().strftime(getattr(self, "timestamp_format", "%H:%M"))
+                         if getattr(self, "show_timestamps", False) else "")
+            print_reflowing(lambda width: render_user_preview(
+                str(user_input or ""), width,
+                first=getattr(self, "user_message_preview_first_lines", 2),
+                last=getattr(self, "user_message_preview_last_lines", 2), timestamp=timestamp))
+            return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
         if "\n" in text:
             ChatConsole().print(self._format_submitted_user_message_preview(text))
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+
+    def _on_interim_assistant_message(self, text: str, **kwargs) -> None:
+        """Close a completed message without clearing final-output deduplication flags.
+
+        Later Codex messages can be marked not-already-streamed against cumulative
+        text; local pending state, not that hint, owns what needs committing.
+        """
+        if getattr(self, "_markdown_stream", None) is not None:
+            self._flush_stream()
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.
@@ -260,6 +279,10 @@ class CLIStreamMixin:
         if getattr(self, "_stream_box_live", False) or getattr(self, "_reasoning_box_opened", False):
             self._held_status_lines = getattr(self, "_held_status_lines", []) + [text]
             return
+        if getattr(self, "final_response_markdown", "strip") == "render":
+            from hermes_cli.cli_conversation_display import print_review_notice
+            if print_review_notice(text):
+                return
         _cprint(text)
 
     def _release_held_status_lines(self) -> None:
@@ -267,7 +290,7 @@ class CLIStreamMixin:
         from cli import _cprint
         held, self._held_status_lines = getattr(self, "_held_status_lines", []), []
         for line in held:
-            _cprint(line)
+            self._agent_status_print(line)
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open, then flush deferred content."""
@@ -413,6 +436,14 @@ class CLIStreamMixin:
             return
         self._close_reasoning_box()
 
+        if self.final_response_markdown == "render":
+            from hermes_cli.cli_markdown_stream import MarkdownStream
+            if getattr(self, "_markdown_stream", None) is None:
+                self._markdown_stream = MarkdownStream(self)
+            self._stream_box_opened = self._stream_box_live = True
+            self._markdown_stream.feed(text)
+            return
+
         # Open the response box header on the very first visible text
         if not self._stream_box_opened:
             text = text.lstrip("\n")
@@ -486,6 +517,11 @@ class CLIStreamMixin:
             self._emit_stream_text(self._stream_prefilt)
             self._stream_prefilt = ""
         self._close_reasoning_box()  # in case no content tokens arrived
+        if getattr(self, "_markdown_stream", None) is not None:
+            self._markdown_stream.feed("", final=True)
+            self._stream_box_live = False
+            self._release_held_status_lines()
+            return
         # A trailing partial table row joins the table buffer so the whole block is re-aligned
         # together (else the final row prints under-padded).
         if (
@@ -508,6 +544,7 @@ class CLIStreamMixin:
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
+        self._markdown_stream = None
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
@@ -628,7 +665,11 @@ class CLIStreamMixin:
             self._stream_box_opened = False
         self._close_reasoning_box()
         from agent.display import get_tool_emoji
-        _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {tool_name}…")
+        if getattr(self, "final_response_markdown", "strip") == "render":
+            from hermes_cli.cli_tool_activity import print_tool_activity
+            print_tool_activity(f"Preparing {tool_name}…")
+        else:
+            _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {tool_name}…")
 
     def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
@@ -637,6 +678,14 @@ class CLIStreamMixin:
         progress modes tool.completed also commits a stacked scrollback line (tool history).
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home
+        # Some providers (notably Codex app-server) send tool events without the
+        # stream's None sentinel. Commit preceding text before tool UI/scrollback,
+        # and start a fresh message for subsequent deltas. Fast tools may omit started.
+        if event_type in {"tool.started", "tool.completed"} and (
+            getattr(self, "_stream_started", False)
+            or getattr(self, "_reasoning_box_opened", False)
+        ):
+            self._stream_delta(None)
         # MoA reference outputs (display-only events from the MoA facade): render each answer
         # as a labelled thinking-style block BEFORE the aggregator acts.
         if event_type == "moa.reference":
@@ -698,7 +747,11 @@ class CLIStreamMixin:
                 try:
                     from agent.display import get_cute_tool_message
                     line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    if getattr(self, "final_response_markdown", "strip") == "render":
+                        from hermes_cli.cli_tool_activity import print_tool_activity
+                        print_tool_activity(line, failed=bool(kwargs.get("is_error")))
+                    else:
+                        _cprint(f"  {line}")
                 except Exception:
                     pass
                 # One-time /verbose hint on the first long tool in the noisiest mode; latched

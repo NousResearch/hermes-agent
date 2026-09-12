@@ -46,6 +46,11 @@ from hermes_cli.cli_voice_mixin import CLIVoiceMixin
 from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
 from hermes_cli.cli_tui_mixin import CLITuiMixin
 from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
+from hermes_cli.markdown_rendering import (
+    preserve_windows_dot_segments as _preserve_windows_dot_segments_for_markdown,
+    rich_text_from_ansi as _rich_text_from_ansi,
+    strip_markdown_syntax as _strip_markdown_syntax,
+)
 from agent.interrupt_compat import request_hard_interrupt
 from agent.pet import render as pet_render
 
@@ -1430,49 +1435,6 @@ def _accent_hex() -> str:
         return "#FFBF00"
 
 
-def _rich_text_from_ansi(text: str) -> _RichText:
-    """Rich Text from ANSI output; literal ``[brackets]`` are not treated as markup."""
-    return _RichText.from_ansi(text or "")
-
-
-def _strip_markdown_syntax(text: str) -> str:
-    """Best-effort markdown marker removal for plain-text display."""
-    plain = _rich_text_from_ansi(text or "").plain
-    # HR markers: "-"/"_" runs of 3+, but "*" only when exactly 3 (cron schedules "* * * * *").
-    plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
-    plain = re.sub(r"^\s{0,3}(?:\*\s*){3}\s*$", "", plain, flags=re.MULTILINE)
-    plain = re.sub(r"^\s{0,3}#{1,6}\s+", "", plain, flags=re.MULTILINE)
-    # Blockquotes, lists, and checkboxes are preserved because they carry structure.
-    plain = re.sub(r"(```+|~~~+)", "", plain)
-    plain = re.sub(r"`([^`]*)`", r"\1", plain)
-    plain = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", plain)
-    plain = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", plain)
-    plain = re.sub(r"\*\*\*([^*]+)\*\*\*", r"\1", plain)
-    plain = re.sub(r"(?<!\w)___([^_]+)___(?!\w)", r"\1", plain)
-    plain = re.sub(r"\*\*([^*]+)\*\*", r"\1", plain)
-    plain = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", r"\1", plain)
-    # `*emphasis*` only when the inner text is non-whitespace (cron expressions again).
-    plain = re.sub(r"\*([^\s*][^*]*?[^\s*])\*", r"\1", plain)
-    plain = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", plain)
-    plain = re.sub(r"~~([^~]+)~~", r"\1", plain)
-    plain = re.sub(r"\n{3,}", "\n\n", plain)
-    return plain.strip("\n")
-
-
-_WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*")
-
-
-def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
-    r"""Double the ``\`` before hidden dirs in Windows paths: CommonMark reads ``\.`` as an escaped dot."""
-    if "\\." not in text:
-        return text
-
-    def _protect(match: re.Match[str]) -> str:
-        return re.sub(r"(?<!\\)\\(?=\.)", r"\\\\", match.group(0))
-
-    return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
-
-
 def _terminal_columns() -> int:
     try:
         return shutil.get_terminal_size((80, 24)).columns
@@ -1485,12 +1447,11 @@ def _terminal_width_for_streaming() -> int:
     return max(20, _terminal_columns() - len(_STREAM_PAD) - 2)
 
 
-def _render_final_assistant_content(text: str, mode: str = "render"):
+def _render_final_assistant_content(text: str, mode: str = "render", *, width: int | None = None,
+                                    terminal_wrap: bool = False):
     """Render final assistant content as markdown, stripped text, or raw text."""
-    from rich.markdown import Markdown
-
     # 1 border cell each side + margin so resize races don't push a borderline table into soft-wrap.
-    panel_width = max(20, _terminal_columns() - 4)
+    panel_width = max(20, _terminal_columns() - 4) if width is None else max(1, width)
 
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
@@ -1499,11 +1460,8 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 
-    # Normalising under-padded tables up front gives narrow-panel fallbacks consistent input.
-    plain = _rich_text_from_ansi(text or "").plain
-    plain = _preserve_windows_dot_segments_for_markdown(plain)
-    plain = realign_markdown_tables(plain, panel_width)
-    return Markdown(plain)
+    from hermes_cli.cli_markdown_stream import make_markdown
+    return make_markdown(text or "", panel_width, terminal_wrap=terminal_wrap)
 
 
 def _post_stream_transform_output(response: str, result: dict | None) -> str:
@@ -1586,20 +1544,40 @@ def _replay_output_history() -> None:
                     continue
                 if isinstance(lines, str):
                     lines = lines.splitlines()
-            rendered_lines.extend(str(line) for line in lines)
+        rendered_lines.extend(str(line) for line in lines)
         if rendered_lines:
             # One payload: per-line pt prints each force a sync redraw (a waterfall of old output).
-            _pt_print(_PT_ANSI("\n".join(rendered_lines)))
+            _pt_print_ansi("\n".join(rendered_lines))
     except Exception:
         pass
     finally:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
-def _pt_print_ansi(text: str) -> None:
+def _pt_print_ansi(text: str, *, color_depth=None) -> None:
     """``_pt_print(ANSI(text))``, falling back to ``print`` when stdout is not a real console."""
     try:
-        _pt_print(_PT_ANSI(text))
+        if color_depth is None:
+            try:
+                from prompt_toolkit.application import get_app_or_none
+                app = get_app_or_none()
+                if app is not None and getattr(app, "_is_running", False):
+                    color_depth = "DEPTH_24_BIT"
+            except Exception:
+                pass
+        # The parent process may intentionally advertise TERM=dumb/NO_COLOR while the
+        # interactive TUI still owns a color-capable terminal.  Without an explicit depth,
+        # prompt_toolkit parses ANSI but then emits plain text, which turns colored scrollback
+        # (including user bands) back into the terminal's default charcoal surface.
+        try:
+            if color_depth is None:
+                _pt_print(_PT_ANSI(text))
+            else:
+                _pt_print(_PT_ANSI(text), color_depth=color_depth)
+        except TypeError:
+            # Keep compatibility with the lightweight one-argument print doubles used by tests
+            # and with older prompt_toolkit versions.
+            _pt_print(_PT_ANSI(text))
     except Exception:
         # NoConsoleScreenBufferError (Windows) / OSError when stdout is e.g. a worker log file.
         with suppress(Exception):
@@ -1644,7 +1622,7 @@ def _cprint(text: str):
     except Exception:
         current_loop = None
     if loop is None or (current_loop is loop and loop.is_running()):
-        _pt_print(_PT_ANSI(text))
+        _pt_print_ansi(text)
         return
 
     def _schedule():
@@ -1653,7 +1631,7 @@ def _cprint(text: str):
         # Never fall back to a bare print on error: the sync path already printed.
         with suppress(Exception):
             import inspect as _inspect
-            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            coro = run_in_terminal(lambda: _pt_print_ansi(text))
             if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
                 _asyncio.ensure_future(coro)
 
@@ -3494,14 +3472,19 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                     if user_input is None:
                         return
 
+        # Keep the compact marker in scrollback; expansion is for the model payload only.
+        preview_input = notification_preview or user_input
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
         print()
-        self._print_user_message_preview(notification_preview or user_input)
+        self._print_user_message_preview(preview_input)
 
         if submit_images:
             n = len(submit_images)
-            _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+            if self.final_response_markdown == "render":
+                _cprint(f"  {n} image{'s' if n > 1 else ''} attached\n")
+            else:
+                _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False

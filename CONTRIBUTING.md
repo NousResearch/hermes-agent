@@ -141,6 +141,12 @@ git checkout -b fix/description
 scripts/run_tests.sh
 ```
 
+The canonical test runner is a Bash script and expects a POSIX-style virtual
+environment layout (`.venv/bin` or `venv/bin`). On native Windows, run it from
+Git Bash or WSL rather than PowerShell. Git Bash/MSYS can rewrite absolute
+Windows paths passed as arguments, so use WSL when a test depends on preserving
+Windows path syntax.
+
 ### Manual clone fallback
 
 Use this only if you intentionally do not want Hermes' managed install layout

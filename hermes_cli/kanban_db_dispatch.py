@@ -371,7 +371,8 @@ def _defer_reclaim_for_live_worker(
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET claim_expires = ? WHERE id = ?", (grace, run_id))
-        payload = {"reason": reason, "claim_lock": claim_lock, "claim_expires_now": grace}
+        payload = {"reason": reason, "owner": _kb._public_label(claim_lock),
+                   "claim_expires_now": grace}
         payload.update(termination)
         _kb._append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
 
@@ -642,7 +643,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
                 continue
             payload = {
                 "reason": "orphaned_running",
-                "claim_lock": row["claim_lock"],
+                "owner": _kb._public_label(row["claim_lock"]),
                 "claim_expires": _kb._opt_int(row["claim_expires"]),
                 "worker_pid": int(pid) if pid else None,
                 "now": now,
@@ -762,7 +763,8 @@ def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
             # ``protocol_violation`` is the durable marker for
             # _protocol_violation_streak: _end_run copies this payload into the
             # run metadata.
-            {"pid": pid, "claimer": claimer, "exit_code": code, "protocol_violation": True},
+            {"pid": pid, "claimer": _kb._public_label(claimer), "exit_code": code,
+             "protocol_violation": True},
             protocol_violation=True,
         )
     if kind == "rate_limited":
@@ -772,7 +774,7 @@ def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
             kind, code,
             f"pid {pid} exited rate-limited (quota wall) — requeued without counting a failure",
             "rate_limited",
-            {"pid": pid, "claimer": claimer, "exit_code": code},
+            {"pid": pid, "claimer": _kb._public_label(claimer), "exit_code": code},
             rate_limited=True,
         )
     if kind == "nonzero_exit":
@@ -781,7 +783,7 @@ def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
         error_text = f"pid {pid} killed by signal {code}"
     else:
         error_text = f"pid {pid} not alive"
-    event_payload = {"pid": pid, "claimer": claimer}
+    event_payload = {"pid": pid, "claimer": _kb._public_label(claimer)}
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
         event_payload["exit_code"] = code
@@ -913,7 +915,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 end_run=False,
                 event_payload_extra={
                     "pid": pid,
-                    "claimer": claimer,
+                    "claimer": _kb._public_label(claimer),
                     "protocol_violations": streak,
                     "protocol_violation_limit": violation_limit,
                 },
@@ -927,7 +929,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 failure_limit=1 if is_systemic else None,
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "claimer": claimer},
+                event_payload_extra={"pid": pid, "claimer": _kb._public_label(claimer)},
             )
         if tripped:
             auto_blocked.append(tid)

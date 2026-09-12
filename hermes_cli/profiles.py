@@ -829,7 +829,19 @@ def create_profile(
     if clone_from is not None or clone_all or clone_config:
         source_dir = _resolve_clone_source(clone_from)
     if clone_all and source_dir:
-        _clone_all_into(source_dir, profile_dir, canon)
+        # Validate the actual staged copy before it becomes a usable profile.
+        import tempfile
+        from hermes_cli.kanban_history import refuse_authority_copy
+        with tempfile.TemporaryDirectory(prefix='hermes_profile_clone_') as tmpdir:
+            staged = Path(tmpdir) / canon
+            _clone_all_into(source_dir, staged, canon)
+            refuse_authority_copy(staged)
+            profile_dir.parent.mkdir(parents=True, exist_ok=True)
+            # copytree creates the destination exclusively (exist_ok=False).
+            # Never let a racing creator turn placement into a container move,
+            # or strip/register a destination we do not own. Copying also works
+            # when the validated temporary tree is on a different filesystem.
+            shutil.copytree(staged, profile_dir, symlinks=True)
     else:
         _bootstrap_profile_dir(profile_dir, source_dir)
 
@@ -1570,6 +1582,9 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         extracted = staging_root / archive_root
         if not extracted.is_dir():
             raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
+
+        from hermes_cli.kanban_history import refuse_authority_copy
+        refuse_authority_copy(extracted)
         final_source = extracted
         if archive_root != canon:
             final_source = staging_root / canon

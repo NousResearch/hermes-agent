@@ -642,6 +642,16 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     if not d.exists():
         raise ValueError(f"board {normed!r} does not exist")
 
+    # Refuse before changing the current-board pointer or filesystem.
+    # Imported in-function: kanban_db_connect imports this module late-bound, so
+    # a top-level import here would be circular.
+    from hermes_cli.kanban_db_connect import connect_closing
+
+    with connect_closing(d / "kanban.db") as history_conn:
+        from hermes_cli.kanban_history import reserve_removal
+
+        reserve_removal(history_conn)
+
     # If the user removed the currently-active board, revert to default.
     if get_current_board() == normed:
         clear_current_board()
@@ -1068,6 +1078,98 @@ def _claimer_id() -> str:
 def _host_prefix() -> str:
     """``"<host>:"`` prefix shared by every claim lock issued from this host."""
     return f"{_claimer_id().split(':', 1)[0]}:"
+
+
+def _socket_host() -> str:
+    """Host name alone: a truthful PUBLIC identifier, never the bearer value."""
+    return _claimer_id().split(":", 1)[0]
+
+
+def _public_label(lock):
+    """Non-secret stand-in for a claim lock, for anything published. See C1."""
+    from hermes_cli.kanban_history import public_claim_label
+
+    return public_claim_label(lock)
+
+
+def public_run_fields(run):
+    """The run fields safe to publish (dashboard JSON, CLI, diagnostics).
+
+    C1. The dashboard previously returned task_runs.claim_lock verbatim, which
+    is the bearer. This projection replaces it with a non-secret owner label so
+    there is ONE place that decides what leaves the process, instead of each
+    call site remembering to redact.
+    """
+    fields = dict(run)
+    if "claim_lock" in fields:
+        fields["owner"] = _public_label(fields.pop("claim_lock"))
+    return fields
+
+
+def _secure_claim_identity(conn, task_id, claimer, default_lock):
+    """Mint a capability and bind a truthful owner for an ENROLLED task.
+
+    Returns the lock the caller should use. For a non-bound task, or when the
+    caller supplied an explicit claimer, the existing default is returned
+    unchanged. For a bound task it mints an unpredictable, host-prefixed
+    capability and records the owner binding in the CALLER'S transaction, before
+    any protected mutation, so a failed binding rolls the claim back with it.
+
+    Shared by every bound production claim entry point. C3 existed because the
+    logic lived inline in claim_task only.
+    """
+    if claimer is not None:
+        return default_lock
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='authority_task_bindings'").fetchone():
+        return default_lock
+    if not conn.execute("SELECT 1 FROM authority_task_bindings WHERE task_id=?",
+                        (task_id,)).fetchone():
+        return default_lock
+    from hermes_cli import kanban_history as _kh
+    lock = _kh.mint_claim_capability(_socket_host())
+    _kh.bind_owner_locked(
+        conn, task_id, claimer=lock,
+        consumer_id=_socket_host(), runtime_id=str(os.getpid()),
+        owner_ref="kanban-dispatcher",
+    )
+    return lock
+
+
+def authority_history_capability(conn: sqlite3.Connection):
+    """Return prospective durable-history enrollment, or None for ordinary boards."""
+    from hermes_cli.kanban_history import capability
+
+    return capability(conn)
+
+
+def enroll_authority_history(conn: sqlite3.Connection):
+    """Permanently enroll this board; does not backfill or enroll existing tasks."""
+    from hermes_cli.kanban_history import enroll
+
+    return enroll(conn)
+
+
+def bind_authority_task(conn: sqlite3.Connection, task_id: str, **kwargs):
+    """Permanently bind a prospectively enrolled task to repository/project IDs."""
+    from hermes_cli.kanban_history import bind_task
+
+    return bind_task(conn, task_id, **kwargs)
+
+
+def bind_authority_owner(conn: sqlite3.Connection, task_id: str, **kwargs):
+    """Precommit non-secret actor identity for an exact claim credential."""
+    from hermes_cli.kanban_history import bind_owner
+
+    return bind_owner(conn, task_id, **kwargs)
+
+
+def read_authority_history(conn: sqlite3.Connection, **kwargs):
+    """Strict globally ordered durable reader; see kanban_history.read."""
+    from hermes_cli.kanban_history import read
+
+    return read(conn, **kwargs)
 
 
 # --- Task creation / mutation ---
@@ -1846,10 +1948,15 @@ def _append_event(
     run_id: Optional[int] = None,
 ) -> None:
     """Insert an event row inside the caller's txn; ``run_id`` groups it by attempt (NULL = task-scoped)."""
-    conn.execute(
+    event = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)", (task_id, run_id, kind, _json_or_null(payload), int(time.time())),
     )
+    # Durable capture on the CALLER'S connection inside the CALLER'S transaction:
+    # the history commits with the event or not at all. Not an async copier.
+    from hermes_cli.kanban_history import capture
+
+    capture(conn, task_id, kind, event.lastrowid, run_id)
 
 
 def _end_run(
@@ -2082,10 +2189,18 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, claimer: Optional[str] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    when the CAS lost. Caller holds the txn.
+
+    C3: the secure mint-and-bind runs HERE, the single point both claim entry
+    points share, rather than inline in claim_task. C3 existed because the logic
+    lived in one caller only, so an enrolled review task could not be claimed at
+    all; putting it at the shared point means a third entry point cannot drift
+    the same way.
+    """
+    lock = _secure_claim_identity(conn, task_id, claimer, lock)
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2122,7 +2237,8 @@ def _claim_and_open_run(
     conn.execute("UPDATE tasks SET current_run_id = ? WHERE id = ?", (run_id, task_id))
     _append_event(
         conn, task_id, "claimed",
-        {"lock": lock, "expires": expires, "run_id": run_id, **(event_extra or {})}, run_id=run_id,
+        {"owner": _public_label(lock), "expires": expires, "run_id": run_id,
+         **(event_extra or {})}, run_id=run_id,
     )
     return run_id
 
@@ -2154,7 +2270,7 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now, claimer=claimer)
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2185,7 +2301,8 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now, claimer=claimer,
+            event_extra={"source_status": "review"},
         )
         if run_id is None:
             return None
@@ -2261,7 +2378,10 @@ def heartbeat_claim(
         )
         if cur.rowcount != 1:
             return False
-        _extend_run_claim(conn, task_id, expires)
+        run_id = _extend_run_claim(conn, task_id, expires)
+        if conn.execute("SELECT 1 FROM authority_task_bindings WHERE task_id=?",
+                        (task_id,)).fetchone():
+            _append_event(conn, task_id, "claim_renewed", run_id=run_id)
         return True
 
 
@@ -2337,9 +2457,9 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
                 continue
             run_id = _record_reclaim(
                 conn, row["id"], termination,
-                error=f"stale_lock={row['claim_lock']}",
+                error=f"stale_lock_owner={_public_label(row['claim_lock'])}",
                 payload={
-                    "stale_lock": row["claim_lock"],
+                    "stale_lock_owner": _public_label(row["claim_lock"]),
                     "worker_pid": _opt_int(row["worker_pid"]),
                     "claim_expires": int(row["claim_expires"]),
                     "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
@@ -2394,7 +2514,7 @@ def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: in
             {
                 "reason": "pid_alive",
                 "worker_pid": int(row["worker_pid"]),
-                "claim_lock": row["claim_lock"],
+                "owner": _public_label(row["claim_lock"]),
                 "claim_expires_was": int(row["claim_expires"]),
                 "claim_expires_now": new_expires,
                 "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
@@ -2430,8 +2550,10 @@ def reclaim_task(
             return False
         _record_reclaim(
             conn, task_id, termination,
-            error=f"manual_reclaim: {reason}" if reason else f"manual_reclaim lock={prev_lock}",
-            payload={"manual": True, "reason": reason, "prev_lock": prev_lock, "retry_status": retry_status},
+            error=(f"manual_reclaim: {reason}" if reason
+                   else f"manual_reclaim owner={_public_label(prev_lock)}"),
+            payload={"manual": True, "reason": reason,
+                     "prev_owner": _public_label(prev_lock), "retry_status": retry_status},
         )
     # Operator intervention = fresh retry budget (own txn, runs after commit).
     _clear_failure_counter(conn, task_id)
@@ -3522,6 +3644,12 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         if _task_status(conn, task_id) != "archived":
             return False
+        # Emit before the relations (and so the task_events row) are removed:
+        # capture() has already written the durable, guarded history row, which
+        # survives the ephemeral event it was derived from.
+        if conn.execute("SELECT 1 FROM authority_task_bindings WHERE task_id=?",
+                        (task_id,)).fetchone():
+            _append_event(conn, task_id, "deleted")
         _delete_task_relations(conn, task_id)
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
@@ -3530,9 +3658,19 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
 def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """Hard-delete a task and its related rows in one txn; False when not found."""
     with write_txn(conn):
+        if conn.execute(
+                """SELECT 1 FROM tasks t JOIN authority_task_bindings b ON b.task_id=t.id
+                   WHERE t.id=? AND (t.status='running' OR t.current_run_id IS NOT NULL
+                                     OR t.claim_lock IS NOT NULL)""",
+                (task_id,)).fetchone():
+            from hermes_cli.kanban_history import AuthorityHistoryError
+            raise AuthorityHistoryError("cannot delete an enrolled active task")
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
+        if conn.execute("SELECT 1 FROM authority_task_bindings WHERE task_id=?",
+                        (task_id,)).fetchone():
+            _append_event(conn, task_id, "deleted")
         _delete_task_relations(conn, task_id)
     recompute_ready(conn)
     return True

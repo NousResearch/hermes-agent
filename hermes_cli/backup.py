@@ -982,6 +982,33 @@ def run_import(args) -> None:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
         if not args.force and not _confirm_import_overwrite(hermes_root):
             return
+
+        # Refuse enrolled authority copy/rollback before any target overlay.
+        # Stage DBs under generated names: archive paths cannot escape staging.
+        from hermes_cli.kanban_history import refuse_authority_copy, is_standard_kanban_database
+        refuse_authority_copy(hermes_root)
+        with tempfile.TemporaryDirectory(prefix='hermes_import_authority_') as tmpdir:
+            for index, member in enumerate(members):
+                if member.startswith(_EXTERNAL_PREFIX):
+                    continue
+                rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
+                # Use the same normalized destination and containment boundary
+                # as extraction, before losing path context in safe staging.
+                try:
+                    relative = (hermes_root / rel).resolve().relative_to(hermes_root.resolve())
+                except ValueError:
+                    continue  # Extraction reports and blocks escaping paths.
+                if not is_standard_kanban_database(relative):
+                    continue
+                staged = Path(tmpdir) / str(index)
+                staged.mkdir()
+                for suffix in ('', '-wal', '-shm', '-journal'):
+                    if member + suffix in members:
+                        with zf.open(member + suffix) as src, (staged / ('kanban.db' + suffix)).open('wb') as dst:
+                            shutil.copyfileobj(src, dst)
+                refuse_authority_copy(staged)
+
+        # Extract
         print(f"\nImporting {file_count} files ...")
         hermes_root.mkdir(parents=True, exist_ok=True)
         t0 = time.monotonic()
@@ -1285,6 +1312,10 @@ def restore_quick_snapshot(snapshot_id: str, hermes_home: Optional[Path] = None)
         return False
     with open(manifest_path, encoding="utf-8") as f:
         meta = json.load(f)
+
+    from hermes_cli.kanban_history import refuse_authority_copy
+    refuse_authority_copy(snap_dir)
+    refuse_authority_copy(home)
     snap_res, home_res = snap_dir.resolve(), home.resolve()
     restored = 0
     for rel in meta.get("files", {}):

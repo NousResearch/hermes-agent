@@ -573,9 +573,7 @@ def _apply_status(conn, task_id: str, s: str, p, unknown_detail: str) -> bool:
 def _set_priority(conn, task_id: str, priority: int, board: Optional[str]) -> None:
     with kanban_db.write_txn(conn):
         conn.execute("UPDATE tasks SET priority = ? WHERE id = ?", (int(priority), task_id))
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'reprioritized', ?, ?)",
-            (task_id, json.dumps({"priority": int(priority)}), int(time.time())))
+        kanban_db._append_event(conn, task_id, "reprioritized", {"priority": int(priority)})
     # Mutation-boundary observer (post-commit): this direct-SQL write bypasses every kanban_db mutator.
     kanban_db.notify_task_updated(conn, task_id, ("priority",), board=board)
 
@@ -632,9 +630,7 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
             vals.append(payload.body)
         vals.append(task_id)
         conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals)
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'edited', NULL, ?)",
-            (task_id, int(time.time())))
+        kanban_db._append_event(conn, task_id, "edited")
     kanban_db.notify_task_updated(
         conn, task_id, [f for f in ("title", "body") if getattr(payload, f) is not None], board=board)
 
@@ -723,9 +719,9 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
                 conn, task_id, outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)")
             terminations.append((prev["worker_pid"], prev["claim_lock"]))
-        conn.execute(
-            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'status', ?, ?)",
-            (task_id, run_id, json.dumps({"status": effective_status, "requested_status": new_status}), int(time.time())))
+        kanban_db._append_event(
+            conn, task_id, "status",
+            {"status": effective_status, "requested_status": new_status}, run_id=run_id)
         if reopening_satisfied_parent:
             # Domain-layer invalidation composes via a savepoint inside our txn and hands
             # back worker terminations to perform post-commit.
@@ -876,7 +872,7 @@ def list_active_workers(board: Optional[str] = _BOARD_Q):
             "FROM task_runs r JOIN tasks t ON t.id = r.task_id "
             "WHERE r.ended_at IS NULL AND r.worker_pid IS NOT NULL AND t.status = 'running' "
             "ORDER BY r.started_at ASC").fetchall()
-        workers = [dict(row) for row in rows]
+        workers = [kanban_db.public_run_fields(row) for row in rows]
         return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
 
 
@@ -884,7 +880,7 @@ def list_active_workers(board: Optional[str] = _BOARD_Q):
 def get_run_endpoint(run_id: int, board: Optional[str] = _BOARD_Q):
     """``{run: {...}}`` with the same serialisation as ``GET /tasks/{id}``; 404 if unknown."""
     with _board_conn(board) as (board, conn):
-        return {"run": asdict(_require_run(conn, run_id))}
+        return {"run": kanban_db.public_run_fields(asdict(_require_run(conn, run_id)))}
 
 
 @router.get("/runs/{run_id}/inspect")

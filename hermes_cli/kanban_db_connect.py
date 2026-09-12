@@ -725,8 +725,20 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             # Idempotent; runs under _INIT_LOCK so same-process dispatcher
             # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
             if resolved not in _INITIALIZED_PATHS:
+                from hermes_cli.kanban_history import validate_existing
+                validate_existing(conn)
                 conn.executescript(_kb.SCHEMA_SQL)
+                # N2. The optional-column pass contains a real backfill
+                # (UPDATE tasks SET consecutive_failures = ...). On an ENROLLED
+                # board that is a guarded write, so the lease TABLE must exist
+                # first or the guard's own body is unresolvable and the board
+                # cannot be opened at all -- the same failure class as the UDF
+                # it replaced. Hence here, not left to migrate_history below.
+                from hermes_cli.kanban_history import _ensure_lease_table
+                _ensure_lease_table(conn)
                 _migrate_add_optional_columns(conn)
+                from hermes_cli.kanban_history import migrate as migrate_history
+                migrate_history(conn)
                 _INITIALIZED_PATHS.add(resolved)
 
         conn, _ = _open_configured(path, _init_if_needed)
@@ -858,7 +870,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if name not in cols:
             added = _add_column_if_missing(conn, "tasks", name, ddl)
             if added and legacy is not None and legacy in cols:
-                conn.execute(copy_sql)
+                # N2. A real backfill, and on an ENROLLED board a guarded write.
+                # It runs before any normal write transaction, sometimes in
+                # autocommit, so without a transient capability the board could
+                # not be opened at all. Taken for this statement, then released.
+                from hermes_cli.kanban_history import migration_writer as _mw
+                with _mw(conn):
+                    conn.execute(copy_sql)
     for name, ddl in _LATER_TASK_COLUMNS:
         if name not in cols:
             if name == "model_override":
@@ -1167,7 +1185,12 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
         savepoint = f"hermes_nested_{secrets.token_hex(8)}"
         conn.execute(f"SAVEPOINT {savepoint}")
         try:
-            yield conn
+            # The outer transaction is already audited; only the capability is
+            # needed here. _take_lease is reentrant, so when an outer write_txn
+            # already holds the lease this neither re-takes nor releases it.
+            from hermes_cli.kanban_history import owned_writer
+            with owned_writer(conn):
+                yield conn
         except Exception:
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(f"ROLLBACK TO {savepoint}")
@@ -1179,7 +1202,16 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
 
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
-        yield conn
+        # owned_writer is entered INSIDE the transaction, not around it. The
+        # capability is a database row, and a row written before BEGIN would be
+        # committed in autocommit, outlive the transaction and leave the guard
+        # permanently satisfied for every connection. The ordering is
+        # load-bearing, not stylistic.
+        from hermes_cli.kanban_history import audit_finish, audit_start, owned_writer
+        history_before = audit_start(conn)
+        with owned_writer(conn):
+            yield conn
+        audit_finish(conn, history_before)
     except Exception:
         # SQLite may already have auto-rolled-back (EIO, contention, corruption);
         # don't let this secondary failure shadow the real one.

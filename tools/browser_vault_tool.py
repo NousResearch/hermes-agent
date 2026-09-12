@@ -264,6 +264,12 @@ def browser_vault_unlock(backend_name: str) -> str:
                            "error": (f"{backend.display_name} is locked and this session cannot prompt for the "
                                      "master password (headless/cron/API). Unlock it from an interactive Hermes "
                                      "session or the Desktop app first.")})
+    if getattr(backend, "app_unlock", False):
+        try:
+            backend.unlock("")  # type: ignore[attr-defined]
+        except Exception as exc:
+            return json.dumps({"success": False, "error_type": "unlock_failed", "error": str(exc)[:300]})
+        return json.dumps({"success": True, "backend": backend.name})
     prompt = get_unlock_prompt_callback()
     master = prompt(backend.name, backend.display_name) if prompt else ""
     if not master:
@@ -575,7 +581,7 @@ BROWSER_VAULT_LIST_SCHEMA = {
         "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
         "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
         "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
-        "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
+        "browser_vault_unlock (1Password unlocks via the 1Password app; Bitwarden prompts in Hermes, you never see a password) or, when it says "
         "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
         "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
         "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
@@ -587,8 +593,9 @@ BROWSER_VAULT_LIST_SCHEMA = {
 BROWSER_VAULT_UNLOCK_SCHEMA = {
     "name": "browser_vault_unlock",
     "description": (
-        "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
-        "password is typed into a masked prompt owned by the UI and never enters the conversation. "
+        "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. "
+        "1Password unlocks through the 1Password app (Touch ID / app lock); never type that master "
+        "password into Hermes. Bitwarden uses a masked prompt owned by the UI. "
         "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
     ),
     "parameters": {

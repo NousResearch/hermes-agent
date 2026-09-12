@@ -2182,7 +2182,7 @@ DEFAULT_CONFIG = {
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
         "onepassword": {
-            "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
+            "enabled": False,       # `op` CLI via the 1Password app (Touch ID). Hermes never takes the master password.
             "account": "",          # account shorthand for `op --account`; empty = default account.
             "binary_path": "",      # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.

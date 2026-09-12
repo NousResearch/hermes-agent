@@ -205,6 +205,45 @@ class TestRunJobScript:
         assert env["VIRTUAL_ENV"] == str(venv)
         assert str(site_packages) in env["PYTHONPATH"]
 
+    @pytest.mark.windows_only
+    def test_windows_shell_script_runs_without_a_console(self, cron_env, monkeypatch):
+        """Shell-backed cron scripts use the same hidden process contract."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "probe.sh"
+        script.write_text("printf 'ok\\n'\n", encoding="utf-8")
+        captured = {}
+
+        class FakeProc:
+            def __init__(self, argv, **kwargs):
+                captured["argv"] = argv
+                captured["kwargs"] = kwargs
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return ("ok\n", "")
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        monkeypatch.setattr(sched_mod.shutil, "which", lambda name: "bash.exe")
+        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", FakeProc)
+
+        success, output = _run_job_script("probe.sh")
+
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"] == ["bash.exe", str(script.resolve())]
+        expected_flags = sched_mod.windows_hide_flags() | getattr(
+            sched_mod.subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+        assert captured["kwargs"]["creationflags"] == expected_flags
+
     def test_bootstrap_argv_makes_pth_editable_installs_importable(self, cron_env, tmp_path):
         """The bootstrap must process .pth files — the whole reason the
         overlay mode exists is that PYTHONPATH alone cannot (editable

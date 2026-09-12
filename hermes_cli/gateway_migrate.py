@@ -451,6 +451,30 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     return lines
 
 
+def format_rollback_plan(default_home: Path, manifest: dict, *, dry_run: bool) -> list[str]:
+    head = "Rollback plan (dry run — nothing changed)" if dry_run else "Rollback plan"
+    lines = [head, f"  default home: {default_home}", "", "  Steps:"]
+    lines.append("  - default: restore gateway.multiplex_profiles to its pre-migration value")
+    for rec in manifest.get("secondaries", []):
+        if not isinstance(rec, dict):
+            continue
+        name = str(rec.get("profile") or "<unknown>")
+        service = rec.get("service")
+        if isinstance(service, dict) and service.get("kind"):
+            action = f"reinstall and start its {service['kind']} service"
+        elif rec.get("pid"):
+            action = "start its standalone gateway (detached)"
+        else:
+            action = "restore its recorded standalone gateway"
+        lines.append(f"  - {name}: {action}")
+    lines += [
+        "  - default: clear multiplex-owned runtime status",
+        f"  - remove rollback manifest {default_home / MANIFEST_NAME}",
+        "  - default: restart the standalone gateway last",
+    ]
+    return lines
+
+
 def format_update_warning(plan: MigrationPlan) -> list[str]:
     return [
         "⚠ Your profiles each run their own gateway. A single multiplexed gateway is the recommended",
@@ -480,7 +504,29 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
 
 
 def _write_manifest(default_home: Path, data: dict) -> None:
-    _manifest_path(default_home).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    from utils import atomic_json_write
+
+    atomic_json_write(_manifest_path(default_home), data)
+
+
+def _reconcile_standalone_runtime(default_home: Path, secondary_names: set[str]) -> None:
+    """Remove only status owned by multiplexing, without re-stamping gateway identity."""
+    from gateway.status import read_runtime_status
+    from utils import atomic_json_write
+
+    path = default_home / "gateway_state.json"
+    runtime = read_runtime_status(path)
+    if runtime is None:
+        return
+    runtime["served_profiles"] = []
+    platforms = runtime.get("platforms")
+    if isinstance(platforms, dict):
+        prefixes = tuple(f"{name}:" for name in secondary_names)
+        runtime["platforms"] = {
+            key: value for key, value in platforms.items()
+            if not (isinstance(key, str) and prefixes and key.startswith(prefixes))
+        }
+    atomic_json_write(path, runtime, indent=None, separators=(",", ":"))
 
 
 def _wait_for_served(default_home: Path, expected: set[str], timeout: float) -> Optional[list[str]]:
@@ -569,21 +615,33 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
         print(f"✗ No migration manifest at {_manifest_path(default_home)}; nothing to roll back.")
         print("  To leave multiplex mode by hand: hermes config set gateway.multiplex_profiles false && hermes gateway restart")
         return False
-    _write_multiplex_flag(default_home, bool(manifest.get("flag_was", False)))
-    print("  ✓ default: gateway.multiplex_profiles restored")
+    try:
+        _write_multiplex_flag(default_home, bool(manifest.get("flag_was", False)))
+        print("  ✓ default: gateway.multiplex_profiles restored")
+    except Exception as exc:
+        print(f"  ✗ default: could not restore gateway.multiplex_profiles ({exc})")
+        print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
+        return False
+
     default_rec = manifest.get("default") or {}
     default_service = default_rec.get("service")
     default_gw = ProfileGateway(
         "default", default_home, pid=_live_gateway_pid(default_home),
         service=(default_service["kind"], bool(default_service.get("system"))) if default_service else _installed_service(default_home),
     )
-    if default_gw.has_gateway:
-        print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
     ok = True
+    secondary_names: set[str] = set()
     for rec in manifest.get("secondaries", []):
-        home = Path(rec["home"])
-        name = rec["profile"]
+        if not isinstance(rec, dict):
+            ok = False
+            print("  ✗ invalid secondary record in migration manifest")
+            continue
+        name = str(rec.get("profile") or "")
         try:
+            home = Path(rec["home"])
+            if not name:
+                raise ValueError("missing profile name")
+            secondary_names.add(name)
             service = rec.get("service")
             if service:
                 kind, system = service["kind"], bool(service.get("system"))
@@ -598,13 +656,33 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
                     print(f"  ✗ {name}: could not start its standalone gateway")
         except Exception as exc:
             ok = False
-            print(f"  ✗ {name}: {exc}")
-    if ok:
-        _manifest_path(default_home).unlink(missing_ok=True)
-        print("✓ Rolled back to per-profile gateways.")
-    else:
+            print(f"  ✗ {name or '<unknown>'}: {exc}")
+    if not ok:
         print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
-    return ok
+        return False
+
+    try:
+        _reconcile_standalone_runtime(default_home, secondary_names)
+        print("  ✓ default: cleared multiplex-owned runtime status")
+        _manifest_path(default_home).unlink(missing_ok=True)
+    except Exception as exc:
+        print(f"  ✗ default: could not finish rollback cleanup ({exc})")
+        print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
+        return False
+
+    if default_gw.has_gateway:
+        try:
+            print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
+        except Exception as exc:
+            try:
+                _write_manifest(default_home, manifest)
+            except Exception as manifest_exc:
+                print(f"  ✗ default: could not restore rollback manifest ({manifest_exc})")
+            print(f"  ✗ default: could not restart its standalone gateway ({exc})")
+            print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
+            return False
+    print("✓ Rolled back to per-profile gateways.")
+    return True
 
 
 # --------------------------------------------------------------------------- CLI + update hook
@@ -623,6 +701,14 @@ def _host_supports_migration() -> Optional[str]:
 def cmd_migrate(args) -> None:
     """``hermes gateway migrate [--multiplex|--standalone] [--dry-run] [--yes]``."""
     if getattr(args, "standalone", False):
+        if getattr(args, "dry_run", False):
+            default_home = _default_home()
+            manifest = _read_manifest(default_home)
+            if manifest is None:
+                print(f"✗ No migration manifest at {_manifest_path(default_home)}; nothing to roll back.")
+                return
+            _print(format_rollback_plan(default_home, manifest, dry_run=True))
+            return
         sys.exit(0 if rollback_migration() else 1)
     reason = _host_supports_migration()
     if reason:

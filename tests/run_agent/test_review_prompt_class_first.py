@@ -26,7 +26,7 @@ def _assembled_prompt(*, review_memory: bool) -> str:
 def _assert_selective_skill_policy(prompt: str, label: str) -> None:
     lower = prompt.lower()
     assert "taking no skill action" in lower and "explicitly valid" in lower, label
-    assert "no persistent action" in lower, label
+    assert "no persistent action" not in lower, label
     assert "all five" in lower, label
     for requirement in (
         "narrow loading trigger",
@@ -64,9 +64,12 @@ def _assert_selective_skill_policy(prompt: str, label: str) -> None:
 
 
 def test_skill_review_prompt_requires_selective_creation():
-    _assert_selective_skill_policy(
-        _assembled_prompt(review_memory=False), "skill-only review"
-    )
+    prompt = _assembled_prompt(review_memory=False)
+    _assert_selective_skill_policy(prompt, "skill-only review")
+    lower = prompt.lower()
+    assert "during a skill-only review, take no action" in lower
+    assert "put them in user.md or memory.md" not in lower
+    assert "route global style/format/behavior preferences to memory" not in lower
 
 
 def test_review_rejects_redundant_learning_governance_skill_for_regression_scenario():
@@ -107,7 +110,8 @@ def test_review_rejects_redundant_learning_governance_skill_for_regression_scena
     reviewed_transcript = run_review.call_args.args[1]
     prompt = run_review.call_args.args[2].lower()
     assert reviewed_transcript is transcript
-    assert "no persistent action" in prompt
+    assert "taking no skill action" in prompt
+    assert "no persistent action" not in prompt
     assert "hermes-learning-governance" in prompt and "never create" in prompt
     assert (
         "universal learning governance" in prompt
@@ -151,6 +155,7 @@ def test_combined_review_prompt_requires_selective_creation():
     prompt = _assembled_prompt(review_memory=True)
     _assert_selective_skill_policy(prompt, "combined review")
     assert "memory action does not require skill action" in prompt.lower()
+    assert "route global style/format/behavior preferences to memory" in prompt.lower()
 
 
 

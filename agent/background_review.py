@@ -343,7 +343,7 @@ _LESSON_LAYER_BLOCK = (
 # Shared decision gate for skill-only and combined reviews. A skill is selectively loaded context,
 # so creating one is justified only when both its trigger and its procedural payload are reusable.
 _SKILL_DECISION_BLOCK = (
-    "Taking no skill action — no persistent action — is explicitly valid. Do not manufacture a "
+    "Taking no skill action is explicitly valid. Do not manufacture a "
     "skill update to prove that learning happened. Act autonomously when the conversation contains "
     "evidence of a genuine recurring specialized workflow; otherwise say 'Nothing to save.' and "
     "stop the skill review. A useful fact, correction, or successful task is not by itself a skill "
@@ -384,8 +384,8 @@ _DO_NOT_CAPTURE_BLOCK = (
     "retrying worked, the lesson is the retry pattern, not the original failure.\n"
     "  • One-off task narratives. A user asking 'summarize today's market' or 'analyze this PR' is "
     "not a class of work that warrants a skill.\n\n"
-    "  • Global preferences (tone, verbosity, formatting, approval habits). Put them in USER.md or "
-    "MEMORY.md as appropriate; config belongs in config, not in a selectively loaded skill.\n"
+    "  • Global preferences (tone, verbosity, formatting, approval habits) are not skill content; "
+    "config belongs in config, not in a selectively loaded skill.\n"
     "  • Standard agent behavior or generic advice ('verify your work', 'be concise', 'read the "
     "docs'). Put enforceable product behavior in project instructions or code; omit platitudes.\n"
     "  • One-off task state, branch/commit/issue/PR status, and raw logs or transcripts. Keep "
@@ -456,9 +456,10 @@ _SKILL_REVIEW_PROMPT = (
     "skill_view just returned. Creating a brand-new skill or adding a NEW supporting file needs no "
     "prior read. If a write is refused with a read-before-write error, call skill_view for the "
     "named target once and retry the write once; do not loop.\n\n"
-    "Route global style/format/behavior preferences to USER.md or MEMORY.md, not to skills. A "
-    "workflow-specific preference may refine an existing matching skill only when it changes the "
-    "reusable procedure for that narrowly triggered class of task.\n\n"
+    "During a skill-only review, take no action on global style/format/behavior preferences; they "
+    "are outside this review's persistence scope and are not skill content. A workflow-specific "
+    "preference may refine an existing matching skill only when it changes the reusable procedure "
+    "for that narrowly triggered class of task.\n\n"
     "If you notice two existing skills that overlap, note it in your reply — the background "
     "curator handles consolidation at scale.\n\n"
     "Protected skills (DO NOT edit these):\n"

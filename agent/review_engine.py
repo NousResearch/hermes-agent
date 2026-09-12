@@ -137,8 +137,12 @@ def build_review_task(snapshot: List[Dict[str, str]], user_prompt: str = "", loa
 
 
 def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
-    """``auxiliary.review`` as a delegation-credentials dict, or None when unconfigured (provider auto/empty
-    and no model/base_url) so the reviewer inherits the parent's credentials."""
+    """``auxiliary.review`` as a delegation routing dict, or None when unconfigured.
+
+    Delegated children call the ordered route key ``fallback_providers`` while auxiliary tasks
+    expose it as ``fallback_chain``. Translate at this boundary so the full-agent reviewer uses
+    the native in-place fallback rail without inheriting unrelated parent routes.
+    """
     try:
         from hermes_cli.config import load_config_readonly
         review = (load_config_readonly().get("auxiliary") or {}).get("review") or {}
@@ -147,10 +151,20 @@ def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
     if not isinstance(review, dict):
         return None
 
-    cfg = {k: str(review.get(k) or "").strip() for k in ("provider", "model", "base_url", "api_key", "api_mode")}
+    cfg: Dict[str, Any] = {
+        k: str(review.get(k) or "").strip()
+        for k in ("provider", "model", "base_url", "api_key", "api_mode")
+    }
     if cfg["provider"].lower() == "auto":
         cfg["provider"] = ""
-    if not (cfg["provider"] or cfg["model"] or cfg["base_url"]):
+    if "fallback_chain" in review:
+        chain = review.get("fallback_chain")
+        if isinstance(chain, list):
+            from hermes_cli.fallback_config import get_fallback_chain
+            normalized_chain = get_fallback_chain({"fallback_providers": chain})
+            if normalized_chain:
+                cfg["fallback_providers"] = normalized_chain
+    if not (cfg["provider"] or cfg["model"] or cfg["base_url"] or cfg.get("fallback_providers")):
         return None
     return cfg
 

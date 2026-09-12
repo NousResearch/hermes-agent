@@ -184,7 +184,9 @@ def test_owner_removal_preserves_authorized_adopter(tmp_path, monkeypatch):
     from tools.registry import registry
 
     homes = {name: tmp_path / name for name in ("a", "b")}
-    cfg = {"url": "https://mcp.example/shared", "headers": {"Authorization": "Bearer shared"}}
+    cfg = mcp_tool_config._MCPServerConfig(
+        {"url": "https://mcp.example/shared", "headers": {"Authorization": "Bearer shared"}},
+        native_config_managed=True)
     for home in homes.values():
         home.mkdir()
         (home / "config.yaml").write_text(
@@ -251,7 +253,8 @@ def test_adopter_removal_deregisters_its_filtered_tools(tmp_path, monkeypatch):
     homes = {name: tmp_path / name for name in ("a", "b")}
     for home in homes.values():
         home.mkdir()
-    cfg = {"url": "https://mcp.example/shared"}
+    cfg = mcp_tool_config._MCPServerConfig(
+        {"url": "https://mcp.example/shared"}, native_config_managed=True)
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
     server = mcp_tool.MCPServerTask("shared")
     server._config = cfg
@@ -362,6 +365,50 @@ async def test_parked_native_task_polls_config_without_waiting_for_revival(monke
     result = await asyncio.wait_for(server._wait_for_reconnect_or_shutdown(), timeout=0.5)
     assert result == "shutdown"
     assert server._retired_from_config is True
+
+
+@pytest.mark.parametrize("owner_native, adopter_native", [(False, True), (True, False)])
+def test_shared_adoption_requires_matching_authority_provenance(
+    tmp_path, monkeypatch, owner_native, adopter_native
+):
+    """Portable and native profiles never share a transport lifecycle."""
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+    from tools import mcp_tool_registration
+
+    homes = {name: tmp_path / name for name in ("a", "b")}
+    for home in homes.values():
+        home.mkdir()
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+    raw = {"url": "https://mcp.example/shared"}
+    owner_cfg = (mcp_tool_config._MCPServerConfig(raw, native_config_managed=True)
+                 if owner_native else dict(raw))
+    adopter_cfg = (mcp_tool_config._MCPServerConfig(raw, native_config_managed=True)
+                   if adopter_native else dict(raw))
+    server = mcp_tool.MCPServerTask("shared")
+    server._config = owner_cfg
+    server._native_config_managed = owner_native
+    server.session = object()
+    server._tools = [SimpleNamespace(
+        name="ping", description="", inputSchema={"type": "object", "properties": {}}, annotations=None)]
+    server.initialize_result = None
+    server._registered_tool_names = []
+    tokens = []
+    try:
+        tokens.append(set_hermes_home_override(homes["a"]))
+        scope_a = hermes_home_key(homes["a"])
+        mcp_tool_discovery._adopt_server("shared", server)
+        key = (scope_a, "shared")
+        tokens.append(set_hermes_home_override(homes["b"]))
+        scope_b = hermes_home_key(homes["b"])
+        assert mcp_tool_registration.register_connected_into_current_scope({"shared": adopter_cfg}) == 0
+        assert scope_b not in mcp_tool._server_tool_scopes.get(key, set())
+    finally:
+        for token in reversed(tokens):
+            reset_hermes_home_override(token)
+        with mcp_tool._lock:
+            mcp_tool._servers.clear()
+            mcp_tool._server_scope_keys.clear()
+            mcp_tool._server_tool_scopes.clear()
 
 
 def test_adoption_revalidates_after_retirement_cas(tmp_path, monkeypatch):

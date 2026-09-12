@@ -117,8 +117,6 @@ class MCPServerRunMixin:
             if final_owner != owner_scope or final_scopes != scopes:
                 return False
             self._retired_from_config = True
-            if _core._servers.get(key) is self:
-                _core._servers.pop(key, None)
         logger.info("MCP server '%s': removed or disabled in config; stopping live connection", self.name)
         self._shutdown_event.set()
         # A task can retire before its first transport starts. Complete start()'s
@@ -127,6 +125,8 @@ class MCPServerRunMixin:
         self._fail_inflight_calls("config removal")
         self._deregister_tools()
         with _core._lock:
+            if _core._servers.get(key) is self:
+                _core._servers.pop(key, None)
             for ledger in (
                 _core._server_scope_keys, _core._server_tool_scopes,
                 _core._server_connect_errors, _core._server_connect_failures,

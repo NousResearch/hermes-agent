@@ -470,6 +470,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             shared = [(key, live) for key, live in _core._servers.items()
                       if _key_name(key) == name and getattr(live, "session", None) is not None
                       and not getattr(live, "_retired_from_config", False)
+                      and bool(getattr(live, "_native_config_managed", False))
+                      == bool(getattr(config, "native_config_managed", False))
                       and _same_server_route(live, config)]
         if not shared:
             continue

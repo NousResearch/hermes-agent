@@ -46,15 +46,50 @@ _CONTROL_REPLY_TYPES = frozenset({
     "reload_mcp.ack", "shutdown.ack"})
 
 
+_APPEND_PATH_LOCKS: dict[str, threading.Lock] = {}
+_APPEND_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _append_path_lock(path: str | Path) -> tuple[str, threading.Lock]:
+    """Return (normalized key, lock) for one append target.
+
+    Windows paths are case-insensitive and the same log can be reached via
+    relative, absolute, or short forms, so str(path) alone would hand two
+    locks to one file and give false safety.  normcase folds case and
+    separators; callers still get process-local locks only — cross-process
+    writers keep relying on the kernel's O_APPEND guarantee.
+    """
+    key = os.path.normcase(os.path.abspath(str(path)))
+    with _APPEND_PATH_LOCKS_GUARD:
+        lock = _APPEND_PATH_LOCKS.get(key)
+        if lock is None:
+            lock = _APPEND_PATH_LOCKS[key] = threading.Lock()
+        return key, lock
+
+
 def append_log_record(path: str | Path, record: str) -> None:
-    """Append one log record using O_APPEND and exactly one os.write call."""
+    """Append one log record using O_APPEND and exactly one os.write call.
+
+    On Windows, O_APPEND is atomic across *processes* but not across threads
+    that each open their own file handle: the append position is re-derived
+    per CreateFile and concurrent per-call opens overwrite each other at a
+    stale EOF (observed: 32 threaded 2 KB writes land as 21-31 lines on a
+    Windows 11 box; O_BINARY and msvcrt.locking(fd, LK_LOCK) do not prevent
+    it).  A per-path process-local lock serialises the open/write/close
+    sequence for same-process writers while cross-process writers keep
+    relying on the kernel's O_APPEND guarantee.  POSIX keeps kernel-atomic
+    appends; the lock only serialises same-process writers there and the
+    critical section is a single small write, so the cost is negligible.
+    """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     text = record if record.endswith("\n") else f"{record}\n"
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        os.write(fd, text.encode("utf-8", errors="replace"))
-    finally:
-        os.close(fd)
+    key, lock = _append_path_lock(path)
+    with lock:
+        fd = os.open(key, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, text.encode("utf-8", errors="replace"))
+        finally:
+            os.close(fd)
 
 
 def _repo_root() -> Path:

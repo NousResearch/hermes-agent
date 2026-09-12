@@ -118,6 +118,61 @@ def test_append_log_record_single_write_lines(tmp_path):
     assert all(line.endswith("x" * 2000) for line in lines)
 
 
+def test_append_log_record_repeats_stably(tmp_path):
+    """The Windows O_APPEND thread race lost 1-10 of 32 records *per trial*,
+    so a single passing trial proves little. Repeat the concurrent append so
+    the regression is deterministic on affected Windows hosts (red-on-main:
+    7/8 trials failed at ~1021a03; green with the per-path lock: 10/10)."""
+    path = tmp_path / "agent.log"
+
+    for _round in range(8):
+        base = _round * 32
+
+        def writer(i: int, _b: int = base) -> None:
+            append_log_record(path, f"line-{_b + i:04d}-" + ("x" * 500))
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(32)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 8 * 32
+    assert sorted(line.split("-", 2)[1] for line in lines) == [
+        f"{i:04d}" for i in range(8 * 32)
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="case-insensitive path aliasing is Windows-only")
+def test_append_log_record_same_file_via_different_path_strings(tmp_path):
+    """Windows case-insensitivity must not hand one file two locks.
+
+    One caller may pass the absolute path while another passes a path that
+    differs only by case — the same file on Windows. str(path) keying would
+    give them separate locks and the O_APPEND race returns;
+    normcase(abspath(...)) keying keeps them on one lock.
+    """
+    path = tmp_path / "agent.log"
+    upper = str(path).upper()
+    assert upper != str(path)
+
+    def writer(i: int, target) -> None:
+        append_log_record(target, f"alias-{i:03d}")
+
+    threads = [
+        threading.Thread(target=writer, args=(i, path if i % 2 else upper))
+        for i in range(32)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 32
+    assert len(set(lines)) == 32
+
+
 def test_supervisor_startup_reconcile_pid_reuse_guard(tmp_path, monkeypatch):
     registry = tmp_path / "dashboard-compute-host.json"
     registry.write_text(json.dumps({"host_pid": os.getpid(), "boot_id": "stale"}), encoding="utf-8")

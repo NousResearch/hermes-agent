@@ -322,10 +322,51 @@ def _dashboard_spawn_executable() -> str:
     return sys.executable
 
 
+def _dashboard_is_systemd_managed() -> bool:
+    """Whether THIS dashboard process is itself the main process of a systemd unit."""
+    if sys.platform == "win32":
+        return False
+    from hermes_cli.main_dashboard import _get_systemd_service_for_pid
+    return _get_systemd_service_for_pid(os.getpid()) is not None
+
+
+def _cgroup_escaped_argv_and_env(
+    cmd: List[str], env: Dict[str, str]
+) -> Tuple[List[str], Dict[str, str]]:
+    """Wrap *cmd* in a ``systemd-run --user --scope`` transient unit, when that escape is
+    actually usable; *cmd*/*env* unchanged otherwise (never raises, never blocks the spawn).
+
+    A dashboard-triggered ``hermes update`` is normally a plain child of the dashboard's own
+    process, sharing its systemd cgroup (``start_new_session`` only creates a new POSIX
+    session, not a new cgroup). When the update's own post-update phase restarts that same
+    unit, ``KillMode=control-group`` SIGKILLs the update child right along with it — before it
+    can finalize the receipt or clear its markers, since a SIGKILL never runs Python's
+    ``finally`` blocks. Placing the child in its own transient scope first keeps it alive
+    through that restart. See #106592.
+    """
+    import shutil
+    from tools.process_registry import _systemd_run_user_scope_available, systemd_user_bus_env
+    if not _systemd_run_user_scope_available():
+        return cmd, env
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        return cmd, env
+    return (
+        [systemd_run, "--user", "--scope", "--quiet", "--collect", "--", *cmd],
+        systemd_user_bus_env(env),
+    )
+
+
 def _spawn_hermes_action(
-    subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None
+    subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None,
+    escape_cgroup: bool = False,
 ) -> subprocess.Popen:
-    """Spawn ``hermes <subcommand>`` detached (via ``hermes_cli.main``) and record the handle."""
+    """Spawn ``hermes <subcommand>`` detached (via ``hermes_cli.main``) and record the handle.
+
+    *escape_cgroup*: this action's own effects (e.g. restarting the dashboard's systemd unit)
+    could SIGKILL the spawned child before it finishes — place it outside that cgroup first.
+    See :func:`_cgroup_escaped_argv_and_env`.
+    """
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
@@ -339,6 +380,8 @@ def _spawn_hermes_action(
     action_env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
     action_env.pop("_HERMES_GATEWAY", None)
     detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
+    if escape_cgroup and sys.platform != "win32" and _dashboard_is_systemd_managed():
+        cmd, action_env = _cgroup_escaped_argv_and_env(cmd, action_env)
     proc = subprocess.Popen(
         cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
         env={**action_env, **(env_overrides or {})}, **detach,

@@ -445,12 +445,12 @@ def get_profiles_sessions_sidebar(
     errors: List[Dict[str, str]] = []
     now = time.time()
 
-    def _slice(db, key):
+    def _slice(db, key, sources=None):
         source, exclude = slice_scope[key]
         # include_pinned: a pinned conversation must reach the sidebar even when it has aged
         # past the window, or its Pinned row renders empty.
         return db.list_sessions_rich(
-            source=source, exclude_sources=exclude or None, limit=cap[key], offset=0,
+            source=source, sources=sources, exclude_sources=exclude or None, limit=cap[key], offset=0,
             min_message_count=1, include_archived=False, archived_only=False,
             order_by_last_active=True, compact_rows=True, include_pinned=True)
 
@@ -458,7 +458,7 @@ def get_profiles_sessions_sidebar(
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a
         # page, and a total that shrank when you scrolled would be worse than no total at all.
         slices = {"recents": _slice(db, "recents"), "usage": db.usage_totals(),
-                  "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging")}
+                  "cron": _slice(db, "cron", sources=["cron", "cron_desktop"]), "messaging": _slice(db, "messaging")}
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
 

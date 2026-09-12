@@ -454,6 +454,8 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"desktop-session"` | Per-job persistent Desktop chat in the sidebar | Local state.db session |
+| `"desktop-session:Daily Brief"` | Named Desktop delivery session | Explicit title |
 | `"bot-chat"` | This profile's canonical Bot Chat — the bot reads the output and responds | Machine-local |
 | `"bot-chat:research"` | Another local profile's Bot Chat | Validated at create time |
 | `"all"` | Fan out to every connected home channel | Resolved at fire time |
@@ -486,6 +488,27 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. Without a live mailbox owner, the existing `hermes chat -c "Bot Chat" --create-if-missing` lane remains available (normal session ownership checks still apply).
 - **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
 - Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
+
+### Desktop-native delivery (`desktop-session`)
+
+`desktop-session` delivers cron output to a **persistent per-job chat in the Hermes Desktop sidebar**. Unlike regular cron run sessions (which are ephemeral and created fresh each time), the delivery session persists across runs and accumulates output. You can click it, read past deliveries, and reply in-context.
+
+- `desktop-session` (bare) auto-names the session from the job id.
+- `desktop-session:Daily Brief` (named) sets the session title to "Cron Delivery: Daily Brief".
+- Each run appends its output as a new assistant message in the delivery session.
+- The session appears in the sidebar alongside regular chats with a "Cron" source label and receives an unread dot on new output.
+- Composes with other targets (`desktop-session,telegram`) — the job delivers to both the Desktop session and the external platform.
+
+You can also enable Desktop delivery on any job without changing its main delivery target via the `desktop_delivery_enabled` field:
+
+```python
+cronjob(
+    action="create",
+    schedule="0 9 * * *",
+    prompt="Summarize overnight activity.",
+    desktop_delivery_enabled=True,  # delivers to Desktop in addition to the deliver= target
+)
+```
 
 ### Routing intent (`all`)
 

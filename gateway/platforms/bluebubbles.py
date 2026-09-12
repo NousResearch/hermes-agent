@@ -12,7 +12,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 
@@ -286,15 +286,65 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return [wh for wh in data if wh.get("url") == url]
         return []
 
+    async def _list_registered_webhooks(self) -> list:
+        """Return all BlueBubbles webhook registrations, or an empty list on failure."""
+        with suppress(Exception):
+            data = (await self._api_get("/api/v1/webhook")).get("data")
+            if isinstance(data, list):
+                return data
+        return []
+
+    def _is_our_webhook(self, url: str) -> bool:
+        """Match this adapter's endpoint independent of loopback alias and auth query.
+
+        BlueBubbles stores webhook URLs literally.  ``localhost`` and ``127.0.0.1``
+        therefore accumulated as separate registrations after manual resets, and an
+        old password in the query string survived password rotations.  All of those
+        URLs target the same local Hermes listener and must be managed as one slot.
+        """
+        try:
+            candidate = urlsplit(url)
+            expected = urlsplit(self._webhook_url)
+            candidate_host = "localhost" if candidate.hostname in _LOCAL_HOSTS else candidate.hostname
+            expected_host = "localhost" if expected.hostname in _LOCAL_HOSTS else expected.hostname
+            return (
+                candidate.scheme.lower(), candidate_host, candidate.port, candidate.path.rstrip("/")
+            ) == (
+                expected.scheme.lower(), expected_host, expected.port, expected.path.rstrip("/")
+            )
+        except (TypeError, ValueError):
+            return False
+
+    async def _delete_webhooks(self, webhooks: list) -> bool:
+        """Delete the supplied registrations; fail closed rather than create duplicates."""
+        try:
+            for webhook in webhooks:
+                webhook_id = webhook.get("id")
+                if webhook_id is None:
+                    raise ValueError("webhook registration is missing an id")
+                (await self.client.delete(self._api_url(f"/api/v1/webhook/{webhook_id}"))).raise_for_status()
+            return True
+        except Exception as exc:
+            logger.warning("[bluebubbles] failed to reconcile webhook registrations: %s", exc)
+            return False
+
     async def _register_webhook(self) -> bool:
-        """Register this webhook URL, reusing an existing registration if present (crash resilience —
-        avoids duplicates after an unclean shutdown)."""
+        """Reconcile equivalent local registrations, leaving exactly one current URL."""
         if not self.client:
             return False
         webhook_url, log_url = self._webhook_register_url, self._webhook_register_url_for_log
-        if await self._find_registered_webhooks(webhook_url):
+        managed = [
+            webhook for webhook in await self._list_registered_webhooks()
+            if self._is_our_webhook(webhook.get("url", ""))
+        ]
+        exact = [webhook for webhook in managed if webhook.get("url") == webhook_url]
+        if len(managed) == 1 and len(exact) == 1:
             logger.info("[bluebubbles] webhook already registered: %s", log_url)
             return True
+        if managed:
+            if not await self._delete_webhooks(managed):
+                return False
+            logger.info("[bluebubbles] removed %d stale/equivalent webhook registration(s)", len(managed))
         try:
             res = await self._api_post("/api/v1/webhook",
                                        {"url": webhook_url, "events": ["new-message", "updated-message"]})
@@ -309,15 +359,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return False
 
     async def _unregister_webhook(self) -> bool:
-        """Remove *all* registrations matching our URL (cleans up crash duplicates)."""
+        """Remove all registrations targeting this endpoint, including loopback aliases."""
         if not self.client:
             return False
         removed = False
         try:
-            for wh in await self._find_registered_webhooks(self._webhook_register_url):
-                if wh_id := wh.get("id"):
-                    (await self.client.delete(self._api_url(f"/api/v1/webhook/{wh_id}"))).raise_for_status()
-                    removed = True
+            managed = [
+                webhook for webhook in await self._list_registered_webhooks()
+                if self._is_our_webhook(webhook.get("url", ""))
+            ]
+            if managed:
+                removed = await self._delete_webhooks(managed)
             if removed:
                 logger.info("[bluebubbles] webhook unregistered: %s", self._webhook_register_url_for_log)
         except Exception as exc:

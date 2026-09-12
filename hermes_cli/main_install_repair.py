@@ -984,10 +984,48 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}")
     if failed_extras:
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
+        _warn_configured_features_missing_deps(install_cmd_prefix)
     # uv's incremental resolver has left newly added base deps silently missing on a half-stale
     # venv, surfacing hours later as a downstream ModuleNotFoundError. Verify here instead.
     _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
     _verify_console_scripts_installed(install_cmd_prefix, env=env)
+
+
+def _configured_features_missing_deps() -> list[tuple[str, str]]:
+    """``(feature, hint)`` for every configured platform / MCP whose optional deps are not importable
+    in this interpreter. A running gateway masks the gap until its next restart (#10651), so the
+    update has to say which configured feature will fail to load."""
+    missing: list[tuple[str, str]] = []
+    try:
+        from gateway.config import load_gateway_config
+        from gateway.platform_registry import platform_registry
+        config = load_gateway_config()
+        for platform in config.get_connected_platforms():
+            entry = platform_registry.get(platform.value)
+            if entry is None or entry.check_fn():
+                continue
+            missing.append((entry.label, entry.install_hint or f"reinstall the '{platform.value}' extra"))
+    except Exception as exc:  # the update must finish even when the gateway config is unreadable
+        logger.debug("configured-platform dependency check skipped: %s", exc)
+    try:
+        from hermes_cli.config import load_config
+        import importlib.util
+        if (load_config().get("mcp_servers") or {}) and importlib.util.find_spec("mcp") is None:
+            missing.append(("MCP servers", "install the 'mcp' extra"))
+    except Exception as exc:
+        logger.debug("configured-MCP dependency check skipped: %s", exc)
+    return missing
+
+
+def _warn_configured_features_missing_deps(install_cmd_prefix: list[str]) -> None:
+    missing = _configured_features_missing_deps()
+    if not missing:
+        return
+    prefix = " ".join(shlex.quote(part) for part in install_cmd_prefix)
+    print("  ⚠ Configured features whose dependencies are still missing — the gateway will fail to load them on restart:")
+    for feature, hint in missing:
+        print(f"    - {feature}: {hint}")
+    print(f"    Retry with: {prefix} install -e '.[all]'")
 
 
 def _load_console_script_names() -> list[str]:

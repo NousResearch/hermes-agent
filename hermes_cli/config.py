@@ -3318,6 +3318,22 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     return canonical, f"  (note: per-platform display setting — saved as {canonical})"
 
 
+def _wrap_platform_home_channel(key: str, value: Any) -> tuple[Any, bool]:
+    """Wrap a bare chat id for ``platforms.<name>.home_channel`` into the mapping
+    ``HomeChannel.from_dict`` reads. The gateway drops a non-mapping ``home_channel``
+    silently, so an unwrapped write reports success while the runtime never sees it
+    (#33141). Explicit mappings pass through untouched."""
+    segs = _split_key_path(key)
+    if (
+        len(segs) == 3
+        and segs[0] == "platforms"
+        and segs[2] == "home_channel"
+        and not isinstance(value, (dict, list, bool))
+    ):
+        return {"platform": segs[1], "chat_id": str(value), "name": "Home"}, True
+    return value, False
+
+
 def _exit_if_key_managed(key: str, action: str) -> None:
     """A key pinned by the managed layer cannot be set/unset (the next load would reinstate it):
     hard-reject and name the source. Distinct from ``is_managed()``; env-shaped keys route to the
@@ -3443,6 +3459,9 @@ def set_config_value(key: str, value: str, force: bool = False):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
     value = _coerce_config_set_value(key, value)
+    value, _home_channel_wrapped = _wrap_platform_home_channel(key, value)
+    if _home_channel_wrapped:
+        print("  (note: home_channel is a mapping — bare chat id saved as {platform, chat_id, name})")
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")

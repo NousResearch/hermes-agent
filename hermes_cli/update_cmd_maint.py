@@ -25,13 +25,22 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 _UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local", "tools.lazy_deps"
 
-#: Package prefixes whose cached modules go stale when the checkout changes under this
-#: process; purged (not reloaded) so any LATER import chain resolves against fresh source.
+#: Fallback for the purge's top-level names when the checkout scan below cannot run; the
+#: live set comes from ``_stale_purge_prefixes()``.
 _STALE_PURGE_PREFIXES = "hermes_cli", "gateway", "tools", "tui_gateway", "agent"
+
+#: Owned by the checkout but never purged: pytest resolves fixtures through the identity of
+#: its own already-imported test modules, and evicting them mid-session breaks that.
+_STALE_PURGE_EXCLUDED_TOP_LEVEL = frozenset({"tests"})
 
 #: Modules EXECUTING the update survive the purge: evicting them buys nothing (running frames
 #: keep them alive) and reloading them mid-flight is the one genuinely unsafe move.
-_STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_cli.hermes_logging"})
+#: ``hermes_logging`` is protected for a different reason: its queue listener, handler list and
+#: ``_logging_initialized`` flag are module globals, so a fresh copy starts a SECOND
+#: QueueListener over the same log files while the first one keeps running.
+_STALE_PURGE_PROTECTED = frozenset({
+    "hermes_cli", "hermes_cli.main", "hermes_cli.hermes_logging", "hermes_logging",
+})
 
 #: The updater's own module family (``update_cmd*``, ``update_receipt``, ``update_inventory``,
 #: ``update_lock``, ...) is protected as a prefix: these hold per-run state — the open receipt
@@ -70,6 +79,26 @@ def _reload_modules(names, *, modules, log) -> None:
             log(module_name, exc)
 
 
+def _stale_purge_prefixes() -> frozenset:
+    """Top-level names the checkout owns, for the post-pull purge.
+
+    Scanned, not listed: a hardcoded tuple stops covering each newly added top-level module
+    without anything failing, and the symbol that breaks the next update is in whichever one
+    drifted out — ``utils`` gaining ``base_url_origin`` was the field case.
+    """
+    from hermes_cli.update_cmd import _m
+    names = set(_STALE_PURGE_PREFIXES)
+    try:
+        for entry in Path(_m().PROJECT_ROOT).iterdir():
+            if entry.suffix == ".py" and entry.is_file():
+                names.add(entry.stem)
+            elif (entry / "__init__.py").is_file():
+                names.add(entry.name)
+    except OSError as exc:
+        logger.debug("Could not scan the checkout for purge prefixes: %s", exc)
+    return frozenset(names) - _STALE_PURGE_EXCLUDED_TOP_LEVEL
+
+
 def _purge_stale_hermes_modules() -> None:
     """Evict every cached Hermes module after the checkout changed in-place. Never raises.
 
@@ -82,12 +111,13 @@ def _purge_stale_hermes_modules() -> None:
     with _best_effort('Could not purge stale Hermes modules: %s'):
         importlib.invalidate_caches()
         modules = _m().sys.modules
+        prefixes = _stale_purge_prefixes()
         purged = [
             name for name in list(modules)
             if name not in _STALE_PURGE_PROTECTED
             and not name.startswith(_STALE_PURGE_PROTECTED_PREFIX)
             # Root-package check: startswith() alone also matches unrelated ``gateway_foo``.
-            and name.split(".", 1)[0] in _STALE_PURGE_PREFIXES
+            and name.split(".", 1)[0] in prefixes
             and modules.pop(name, None) is not None
         ]
         if purged:

@@ -59,11 +59,20 @@ def _path(profile_key: Optional[str]) -> Path:
 
 
 def _read(path: Path) -> Lease:
+    """No file = fresh profile, agent holds. A file that exists but cannot be parsed is a torn write
+    or tampering: fail CLOSED (human holds) — an unreadable lease must never let the agent act on a
+    screen a human may be using; the next successful write repairs it."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return Lease(**{k: v for k, v in data.items() if k in Lease.__dataclass_fields__})
-    except (OSError, ValueError, TypeError):
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return Lease()
+    except OSError:
+        return Lease(holder=HUMAN, viewer_id="unreadable-lease", reason="lease file unreadable")
+    try:
+        data = json.loads(raw)
+        return Lease(**{k: v for k, v in data.items() if k in Lease.__dataclass_fields__})
+    except (ValueError, TypeError):
+        return Lease(holder=HUMAN, viewer_id="unreadable-lease", reason="lease file corrupt")
 
 
 def _write(path: Path, lease: Lease) -> None:
@@ -134,7 +143,10 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
     """Human ``viewer_id`` takes control. Last writer wins: a second viewer evicts the first, and the
     RFB bridge closes the evicted socket so its UI drops to view-only."""
     def _m(lease: Lease) -> bool:
-        lease.holder, lease.viewer_id, lease.since, lease.reason = HUMAN, viewer_id, time.time(), reason
+        # The agent's ask ("please log in to X") stays as the takeover reason: the human needs it
+        # on screen WHILE they act, not only before they clicked Take over.
+        lease.holder, lease.viewer_id, lease.since = HUMAN, viewer_id, time.time()
+        lease.reason = reason or lease.pending_handoff or ""
         lease.pending_handoff = None
         return True
     return _transition(profile_key, _m)

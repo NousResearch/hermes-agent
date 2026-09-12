@@ -279,14 +279,16 @@ class TestIterBackupFiles:
         assert "hermes-agent" in skipped
 
     @pytest.mark.linux_only
-    def test_skips_unix_sockets(self, tmp_path):
+    def test_skips_unix_sockets(self, tmp_path, monkeypatch):
         from hermes_cli.backup import _iter_backup_files
 
         root = tmp_path / ".hermes"
         root.mkdir()
-        socket_path = root / "gateway.sock"
+        # AF_UNIX paths are capped at ~108 bytes; pytest's tmp_path overflows that under the
+        # test runner's deep temp root, so bind by a relative name from inside ``root``.
+        monkeypatch.chdir(root)
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as gateway_socket:
-            gateway_socket.bind(str(socket_path))
+            gateway_socket.bind("gateway.sock")
 
             selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
 

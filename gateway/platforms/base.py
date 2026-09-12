@@ -124,6 +124,17 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     profile = str(getattr(source, "profile", None) or "").strip()
     if profile:
         metadata["hermes_profile"] = profile
+    # Feishu topic threads: media sends carry only ``thread_id`` metadata, so
+    # the adapter's reply branch never triggers and non-text messages fall
+    # through to a create with receive_id_type='thread_id' — which Feishu's
+    # API rejects outright (99992402: receive_id_type is not a valid enum
+    # value; text only ever worked because streaming metadata already carried
+    # a reply anchor). Carry the anchor for Feishu too so media replies land
+    # in the topic via the reply API.
+    if _platform_name(getattr(source, "platform", None)) == "feishu" and thread_id:
+        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        if anchor is not None:
+            metadata["reply_to_message_id"] = str(anchor)
     return metadata
 
 

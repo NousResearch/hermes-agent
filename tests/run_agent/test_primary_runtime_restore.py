@@ -138,6 +138,33 @@ class TestPrimaryRuntimeSnapshot:
 # _restore_primary_runtime()
 # =============================================================================
 
+def test_native_restore_keeps_cooldown_policy_then_restores_configured_primary_tier():
+    from copy import deepcopy
+
+    overrides = {"service_tier": "priority", "speed": "fast", "extra_body": {"service_tier": "flex", "store": False}}
+    before = deepcopy(overrides)
+    agent = _make_agent(
+        fallback_model={"provider": "openrouter", "model": "gpt-4.1", "service_tier_override": "normal"},
+        request_overrides=overrides,
+    )
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_resolve(), None)):
+        assert agent._try_activate_fallback() is True
+    agent._rate_limited_until = float("inf")
+    assert agent._restore_primary_runtime() is False
+    assert agent._active_fallback_service_tier_override == "normal"
+    agent._rate_limited_until = 0
+    with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        assert agent._restore_primary_runtime() is True
+    assert agent._active_fallback_service_tier_override is None
+    assert agent._fallback_index == 0
+    wire = agent._build_api_kwargs([{"role": "user", "content": "fixture"}])
+    assert wire["service_tier"] == "priority"
+    assert wire["speed"] == "fast"
+    assert wire["extra_body"] == before["extra_body"]
+    assert agent.request_overrides == before
+    assert overrides == before
+
+
 class TestRestorePrimaryRuntime:
     def test_noop_when_not_fallback(self):
         agent = _make_agent()

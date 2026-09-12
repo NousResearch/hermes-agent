@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.fallback_policy import activate_fallback_service_tier_override
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -855,6 +856,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             agent.provider = _fb["provider"]
             agent.model = _fb_model or _fb["model"]
             agent._fallback_activated = True
+            activate_fallback_service_tier_override(agent, _fb, log=logger)
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
@@ -1032,6 +1034,9 @@ def _init_fallback_chain(agent, fallback_model):
     agent._fallback_chain = _fallback_entries(fallback_model)
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
+    agent._active_fallback_service_tier_override = getattr(
+        agent, "_active_fallback_service_tier_override", None,
+    )
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     chain = agent._fallback_chain
@@ -2088,6 +2093,7 @@ def _snapshot_primary_runtime(agent):
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "fallback_service_tier_override": agent._active_fallback_service_tier_override,
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

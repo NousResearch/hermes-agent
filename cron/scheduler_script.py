@@ -350,11 +350,15 @@ def _run_job_script(
                 "encoding": "utf-8",
                 "errors": "replace"}
         # A routed profile's script (desktop multi-profile ticker, multiplex gateway) must see ITS
-        # profile's .env + vault values — the process env holds the launch profile's. Overlay the
-        # installed scope onto the base BEFORE sanitizing, so the same scrub / passthrough rules
-        # apply to those values as to any other; the parent process is never mutated.
+        # profile's .env + vault values — the process env holds the launch profile's. Drop the
+        # launch profile's dotenv-owned residue first (a name only the launch .env defines must
+        # come through UNSET, not with the launch value — the scrub only knows classified secrets),
+        # then overlay the installed scope, then sanitize, so routed values pass the same scrub /
+        # passthrough rules as any other. No-op outside multiplex or for the launch profile's own
+        # fires; the parent process is never mutated.
         from agent.secret_scope import current_secret_scope
-        base = dict(os.environ)
+        from tools.environments.local import strip_launch_profile_env
+        base = strip_launch_profile_env(dict(os.environ))
         scope = current_secret_scope()
         if scope:
             base.update(scope)

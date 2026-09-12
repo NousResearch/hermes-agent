@@ -1982,11 +1982,28 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
     # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
     agent._ollama_num_ctx: int | None = None
     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
+    _provider_name = str(getattr(agent, "provider", "") or "").strip().lower().replace("_", "-")
+    # An explicit endpoint is authoritative: an Ollama-named provider can
+    # still be pointed at a remote-compatible service. Only fall back to the
+    # provider name when no endpoint was resolved (the local provider defaults
+    # supply their own local route later).
+    _is_local_ollama_route = (
+        bool(agent.base_url) and is_local_endpoint(agent.base_url)
+    ) or (
+        not agent.base_url and _provider_name in {"ollama", "lmstudio", "lm-studio"}
+    )
     if _override is not None:
-        try:
-            agent._ollama_num_ctx = int(_override)
-        except (TypeError, ValueError):
-            _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _override)
+        if _is_local_ollama_route:
+            try:
+                agent._ollama_num_ctx = int(_override)
+            except (TypeError, ValueError):
+                _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _override)
+        else:
+            _ra().logger.info(
+                "Ignoring model.ollama_num_ctx=%r for non-local endpoint %s",
+                _override,
+                agent.base_url or f"provider={getattr(agent, 'provider', '')}",
+            )
     if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
         try:
             # api_key may be a callable (Entra token provider); detection needs a string.
@@ -2022,7 +2039,13 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
     # window to the effective num_ctx so threshold math operates on the context the server actually serves.
     # (Overlaps #60103's silent-clamp dead zone; this is the init-order half.)
     _cc_window = getattr(agent.context_compressor, "context_length", 0) or 0
-    if agent._ollama_num_ctx and agent._ollama_num_ctx > 0 and _cc_window and agent._ollama_num_ctx < _cc_window:
+    if (
+        _is_local_ollama_route
+        and agent._ollama_num_ctx
+        and agent._ollama_num_ctx > 0
+        and _cc_window
+        and agent._ollama_num_ctx < _cc_window
+    ):
         _ra().logger.info(
             "Compressor window clamped to Ollama num_ctx: %d -> %d",
             _cc_window, agent._ollama_num_ctx,

@@ -343,10 +343,11 @@ _LESSON_LAYER_BLOCK = (
 # Shared decision gate for skill-only and combined reviews. A skill is selectively loaded context,
 # so creating one is justified only when both its trigger and its procedural payload are reusable.
 _SKILL_DECISION_BLOCK = (
-    "Taking no skill action is explicitly valid. Do not manufacture a skill update to prove that "
-    "learning happened. Act autonomously when the conversation contains evidence of a genuine "
-    "recurring specialized workflow; otherwise say 'Nothing to save.' and stop the skill review. "
-    "A useful fact, correction, or successful task is not by itself a skill signal.\n\n"
+    "Taking no skill action — no persistent action — is explicitly valid. Do not manufacture a "
+    "skill update to prove that learning happened. Act autonomously when the conversation contains "
+    "evidence of a genuine recurring specialized workflow; otherwise say 'Nothing to save.' and "
+    "stop the skill review. A useful fact, correction, or successful task is not by itself a skill "
+    "signal.\n\n"
     "Before CREATING a skill, require ALL FIVE:\n"
     "  1. NARROW LOADING TRIGGER: state the specific kind of request or context that should load "
     "it; broad triggers such as 'when helping the user' do not qualify.\n"
@@ -360,6 +361,13 @@ _SKILL_DECISION_BLOCK = (
     "the proposed skill.\n"
     "If any criterion fails, do not create the skill. Prefer extending an existing matching skill "
     "whenever one can carry the reusable workflow without broadening its trigger unnaturally.\n\n"
+    "Universal learning governance is NOT a specialized workflow. Never create a meta/governance "
+    "skill such as `hermes-learning-governance` merely to restate how Hermes should learn, review, "
+    "remember, manage skills, or behave. Those policies belong in core background-review "
+    "machinery, config, USER.md or MEMORY.md, project instructions, or an actually matching "
+    "existing management context such as `hermes-agent`; respect its ownership rules rather than "
+    "creating a duplicate. Creating such a skill and then deleting it as redundant is evidence "
+    "against recreating it, not evidence that the workflow recurs.\n\n"
 )
 
 # Shared tail of the skill and combined prompts: what NOT to persist as a skill.

@@ -1,6 +1,7 @@
 """Behavior contracts for the operative background skill-review prompts."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from agent.background_review import spawn_background_review_thread
 
@@ -8,7 +9,11 @@ from agent.background_review import spawn_background_review_thread
 def _assembled_prompt(*, review_memory: bool) -> str:
     """Exercise the prompt-selection path used by the background review thread."""
     _target, prompt = spawn_background_review_thread(
-        SimpleNamespace(), [], review_memory=review_memory, review_skills=True, task_cfg={},
+        SimpleNamespace(),
+        [],
+        review_memory=review_memory,
+        review_skills=True,
+        task_cfg={},
     )
     return prompt
 
@@ -17,9 +22,11 @@ def _assembled_prompt(*, review_memory: bool) -> str:
 # _SKILL_REVIEW_PROMPT
 # ---------------------------------------------------------------------------
 
+
 def _assert_selective_skill_policy(prompt: str, label: str) -> None:
     lower = prompt.lower()
-    assert "taking no skill action is explicitly valid" in lower, label
+    assert "taking no skill action" in lower and "explicitly valid" in lower, label
+    assert "no persistent action" in lower, label
     assert "all five" in lower, label
     for requirement in (
         "narrow loading trigger",
@@ -28,16 +35,26 @@ def _assert_selective_skill_policy(prompt: str, label: str) -> None:
         "no better home",
         "safe selective loading",
     ):
-        assert requirement in lower, f"{label}: missing creation requirement {requirement!r}"
+        assert requirement in lower, (
+            f"{label}: missing creation requirement {requirement!r}"
+        )
     for better_home in (
-        "config", "user.md", "memory.md", "project instructions", "code",
-        "session/git/issue/pr", "existing skill",
+        "config",
+        "user.md",
+        "memory.md",
+        "project instructions",
+        "code",
+        "session/git/issue/pr",
+        "existing skill",
     ):
         assert better_home in lower, f"{label}: missing better home {better_home!r}"
     assert "unrelated conversations must work correctly without loading" in lower, label
     assert "prefer extending an existing matching skill" in lower, label
     for rejected in (
-        "global preferences", "standard agent behavior", "one-off task state", "raw logs",
+        "global preferences",
+        "standard agent behavior",
+        "one-off task state",
+        "raw logs",
         "generic advice",
     ):
         assert rejected in lower, f"{label}: must reject {rejected}"
@@ -47,7 +64,62 @@ def _assert_selective_skill_policy(prompt: str, label: str) -> None:
 
 
 def test_skill_review_prompt_requires_selective_creation():
-    _assert_selective_skill_policy(_assembled_prompt(review_memory=False), "skill-only review")
+    _assert_selective_skill_policy(
+        _assembled_prompt(review_memory=False), "skill-only review"
+    )
+
+
+def test_review_rejects_redundant_learning_governance_skill_for_regression_scenario():
+    """A create-then-delete meta skill is evidence against persisting the same policy again."""
+    transcript = [
+        {
+            "role": "user",
+            "content": "Improve self-learning and stop creating noisy skills.",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "The existing hermes-agent management skill, stable user policy, and core "
+                "background review machinery already govern this behavior. Even so, the old "
+                "review instruction said to be active because most sessions should produce a "
+                "skill action, so it created hermes-learning-governance."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Why is that a new skill instead of part of the existing learning machinery?"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": "It is redundant with universal policy and has been deleted.",
+        },
+    ]
+    agent = SimpleNamespace()
+    target, _prompt = spawn_background_review_thread(
+        agent, transcript, review_skills=True, task_cfg={},
+    )
+
+    with patch("agent.background_review._run_review_in_thread") as run_review:
+        target()
+
+    reviewed_transcript = run_review.call_args.args[1]
+    prompt = run_review.call_args.args[2].lower()
+    assert reviewed_transcript is transcript
+    assert "no persistent action" in prompt
+    assert "hermes-learning-governance" in prompt and "never create" in prompt
+    assert (
+        "universal learning governance" in prompt
+        and "not a specialized workflow" in prompt
+    )
+    assert all(
+        home in prompt
+        for home in ("core", "config", "user.md", "memory.md", "hermes-agent")
+    )
+    assert "deleting it as redundant is evidence against recreating it" in prompt
+    assert "prefer extending an existing matching skill" in prompt
+    assert "most sessions produce" not in prompt
 
 
 

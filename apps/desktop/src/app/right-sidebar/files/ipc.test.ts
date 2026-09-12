@@ -124,4 +124,90 @@ describe('readProjectDir', () => {
     expect(result.entries.map(entry => entry.name)).toEqual(['debug.log'])
     expect(readFileDataUrl).not.toHaveBeenCalled()
   })
+
+  it('keeps nested repository roots visible when the parent gitignores them', async () => {
+    gitRoot.mockResolvedValue('/repo')
+    readDir.mockImplementation(async path => {
+      if (path === '/repo') {
+        return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      }
+
+      if (path === '/repo/dev') {
+        return ok([
+          { name: 'ownward-studio', path: '/repo/dev/ownward-studio', isDirectory: true },
+          { name: 'scratch', path: '/repo/dev/scratch', isDirectory: true },
+          { name: 'notes.txt', path: '/repo/dev/notes.txt', isDirectory: false },
+          { name: 'README.md', path: '/repo/dev/README.md', isDirectory: false }
+        ])
+      }
+
+      if (path === '/repo/dev/ownward-studio') {
+        return ok([{ name: '.git', path: '/repo/dev/ownward-studio/.git', isDirectory: true }])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockResolvedValue(dataUrl('dev/*\n!dev/README.md\n'))
+
+    const result = await readProjectDir('/repo/dev', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['ownward-studio', 'README.md'])
+  })
+
+  it('keeps worktree roots with a .git file visible', async () => {
+    gitRoot.mockResolvedValue('/repo')
+    readDir.mockImplementation(async path => {
+      if (path === '/repo') {
+        return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      }
+
+      if (path === '/repo/dev') {
+        return ok([{ name: 'wt-feature', path: '/repo/dev/wt-feature', isDirectory: true }])
+      }
+
+      if (path === '/repo/dev/wt-feature') {
+        return ok([{ name: '.git', path: '/repo/dev/wt-feature/.git', isDirectory: false }])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockResolvedValue(dataUrl('dev/*\n'))
+
+    const result = await readProjectDir('/repo/dev', '/repo')
+
+    expect(result.entries.map(entry => entry.name)).toEqual(['wt-feature'])
+  })
+
+  it('invalidates cached nested repository probes below a refreshed root', async () => {
+    let nestedRepoExists = false
+
+    gitRoot.mockResolvedValue('/repo')
+    readDir.mockImplementation(async path => {
+      if (path === '/repo') {
+        return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      }
+
+      if (path === '/repo/dev') {
+        return ok([{ name: 'nested', path: '/repo/dev/nested', isDirectory: true }])
+      }
+
+      if (path === '/repo/dev/nested') {
+        return nestedRepoExists
+          ? ok([{ name: '.git', path: '/repo/dev/nested/.git', isDirectory: true }])
+          : ok([])
+      }
+
+      return ok([])
+    })
+    readFileDataUrl.mockResolvedValue(dataUrl('dev/*\n'))
+
+    const before = await readProjectDir('/repo/dev', '/repo')
+    expect(before.entries).toEqual([])
+
+    nestedRepoExists = true
+    clearProjectDirCache('/repo')
+
+    const after = await readProjectDir('/repo/dev', '/repo')
+    expect(after.entries.map(entry => entry.name)).toEqual(['nested'])
+  })
 })

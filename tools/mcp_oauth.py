@@ -934,6 +934,21 @@ def _maybe_preregister_client(storage: "HermesTokenStorage", cfg: dict, client_m
     client_id = cfg.get("client_id")
     if not client_id:
         return
+    # Guard: never persist an unresolved ${VAR} placeholder as client_id
+    # and never discard a valid token on its behalf. A real client_id never
+    # contains a literal "${...}"; the placeholder survives only when the
+    # profile's secret scope was unavailable during interpolation (unified
+    # dashboard serving a secondary profile without its .env scope, #108253).
+    # Keeping the existing .client.json preserves the minted token; the
+    # stale-placeholder session will simply reuse it or fall back to DCR.
+    if isinstance(client_id, str) and "${" in client_id:
+        logger.warning(
+            "MCP OAuth '%s': refusing to overwrite client registration with "
+            "unresolved placeholder client_id %r; keeping existing "
+            "registration and cached token (resolve env interpolation or "
+            "re-run hermes mcp login %s)",
+            storage._server_name, client_id, storage._server_name)
+        return
     info_cls = _sdk_class("OAuthClientInformationFull")
     _invalidate_tokens_on_client_change(storage, client_id, cfg.get("client_secret"))
     info_dict: dict[str, Any] = {

@@ -418,6 +418,18 @@ class GeminiReceiptStore:
             ).fetchone()
         return self._row(row)
 
+    def claim_review_batch(self, batch_id: str) -> bool:
+        """Atomically grant one runner authority to execute a prepared batch."""
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE daily_review_batches
+                   SET status='reviewing'
+                   WHERE batch_id=? AND status='preparing'
+                """,
+                (batch_id,),
+            )
+        return cursor.rowcount == 1
+
     def count_review_batches(self) -> int:
         with self._read_connection() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM daily_review_batches").fetchone()[0])

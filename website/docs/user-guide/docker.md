@@ -514,7 +514,7 @@ The container ENTRYPOINT is now the `entrypoint-dispatch.sh` dispatcher (which d
 :::
 
 :::warning Privilege model
-Do not override the image entrypoint unless you keep `/init` (or, equivalently, the legacy `docker/entrypoint.sh` shim that forwards to the stage2 hook) in the command chain. s6-overlay's `/init` runs as root so it can chown the volume on first boot, then drops to the `hermes` user via `s6-setuidgid` for every supervised service AND for the main program. Starting `hermes gateway run` as root inside the official image is refused by default because it can leave root-owned files in `/opt/data` and break later dashboard or gateway starts. Set `HERMES_ALLOW_ROOT_GATEWAY=1` only when you intentionally accept that risk.
+Do not override the image entrypoint unless you keep `/init` (or, equivalently, the legacy `docker/entrypoint.sh` shim that forwards to the stage2 hook) in the command chain. s6-overlay's `/init` runs as root so it can chown the volume on first boot, then drops to the `hermes` user via `s6-setuidgid` for every supervised service AND for the main program. For the same reason, do not start the container as a non-root user: no `user:` in Compose, no `--user` on `docker run`, and no trailing `USER hermes` in a derived Dockerfile — any of these skips the UID/GID remap and the volume ownership fix-up. Use `HERMES_UID`/`HERMES_GID` (or `PUID`/`PGID`) to control file ownership instead. Starting `hermes gateway run` as root inside the official image is refused by default because it can leave root-owned files in `/opt/data` and break later dashboard or gateway starts. Set `HERMES_ALLOW_ROOT_GATEWAY=1` only when you intentionally accept that risk.
 :::
 
 ### `docker exec` automatically drops to the `hermes` user
@@ -603,8 +603,9 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends <your-package> \
     && rm -rf /var/lib/apt/lists/*
-USER hermes
 ```
+
+Leave the image at `USER root` — the base image's final user. The s6-overlay bootstrap has to start as root to apply `HERMES_UID`/`HERMES_GID` and fix ownership of `/opt/data`; it then drops every supervised process to the `hermes` user itself, and the `hermes` exec shim drops `docker exec` callers too. A trailing `USER hermes` in a derived image starts the container as UID 10000 instead: the bootstrap's `usermod` fails, the volume is never chowned, and the gateway cannot write to `/opt/data` (see the privilege model note above).
 
 Build it and use it in place of the official image:
 

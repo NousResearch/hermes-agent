@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { ListRow } from '@/app/settings/primitives'
 import { Input } from '@/components/ui/input'
+import { useI18n } from '@/i18n'
 import { $poolLimits, loadPoolLimits, savePoolLimits } from '@/store/pool-limits'
 
 // Bounds imported from main's clamp module so the advertised input ranges
@@ -16,6 +17,7 @@ const IDLE_MS_MAX = POOL_LIMITS_BOUNDS.idleMsMax
  *  Device-local (not profile-scoped): the pool is sized once per machine and
  *  changes apply live — main evicts/reaps to converge without a restart. */
 export function PoolLimitsSetting() {
+  const { t } = useI18n()
   const limits = useStore($poolLimits)
   const [maxDraft, setMaxDraft] = useState(String(limits.maxBackends))
   const [idleDraft, setIdleDraft] = useState(String(limits.idleMs))
@@ -63,7 +65,7 @@ export function PoolLimitsSetting() {
         action={
           <div className="flex items-center gap-2">
             <Input
-              aria-label="Warm bot backends"
+              aria-label={t.settings.poolLimits.warmBotBackendsAria}
               className="w-20"
               inputMode="numeric"
               max={MAX_BACKENDS_MAX}
@@ -81,13 +83,13 @@ export function PoolLimitsSetting() {
           </div>
         }
         description="How many bot backends stay running for instant switching. Higher = faster switches, more memory (~60MB per backend). Applies immediately."
-        title="Warm Bot Backends"
+        title={t.settings.poolLimits.warmBotBackendsTitle}
       />
       <ListRow
         action={
           <div className="flex items-center gap-2">
             <Input
-              aria-label="Backend idle timeout in milliseconds"
+              aria-label={t.settings.poolLimits.backendIdleTimeoutAria}
               className="w-28"
               inputMode="numeric"
               max={IDLE_MS_MAX}
@@ -106,7 +108,7 @@ export function PoolLimitsSetting() {
           </div>
         }
         description="How long an unused bot backend stays warm before it is shut down. Raise this so bots you revisit every few minutes never pay a cold start."
-        title="Backend Idle Timeout"
+        title={t.settings.poolLimits.backendIdleTimeoutTitle}
       />
     </>
   )

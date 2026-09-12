@@ -545,6 +545,7 @@ export const zhHant = defineLocale({
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeSearchPlaceholder: '搜尋本機主題或 VS Code Marketplace…',
       themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
       installTitle: '從 VS Code 安裝',
       installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
@@ -648,7 +649,8 @@ export const zhHant = defineLocale({
       },
       browser: {
         allowPrivateUrls: '瀏覽器私有 URL',
-        autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器'
+        autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器',
+        useRealProfile: '使用我的真實瀏覽器設定檔'
       },
       checkpoints: {
         enabled: '檔案檢查點',
@@ -657,11 +659,17 @@ export const zhHant = defineLocale({
       voice: {
         recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
-        autoTts: '朗讀回覆'
+        autoTts: '朗讀回覆',
+        voiceChatMode: '語音聊天模式',
+        gptLive: {
+          voice: 'GPT-Live 音色',
+          instructions: 'GPT-Live 人設'
+        }
       },
       stt: {
         enabled: '語音轉文字',
         provider: '語音轉文字提供方',
+        echoTranscripts: '回傳轉寫文字',
         local: {
           model: '本機轉寫模型',
           language: '轉寫語言'
@@ -694,6 +702,10 @@ export const zhHant = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 語音',
           modelId: 'ElevenLabs 模型'
+        },
+        deepinfra: {
+          model: 'DeepInfra TTS 模型',
+          voice: 'DeepInfra 語音'
         },
         xai: {
           voiceId: 'xAI (Grok) 語音',
@@ -777,7 +789,11 @@ export const zhHant = defineLocale({
       terminal: {
         cwd: '工具與終端機操作的預設專案資料夾。',
         persistentShell: '後端支援時，在指令之間保留 Shell 狀態。',
-        envPassthrough: '傳入工具執行的環境變數。'
+        envPassthrough: '傳入工具執行的環境變數。',
+        dockerImage: '執行後端為 Docker 時使用的容器映像。',
+        singularityImage: '執行後端為 Singularity 時使用的映像。',
+        modalImage: '執行後端為 Modal 時使用的映像。',
+        daytonaImage: '執行後端為 Daytona 時使用的映像。'
       },
       codeExecution: {
         mode: '程式碼執行被限制在目前專案中的嚴格程度。'
@@ -803,13 +819,38 @@ export const zhHant = defineLocale({
       compression: {
         enabled: '對話變大時摘要較早的上下文。'
       },
+      browser: {
+        useRealProfile:
+          '本機瀏覽會使用你的真實登入狀態。Hermes 會將預設瀏覽器的設定（Cookie、登入資訊與偏好）複製成受管理的快照，再以內建的 Chromium 驅動它——不會直接開啟你正在使用的設定檔，且每次執行都會從目前的設定檔重新整理副本。設定雲端瀏覽器後端時，也允許代理視需要開啟本機真實設定檔工作階段。僅支援 Chromium 系瀏覽器（Chrome、Edge、Brave、Brave Origin、Chromium）；若預設瀏覽器並非 Chromium 系，會顯示明確錯誤。預設關閉。'
+      },
       voice: {
-        autoTts: '自動朗讀助手回覆。'
+        autoTts: '自動朗讀助手回覆。',
+        voiceChatMode:
+          'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。',
+        gptLive: {
+          voice: 'GPT-Live 模式使用的音色，可填入自訂音色 ID。',
+          instructions: '附加至即時語音人設的句子（語氣、語速、語言）。Hermes 會保留自己的系統提示詞。'
+        }
       },
       stt: {
         enabled: '啟用本機或提供方支援的語音轉寫。',
+        echoTranscripts: '將語音訊息的原始 🎙️ 轉寫文字傳回聊天。',
         elevenlabs: {
           languageCode: '可選的 ISO-639-3 語言代碼。留空讓 ElevenLabs 自動偵測。'
+        }
+      },
+      tts: {
+        xai: {
+          voiceId: 'xAI 音色 ID（例如 eve）或自訂音色 ID。',
+          language: '口語語言代碼（例如 en、pt-BR），或填入 "auto" 自動偵測。',
+          speed: '播放速度。0.7 = 較慢，1.0 = 正常，1.5 = 較快。',
+          autoSpeechTags: '合成前讓 LLM 在文稿中插入富有表現力的音訊標籤（例如 [laughing]、[sighs]）。',
+          optimizeStreamingLatency: '延遲與品質的權衡。0 = 最佳品質，2 = 最低延遲。',
+          sampleRate: '音訊取樣率（Hz）。越高音質越好、檔案越大。',
+          bitRate: 'MP3 位元率（bps）。僅在編碼為 mp3 時生效。'
+        },
+        neutts: {
+          device: 'NeuTTS 的本機推論裝置。'
         }
       },
       updates: {
@@ -817,6 +858,30 @@ export const zhHant = defineLocale({
           'Hermes 從應用程式內更新自身時，保留本機原始碼變更（stash）或丟棄（discard）。終端機更新一律會詢問。'
       }
     }),
+    uninstallSection: {
+      dangerZone: '危險操作',
+      confirmUninstall: '確認解除安裝',
+      uninstallHermes: '解除安裝 Hermes'
+    },
+    poolLimits: {
+      warmBotBackendsAria: '預熱機器人後端',
+      warmBotBackendsTitle: '預熱機器人後端',
+      backendIdleTimeoutAria: '後端閒置逾時（毫秒）',
+      backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
+    },
+    customEndpoints: {
+      title: '自訂端點',
+      deleteEndpoint: '刪除端點',
+      emptyDescription: '在下方新增 OpenAI 相容端點。',
+      emptyTitle: '尚無自訂端點',
+      namePlaceholder: '範例代理（預留位置）',
+      contextPlaceholder: '自動'
+    },
+    computerUse: {
+      accessibility: '輔助使用',
+      screenRecording: '螢幕錄製',
+      driverHealth: '驅動程式健康狀態'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,
@@ -870,7 +935,8 @@ export const zhHant = defineLocale({
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
+      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      showOptions: '顯示選項'
     },
     quickEntry: {
       enabledTitle: '快速輸入',
@@ -1101,6 +1167,9 @@ export const zhHant = defineLocale({
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
       providerDefault: '(提供方預設)',
+      moaTitle: '混合代理（Mixture of Agents）',
+      moaPreset: '預設',
+      moaAggregator: '聚合模型',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },

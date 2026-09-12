@@ -750,6 +750,7 @@ export const zh = defineLocale({
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      themeSearchPlaceholder: '搜索本地主题或 VS Code 市场…',
       themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
       installTitle: '从 VS Code 安装',
       installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',
@@ -853,7 +854,8 @@ export const zh = defineLocale({
       },
       browser: {
         allowPrivateUrls: '浏览器私有 URL',
-        autoLocalForPrivateUrls: '私有 URL 使用本地浏览器'
+        autoLocalForPrivateUrls: '私有 URL 使用本地浏览器',
+        useRealProfile: '使用我的真实浏览器配置'
       },
       checkpoints: {
         enabled: '文件检查点',
@@ -872,6 +874,7 @@ export const zh = defineLocale({
       stt: {
         enabled: '语音转文字',
         provider: '语音转文字提供方',
+        echoTranscripts: '回显转写文本',
         local: {
           model: '本地转写模型',
           language: '转写语言'
@@ -904,6 +907,10 @@ export const zh = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 语音',
           modelId: 'ElevenLabs 模型'
+        },
+        deepinfra: {
+          model: 'DeepInfra TTS 模型',
+          voice: 'DeepInfra 语音'
         },
         xai: {
           voiceId: 'xAI (Grok) 语音',
@@ -987,7 +994,11 @@ export const zh = defineLocale({
       terminal: {
         cwd: '工具与终端操作的默认项目目录。',
         persistentShell: '当后端支持时，在命令之间保留 Shell 状态。',
-        envPassthrough: '传入工具执行的环境变量。'
+        envPassthrough: '传入工具执行的环境变量。',
+        dockerImage: '当执行后端为 Docker 时使用的容器镜像。',
+        singularityImage: '当执行后端为 Singularity 时使用的镜像。',
+        modalImage: '当执行后端为 Modal 时使用的镜像。',
+        daytonaImage: '当执行后端为 Daytona 时使用的镜像。'
       },
       codeExecution: {
         mode: '代码执行被限定到当前项目的严格程度。'
@@ -1013,6 +1024,10 @@ export const zh = defineLocale({
       compression: {
         enabled: '当对话变大时对较早的上下文进行摘要。'
       },
+      browser: {
+        useRealProfile:
+          '本地浏览使用你的真实登录状态。Hermes 会把你默认浏览器的配置（Cookie、登录、偏好）复制为受管快照，并用自带的 Chromium 驱动它——不会直接打开你的实时配置，且每次运行都会从实时配置刷新副本。还允许智能体在配置了云端浏览器后端时，按需打开本地真实配置会话。仅支持 Chromium 系浏览器（Chrome、Edge、Brave、Brave Origin、Chromium）；默认浏览器不是 Chromium 系时会给出明确报错。默认关闭。'
+      },
       voice: {
         autoTts: '自动朗读助手回复。',
         voiceChatMode:
@@ -1024,8 +1039,23 @@ export const zh = defineLocale({
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',
+        echoTranscripts: '将语音消息的原始 🎙️ 转写文本发回聊天。',
         elevenlabs: {
           languageCode: '可选的 ISO-639-3 语言代码。留空让 ElevenLabs 自动检测。'
+        }
+      },
+      tts: {
+        xai: {
+          voiceId: 'xAI 语音 ID（如 eve）或自定义语音 ID。',
+          language: '口语语言代码（如 en、pt-BR），或填 "auto" 自动检测。',
+          speed: '播放速度。0.7 = 较慢，1.0 = 正常，1.5 = 较快。',
+          autoSpeechTags: '合成前让 LLM 在文稿中插入表现力音频标签（如 [laughing]、[sighs]）。',
+          optimizeStreamingLatency: '延迟与质量的权衡。0 = 最佳质量，2 = 最低延迟。',
+          sampleRate: '音频采样率（Hz）。越高音质越好、文件越大。',
+          bitRate: 'MP3 比特率（bps）。仅当编码为 mp3 时生效。'
+        },
+        neutts: {
+          device: 'NeuTTS 的本地推理设备。'
         }
       },
       updates: {
@@ -1033,6 +1063,30 @@ export const zh = defineLocale({
           'Hermes 从应用内更新时（无终端提示），保留本地源码修改（暂存）或丢弃（放弃）。通过终端更新时始终会询问。'
       }
     }),
+    uninstallSection: {
+      dangerZone: '危险操作',
+      confirmUninstall: '确认卸载',
+      uninstallHermes: '卸载 Hermes'
+    },
+    poolLimits: {
+      warmBotBackendsAria: '预热机器人后端',
+      warmBotBackendsTitle: '预热机器人后端',
+      backendIdleTimeoutAria: '后端空闲超时（毫秒）',
+      backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
+    },
+    customEndpoints: {
+      title: '自定义端点',
+      deleteEndpoint: '删除端点',
+      emptyDescription: '在下方添加兼容 OpenAI 的端点。',
+      emptyTitle: '暂无自定义端点',
+      namePlaceholder: '示例代理（占位符）',
+      contextPlaceholder: '自动'
+    },
+    computerUse: {
+      accessibility: '辅助功能',
+      screenRecording: '屏幕录制',
+      driverHealth: '驱动健康状态'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,
@@ -1094,7 +1148,8 @@ export const zh = defineLocale({
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）'
+      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
+      showOptions: '显示选项'
     },
     quickEntry: {
       enabledTitle: '快速输入',
@@ -1471,6 +1526,9 @@ export const zh = defineLocale({
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
+      moaTitle: '混合智能体（Mixture of Agents）',
+      moaPreset: '预设',
+      moaAggregator: '聚合模型',
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         compression: { label: '压缩', hint: '上下文压缩' },

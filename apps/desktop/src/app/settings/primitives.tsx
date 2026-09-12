@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { type ReactNode, useId } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { triggerHaptic } from '@/lib/haptics'
 import type { IconComponent } from '@/lib/icons'
+import { nameControl } from '@/lib/name-control'
 import { cn } from '@/lib/utils'
 
 import { PAGE_INSET_X } from '../layout-constants'
@@ -22,28 +23,10 @@ export function SettingsContent({ children, bare = false }: { children: ReactNod
   )
 }
 
-const PILL_VARIANT = {
-  muted: 'muted',
-  primary: 'default',
-  success: 'success',
-  warn: 'warn',
-  destructive: 'destructive'
-} as const
+const PILL_VARIANT = { muted: 'muted', primary: 'default', warn: 'warn' } as const
 
-// Rest props spread through to the Badge's DOM node — REQUIRED for Radix
-// `asChild` composition (wrapping a Pill in `Tip` clones it with the hover
-// handlers and ref as props; swallowing them left every tooltip on a Pill
-// silently dead).
-export function Pill({
-  tone = 'muted',
-  children,
-  ...props
-}: { tone?: keyof typeof PILL_VARIANT; children: ReactNode } & Omit<ComponentProps<typeof Badge>, 'variant'>) {
-  return (
-    <Badge variant={PILL_VARIANT[tone]} {...props}>
-      {children}
-    </Badge>
-  )
+export function Pill({ tone = 'muted', children }: { tone?: keyof typeof PILL_VARIANT; children: ReactNode }) {
+  return <Badge variant={PILL_VARIANT[tone]}>{children}</Badge>
 }
 
 export function SectionHeading({
@@ -123,6 +106,20 @@ export function NavLink({
   )
 }
 
+function ActionCell({ action, titleId, wide }: { action: ReactNode; titleId: string; wide: boolean }) {
+  const { group, node } = nameControl(action, titleId)
+
+  return (
+    <div
+      aria-labelledby={group ? titleId : undefined}
+      className={cn('min-w-0', !wide && '@2xl:justify-self-end')}
+      role={group ? 'group' : undefined}
+    >
+      {node}
+    </div>
+  )
+}
+
 export function ListRow({
   title,
   description,
@@ -145,6 +142,8 @@ export function ListRow({
   wide?: boolean
   className?: string
 }) {
+  const titleId = useId()
+
   return (
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
@@ -157,7 +156,9 @@ export function ListRow({
         )}
       >
         <div className="min-w-0">
-          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
+          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground" id={titleId}>
+            {title}
+          </div>
           {description && (
             <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
               {description}
@@ -166,7 +167,7 @@ export function ListRow({
           {hint && <div className="mt-1 block font-mono text-[0.68rem] text-muted-foreground/45">{hint}</div>}
           {below}
         </div>
-        {action && <div className={cn('min-w-0', !wide && '@2xl:justify-self-end')}>{action}</div>}
+        {action && <ActionCell action={action} titleId={titleId} wide={wide} />}
       </div>
     </div>
   )

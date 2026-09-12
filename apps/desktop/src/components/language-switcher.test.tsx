@@ -31,11 +31,10 @@ describe('LanguageSwitcher', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Switch language' }).hasAttribute('disabled')).toBe(false)
+      expect(screen.getByRole('combobox', { name: 'Switch language' }).hasAttribute('disabled')).toBe(false)
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Switch language' }))
-    fireEvent.click(screen.getByRole('option', { name: /日本語/i }))
+    fireEvent.change(screen.getByRole('combobox', { name: 'Switch language' }), { target: { value: 'ja' } })
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
     expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'slate' } })

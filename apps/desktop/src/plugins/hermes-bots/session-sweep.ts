@@ -10,7 +10,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { PROFILE_SESSION_LIST_LIMIT } from './canonical-chat'
-import { $lastRoster } from './data'
+import { $lastRoster, isActiveRosterBot } from './data'
 import { $groupChats } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import { backendTargetProfile, botConnectionRoute, requestForBot } from './routing'
@@ -268,8 +268,23 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
     }
   }
 
+  // ponytail: only sweep active/last-active profile — inactive lazy, reuse isActiveRosterBot (deletion over addition)
+  const activeProfile = String(host.state.profile?.get?.() || 'default').trim() || 'default'
+  const activeConnectionId = String(
+    host.state.connectionId?.get?.() ||
+      (typeof (host as unknown as { activeConnectionId?: () => string }).activeConnectionId === 'function'
+        ? (host as unknown as { activeConnectionId: () => string }).activeConnectionId()
+        : '') ||
+      ''
+  ).trim()
+  const activeOwner = { name: activeProfile, connectionId: activeConnectionId || 'local' }
+  const sweepRoster = roster.filter(bot => isActiveRosterBot(bot, activeOwner))
+  if (sweepRoster.length === 0) {
+    return
+  }
+
   await Promise.all(
-    roster.map(async (bot: RosterRow) => {
+    sweepRoster.map(async (bot: RosterRow) => {
       const name = String(bot?.name || '').trim()
 
       if (!name) {

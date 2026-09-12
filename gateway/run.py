@@ -3934,6 +3934,45 @@ class GatewayRunner(
     def _status_action_gerund(self) -> str:
         return "restarting" if self._restart_requested else "shutting down"
 
+    # The home channel is where everything the agent says unprompted lands: cron
+    # deliveries, send_message "home", CLI handoffs. The two gateway lifecycle notices
+    # went there too for lack of a destination of their own, and on a deployment that
+    # restarts regularly they bury the traffic the operator actually reads. The existing
+    # knob (gateway_restart_notification) only silences them; it cannot redirect them.
+    def _gateway_notice_channel(self, platform, platform_cfg=None):
+        """Destination for the gateway lifecycle broadcasts (shutting down / online).
+
+        ``platforms.<name>.gateway_notice_channel`` wins; otherwise the platform home
+        channel, which is the historical behaviour. The config carries the normalised
+        mapping (see ``PlatformConfig.from_dict``) and the HomeChannel is built here,
+        where the Platform is known. Only the two lifecycle broadcasts call this —
+        cron deliver=home, send_message and CLI handoff keep targeting the home channel.
+        """
+        cfg = platform_cfg if platform_cfg is not None else self.config.platforms.get(platform)
+        home = cfg.home_channel if cfg is not None else None
+        notice = getattr(cfg, "gateway_notice_channel", None) if cfg is not None else None
+        if not notice:
+            return home
+        chat_id = str(notice.get("chat_id", "")).strip()
+        if not chat_id:
+            return home
+        from gateway.config import HomeChannel
+        return HomeChannel(
+            platform=platform,
+            chat_id=chat_id,
+            name=str(notice.get("name") or "").strip() or "Gateway",
+            thread_id=str(notice.get("thread_id") or "").strip() or None,
+            # Relay provenance is INHERITED from the platform home channel, never written
+            # by hand in config. A Relay-fronted platform re-attaches user_id/scope_id on
+            # egress, and the caches those fall back to are filled only by *inbound*
+            # events — a dedicated operations channel is one nobody speaks in, so the
+            # cache stays cold and the connector's fail-closed tenant guard declines the
+            # send. Inheriting keeps the authenticated discriminators of the same tenant
+            # without asking an operator to author security-relevant values.
+            user_id=getattr(home, "user_id", None),
+            scope_id=getattr(home, "scope_id", None),
+        )
+
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         _write_runtime_status_quiet(
             gateway_state=gateway_state, exit_reason=exit_reason,

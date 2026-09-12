@@ -1301,6 +1301,16 @@ platform_toolsets:
 # platforms:
 #   telegram:
 #     reply_to_mode: "first"  # off | first | all
+#     # Where the two gateway lifecycle broadcasts go ("Gateway shutting down" /
+#     # "Gateway online"). Omit and they follow the home channel, as before.
+#     # Useful when the gateway restarts often and the notices crowd out the
+#     # traffic you actually read. A bare chat id is enough:
+#     # gateway_notice_channel: "123456789"
+#     # ...or the long form, when the destination is a thread:
+#     # gateway_notice_channel:
+#     #   chat_id: "123456789"
+#     #   name: "Gateway"      # optional label, defaults to "Gateway"
+#     #   thread_id: "42"      # optional, thread-aware platforms only
 #     # guest_mode lets explicit @mentions from non-allowlisted groups through.
 #     # Default false; ordinary messages, replies, and regex wake words stay blocked.
 #     guest_mode: false

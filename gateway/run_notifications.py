@@ -804,6 +804,9 @@ class GatewayNotificationsMixin:
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"
         for platform, platform_cfg, home, transport in self._home_channel_transports():
+            # Lifecycle broadcast only: redirect to the notice channel when one is set.
+            # The transport is resolved per platform, not per chat, so it stays valid.
+            home = self._gateway_notice_channel(platform, platform_cfg) or home
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",

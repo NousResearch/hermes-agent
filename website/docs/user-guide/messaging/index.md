@@ -746,6 +746,46 @@ gateway:
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
 
+#### Sending the notices somewhere else
+
+`gateway_restart_notification` can only silence the notices. To keep them but move
+them off the home channel — where cron deliveries, `send_message "home"` and CLI
+handoffs also land — set `gateway_notice_channel` on the platform:
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      home_chat_id: "987654321"
+      gateway_notice_channel: "111222333"   # lifecycle notices only
+```
+
+Only the two lifecycle broadcasts move. Cron `deliver: home`, `send_message` and CLI
+handoffs keep targeting the home channel, and so do other operational warnings such as
+the session-database alert. Omit the key and the notices follow the home channel
+exactly as before.
+
+The long form adds an optional label and thread:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      gateway_notice_channel:
+        chat_id: "111222333"
+        name: "Gateway"
+        thread_id: "42"
+```
+
+`gateway_restart_notification: false` still wins: with it set, nothing is sent
+regardless of `gateway_notice_channel`.
+
+On a platform fronted by Relay, the notice channel inherits the authenticated
+routing provenance of that platform's home channel. You do not configure it, and
+`user_id`/`scope_id` written into `gateway_notice_channel` are ignored — a
+dedicated channel is one nobody speaks in, so its own routing cache would be
+cold, and provenance is not something config should author.
+
 ### Typing indicators
 
 While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `config.yaml`, which defaults to `true`:

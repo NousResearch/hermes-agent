@@ -1161,3 +1161,87 @@ class TestWindowsLockedProfileCopy:
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err and "login data" in err.lower() and "close" in err.lower()
+
+
+class TestWindows25H2UserChoice:
+    """#107854: 25H2 Settings can change the https handler without updating UserChoice."""
+
+    def _fake_winreg(self, prog_id):
+        class _Winreg:
+            HKEY_CURRENT_USER = object()
+            HKEY_LOCAL_MACHINE = object()
+
+            def OpenKey(self, hive, path):
+                if prog_id is None or "UserChoice" not in path:
+                    raise FileNotFoundError(path)
+                return object()
+
+            def QueryValueEx(self, key, name):
+                return (prog_id, 1)
+
+            def CloseKey(self, key):
+                return None
+
+        return _Winreg()
+
+    def _detect(self, prog_id, exe):
+        import sys
+        import hermes_cli.browser_connect as bc
+        with patch.dict(sys.modules, {"winreg": self._fake_winreg(prog_id)}), \
+             patch.object(bc, "_windows_effective_https_exe", create=True, return_value=exe):
+            return bc._detect_default_windows()
+
+    def test_stale_vivaldi_userchoice_chrome_effective_exe_is_chrome(self):
+        assert self._detect(
+            "VivaldiHTM.XYZ",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        ) == "chrome"
+
+    def test_userchoice_chromehtml_when_effective_exe_missing_stays_chrome(self):
+        assert self._detect("ChromeHTML", None) == "chrome"
+
+    def test_effective_firefox_exe_is_none(self):
+        assert self._detect(
+            "VivaldiHTM.XYZ",
+            r"C:\Program Files\Mozilla Firefox\firefox.exe",
+        ) is None
+
+    def test_stale_userchoice_msedge_exe_is_edge(self):
+        assert self._detect(
+            "VivaldiHTM.XYZ",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ) == "edge"
+
+    def test_brave_origin_path_is_not_brave(self):
+        import hermes_cli.browser_connect as bc
+        assert self._detect(
+            "VivaldiHTM.XYZ",
+            r"C:\Program Files\BraveSoftware\Brave-Origin\Application\brave.exe",
+        ) == "brave-origin"
+        assert self._detect(
+            "VivaldiHTM.XYZ",
+            r"C:\Program Files\BraveSoftware\Brave-Origin\Application\brave.exe",
+        ) != "brave"
+        assert bc._classify_default(
+            "vivaldihtm.xyz", bc._WINDOWS_CHANNEL_PROGIDS, bc._WINDOWS_PROGID_MAP, str.startswith
+        ) is None
+
+    def test_chrome_beta_path_is_unsupported_channel(self):
+        import hermes_cli.browser_connect as bc
+        assert self._detect(
+            "VivaldiHTM.XYZ",
+            r"C:\Program Files\Google\Chrome Beta\Application\chrome.exe",
+        ) == bc.UNSUPPORTED_CHANNEL
+
+    def test_helper_failure_and_missing_userchoice_is_none(self):
+        assert self._detect(None, None) is None
+
+    def test_userchoice_channel_progid_when_exe_missing_stays_unsupported(self):
+        import hermes_cli.browser_connect as bc
+        assert self._detect("ChromeBHTML", None) == bc.UNSUPPORTED_CHANNEL
+
+    def test_effective_vivaldi_exe_is_none(self):
+        assert self._detect(
+            "ChromeHTML",
+            r"C:\Users\t\AppData\Local\Vivaldi\Application\vivaldi.exe",
+        ) is None

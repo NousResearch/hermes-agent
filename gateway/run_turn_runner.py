@@ -51,6 +51,9 @@ class TurnRunner:
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        from gateway.status_delivery import StatusDelivery
+        self._status_delivery = StatusDelivery(ctx, lambda: runner._adapter_for_source(ctx.source))
+        ctx._status_delivery = self._status_delivery
 
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -815,7 +818,7 @@ class TurnRunner:
             logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
-        from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets
         ctx = self._ctx
         if not self._status_live():
             return
@@ -827,12 +830,10 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
-        fut = self._schedule(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+        self._schedule(
+            self._status_delivery.send(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
             f"status_callback ({event_type}) scheduling error",
         )
-        if fut is not None and ctx._cleanup_progress:
-            fut.add_done_callback(self._track_future_cleanup_id)
 
     # ── stream consumer / interim commentary wiring ─────────────────────────────────────────
 

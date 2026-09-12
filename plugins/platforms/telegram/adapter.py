@@ -3410,19 +3410,36 @@ class TelegramAdapter(BasePlatformAdapter):
         append a fresh bubble on every call. With this method, the first call sends and the message id is
         remembered; subsequent calls with the same (chat_id, status_key) edit that same message in place.
         """
-        key = (str(chat_id), str(status_key))
+        import weakref
+        if not hasattr(self, "_status_locks"):
+            self._status_locks = weakref.WeakValueDictionary()
+        key = (str(normalize_telegram_chat_id(chat_id)), str(status_key),
+               str(self._metadata_thread_id(metadata) or ""))
+        lock = self._status_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            return await self._send_locked_status(key, chat_id, content, metadata)
+
+    async def _send_locked_status(self, key, chat_id, content, metadata):
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
             result = await self.edit_message(chat_id, cached_id, content, finalize=True, metadata=metadata)
             if result.success:
-                if result.message_id:
+                if result.message_id and self._status_message_ids.get(key) == cached_id:
                     self._status_message_ids[key] = str(result.message_id)
                 return result
             self._status_message_ids.pop(key, None)
         result = await self.send(chat_id, content, metadata=metadata)
         if result.success and result.message_id:
             self._status_message_ids[key] = str(result.message_id)
+            while len(self._status_message_ids) > 2000:
+                self._status_message_ids.pop(next(iter(self._status_message_ids)))
         return result
+
+    def _forget_status_message_id(self, chat_id, message_id):
+        chat = str(normalize_telegram_chat_id(chat_id))
+        for key, mid in list(self._status_message_ids.items()):
+            if str(normalize_telegram_chat_id(key[0])) == chat and str(mid) == str(message_id):
+                self._status_message_ids.pop(key, None)
 
     async def _edit_text(self, chat_id: str, message_id: str, text: str, parse_mode: Any = None) -> None:
         """``editMessageText`` with normalized ids; ``parse_mode=None`` sends plain text."""
@@ -3658,8 +3675,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         try:
             await self._bot.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
+            self._forget_status_message_id(chat_id, message_id)
             return True
         except Exception as e:
+            if "message to delete not found" in str(e).lower() or "message_id_invalid" in str(e).lower():
+                self._forget_status_message_id(chat_id, message_id)
             logger.debug("[%s] Failed to delete Telegram message %s: %s", self.name, message_id, _redact_telegram_error_text(e))
             return False
 

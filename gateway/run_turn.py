@@ -3743,25 +3743,30 @@ class GatewayTurnMixin:
         Failed runs keep them as breadcrumbs. Only on adapters with ``delete_message``; failures swallowed."""
         from gateway.run import safe_schedule_threadsafe
         _cleanup_msg_ids, session_key = turn_ctx._cleanup_msg_ids, turn_ctx.session_key
+        delivery = turn_ctx._status_delivery
+        if delivery is not None:
+            delivery.closed = True
         if not (
             turn_ctx._cleanup_progress
             and _cleanup_adapter is not None
-            and _cleanup_msg_ids
             and session_key
             and isinstance(response, dict)
             and not response.get("failed")
             and hasattr(_cleanup_adapter, "register_post_delivery_callback")
         ):
             return
-        _ids_snapshot = list(_cleanup_msg_ids)
         _chat_id_snapshot = turn_ctx.source.chat_id
         _loop_snapshot = asyncio.get_running_loop()
 
         def _cleanup_temp_bubbles() -> None:
+            if delivery is not None:
+                delivery.cleaned = True
+            _ids_snapshot = list(dict.fromkeys(_cleanup_msg_ids))
             async def _delete_all() -> None:
                 for _mid in _ids_snapshot:
                     with suppress(Exception):
-                        await _cleanup_adapter.delete_message(_chat_id_snapshot, _mid)
+                        owner = delivery.owners.get(_mid, _cleanup_adapter) if delivery is not None else _cleanup_adapter
+                        await owner.delete_message(_chat_id_snapshot, _mid)
             with suppress(Exception):
                 safe_schedule_threadsafe(
                     _delete_all(), _loop_snapshot, logger=logger,

@@ -32,6 +32,7 @@ class TurnContext:
     long_tool_hint_fired: list = field(default_factory=lambda: [False])
     agent_holder: list = field(default_factory=lambda: [None])
     _LONG_TOOL_THRESHOLD_S: float = 30.0
+    _status_delivery: Any = None
     _cleanup_progress: bool = False
     _cleanup_msg_ids: List[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None

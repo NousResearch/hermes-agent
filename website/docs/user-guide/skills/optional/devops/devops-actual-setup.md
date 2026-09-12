@@ -15,7 +15,7 @@ Set up Actual Computer (actual.inc) inference in Hermes.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/actual-setup` |
-| Path | `optional-skills/devops/actual-setup` |
+| Path | `optional-skills/devops\actual-setup` |
 | Version | `2.0.0` |
 | Author | shl0ms + Hermes Agent |
 | License | MIT |
@@ -141,8 +141,8 @@ a human in a browser.
    `actual models load` takes the INSTALLED name from `actual models list`.
 4. **Reasoning models returning empty content.** GLM/Qwen reasoning variants
    emit thinking in a separate `reasoning` field and can burn a small
-   `max_tokens` entirely on reasoning. Give generous max_tokens before
-   assuming failure.
+   output budget entirely on reasoning. Check the server-side output default
+   before assuming failure.
 5. **Do not create a custom provider named `actual`.** Older setup guides
    (pre first-class support) wrote `providers.actual.*` config blocks. On
    current Hermes the built-in provider wins the name; stale custom blocks

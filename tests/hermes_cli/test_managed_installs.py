@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from hermes_cli.config import recommended_update_command
 from hermes_cli.main import cmd_update
-from tools.skills_hub import OptionalSkillSource
+from tools.skills_hub_official import OptionalSkillSource
 
 
 def test_recommended_update_command_defaults_to_hermes_update(monkeypatch):

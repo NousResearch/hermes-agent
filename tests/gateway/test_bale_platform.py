@@ -77,11 +77,45 @@ def test_registration_includes_standalone_and_auth_hooks():
     assert callable(kwargs["standalone_sender_fn"])
 
 
+def test_multiplex_profiles_do_not_borrow_bale_credentials_or_allowlists(monkeypatch):
+    from agent import secret_scope
+
+    monkeypatch.setenv("BALE_BOT_TOKEN", "default-profile-token")
+    monkeypatch.setenv("BALE_ALLOWED_USERS", "999")
+    monkeypatch.setenv("BALE_ALLOW_ALL_USERS", "true")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    scope = secret_scope.set_secret_scope({})
+    try:
+        config = PlatformConfig(enabled=True)
+        adapter = bale.BaleAdapter(config)
+        assert not config.token
+        assert not bale._is_connected(config)
+        assert not adapter._is_callback_user_authorized("999")
+        assert not adapter._telegram_auth_env_configured()
+    finally:
+        secret_scope.reset_secret_scope(scope)
+
+
+def test_standalone_send_uses_current_profile_token(monkeypatch):
+    from agent import secret_scope
+
+    monkeypatch.setenv("BALE_BOT_TOKEN", "default-profile-token")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    sender = AsyncMock(return_value={"success": True})
+    scope = secret_scope.set_secret_scope({"BALE_BOT_TOKEN": "secondary-token"})
+    try:
+        with patch("tools.send_message_senders._send_telegram", sender):
+            asyncio.run(bale._standalone_send(PlatformConfig(enabled=True), "101", "hello"))
+        assert sender.await_args.args[0] == "secondary-token"
+    finally:
+        secret_scope.reset_secret_scope(scope)
+
+
 def test_standalone_send_uses_bale_endpoint(monkeypatch):
     monkeypatch.setenv("BALE_BOT_TOKEN", "bale-token")
     sender = AsyncMock(return_value={"success": True, "message_id": "7"})
 
-    with patch("tools.send_message_tool._send_telegram", sender):
+    with patch("tools.send_message_senders._send_telegram", sender):
         result = asyncio.run(
             bale._standalone_send(
                 PlatformConfig(enabled=True),

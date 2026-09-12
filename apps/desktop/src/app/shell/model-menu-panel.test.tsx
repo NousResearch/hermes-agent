@@ -69,11 +69,19 @@ afterEach(() => {
 function renderPanel(onSelectModel = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
+  const requestGateway = vi.fn(async (method: string) => {
+    if (method === 'model.options') {
+      return getGlobalModelOptions()
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  })
+
   const content = render(
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
-          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={vi.fn() as never} />
+          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={requestGateway as never} />
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>
@@ -431,7 +439,7 @@ describe('ModelMenuPanel provider collapse', () => {
 
     await content.findByText(/Glm 4\.5 Air/i)
 
-    fireEvent.click(await content.findByText('Refresh Models'))
+    fireEvent.click(await content.findByText('Refresh models'))
 
     await vi.waitFor(() => {
       expect(onSelectModel).toHaveBeenCalledWith({
@@ -450,11 +458,70 @@ describe('ModelMenuPanel provider collapse', () => {
     const { content, onSelectModel } = renderPanel()
 
     await content.findByText(/Deepseek V4 Pro/i)
-    fireEvent.click(await content.findByText('Refresh Models'))
+    fireEvent.click(await content.findByText('Refresh models'))
 
     await vi.waitFor(() => {
       expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
     })
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('does not rewrite the provider when Refresh Models lists the same model id elsewhere', async () => {
+    $currentProvider.set('zhipu')
+    $currentModel.set('glm-4.5-air')
+
+    const catalog = {
+      model: 'glm-4.5-air',
+      provider: 'zhipu',
+      providers: [
+        { models: ['glm-4.5-air', 'gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' },
+        { models: ['glm-4.5-air', 'glm-5-turbo'], name: '智谱2', slug: 'zhipu' },
+        MOA_PROVIDER
+      ]
+    }
+
+    getGlobalModelOptions.mockResolvedValue(catalog)
+
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findAllByText(/Glm 4\.5 Air/i)
+    fireEvent.click(await content.findByText('Refresh models'))
+
+    await vi.waitFor(() => {
+      expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
+    })
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('marks only the matching provider row current when two providers share a model id', async () => {
+    $currentProvider.set('zhipu')
+    $currentModel.set('glm-4.5-air')
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'glm-4.5-air',
+      provider: 'zhipu',
+      providers: [
+        { models: ['glm-4.5-air', 'gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' },
+        { models: ['glm-4.5-air', 'glm-5-turbo'], name: '智谱2', slug: 'zhipu' },
+        MOA_PROVIDER
+      ]
+    })
+
+    const { content, onSelectModel } = renderPanel()
+
+    const rows = await content.findAllByText(/Glm 4\.5 Air/i)
+    const items = [...new Set(rows.map(row => row.closest('[role="menuitem"]')))]
+
+    expect(items).toHaveLength(2)
+
+    const checked = items.filter(item => item?.querySelector('.codicon-check'))
+    expect(checked).toHaveLength(1)
+    expect(checked[0]?.closest('[role="group"]')?.textContent).toContain('智谱2')
+    expect(
+      items.find(item => !item?.querySelector('.codicon-check'))?.closest('[role="group"]')?.textContent
+    ).toContain('OpenRouter')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSelectModel).not.toHaveBeenCalled()
   })
 })
@@ -497,14 +564,18 @@ describe('ModelMenuPanel refresh reconcile × guarded-switch confirm handshake',
         providers: [{ models: ['muse-spark-1.2-contributor'], name: 'OpenCode', slug: 'opencode-go' }, MOA_PROVIDER]
       })
 
-    // Method-aware gateway: the panel's catalog reads (`model.options`) fall
-    // back to the REST mock; `config.set` runs the guarded handshake —
+    // Method-aware gateway: the panel's catalog reads (`model.options`) use
+    // the routed catalog mock; `config.set` runs the guarded handshake —
     // confirm_required first, success on the confirmed resend.
     let configSets = 0
 
     const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'model.options') {
+        return getGlobalModelOptions()
+      }
+
       if (method !== 'config.set') {
-        throw new Error('use REST catalog')
+        throw new Error(`unexpected gateway method: ${method}`)
       }
 
       configSets += 1
@@ -524,7 +595,7 @@ describe('ModelMenuPanel refresh reconcile × guarded-switch confirm handshake',
     const content = render(<ConfirmHarness requestGateway={requestGateway as never} />)
 
     await content.findByText(/Glm 4\.5 Air/i)
-    fireEvent.click(await content.findByText('Refresh Models'))
+    fireEvent.click(await content.findByText('Refresh models'))
 
     // The reconcile fired exactly ONE switch attempt and it came back
     // confirm_required → the confirm toast is up, nothing retried silently.

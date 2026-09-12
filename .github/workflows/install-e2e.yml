@@ -2,15 +2,35 @@ name: Install & Update E2E
 
 # Can a user on a released version get to this commit?
 #
-# For each release we sample, a leg installs that release through the real
-# `curl | install.sh` one-liner (uv, a managed Python, Node, the venv) inside
-# scripts/dev-sandbox.sh, then applies one update route and requires the
-# checkout to land on this commit with a working `hermes`.
+# The support matrix -- every {os, install-method, update-method} combination
+# a user could be on -- lives in scripts/sandbox/generate-e2e-matrix.mjs.
+# generate-matrix expands it against the picked release tags into one leg
+# per {combination, tag}, split into one matrix job per OS:
+#
+#   Matrix: linux     the real curl|bash install one-liner, isolated by a
+#                     git URL redirect to a local bare clone
+#                     (install-e2e-run.yml)
+#   Matrix: windows   the real desktop user flow: website Hermes-Setup.exe
+#                     clicked by AutoHotkey, update via the app, Playwright
+#                     clicking "Update now" (install-e2e-windows-run.yml)
+#   Matrix: macos     script installs on the shared OS-agnostic driver,
+#                     plus the real desktop user flow: website
+#                     Hermes-Setup.dmg mounted and run, updates via the
+#                     app under Playwright (install-e2e-macos-run.yml)
+#
+# Every combination is dispatched to its OS's run workflow; the run
+# workflow natively skips (grey) what its driver cannot run yet -- an
+# unimplemented method pair, or a starting tag that predates the surface
+# under test (pick-releases annotates each tag with what its tree ships,
+# e.g. whether the desktop app exists yet). Capability knowledge lives
+# next to each driver, never here and never in the generator: declaring a
+# method is a spec edit, implementing one is flipping the run workflow's
+# gate.
 #
 # The starting versions are chosen at runtime from the repo's release tags
-# (scripts/sandbox/pick-release-tags.sh): newest, oldest, and a spread between.
-# A hardcoded list would stop covering the newest release the day after it
-# ships, and would pin an "oldest" that nobody still runs.
+# (scripts/sandbox/pick-release-tags.sh): newest, oldest, and a spread
+# between. A hardcoded list would stop covering the newest release the day
+# after it ships, and would pin an "oldest" that nobody still runs.
 #
 # Triggers:
 #   * every 12 hours, so upstream drift (a new uv, a Node bump, a PyPI change)
@@ -27,16 +47,21 @@ on:
   workflow_dispatch:
     inputs:
       route:
-        description: 'Which update route to exercise.'
+        description: 'Which combinations to run. all = every OS; both/update/installer = the linux legs; windows-desktop = the windows legs; macos-desktop = the macos legs.'
         required: false
         type: choice
-        default: both
-        options: [both, update, installer]
+        default: all
+        options: [all, both, update, installer, windows-desktop, macos-desktop]
       tag-count:
         description: 'How many release tags to sample (newest, oldest, and a spread between).'
         required: false
         type: string
-        default: '5'
+        default: '3'
+      install-ref:
+        description: 'Optional exact release tag for a focused reproduction; overrides tag-count.'
+        required: false
+        type: string
+        default: ''
   schedule:
     # Every 12 hours, off the hour to avoid the top-of-hour runner crunch.
     - cron: '20 7,19 * * *'
@@ -54,8 +79,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Which released versions do we test updating FROM? Resolved once and shared
-  # by both route matrices, so the two routes cover the same set.
+  # Which released versions do we test updating FROM? Resolved once,
+  # annotated with what each tag's own tree supports, and shared by every
+  # OS's matrix so all combos cover the same set.
   pick-releases:
     name: Pick release tags
     runs-on: ubuntu-latest
@@ -63,9 +89,10 @@ jobs:
     outputs:
       tags: ${{ steps.pick.outputs.tags }}
     steps:
-      # This job only reads tag names and runs one script, so take the cheap
-      # checkout: no blobs (filter), no other files (sparse), but DO fetch tags
-      # -- they are the whole input, and the default shallow checkout has none.
+      # This job only reads tag names and trees, so take the cheap
+      # checkout: no blobs (filter), no other files (sparse), but DO fetch
+      # tags -- they are the whole input, and the default shallow checkout
+      # has none.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           filter: blob:none
@@ -73,38 +100,179 @@ jobs:
           sparse-checkout: scripts/sandbox/pick-release-tags.sh
           sparse-checkout-cone-mode: false
       - id: pick
+        env:
+          # Dispatch inputs never touch shell syntax directly: TAG_COUNT
+          # arrives via the environment and is validated decimal-only (bash
+          # arithmetic reads a leading zero as octal). GitHub's 256-job cap
+          # applies to each per-OS matrix separately; at 10 tags the largest
+          # is windows at 180 (first over the cap at 15 tags = 270).
+          TAG_COUNT: ${{ inputs.tag-count || 2 }}
+          INSTALL_REF: ${{ inputs.install-ref }}
         run: |
           set -euo pipefail
-          tags="$(scripts/sandbox/pick-release-tags.sh --count '${{ inputs.tag-count || 5 }}')"
+          [[ "$TAG_COUNT" =~ ^(10|[1-9])$ ]] || { echo "tag-count must be 1-10, got: $TAG_COUNT" >&2; exit 1; }
+          if [ -n "$INSTALL_REF" ]; then
+            [[ "$INSTALL_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'install-ref must be an exact release tag' >&2; exit 1; }
+            git rev-parse --verify "refs/tags/$INSTALL_REF^{commit}" >/dev/null
+            tags="$(jq -cn --arg ref "$INSTALL_REF" '[$ref]')"
+          else
+            tags="$(scripts/sandbox/pick-release-tags.sh --count "$TAG_COUNT")"
+          fi
           echo "Testing updates from: $tags"
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          # Annotate each tag with what its own tree supports, so run
+          # workflows can natively skip surfaces the starting version does
+          # not have. Today: does the release ship the desktop app
+          # (apps/desktop, #20059)? Cheaper here -- the tags are already
+          # fetched -- than a probe job per leg.
+          enriched="$(for t in $(echo "$tags" | jq -r '.[]'); do
+            if git ls-tree -d "$t" apps/desktop | grep -q .; then d=true; else d=false; fi
+            echo "{\"ref\":\"$t\",\"desktop\":$d}"
+          done | jq -sc .)"
+          echo "Annotated: $enriched"
+          echo "tags=$enriched" >> "$GITHUB_OUTPUT"
 
-  # `hermes update` -- the route most users take.
-  update:
-    if: github.event_name != 'workflow_dispatch' || inputs.route != 'installer'
+  # Expand the support matrix against the picked tags: one leg per
+  # {os, install-method, update-method, tag}, split into a matrix per OS.
+  generate-matrix:
+    name: Expand combinations
     needs: pick-releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      linux: ${{ steps.gen.outputs.linux }}
+      windows: ${{ steps.gen.outputs.windows }}
+      macos: ${{ steps.gen.outputs.macos }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/sandbox/generate-e2e-matrix.mjs
+          sparse-checkout-cone-mode: false
+      - id: gen
+        run: |
+          set -euo pipefail
+          matrices="$(node scripts/sandbox/generate-e2e-matrix.mjs \
+            --tags '${{ needs.pick-releases.outputs.tags }}')"
+          echo "$matrices"
+          for key in linux windows macos; do
+            echo "$key=$(echo "$matrices" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.stringify(JSON.parse(d)[process.argv[1]])))' "$key")" >> "$GITHUB_OUTPUT"
+          done
+          # The plan, human-readable: a combination x starting-tag chart on
+          # the run's summary page.
+          node scripts/sandbox/generate-e2e-matrix.mjs \
+            --tags '${{ needs.pick-releases.outputs.tags }}' \
+            --format markdown >> "$GITHUB_STEP_SUMMARY"
+
+  linux:
+    name: ${{ matrix.name }}
+    # The update/installer route choices map to the linux update methods;
+    # either way the whole linux matrix runs (legs are cheap and the
+    # distinction wasn't worth a filter layer in the generator).
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "both", "update", "installer"]'), inputs.route)
+    needs: generate-matrix
     strategy:
-      # One release breaking is worth knowing about even if another already
+      # One leg breaking is worth knowing about even if another already
       # failed, so let every leg report.
       fail-fast: false
-      matrix:
-        install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags) }}
+      matrix: ${{ fromJSON(needs.generate-matrix.outputs.linux) }}
     uses: ./.github/workflows/install-e2e-run.yml
     with:
-      route: update
-      install-ref: ${{ matrix.install-ref }}
+      install-method: ${{ matrix.install_method }}
+      update-method: ${{ matrix.update_method }}
+      install-ref: ${{ matrix.install_ref }}
+      tag-has-desktop: ${{ matrix.tag_has_desktop }}
+      leg-id: ${{ matrix.leg_id }}
 
-  # Re-running the curl one-liner over an existing checkout: autostash + pull
-  # rather than the updater's own git handling.
-  installer:
-    if: github.event_name != 'workflow_dispatch' || inputs.route != 'update'
-    needs: pick-releases
+  windows:
+    name: ${{ matrix.name }}
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "windows-desktop"]'), inputs.route)
+    needs: generate-matrix
     strategy:
       fail-fast: false
-      max-parallel: 3
-      matrix:
-        install-ref: ${{ fromJSON(needs.pick-releases.outputs.tags) }}
-    uses: ./.github/workflows/install-e2e-run.yml
+      matrix: ${{ fromJSON(needs.generate-matrix.outputs.windows) }}
+    uses: ./.github/workflows/install-e2e-windows-run.yml
     with:
-      route: installer
-      install-ref: ${{ matrix.install-ref }}
+      install-method: ${{ matrix.install_method }}
+      update-method: ${{ matrix.update_method }}
+      install-ref: ${{ matrix.install_ref }}
+      tag-has-desktop: ${{ matrix.tag_has_desktop }}
+      leg-id: ${{ matrix.leg_id }}
+
+  macos:
+    name: ${{ matrix.name }}
+    if: github.event_name != 'workflow_dispatch' || contains(fromJSON('["all", "macos-desktop"]'), inputs.route)
+    needs: generate-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.generate-matrix.outputs.macos) }}
+    # Two driver arms: the OS-agnostic script driver (shared with linux)
+    # and the published-dmg GUI driver; the run workflow routes.
+    uses: ./.github/workflows/install-e2e-macos-run.yml
+    with:
+      install-method: ${{ matrix.install_method }}
+      update-method: ${{ matrix.update_method }}
+      install-ref: ${{ matrix.install_ref }}
+      tag-has-desktop: ${{ matrix.tag_has_desktop }}
+      leg-id: ${{ matrix.leg_id }}
+
+  # The leg player: one static HTML for the whole run. Uploaded BEFORE the
+  # matrix legs so it exists even when every leg dies; the report job links
+  # every ran leg to it with that leg's logs zip as a #zip= hash param
+  # (hash survives the artifact URL's server-side redirect, the query does
+  # not). archive: false makes GitHub name the artifact after the FILE
+  # (playback.html), ignoring the name: input -- harmless, the renderer
+  # looks it up by that name.
+  leg-player:
+    name: Upload leg player
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: tests/install/e2e-assets/playback.html
+          sparse-checkout-cone-mode: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: install-e2e-player
+          path: tests/install/e2e-assets/playback.html
+          archive: false
+          retention-days: 14
+          if-no-files-found: error
+
+  # The outcome, human-readable: the plan chart again, with each cell
+  # replaced by how that leg actually concluded. Per-leg conclusions are
+  # NOT reachable through `needs` (a matrix job's result collapses to one
+  # aggregate), so the table body comes from the run's own job list; the
+  # `needs` results only sequence this job after every leg and provide
+  # the per-OS aggregates.
+  report:
+    name: Result chart
+    if: always()
+    needs: [leg-player, pick-releases, linux, windows, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: |
+            scripts/sandbox/generate-e2e-matrix.mjs
+            tests/install/e2e-assets/known-failures.json
+          sparse-checkout-cone-mode: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "OS jobs: linux ${{ needs.linux.result }}, windows ${{ needs.windows.result }}, macos ${{ needs.macos.result }}"
+            echo
+            # The tag annotations let the chart say WHY a cell skipped
+            # (pre-desktop vs declared TODO) instead of a flat "skip".
+            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+              --paginate --jq '.jobs[] | {name, conclusion}' > /tmp/e2e-jobs.ndjson
+            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100" \
+              --paginate --jq '.artifacts[] | {name, id}' > /tmp/e2e-artifacts.ndjson
+            echo 'Legend: ✅ upgrade passed · known [n] = exact historical failure, see footnote · ❌ unexpected failure · pre-desktop / TODO = why a leg skipped · 📼 opens the leg player (recording + synced logs)'
+            echo
+            node scripts/sandbox/generate-e2e-matrix.mjs --format results \
+              --tags '${{ needs.pick-releases.outputs.tags }}' \
+              --artifacts /tmp/e2e-artifacts.ndjson < /tmp/e2e-jobs.ndjson
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -134,10 +134,29 @@ class TestLightModeRemap:
 
 
 class TestSkinConfigHook:
-    """The salvage wraps SkinConfig.get_color at module import time so
-    every skin color read goes through the light-mode remap.  Verify
-    the hook installed and functions correctly.
-    """
+    """Exercise the installed color hook, including self-painted badge colors."""
+
+    @pytest.mark.parametrize("skin_name", ["default", "sisyphus"])
+    def test_badge_preserves_its_paired_colors_in_light_mode(
+        self, cli_mod, monkeypatch, skin_name
+    ):
+        from hermes_cli.skin_engine import (
+            get_active_skin, get_prompt_toolkit_style_overrides, set_active_skin,
+        )
+
+        monkeypatch.setenv("HERMES_LIGHT", "1")
+        previous = get_active_skin().name
+        try:
+            set_active_skin(skin_name)
+            skin = get_active_skin()
+            background = skin.colors.get("status_bar_strong", skin.colors.get("banner_title", "#FFD700"))
+            foreground = skin.colors.get("status_bar_bg", "#1a1a2e")
+            assert get_prompt_toolkit_style_overrides()["status-bar-session-title"] == (
+                f"bg:{background} {foreground} bold"
+            )
+        finally:
+            set_active_skin(previous)
+
 
     def test_hook_installed(self, cli_mod):
         from hermes_cli.skin_engine import SkinConfig

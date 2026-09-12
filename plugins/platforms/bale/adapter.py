@@ -11,9 +11,9 @@ longer than the messages they describe.
 
 from __future__ import annotations
 
-import os
 from typing import Optional
 
+from agent.secret_scope import get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource
 from plugins.platforms.telegram.adapter import (
@@ -35,14 +35,14 @@ def _truthy(value: str) -> bool:
 
 def _api_base() -> str:
     """Return the PTB base URL, which must end in ``/bot``."""
-    base = os.getenv("BALE_API_BASE_URL", _DEFAULT_API_BASE).strip().rstrip("/")
+    base = get_secret("BALE_API_BASE_URL", _DEFAULT_API_BASE).strip().rstrip("/")
     return base if base.endswith("/bot") else f"{base}/bot"
 
 
 def _allowed_users() -> set[str]:
-    raw = os.getenv(_ALLOWED_ENV, "")
+    raw = get_secret(_ALLOWED_ENV, "")
     allowed = {item.strip() for item in raw.split(",") if item.strip()}
-    if _truthy(os.getenv(_ALLOW_ALL_ENV, "")):
+    if _truthy(get_secret(_ALLOW_ALL_ENV, "")):
         allowed.add("*")
     return allowed
 
@@ -51,7 +51,7 @@ class BaleAdapter(TelegramAdapter):
     """Hermes' Telegram transport pointed at Bale's Bot API."""
 
     def __init__(self, config: PlatformConfig):
-        token = os.getenv(_TOKEN_ENV, "").strip()
+        token = get_secret(_TOKEN_ENV, "").strip()
         if token:
             config.token = token
 
@@ -146,7 +146,7 @@ def _build_adapter(config: PlatformConfig) -> BaleAdapter:
 
 
 def _is_connected(config: PlatformConfig) -> bool:
-    token = os.getenv(_TOKEN_ENV, "").strip()
+    token = get_secret(_TOKEN_ENV, "").strip()
     return bool(token or str(getattr(config, "token", "") or "").strip())
 
 
@@ -169,10 +169,10 @@ async def _standalone_send(
     force_document=False,
 ):
     """Deliver cron/tool messages without a co-resident gateway process."""
-    token = os.getenv(_TOKEN_ENV, "").strip()
+    token = get_secret(_TOKEN_ENV, "").strip()
     if not token:
         token = str(getattr(pconfig, "token", "") or "").strip()
-    from tools.send_message_tool import _send_telegram
+    from tools.send_message_senders import _send_telegram
 
     return await _send_telegram(
         token,

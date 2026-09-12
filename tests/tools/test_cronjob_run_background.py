@@ -42,7 +42,7 @@ def _bound_session_key(key="agent:main:telegram:dm:123"):
     """Context manager binding the approval session key contextvar."""
     import contextlib
 
-    from tools.approval import _approval_session_key
+    from tools.approval_context import _approval_session_key
 
     @contextlib.contextmanager
     def _cm():
@@ -79,7 +79,7 @@ class TestBackgroundDispatch:
             assert res["claimed"] is True
             assert res["dispatched"] is True
             assert res["delegation_id"]
-            m_claim.assert_called_once_with("job-bg-01", return_job=True)
+            m_claim.assert_called_once_with("job-bg-01", manual=True, return_job=True)
             # The job actually starts on the daemon executor.
             assert run_started.wait(timeout=5.0), "job never started in background"
         finally:
@@ -237,6 +237,28 @@ class TestInFlightDedupe:
         assert seen_during_run["registered"] is True
         assert "job-bg-09" not in sched.get_running_job_ids()   # released after
 
+    def test_run_claimed_job_reports_exact_unknown_execution_not_stale_success(self):
+        from tools.cronjob_tools import _run_claimed_job
+
+        def probe_run(job, **_kwargs):
+            job["execution_id"] = "exec-unknown"
+            return True
+
+        with patch("cron.scheduler.run_one_job", side_effect=probe_run), \
+             patch("cron.executions.get_execution", return_value={
+                 "id": "exec-unknown",
+                 "status": "unknown",
+                 "error": "worker owner exited",
+             }), \
+             patch("tools.cronjob_tools.get_job", return_value={
+                 "last_status": "ok",
+                 "last_error": None,
+             }):
+            res = _run_claimed_job(_job("job-bg-unknown"))
+
+        assert res["success"] is False
+        assert res["error"] == "worker owner exited"
+
     def test_background_dispatch_reports_running_job_immediately(self):
         """The dispatch path pre-checks the running set so a mid-run job
         reports in the tool response, not as a delayed completion event."""
@@ -304,5 +326,5 @@ class TestCronjobRunToolIntegration:
         assert out["success"] is True
         assert out["job"]["executed"] is True
         assert out["job"]["execution_success"] is True
-        m_claim.assert_called_once_with("job-bg-13", return_job=True)
+        m_claim.assert_called_once_with("job-bg-13", manual=True, return_job=True)
         m_run.assert_called_once()

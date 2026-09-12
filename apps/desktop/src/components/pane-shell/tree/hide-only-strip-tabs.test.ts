@@ -104,14 +104,14 @@ describe('hide-only strip tabs', () => {
     expect(hideOnlyZoneTabs('g-main')).toEqual([])
   })
 
-  it('refuses to hide the strip that is the only handle for hide-only tabs', () => {
+  it('honors never on the sessions/Bots strip', () => {
     sessionsBotsTree()
     setTreeGroupTabStrip('g-side', 'never')
 
     const side = $layoutTree.get()
     const group = side && side.type === 'split' ? side.children[0] : side
 
-    expect(group && group.type === 'group' ? tabStripVisibleForGroup(group) : false).toBe(true)
+    expect(group && group.type === 'group' ? tabStripVisibleForGroup(group) : true).toBe(false)
   })
 
   it('excludes hide-only tabs from every close verb', () => {

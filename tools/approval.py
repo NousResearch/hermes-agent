@@ -37,6 +37,18 @@ from tools.approval_floors import (
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
+from tools.exec_code_policy import (
+    _PACKAGE_UNRESOLVABLE,
+    _exec_code_reason_text,
+    _execute_code_has_capability_leak,
+    _execute_code_has_dangerous_ops,
+    _execute_code_has_package_acquisition,
+    _execute_code_has_self_destructive_ops,
+    _execute_code_has_self_termination_command,
+    _execute_code_has_sensitive_write,
+    _execute_code_touches_sensitive_path,
+    _log_blocked_exec_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1106,8 +1118,211 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     arbitrary code headlessly without any approval surface is trusted-by-config (set a gateway/ask surface
     or ``approvals.cron_mode`` to require approval). See #30882.
     """
+    # ── execute_code hard-block / owner-gate layers (PR #65592) ────────
+    # These run BEFORE the isolated-backend / container / --yolo /
+    # approvals.mode=off short-circuits below: a sandbox, --yolo or
+    # approvals.mode=off must never trade away process-kill,
+    # sensitive-write, or package-acquisition protection.  Layers live in
+    # tools/exec_code_policy.py; this is only the orchestration seam.
+    # Check for process-killing operations BEFORE any other gate.
+    # These operations can destroy the Hermes parent process or kill
+    # arbitrary system processes.  They NEVER enter the approval chain —
+    # no user consent, yolo mode, smart approval, or session persistence
+    # can override them.  Design follows Linux seccomp / macOS SIP in
+    # spirit (static layer; runtime-built call names are out of scope —
+    # see _execute_code_has_self_destructive_ops docstring).
+    _hard_block_reason = _execute_code_has_self_destructive_ops(code)
+    if _hard_block_reason is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: {_hard_block_reason}. "
+                "This operation can destroy the agent process or kill arbitrary "
+                "system processes. Statically matched process-killing calls are "
+                "never allowed in execute_code scripts — there is no approval "
+                "path, bypass, or override for a matched call. (Runtime-built "
+                "call names via exec/eval string construction are a separate "
+                "static-analysis limitation handled at the sandbox boundary.) "
+                "Use normal tool calls (terminal, read_file, write_file) instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code self-destructive operation (hard blocked — "
+                "no approval path exists for statically matched calls)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 3a: Self-termination command payload (#74078) ───────────
+    # terminal 侧同源判定（detect_dangerous_command 的进程名选择器规则）：
+    # 脚本里静态可见的「选择器 + 终止动作」载荷 —— pgrep -f hermes | xargs kill、
+    # ps aux | grep hermes | awk … | xargs kill、subprocess.run(['sh','-c',
+    # 'pkill hermes']) 等。这些字符串不经过 terminal 的 per-call 审批
+    # （脚本内 subprocess/os.system 直接起进程），所以形状绕过必须在这里堵。
+    # 与 self-destructive 同级：静态匹配即无审批路径。
+    _self_termination_cmd = _execute_code_has_self_termination_command(code)
+    if _self_termination_cmd is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: execute_code builds a self-termination command "
+                f"({_self_termination_cmd!r}) — a process-name selector "
+                "(pgrep/pidof/ps|grep) aimed at Hermes itself, paired with kill. "
+                "The terminal-side guard refuses this shape; running it inside a "
+                "script would bypass that per-call check. There is no approval "
+                "path, bypass, or override for a statically matched "
+                "self-termination payload. Kill an explicit PID you own, or use "
+                "normal tool calls instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code self-termination command (hard blocked — "
+                "process-name selector + kill, #74078)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 3b: Capability leak (#94647) ────────────────────────────
+    # session kernel 跨 cell 绕过的 cell-1 源头：能力以值的形式被存储/
+    # 传递（return/赋值/容器/参数）而非直接调用——每 cell 单独扫描时
+    # 调用点不可见，cell 2 用不透明名称间接调用即绕过。能力泄漏检测
+    # 在能力「离开当前 cell」之前拦截（存不进去，跨 cell 调用链断开）。
+    # 与 self-destructive 同级：无审批路径、yolo/off 不可覆盖。
+    _leak_reason = _execute_code_has_capability_leak(code)
+    if _leak_reason is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: {_leak_reason}. "
+                "Storing or passing a process-killing capability as a value "
+                "lets it escape per-cell static scanning and be invoked "
+                "indirectly in a later cell (#94647). There is no approval "
+                "path, bypass, or override for a statically matched leak. "
+                "Call the function directly in the same cell, or use normal "
+                "tool calls (terminal, read_file, write_file) instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code capability leak (hard blocked — cross-cell "
+                "capability persistence vector #94647)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 4: Sensitive-write destination invariant (#49578) ──────
+    # The file-tool path hard-refuses security-sensitive destinations
+    # (Hermes config, ~/.ssh, system dirs) regardless of approval mode.
+    # execute_code must preserve that effect/destination invariant, so a
+    # statically resolvable write to a protected target is hard-blocked
+    # HERE — before --yolo / approvals.mode=off can trade it away
+    # (2026-08-25 re-review Blocker 1).
+    _sensitive_target = _execute_code_has_sensitive_write(code)
+    if _sensitive_target is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: execute_code writes to protected path "
+                f"{_sensitive_target!r}. "
+                "This destination is security-sensitive (Hermes config, "
+                "~/.ssh, or system path) and is hard-refused by the file-tool "
+                "path regardless of approval mode (#49578). There is no "
+                "approval path, bypass, or override for a statically matched "
+                "sensitive write — not even under --yolo or approvals.mode=off. "
+                "Edit the file directly instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code write to protected sensitive path (hard blocked — "
+                "destination invariant #49578)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 4b: Library-writer sensitive-path invariant (#49578 残余面) ──
+    # pandas/numpy 等库写方法（to_csv/save/dump/...）的路径参数绕过
+    # open()/Path() AST 形状（2026-08-26 复现：
+    # pd.DataFrame(...).to_csv('/root/.ssh/authorized_keys') 曾直接放行）。
+    # 任何非只读方法调用携带静态可解析的敏感路径参数 → 同样 hard-block，
+    # 与上面的目标不变量共用同一优先级（yolo/off 不可覆盖）。
+    _library_sensitive_target = _execute_code_touches_sensitive_path(code)
+    if _library_sensitive_target is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: execute_code library call references protected "
+                f"path {_library_sensitive_target!r}. "
+                "This destination is security-sensitive (Hermes config, "
+                "~/.ssh, or system path) and is hard-refused by the file-tool "
+                "path regardless of approval mode (#49578). There is no "
+                "approval path, bypass, or override for a statically matched "
+                "sensitive reference — not even under --yolo or "
+                "approvals.mode=off. Use normal tool calls (read_file, "
+                "write_file, terminal) for this path instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code library call on protected sensitive path (hard "
+                "blocked — destination invariant #49578)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
+    # ── Layer 4c: Package acquisition invariant (#97657 BLOCKER 2) ────
+    # #97657 (dandckr-ops) introduces the owner-gated package-acquisition
+    # boundary for terminal strings; execute_code can reach the same
+    # package managers via subprocess/os.system process-launch calls
+    # without passing through terminal approval. The same invariant is
+    # enforced HERE — before the isolated-backend / container / --yolo /
+    # approvals.mode=off short-circuits — so package acquisition stays
+    # owner-gated even where ordinary host-oriented guards are skipped
+    # (andrexibiza #97657 review: "the package decision occurring before
+    # the generic container/YOLO/off short-circuits").
+    _pkg = _execute_code_has_package_acquisition(code)
+    if _pkg is not None and _pkg != _PACKAGE_UNRESOLVABLE:
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: execute_code acquires packages via {_pkg} "
+                f"({_pkg} install/add/run). Package acquisition is a "
+                "supply-chain trust boundary: it requires the owner's exact "
+                "one-operation approval and is never auto-approved — not "
+                "under --yolo, approvals.mode=off, Smart Approval, or in "
+                "isolated backends (#97657). Run it through the terminal "
+                "tool instead (same owner gate applies there), or approve "
+                "this exact operation explicitly."
+            ),
+            "pattern_key": "package acquisition",
+            "description": (
+                "execute_code package acquisition (owner-gated — no yolo/off/"
+                "container bypass, matching #97657 terminal invariant)"
+            ),
+            "outcome": "package_acquisition",
+            "user_consent": False,
+        }
+
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
+
+    # A process launch whose command line cannot be statically resolved cannot be cleared as
+    # non-acquisition either. It is NOT turned into a hard block: the resolution failure is an
+    # inference, not evidence, and `subprocess.run([sys.executable, "-c", ...])` and friends are
+    # ordinary execute_code usage. Instead the owner gate is applied where an owner can actually
+    # answer — the fact is carried into the prompt below (CLI panel / gateway / ask) so the
+    # decision is informed. Where the local auto-approve contract applies (no approval surface,
+    # or an explicit --yolo / approvals.mode=off), there is no authority to fail closed to, so
+    # the session-level trust stands; that residual is documented in the PR, not silently taken.
+    _pkg_unresolved = _pkg == _PACKAGE_UNRESOLVABLE
+    if _pkg_unresolved:
+        description = (
+            f"{description}\n\n"
+            "进程启动的命令行无法静态解析，无法排除包获取（#97657 owner gate）。"
+            "请确认本次操作不进行包安装。"
+        )
 
     # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
     if env_type == "vercel_sandbox":
@@ -1132,12 +1347,29 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
         return _approved()
 
     # Only gateway/ask contexts get the one-shot whole-script approval. In an interactive CLI the script's terminal()
-    # calls are guarded per-call (context propagates into the RPC thread, #33057), so a whole-script prompt would fire
-    # on every execute_code call. Ask-mode still takes this path even with INTERACTIVE set (how gateway/smart tests
-    # and messaging ask-mode drive whole-script approval); when that leaks into a CLI with no notify callback, the
-    # engine falls through to the CLI Dangerous Command panel instead of a silent pending_approval.
+    # calls are guarded per-call (context propagates into the RPC thread, #33057), so a whole-script prompt on EVERY
+    # call would be noise. A script the static scanner resolves to a dangerous op is the exception (#65592): the local
+    # auto-approve contract must not swallow it, so it falls through to the Dangerous Command panel. Ask-mode still
+    # takes this path even with INTERACTIVE set (how gateway/smart tests and messaging ask-mode drive whole-script
+    # approval); when that leaks into a CLI with no notify callback, the engine falls through to the CLI Dangerous
+    # Command panel instead of a silent pending_approval.
+    danger_reason = None
     if not is_gateway and not is_ask:
-        return _approved()
+        # Non-interactive local sessions keep the auto-approve contract above: the script's own
+        # terminal() calls are guarded per-call, and there is nobody to answer a panel. An
+        # interactive CLI is the exception — a script the static scanner resolves to a dangerous
+        # op, or one whose process launch cannot be cleared of package acquisition, must reach the
+        # Dangerous Command panel instead of running ungated (#65592, #97657).
+        if not is_cli:
+            return _approved()
+        danger_reason = _execute_code_has_dangerous_ops(code)
+        if danger_reason is None and not _pkg_unresolved:
+            return _approved()
+        if danger_reason is not None:
+            _log_blocked_exec_code(code, f"AST-dangerous-ops-CLI-fallthrough:{danger_reason}")
+            description = f"{description}\n\n检测到危险操作：{_exec_code_reason_text(danger_reason)}"
+        else:
+            _log_blocked_exec_code(code, "package-acquisition-unresolvable-CLI-fallthrough")
 
     session_key = get_current_session_key()
     # Built only past the early-return gates so common paths don't copy a potentially-large script into this string.

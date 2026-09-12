@@ -18,16 +18,28 @@ def test_hindsight_is_declared():
         "api_url",
         "bank_id",
         "recall_budget",
+        "recall_max_results", "recall_live_status_bypass", "recall_simple_budget",
+        "recall_simple_max_words", "recall_document_tags", "recall_document_terms",
+        "recall_document_tag_routes", "recall_document_types",
     }
 
 
-def test_fields_are_all_inline():
+def test_basic_fields_stay_inline_and_optional_controls_use_full_config():
     provider = get_provider_config_schema("hindsight")
     assert provider is not None
 
-    # Hindsight is simple enough to render fully in the compact panel, so it
-    # never grows a Full config… modal.
-    assert all(field.inline for field in provider.fields)
+    # Keep the normal panel compact; opt-in controls belong in the existing modal.
+    assert {field.key for field in provider.inline_fields()} == {
+        "mode", "api_key", "api_url", "bank_id", "recall_budget",
+    }
+    advanced = {field.key: field for field in provider.fields if not field.inline}
+    assert all(field.group for field in advanced.values())
+    assert advanced["recall_max_results"].default == "0"
+    assert advanced["recall_live_status_bypass"].default == "false"
+    assert advanced["recall_simple_budget"].default == ""
+    assert advanced["recall_simple_max_words"].default == "0"
+    assert advanced["recall_document_tags"].default == "[]"
+    assert advanced["recall_document_terms"].default == "[]"
 
 
 def test_mode_gating_is_expressed_as_select_options():

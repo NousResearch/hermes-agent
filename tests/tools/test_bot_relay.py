@@ -554,6 +554,12 @@ def test_drain_ttl_zero_disables_expiry(root, monkeypatch):
     assert [e["id"] for e in claimed] == [env["id"]]
 
 
+def test_invalid_ttl_config_falls_back_instead_of_breaking_drain(monkeypatch):
+    monkeypatch.setattr(bot_relay, "_bot_mode_cfg", lambda *args, **kwargs: "not-a-number")
+
+    assert bot_relay._envelope_ttl_seconds() == bot_relay.DEFAULT_ENVELOPE_TTL_SECONDS
+
+
 def test_ttl_config_read_is_lazy_and_defensive(monkeypatch):
     import builtins
 

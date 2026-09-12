@@ -188,7 +188,13 @@ def _envelope_ttl_seconds() -> int:
     """Configured drain TTL (``bot_mode.envelope_ttl_seconds``), read per-drain.
     ``0`` (or negative) disables expiry."""
     val = _bot_mode_cfg("envelope_ttl_seconds", loader="load_config_readonly")
-    return DEFAULT_ENVELOPE_TTL_SECONDS if val is None else int(val)
+    if val is None:
+        return DEFAULT_ENVELOPE_TTL_SECONDS
+    try:
+        return int(val)
+    except (TypeError, ValueError, OverflowError):
+        logger.debug("Invalid bot_mode.envelope_ttl_seconds %r; using fallback", val)
+        return DEFAULT_ENVELOPE_TTL_SECONDS
 
 
 def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:

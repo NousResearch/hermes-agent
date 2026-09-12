@@ -402,7 +402,7 @@ class TestHermesHomeHardline:
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
         result = approval_module.check_all_command_guards(command, "local")
         assert result["approved"] is False
-        assert result.get("outcome") == "blocked"
+        assert result["hardline"] is True
 
         replay = json.loads(terminal_module.terminal_tool(command=command, force=True))
         assert replay["status"] == "blocked"

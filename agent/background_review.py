@@ -253,7 +253,17 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
     provider_fallback = bool(getattr(agent, "_provider_fallback_active", False))
     primary_cooldown = float(getattr(agent, "_rate_limited_until", 0) or 0)
     if provider_fallback and primary_cooldown <= time.monotonic():
-        primary_snapshot = getattr(agent, "_primary_runtime", None) or None
+        candidate = getattr(agent, "_primary_runtime", None) or None
+        if candidate:
+            from agent.fallback_cooldown import _is_entitlement_rejected
+
+            primary_provider = str(candidate.get("provider") or "").strip().lower()
+            primary_model = str(candidate.get("model") or "").strip()
+            if not (
+                primary_model
+                and _is_entitlement_rejected(agent, primary_provider, primary_model)
+            ):
+                primary_snapshot = candidate
     primary_pool_blocked = False
     if primary_snapshot:
         credential_pool, primary_pool_blocked = _load_primary_pool_for_fork(primary_snapshot)

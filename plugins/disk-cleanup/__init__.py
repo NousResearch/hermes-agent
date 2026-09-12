@@ -60,12 +60,25 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = Non
     if not isinstance(args, dict) or extractor is None:
         return
     for path_str in extractor(args, result if isinstance(result, str) else ""):
+        # The whole probe sits inside the guard on purpose: ``Path.exists()`` does not
+        # swallow ``PermissionError`` (only ENOENT/ENOTDIR/EBADF/ELOOP), so a path under an
+        # unreadable directory — typically a container path such as ``/root/.local/share/uv/…``
+        # that a ``docker exec …`` command line mentions — would otherwise propagate out of
+        # ``_on_post_tool_call`` and abort the observer hook for the tool call it follows
+        # (seen live 2026-09-11; homelab patch 2026-09-12).
         try:
             p = Path(path_str).expanduser()
+            if not p.exists():
+                continue
+            category = dg.guess_category(p)
+            if category is None:
+                continue
+            newly = dg.track(str(p), category, silent=True)
+        except OSError:
+            continue  # unreadable/unstatable path — nothing to track
         except Exception:
-            continue
-        category = dg.guess_category(p) if p.exists() else None
-        if category is not None and dg.track(str(p), category, silent=True) and category == "test":
+            continue  # observer-hook contract: never break the caller
+        if newly and category == "test":
             with _lock:
                 _recent_test_tracks.setdefault(task_id or session_id or "default", set()).add(str(p))
 

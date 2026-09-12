@@ -866,6 +866,19 @@ def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
 
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
+    if client is not None:
+        return _run_codex_stream_body(agent, api_kwargs, client=client, on_first_delta=on_first_delta)
+    # ``client=None`` drives the SHARED primary client in place. Check it out for the whole request
+    # (twin of the per-request slot's ``in_use``) so a concurrent teardown — ``agent.close()`` — parks
+    # its close for this thread instead of shutting the transport down mid-stream, which leaves this
+    # request with no events and no error (silent hang). See #107475.
+    with agent._shared_client_checkout(reason="codex_stream_direct") as shared_client:
+        return _run_codex_stream_body(
+            agent, api_kwargs, client=shared_client, on_first_delta=on_first_delta, shared_primary=True)
+
+
+def _run_codex_stream_body(agent, api_kwargs: dict, client: Any = None, on_first_delta=None, *,
+                          shared_primary: bool = False):
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
     from agent import relay_llm
@@ -969,9 +982,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 close_fn()
         except Exception:
             # A failed close can leave this connection checked out of the httpx pool while the caller
-            # reuse-caches the client; poison the slot so close really closes the pool. ``client is None``
-            # is the shared primary client — never force-shut.
-            if client is not None:
+            # reuse-caches the client; poison the slot so close really closes the pool. The shared primary
+            # client is never force-shut (``shared_primary`` / ``client is None``).
+            if not shared_primary:
                 agent._abort_request_openai_client(active_client, reason="codex_stream_close_failed")
     show_commentary = getattr(agent, "show_commentary", True)
     wants_commentary = getattr(agent, "interim_assistant_callback", None) is not None and show_commentary

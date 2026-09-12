@@ -911,8 +911,12 @@ class AIAgent(
         memory provider are kept). Idempotent; distinct from ``close()``."""
         self._close_active_children(soft=True)
         # Retire (don't hard-close) the shared client: eviction runs on the gateway memory-manager thread,
-        # and a cross-thread close can release TLS FDs under a still-unwinding worker.
-        _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
+        # and a cross-thread close can release TLS FDs under a still-unwinding worker. The shared-client
+        # teardown parks that work while a request still has the client checked out (#107475).
+        _quietly(
+            self._teardown_shared_client,
+            lambda c: self._retire_shared_openai_client(c, reason="cache_evict"), reason="cache_evict",
+        )
         self._close_request_clients("cache_evict")
 
     def close(self) -> None:
@@ -924,7 +928,10 @@ class AIAgent(
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
-        _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
+        _quietly(
+            self._teardown_shared_client,
+            lambda c: self._close_openai_client(c, reason="agent_close", shared=True), reason="agent_close",
+        )
         self._close_request_clients("agent_close")
         _quietly(self._close_codex_session)
         # Free conversation history proactively: callers may still hold the closed agent. The DB-flush
@@ -954,18 +961,6 @@ class AIAgent(
                 except Exception:
                     pass
             _quietly(lambda: child.close())
-
-    def _drop_shared_client(self, close_fn: Callable[[Any], None]) -> None:
-        """Hand the shared OpenAI/httpx client to ``close_fn`` and clear the attribute."""
-        # Retire the OpenAI/httpx client to release sockets immediately. #70773: eviction runs on the
-        # gateway's memory-manager thread — a cross-thread hard close of the shared client can release TLS
-        # FDs under a still-unwinding worker (FD-recycle → SQLite corruption). Retirement shuts the pooled
-        # sockets down (the memory/socket win we want here) and lets GC release the FDs once no thread holds
-        # them.
-        client = getattr(self, "client", None)
-        if client is not None:
-            close_fn(client)
-            self.client = None
 
     def _close_request_clients(self, reason: str) -> None:
         """Drop the cached per-request wire clients (reused across sequential LLM calls)."""

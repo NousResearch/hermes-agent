@@ -6,7 +6,7 @@
 import logging
 import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from typing import Any, Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
@@ -538,6 +538,71 @@ class ClientLifecycleMixin:
 
     def _abort_request_anthropic_client(self, client: Any, *, reason: str) -> None:
         self._abort_request_slot_client(_ANTHROPIC_SLOT, client, reason=reason)
+
+    # ------------------------------------------------------------------ shared primary client in-use guard
+    # The per-request slot keeps concurrent calls off ONE pool via its ``in_use`` flag and its teardown
+    # hook (``_close_cached_request_openai_client``) refuses to hard-close a checked-out client. The
+    # shared primary client is driven IN PLACE by requests that have no per-request clone (codex-direct
+    # stream, iteration-limit summaries, MoA facade), so it carries the same flag here: closing it while
+    # a worker is mid-request yanks the transport out from under that request — it stops receiving events
+    # and raises nothing, hanging until a watchdog — so the teardown is parked for the request's own
+    # thread (the FD owner) instead. See #107475.
+    _SHARED_IN_FLIGHT_ATTR = "_shared_client_in_flight"
+
+    def _shared_in_flight(self) -> int:
+        """Number of requests currently checked out on the shared primary client (0 when never used)."""
+        with self._openai_client_lock():
+            return int(getattr(self, self._SHARED_IN_FLIGHT_ATTR, 0) or 0)
+
+    def _acquire_shared_client(self, *, reason: str) -> Any:
+        """Check out the shared primary client for one in-place request (twin of ``_checkout_request_slot``)."""
+        client = self._ensure_primary_openai_client(reason=reason)
+        with self._openai_client_lock():
+            setattr(self, self._SHARED_IN_FLIGHT_ATTR, self._shared_in_flight() + 1)
+        return client
+
+    @contextmanager
+    def _shared_client_checkout(self, *, reason: str):
+        """Run one request that drives the shared primary client in place under the in-use guard."""
+        client = self._acquire_shared_client(reason=reason)
+        try:
+            yield client
+        finally:
+            self._release_shared_client()
+
+    def _release_shared_client(self) -> None:
+        """Owner-thread release; runs the teardown close parked while this request was in flight."""
+        parked = None
+        with self._openai_client_lock():
+            self._shared_client_in_flight = max(0, self._shared_in_flight() - 1)
+            if not self._shared_client_in_flight:
+                parked, self._shared_client_close_parked = getattr(self, "_shared_client_close_parked", None), None
+        if parked is not None:  # the request-driving thread owns the transport FDs (#70773)
+            parked()
+
+    def _teardown_shared_client(self, close_fn, *, reason: str) -> None:
+        """Guarded shared-client teardown: the same in-use check the per-request path performs.
+
+        ``close_fn(client)`` runs only when no request has the shared client checked out; while one does,
+        the teardown is parked and the LAST ``_release_shared_client`` runs it from that request's own
+        thread. That mirrors ``_close_cached_request_openai_client`` (which aborts instead of closing a
+        checked-out client) because the shared client has no owner thread to defer to.
+        """
+        with self._openai_client_lock():
+            client = getattr(self, "client", None)
+            if client is None:
+                return
+            self.client = None
+            if self._shared_in_flight():
+                # One parked teardown at a time: a later teardown supersedes it, and the superseded
+                # client falls to GC (safe — nothing closes under a live reader).
+                self._shared_client_close_parked = lambda: close_fn(client)
+                logger.info(
+                    "Shared OpenAI client teardown deferred (%s, shared=True, in_flight=%d) %s",
+                    reason, self._shared_in_flight(), self._client_log_context(),
+                )
+                return
+        close_fn(client)
 
     # ------------------------------------------------------------------ credential refresh
     def _sync_client_kwargs_credentials(self) -> None:

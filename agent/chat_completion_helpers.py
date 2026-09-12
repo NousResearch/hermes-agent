@@ -2095,10 +2095,14 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     summary_kwargs = _iteration_summary_chat_kwargs(agent, api_messages)
 
     def _attempt(retry_count: int) -> str:
-        summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
-        response = _managed_summary_call(
-            agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
-        return _summary_text(agent, response)
+        # The summary drives the SHARED primary client in place: hold it checked out (see
+        # ``_shared_client_checkout``) so a concurrent agent_close parks its close for this thread
+        # instead of yanking the transport out from under an in-flight request (#107475).
+        reason = "iteration_limit_summary_retry" if retry_count else "iteration_limit_summary"
+        with agent._shared_client_checkout(reason=reason) as summary_client:
+            response = _managed_summary_call(
+                agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
+            return _summary_text(agent, response)
     return _attempt
 
 

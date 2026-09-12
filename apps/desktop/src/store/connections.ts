@@ -293,7 +293,13 @@ export async function selectConnection(connectionId: string, options: SelectConn
   const targetIsActive = () => {
     const active = $connection.get()
 
-    return active?.connectionId === connectionId && normalizeProfileKey(active.profile) === targetProfile
+    return (
+      active?.connectionId === connectionId &&
+      (normalizeProfileKey(active.profile) === targetProfile ||
+        (!String(active.profile ?? '').trim() &&
+          connectionId === registry.primary &&
+          targetConnection.kind === 'local'))
+    )
   }
 
   if (pendingTarget === targetKey) {

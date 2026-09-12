@@ -135,11 +135,16 @@ def _assert_keepalive_tight(instances):
         assert limits.max_connections is not None and limits.max_connections > 0
 
 
-def _assert_updates_pool_never_reuses(instance):
-    """The long-poll pool must not reuse server-closed connections (#87057)."""
+def _assert_updates_pool_reuse_matches_platform(instance):
+    """The long-poll pool's keepalive follows the platform contract (#107880 / #87057).
+
+    Non-Windows platforms reuse a small pool — a fresh socket per long-poll buries macOS's
+    ephemeral range in TIME_WAIT after ~2 days (#107880). Windows keeps 0: a pooled socket
+    half-closed by an intermediary leaks fds in CLOSE_WAIT (#87057).
+    """
     limits = instance.kwargs.get("httpx_kwargs", {}).get("limits")
     assert isinstance(limits, httpx.Limits)
-    assert limits.max_keepalive_connections == 0
+    assert limits.max_keepalive_connections == tg_adapter._getupdates_keepalive_connections()
     assert limits.max_connections == 512
 
 
@@ -149,7 +154,7 @@ def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     # Both the general request pool and the get_updates pool are built here.
     assert len(instances) >= 2
     _assert_keepalive_tight(instances[:1])
-    _assert_updates_pool_never_reuses(instances[1])
+    _assert_updates_pool_reuse_matches_platform(instances[1])
     # Sanity: the proxy was actually threaded through (we're on the proxy branch).
     assert any(inst.kwargs.get("proxy") == "http://127.0.0.1:9/" for inst in instances)
 
@@ -184,7 +189,30 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
         if index == 0:
             assert limits.max_keepalive_connections >= 1
         else:
-            assert limits.max_keepalive_connections == 0
+            assert limits.max_keepalive_connections == tg_adapter._getupdates_keepalive_connections()
 
     for instance in instances:
         asyncio.run(instance.kwargs["httpx_kwargs"]["transport"].aclose())
+
+
+class TestGetupdatesKeepalivePlatform:
+    """#107880: the long-poll pool reuses sockets only where the platform tolerates it."""
+
+    def test_windows_never_reuses(self, monkeypatch):
+        monkeypatch.delenv("HERMES_TELEGRAM_GETUPDATES_KEEPALIVE", raising=False)
+        assert tg_adapter._getupdates_keepalive_connections(platform="win32") == 0
+
+    def test_non_windows_reuses_small_pool(self, monkeypatch):
+        monkeypatch.delenv("HERMES_TELEGRAM_GETUPDATES_KEEPALIVE", raising=False)
+        assert tg_adapter._getupdates_keepalive_connections(platform="darwin") == 4
+        assert tg_adapter._getupdates_keepalive_connections(platform="linux") == 4
+
+    def test_env_overrides_pool_size(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TELEGRAM_GETUPDATES_KEEPALIVE", "8")
+        assert tg_adapter._getupdates_keepalive_connections(platform="darwin") == 8
+        # Windows stays closed regardless of the override.
+        assert tg_adapter._getupdates_keepalive_connections(platform="win32") == 0
+
+    def test_env_zero_disables_reuse(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TELEGRAM_GETUPDATES_KEEPALIVE", "0")
+        assert tg_adapter._getupdates_keepalive_connections(platform="darwin") == 0

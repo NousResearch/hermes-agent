@@ -170,6 +170,22 @@ _TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image
 _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
 
 
+def _getupdates_keepalive_connections(platform: str = sys.platform) -> int:
+    """Keepalive pool size for the getUpdates long-poll client.
+
+    A fresh socket per long-poll puts every completed poll into client-side TIME_WAIT; on
+    macOS's default ephemeral range that exhausts local ports after ~2 days of continuous
+    polling (#107880). Non-Windows platforms reuse a small pool so polls recycle sockets.
+    Windows stays at 0: a pooled socket half-closed by an intermediary sits in CLOSE_WAIT
+    and leaks fds (#31599 / #87057 class), and the always-active long-poll never idles long
+    enough for ``keepalive_expiry`` to drain it. ``HERMES_TELEGRAM_GETUPDATES_KEEPALIVE``
+    overrides (set 0 to disable reuse everywhere).
+    """
+    if platform.startswith("win"):
+        return 0
+    return env_int("HERMES_TELEGRAM_GETUPDATES_KEEPALIVE", 4)
+
+
 def _coerce_duration_seconds(value: Any) -> Optional[int]:
     """Round a raw length to whole positive seconds, or None if unusable."""
     try:
@@ -2724,10 +2740,13 @@ class TelegramAdapter(BasePlatformAdapter):
             _pool_limits = _httpx.Limits(
                 max_connections=request_kwargs["connection_pool_size"],
                 max_keepalive_connections=_base_limits.max_keepalive_connections, keepalive_expiry=_base_limits.keepalive_expiry)
-            # A long-poll is continuously active, so keepalive expiry can't protect it from a server-side
-            # close: never hand getUpdates a pooled socket from a previous poll.
+            # A long-poll is continuously active, so keepalive expiry can't protect it from a
+            # server-side close — but a fresh socket per poll buries macOS's ephemeral range in
+            # TIME_WAIT after ~2 days (#107880). Reuse a small pool where the platform tolerates
+            # it; Windows keeps 0 (CLOSE_WAIT fd-leak class, #31599/#87057).
             _updates_limits = _httpx.Limits(
-                max_connections=request_kwargs["connection_pool_size"], max_keepalive_connections=0,
+                max_connections=request_kwargs["connection_pool_size"],
+                max_keepalive_connections=_getupdates_keepalive_connections(),
                 keepalive_expiry=_base_limits.keepalive_expiry)
         else:  # pragma: no cover — httpx always present alongside PTB
             _pool_limits = _updates_limits = None

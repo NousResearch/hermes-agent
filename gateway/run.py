@@ -3984,6 +3984,9 @@ class GatewayRunner(
     # Slow-tier respawns while work is queued; if 30 min of 5-min retries can't keep it up, fail loudly.
     _MAX_SLOW_WATCHER_RESPAWNS = 6
     _TELEGRAM_CAPABILITY_HINT_COOLDOWN_S = 300.0
+    # Drain-window refusal: one notice per (profile, chat) per window — a 30-min restart drain must
+    # not answer every message with the same line (#109002).
+    _DRAIN_NOTICE_COOLDOWN_S = 300.0
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
     _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling
     # Command-specific mid-run reject texts (busy_policy == "reject" with a busy_handler naming an

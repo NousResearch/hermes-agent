@@ -123,6 +123,12 @@ class GatewayTopicThreadsMixin:
         """Rate-limit the BotFather Threads Settings screenshot (repeated /topic must not re-upload it)."""
         return self._telegram_cooldown_elapsed(source, "_telegram_capability_hint_ts", self._TELEGRAM_CAPABILITY_HINT_COOLDOWN_S)
 
+    def _should_send_drain_notice(self, source: SessionSource) -> bool:
+        """Rate-limit the drain-window refusal to one per (profile, chat) per cooldown window, not
+        one per message — during a long restart drain, repeated identical refusals read as a bot
+        stuck in a loop (#109002)."""
+        return self._telegram_cooldown_elapsed(source, "_drain_notice_ts", self._DRAIN_NOTICE_COOLDOWN_S)
+
     # ── Telegram topic mode: user-facing text ───────────────────────────────────────────────
 
     def _telegram_topic_root_lobby_message(self) -> str:

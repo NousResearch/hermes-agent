@@ -72,6 +72,25 @@ class TestCheckBinaryDocumentWrite:
     def test_plain_text_allowed(self, tmp_path: Path):
         assert _check_binary_document_write(str(tmp_path / "notes.txt")) is None
 
+    def test_symlink_to_docx_rejected(self, tmp_path: Path):
+        """A text-suffixed symlink pointing to a .docx must be rejected."""
+        target = tmp_path / "document.docx"
+        _make_minimal_docx(target)
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(target)
+        err = _check_binary_document_write(str(alias))
+        assert err is not None
+        assert "symlink" in err.lower()
+        assert ".docx" in err.lower()
+
+    def test_symlink_to_plain_text_allowed(self, tmp_path: Path):
+        """A symlink to a .txt file should pass the guard."""
+        target = tmp_path / "real.txt"
+        target.write_text("hello")
+        alias = tmp_path / "alias.txt"
+        alias.symlink_to(target)
+        assert _check_binary_document_write(str(alias)) is None
+
 
 class TestWriteFileToolGuard:
     def test_write_file_rejects_existing_docx(self, tmp_path: Path):

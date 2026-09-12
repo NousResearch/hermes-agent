@@ -94,3 +94,55 @@ def test_every_picker_keyboard_is_a_valid_ptb_keyboard(real_ptb):
             for button in row:
                 assert button.text.strip(), f"blank button text in {keyboard.inline_keyboard}"
                 assert len(str(button.callback_data).encode()) <= 64, button.callback_data
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slug", ["bedrock", "openai-codex"])
+async def test_provider_scope_and_other_ids_survive_real_router(real_ptb, monkeypatch, slug):
+    """Real PTB keyboards, real callback dispatch; only transport/switch are mocked."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from hermes_cli import model_selection_guards
+
+    monkeypatch.setattr(model_selection_guards, "combined_selection_warning", lambda *a, **k: None)
+    if slug != "bedrock":
+        def unexpected_region_lookup():
+            pytest.fail("Non-Bedrock picker looked up an AWS region")
+        monkeypatch.setattr(real_ptb, "configured_region_geo", unexpected_region_lookup)
+    models = ["openai.example", "global.openai.example", "meta.example"]
+    unknown = [f"unlisted-vendor.example-{i}" for i in range(9)]
+    models += unknown
+    callback = AsyncMock(return_value="switched")
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._model_picker_state["12345"] = {
+        "providers": [{"slug": slug, "name": slug, "models": models}],
+        "current_model": models[0], "current_provider": slug,
+        "on_model_selected": callback,
+    }
+
+    async def tap(data):
+        query = SimpleNamespace(
+            data=data, message=SimpleNamespace(chat_id=12345), from_user=None,
+            answer=AsyncMock(), edit_message_text=AsyncMock())
+        await adapter._handle_callback_query(SimpleNamespace(callback_query=query), None)
+        return query
+
+    query = await tap(f"mp:{slug}")
+    payload = query.edit_message_text.call_args.kwargs
+    if slug == "bedrock":
+        vendors = [b.callback_data for row in payload["reply_markup"].inline_keyboard for b in row]
+        assert "mvd:other" in vendors
+        await tap("mvd:other")
+        query = await tap("mg:1")
+        payload = query.edit_message_text.call_args.kwargs
+        chosen = next(b for row in payload["reply_markup"].inline_keyboard for b in row
+                      if b.callback_data == "mm:8")
+        assert chosen.text == unknown[8]
+        await tap(chosen.callback_data)
+        callback.assert_awaited_once_with("12345", unknown[8], slug)
+    else:
+        buttons = [b for row in payload["reply_markup"].inline_keyboard for b in row]
+        assert not any(b.callback_data.startswith("mvd:") for b in buttons)
+        assert [b.text for b in buttons if b.callback_data.startswith("mm:")] == models[:8]
+        assert "in-region" not in payload["text"]
+        await tap("mm:1")
+        callback.assert_awaited_once_with("12345", models[1], slug)

@@ -419,13 +419,15 @@ class SessionMessagesMixin:
 
     def take_unseen_reactions(self, session_id: str, *, author: str = "user") -> List[Dict[str, Any]]:
         """Return *author*'s not-yet-surfaced reactions and mark them seen. Reactions are announced on the
-        NEXT user turn (never by rewriting the reacted message: cache-safe); ``seen`` makes it exactly once."""
+        NEXT user turn (never by rewriting the reacted message: cache-safe); ``seen`` makes it exactly once.
+        Include compaction-archived history that remains visible, but exclude rewound/superseded rows."""
         if not session_id:
             return []
         def _do(conn):
             pending = []
             for row in conn.execute("SELECT id, role, content, display_metadata FROM messages "
-                    "WHERE session_id = ? AND active = 1 AND display_metadata IS NOT NULL ORDER BY id",
+                    "WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+                    "AND display_metadata IS NOT NULL ORDER BY id",
                     (session_id,)).fetchall():
                 meta = self._decode_display_metadata(row["display_metadata"])
                 reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None

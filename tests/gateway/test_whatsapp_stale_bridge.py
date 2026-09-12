@@ -110,8 +110,27 @@ class TestFileContentHash:
         f = tmp_path / "x.js"
         f.write_text("abc")
         h = _file_content_hash(f)
-        assert len(h) == 16
+        assert len(h) == 64
         assert h == _file_content_hash(f)  # deterministic
+
+    def test_rejects_missing_file(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        assert _file_content_hash(tmp_path / "missing.js") == ""
+
+
+class TestBridgeHashContract:
+    def test_accepts_only_exact_full_sha256(self):
+        from plugins.platforms.whatsapp.adapter import _bridge_hash_matches
+
+        expected = "a" * 64
+        assert _bridge_hash_matches(expected, expected)
+        assert not _bridge_hash_matches(expected[:16], expected)
+        assert not _bridge_hash_matches("b" * 64, expected)
+        assert not _bridge_hash_matches("a" * 63, expected)
+        assert not _bridge_hash_matches("a" * 65, expected)
+        assert not _bridge_hash_matches("g" * 64, expected)
+        assert not _bridge_hash_matches(None, expected)
 
 
 class TestStaleBridgeHandshake:

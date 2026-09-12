@@ -96,17 +96,22 @@ async def run_task(connection, params):
     import psutil
     context = json.loads(policy.kanban_json)
     with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-        task = kb.get_task(conn, params['task_id'])
-        if task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']:
-            marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
-                                  (task.id, task.current_run_id)).fetchone()
-            if marker and json.loads(marker[0])['session_id'] != ref.session_id:
+        # Either this exact attempt was already admitted to this session (retry after a
+        # crash between session creation and admission), or the claim is still current
+        # now; a reclaimed/closed task never reaches resume/submit.
+        marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
+                              (params['task_id'], params['run_id'])).fetchone()
+        if marker:
+            if json.loads(marker[0])['session_id'] != ref.session_id:
                 raise RuntimeStoreError('stale_kanban_claim')
-            if not marker:
-                kb._append_event(conn, task.id, 'owner_admitted',
-                    {'db': str(Path(authority.db.db_path).resolve()), 'session_id': ref.session_id,
-                     'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
-                    run_id=task.current_run_id)
+        else:
+            task = kb.get_task(conn, params['task_id'])
+            if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
+                raise RuntimeStoreError('stale_kanban_claim')
+            kb._append_event(conn, task.id, 'owner_admitted',
+                {'db': str(Path(authority.db.db_path).resolve()), 'session_id': ref.session_id,
+                 'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                run_id=task.current_run_id)
     await connection.resume(ref, {})
     receipt = await authority.submit(connection.actor, Submission(request_id, ref,
         {'text': f'work kanban task {params["task_id"]}'}, 'queue'))

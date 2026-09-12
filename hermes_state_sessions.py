@@ -654,6 +654,25 @@ class SessionSessionsMixin:
             lambda merged: (model, merged, session_id),
         )
 
+    def clear_session_model(self, session_id: str) -> None:
+        """Clear the persisted session model and confirmed runtime lock atomically.
+
+        Only fields written by the session model-lock path are removed. Lineage
+        and unrelated model configuration survive, while the prompt snapshot is
+        invalidated so a rebuilt turn cannot retain stale model/provider text.
+        """
+        if not session_id:
+            return
+        self.flush_token_counts()
+        self._write_model_config_patch(
+            session_id, {key: None for key in (
+                "browser_model_lock", "model", "provider", "base_url", "api_mode",
+                "gateway_runtime", "route_source", "model_options",
+            )},
+            "UPDATE sessions SET model = NULL, model_config = ?, "
+            "system_prompt = NULL, system_prompt_hash = NULL WHERE id = ?",
+        )
+
     def _write_model_config_patch(
         self, session_id: str, patch: Dict[str, Any],
         sql: str = "UPDATE sessions SET model_config = ? WHERE id = ?",

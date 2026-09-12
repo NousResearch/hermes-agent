@@ -69,6 +69,7 @@ _STATIC_FEATURE_FLAGS = {
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "session_model_clear": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
@@ -3263,7 +3264,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_require_auth
     async def _handle_session_model_lock(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions/{session_id}/model — backend-ack a Browser model lock."""
+        """POST /api/sessions/{session_id}/model — set or clear a session model lock.
+
+        A missing ``model`` remains invalid; JSON null explicitly clears the
+        session-scoped lock and returns to normal routing.
+        """
         session_id = request.match_info["session_id"]
         _, err = await self._get_existing_session_or_404(session_id)
         if err:
@@ -3271,6 +3276,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
+        if "model" not in body:
+            return _error_response(
+                "model is required; use null to clear the session model lock",
+                400, code="missing_model")
+        if body["model"] is None:
+            db = await self._ensure_session_db_async()
+            if db is None:
+                return self._session_db_unavailable()
+            await asyncio.to_thread(db.clear_session_model, session_id)
+            return web.json_response({
+                "object": "hermes.session.model_lock", "session_id": session_id,
+                "runtime": {"provider": "", "model": "", "route_source": "global",
+                             "requested": {"provider": "", "model": ""},
+                             "model_lock": "cleared"}})
+        if not isinstance(body["model"], str) or not body["model"].strip():
+            return _error_response(
+                "model must be a non-empty string or null", 400, code="invalid_model")
         runtime_request = self._session_runtime_request_from_body(body)
         runtime_request["require_model_lock"] = True
         lock_error = self._runtime_lock_error(runtime_request)

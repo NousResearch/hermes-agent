@@ -64,6 +64,7 @@ class TestFailoverReason:
             "image_corrupt",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
+            "empty_reasoning_follow_content",
             "multimodal_tool_content_unsupported",
             "reasoning_mandatory",
             "provider_policy_blocked",
@@ -766,6 +767,35 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False
+
+    # ── Volcengine Ark: empty assistant placeholder after replayed reasoning ──
+
+    @pytest.mark.parametrize("body", [
+        # Exact Ark envelope captured from a failing codex_responses request.
+        {"error": {"code": "MissingParameter",
+                   "message": "The request failed because it is missing `input.content` parameter. Request id: x",
+                   "param": "input.content", "type": "BadRequest"}},
+        # Message-only shape: code + field path in text, no structured param.
+        {"error": {"code": "MissingParameter", "message": "HTTP 400: missing `input.content` parameter."}},
+    ], ids=["structured-param", "message-only"])
+    def test_ark_empty_reasoning_follow_content_triggers_replay_strip(self, body):
+        e = MockAPIError("Error code: 400 - bad request", status_code=400, body=body)
+        result = classify_api_error(e, provider="custom", model="ark-code-latest")
+        assert result.reason == FailoverReason.empty_reasoning_follow_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+        assert result.should_compress is False
+
+    @pytest.mark.parametrize("body", [
+        # A different missing parameter must never match.
+        {"error": {"code": "MissingParameter", "message": "missing `messages` parameter.", "param": "messages"}},
+        # input.content present but rejected as an unknown parameter.
+        {"error": {"code": "UnknownParameter", "message": "unknown parameter: input.content", "param": "input.content"}},
+    ], ids=["other-param", "unknown-param"])
+    def test_ark_empty_reasoning_follow_content_negative(self, body):
+        e = MockAPIError("Error code: 400 - bad request", status_code=400, body=body)
+        result = classify_api_error(e, provider="custom", model="ark-code-latest")
+        assert result.reason != FailoverReason.empty_reasoning_follow_content
 
     # ── Codex masked encrypted-reasoning replay rejection (#92353) ──
 

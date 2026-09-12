@@ -43,6 +43,7 @@ class FailoverReason(enum.Enum):
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
+    empty_reasoning_follow_content = "empty_reasoning_follow_content"  # Strict Responses relay rejects the empty assistant placeholder that must follow a replayed reasoning item — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
 
@@ -381,9 +382,41 @@ _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
+# Strict custom Responses relays (e.g. Volcengine Ark) reject the empty assistant
+# message Hermes emits after a replayed reasoning item with MissingParameter(input.content).
+# Same recovery as a rejected replay blob: strip replay state and retry once.
+_V_EMPTY_REASONING_FOLLOW = _v(_R.empty_reasoning_follow_content, should_compress=False, should_fallback=False)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
+
+# Strict Responses relays reject the empty assistant placeholder Hermes emits after a replayed
+# ``reasoning`` item. Volcengine Ark: code=MissingParameter, param=input.content. Match on the
+# field path AND a missing/empty signal so an unrelated ``input.content`` complaint is never caught.
+_EMPTY_REASONING_FOLLOW_CODES = frozenset({"missingparameter"})
+_EMPTY_REASONING_FOLLOW_PARAM = "input.content"
+_EMPTY_REASONING_FOLLOW_MESSAGE_PATTERNS = (
+    "missing `input.content` parameter",
+    "missing 'input.content' parameter",
+    "missing input.content parameter",
+    "input.content` parameter",
+)
+
+
+def _is_empty_reasoning_follow_content(c: "_Ctx") -> bool:
+    """True for a strict-relay 400 rejecting the empty ``{role:'assistant', content:''}`` item.
+
+    Requires the Responses field path ``input.content`` plus either the structured ``param``
+    field or a missing-parameter message/code — deliberately narrower than a bare substring hit.
+    """
+    msg = (c.msg or "").lower()
+    body = c.body if isinstance(c.body, dict) else {}
+    error_obj = body.get("error") if isinstance(body.get("error"), dict) else {}
+    param = str(error_obj.get("param") or body.get("param") or "").strip().lower()
+    param_hit = param == _EMPTY_REASONING_FOLLOW_PARAM or _EMPTY_REASONING_FOLLOW_PARAM in msg
+    message_hit = any(p in msg for p in _EMPTY_REASONING_FOLLOW_MESSAGE_PATTERNS)
+    code_hit = c.code in _EMPTY_REASONING_FOLLOW_CODES
+    return param_hit and (message_hit or code_hit)
 
 
 def _billing_hints(error_msg: str) -> Verdict:
@@ -764,6 +797,10 @@ def _classify_400(c: _Ctx) -> Verdict:
         "conflicting authenticated continuation identities" in msg
     ):
         return _V_INVALID_ENCRYPTED
+    # Strict custom relay (Volcengine Ark) rejects the empty assistant placeholder that
+    # follows a replayed reasoning item — strip replay state and retry once, like a bad blob.
+    if _is_empty_reasoning_follow_content(c):
+        return _V_EMPTY_REASONING_FOLLOW
     # Reasoning-mandatory route rejecting a disable (GLM-5.3 on Nous Portal / OpenRouter). Deterministic
     # for the request shape, but the only bad field is ``reasoning: {enabled: false}`` — the loop drops
     # the disable and retries once. Must precede request-validation, which would abort as format_error.

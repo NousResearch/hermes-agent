@@ -28,6 +28,9 @@ class TurnRetryState:
     # Format / payload recovery guards
     thinking_sig_retry_attempted: bool = False
     invalid_encrypted_content_retry_attempted: bool = False
+    # Strict Responses relay rejected the empty assistant placeholder after a replayed
+    # reasoning item (e.g. Volcengine Ark MissingParameter input.content).
+    empty_reasoning_follow_content_retry_attempted: bool = False
     native_compaction_reject_retry_attempted: bool = False
     image_shrink_retry_attempted: bool = False
     multimodal_tool_content_retry_attempted: bool = False

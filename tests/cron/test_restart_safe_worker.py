@@ -521,6 +521,7 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
         )
     payload = tmp_path / "job.json"
     launched = tmp_path / "launched.json"
+    worker_inv = tmp_path / "worker_inv.json"
     payload.write_text(json.dumps(job), encoding="utf-8")
 
     sent = []
@@ -554,18 +555,32 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
     assert replacement_loop.is_running()
 
     harness = (
-        "import json, os, pathlib, time\n"
+        "import json, os, pathlib, subprocess, time\n"
         f"os.environ['HERMES_HOME'] = {str(home)!r}\n"
         "os.environ['INVOCATION_ID'] = 'restart-fixture'\n"
         "from cron import scheduler\n"
         "from tools import process_registry\n"
         "process_registry._is_supervised_gateway_process = lambda: True\n"
+        # Spy the real worker spawn to assert its cwd/env invariants; the worker itself runs
+        # with stdout/stderr on DEVNULL, so report through a side-channel file. The spy only
+        # observes and delegates — it must not break the ack/wait protocol.
+        "_real_popen = subprocess.Popen\n"
+        "class _SpyPopen(_real_popen):\n"
+        "    def __init__(s, cmd, *a, **k):\n"
+        "        _ip = os.environ.get('HERMES_WORKER_INV', '')\n"
+        "        if _ip:\n"
+        "            _pp = (k.get('env') or {}).get('PYTHONPATH', '')\n"
+        "            pathlib.Path(_ip).write_text(json.dumps({'cwd': k.get('cwd'), 'PYTHONPATH': _pp}), encoding='utf-8')\n"
+        "        super().__init__(cmd, *a, **k)\n"
+        "subprocess.Popen = _SpyPopen\n"
+        "scheduler.subprocess.Popen = _SpyPopen\n"
         f"job = json.loads(pathlib.Path({str(payload)!r}).read_text())\n"
         "if not scheduler.run_one_job(job, adapters=None, loop=None):\n"
         "    raise SystemExit('worker was not isolated')\n"
         f"pathlib.Path({str(launched)!r}).write_text('returned')\n"
     )
-    parent = subprocess.Popen([sys.executable, "-c", harness])
+    parent = subprocess.Popen([sys.executable, "-c", harness],
+                              env={**os.environ, "HERMES_WORKER_INV": str(worker_inv)})
     worker_pid = None
     try:
         deadline = time.monotonic() + 10
@@ -602,6 +617,17 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
                 break
             time.sleep(0.05)
         assert executions.latest_execution(job["id"])["status"] == "completed"
+
+        import pathlib as _pathlib
+        # Invariant: the restart-safe worker left the repo checkout behind (a repo-dir cwd
+        # leaks into terminal-tool calls with no explicit TERMINAL_CWD signal and poisons
+        # that job's persistent Docker /workspace mount) and can still resolve
+        # `-m cron.scheduler` via PYTHONPATH.
+        _inv = json.loads(worker_inv.read_text(encoding="utf-8"))
+        _repo_root = str(_pathlib.Path(scheduler.__file__).resolve().parents[1])
+        assert _inv["cwd"] != _repo_root, f"worker cwd leaked the repo checkout: {_inv['cwd']}"
+        assert _repo_root in _inv["PYTHONPATH"].split(os.pathsep), \
+            "repo root missing from worker PYTHONPATH"
         assert side_effect.read_text(encoding="utf-8").splitlines() == ["once"]
         assert delivery_queue.get_status(execution["id"])["status"] == "delivered"
         assert len(sent) == 1

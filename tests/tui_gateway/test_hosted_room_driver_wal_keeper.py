@@ -13,6 +13,7 @@ another connection's close.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from tui_gateway.hosted_room_driver import HostedRoomRuntime
@@ -43,6 +44,21 @@ def _set_wal_mode(db: Path) -> None:
         conn.execute("PRAGMA journal_mode=WAL").fetchone()
     finally:
         conn.close()
+
+
+def slow_rooms_provider():
+    """A rooms provider that blocks from its FIRST call (concurrent with the
+    keeper acquire) until the returned ``release`` event is set — isolating
+    the fresh-database sequence the review exercised: keeper first, store
+    connection second, no room thread racing the WAL flip. Returns
+    ``(provider, release)``."""
+    gate = threading.Event()
+
+    def _provider():
+        gate.wait(timeout=30)
+        return [BINDING]
+
+    return _provider, gate
 
 
 def test_driver_keeps_wal_sidecars_across_ephemeral_cycles(tmp_path: Path):
@@ -81,6 +97,180 @@ def test_driver_keeps_wal_sidecars_across_ephemeral_cycles(tmp_path: Path):
     finally:
         runtime.stop(timeout=2.0)
     assert runtime._wal_keeper is None, "keeper must close on stop"
+
+
+def test_fresh_database_keeper_applies_journal_policy(tmp_path: Path):
+    """On a fresh (never-written) database the keeper must itself apply the
+    journal policy, not open raw: a raw keeper connects while the file is
+    still in DELETE mode, the later store connection flips the header to WAL,
+    and the stale keeper never joins the WAL shared-memory index — so every
+    ephemeral close remains a "last WAL member" close and deletes the
+    sidecars even with the keeper held (review reproduction, PR #103665)."""
+    db = tmp_path / "state.db"
+    rooms, release = slow_rooms_provider()
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=rooms,
+        rpc=FakeSessionRPC(),
+        turn_lock=RecordingTurnLocks(),
+        poll_interval_seconds=0.01,
+    )
+    try:
+        runtime.start()
+        _wait_for(lambda: runtime._wal_keeper is not None)
+
+        # The later store connection applies the canonical policy and writes.
+        from hermes_state_wal import apply_wal_with_fallback
+
+        store = sqlite3.connect(db, timeout=10)
+        assert apply_wal_with_fallback(store) == "wal"
+        store.execute("CREATE TABLE IF NOT EXISTS probe (k TEXT)")
+        store.execute("INSERT INTO probe VALUES ('v')")
+        store.commit()
+        assert _wal_path(db).exists(), "writer's WAL sidecar missing"
+        store.close()
+        assert _wal_path(db).exists(), (
+            "store close deleted the WAL sidecar while the keeper was open — "
+            "the keeper never joined the WAL index (opened in DELETE mode)"
+        )
+
+        _ephemeral_cycle(db)
+        assert _wal_path(db).exists(), (
+            "ephemeral close deleted the WAL sidecar while the keeper was open"
+        )
+    finally:
+        release.set()
+        runtime.stop(timeout=2.0)
+    assert runtime._wal_keeper is None, "keeper must close on stop"
+
+
+def test_configured_delete_mode_leaves_no_wal_sidecars(tmp_path: Path, monkeypatch):
+    """With ``database.journal_mode: delete`` the keeper honors the configured
+    policy: the fresh DB stays in DELETE and no WAL sidecars appear. (Contract:
+    the keeper acquire follows the policy function — the same one
+    hosted_rooms_common uses — instead of guessing.)"""
+    monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
+    db = tmp_path / "state.db"
+    rooms, release = slow_rooms_provider()
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=rooms,
+        rpc=FakeSessionRPC(),
+        turn_lock=RecordingTurnLocks(),
+        poll_interval_seconds=0.01,
+    )
+    try:
+        runtime.start()
+        _wait_for(lambda: runtime._wal_keeper is not None)
+        probe = sqlite3.connect(db, timeout=10)
+        mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
+        probe.close()
+        assert mode.lower() != "wal", (
+            f"configured journal_mode=delete must not be flipped to WAL, got {mode!r}"
+        )
+        assert not _wal_path(db).exists()
+    finally:
+        release.set()
+        runtime.stop(timeout=2.0)
+
+
+def test_vulnerable_runtime_fresh_db_keeper_and_store_stay_consistent(tmp_path: Path, monkeypatch):
+    """On a WAL-reset-vulnerable SQLite (3.7.0–3.51.2) the policy gate refuses
+    to enable WAL on non-WAL files. The keeper must take the SAME branch as the
+    canonical store connection — both ending in DELETE with no mixed modes and
+    no stranded sidecars — instead of a raw keeper opening in DELETE while a
+    store connection flips WAL behind its back (the defect-1 shape, one gate
+    earlier)."""
+    import hermes_state_wal
+
+    monkeypatch.setattr(
+        hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: True
+    )
+    db = tmp_path / "state.db"
+    rooms, release = slow_rooms_provider()
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=rooms,
+        rpc=FakeSessionRPC(),
+        turn_lock=RecordingTurnLocks(),
+        poll_interval_seconds=0.01,
+    )
+    try:
+        runtime.start()
+        _wait_for(lambda: runtime._wal_keeper is not None)
+
+        probe = sqlite3.connect(db, timeout=10)
+        keeper_mode = probe.execute("PRAGMA journal_mode").fetchone()[0]
+        probe.close()
+        assert keeper_mode.lower() != "wal", (
+            f"vulnerable runtime must not flip fresh DB to WAL, got {keeper_mode!r}"
+        )
+
+        from hermes_state_wal import apply_wal_with_fallback
+
+        store = sqlite3.connect(db, timeout=10)
+        store_mode = apply_wal_with_fallback(store)
+        store.execute("CREATE TABLE IF NOT EXISTS probe (k TEXT)")
+        store.execute("INSERT INTO probe VALUES ('v')")
+        store.commit()
+        store.close()
+        assert store_mode == keeper_mode, (
+            f"keeper ({keeper_mode!r}) and store ({store_mode!r}) disagree on journal mode"
+        )
+        assert not _wal_path(db).exists()
+
+        # Data written through the store must be readable after its close.
+        probe = sqlite3.connect(db, timeout=10)
+        rows = probe.execute("SELECT * FROM probe").fetchall()
+        probe.close()
+        assert rows == [("v",)]
+    finally:
+        release.set()
+        runtime.stop(timeout=2.0)
+
+
+def test_keeper_released_when_lease_cleanup_fails(tmp_path: Path, monkeypatch):
+    """Blocker-2 regression: a non-DriverStateError out of
+    _release_idle_leases (e.g. sqlite3.OperationalError) must not exit the
+    worker finally block before the keeper is closed — that previously left
+    _wal_keeper referenced (restart skips re-acquire) and the connection fd
+    open forever."""
+    db = tmp_path / "state.db"
+    _set_wal_mode(db)
+    runtime = HostedRoomRuntime(
+        db_path=db,
+        rooms=[BINDING],
+        rpc=FakeSessionRPC(),
+        turn_lock=RecordingTurnLocks(),
+        poll_interval_seconds=0.01,
+    )
+    runtime.start()
+    _wait_for(lambda: runtime._wal_keeper is not None)
+    keeper = runtime._wal_keeper
+
+    def _boom():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(runtime, "_release_idle_leases", _boom)
+    runtime.stop(timeout=2.0)
+
+    assert runtime._wal_keeper is None, "keeper reference must clear even when lease cleanup raises"
+    # The connection object itself must be closed. It belongs to the dead
+    # worker thread, so probe it from this fresh thread (only the creating
+    # thread may use it — a still-open keeper would answer the SELECT).
+    probe_result: list[bool] = []
+
+    def _poke():
+        try:
+            keeper.execute("SELECT 1").fetchone()
+            probe_result.append(True)  # still open — leaked
+        except sqlite3.ProgrammingError:
+            probe_result.append(False)  # closed as required
+
+    t = threading.Thread(target=_poke)
+    t.start()
+    t.join(2)
+    assert probe_result == [False], "keeper connection must be closed on stop even when lease cleanup raises"
 
 
 def test_keeper_acquire_retries_after_transient_failure(tmp_path, monkeypatch):

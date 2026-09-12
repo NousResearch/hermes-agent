@@ -1499,16 +1499,17 @@ class GoalManager:
         # separately because persistent API errors (401, DNS) mean a broken config.
         state.consecutive_parse_failures = state.consecutive_parse_failures + 1 if parse_failed else 0
         state.consecutive_transport_failures = state.consecutive_transport_failures + 1 if transport_failed else 0
-        # Track response repetition regardless of verdict, so the counter is accurate the moment a
-        # judged-insufficient reply starts repeating. Only a `continue` verdict acts on it below.
+        if verdict == "wait" and wait_directive:
+            return self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
+
+        # Track response repetition only after the judge ruled on the reply. A `wait`
+        # verdict parks the goal instead of judging the reply, so parked replies must
+        # not accrue a streak that the next judged reply would inherit.
         digest = _response_digest(last_response)
         state.consecutive_identical_responses = (
             state.consecutive_identical_responses + 1 if digest and digest == state.last_response_digest else 0
         )
         state.last_response_digest = digest
-
-        if verdict == "wait" and wait_directive:
-            return self._apply_wait_directive(wait_directive, reason, active_delegations=active_delegations)
 
         # BLOCKED is NOT done: pause so the user sees the judge's reason and can re-scope or override,
         # instead of burning turns on an unachievable goal or waving it through as complete.

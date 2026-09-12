@@ -984,6 +984,39 @@ class TestNoProgressDetector:
             d = mgr.evaluate_after_turn("same text")
             assert d["should_continue"] is True, "resume must grant a real retry"
 
+    def test_wait_verdict_does_not_accrue_the_streak(self, hermes_home):
+        """A `wait` verdict parks the goal without judging the reply, so parked replies must
+        not accrue a streak that the next judged reply would inherit (review nit on #106925)."""
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, DEFAULT_MAX_IDENTICAL_RESPONSES
+
+        mgr = GoalManager(session_id="np-wait", default_max_turns=100)
+        mgr.set("do a thing")
+
+        with patch.object(
+            goals, "judge_goal",
+            return_value=("wait", "CI running", False, {"seconds": 30}, False),
+        ):
+            for _ in range(DEFAULT_MAX_IDENTICAL_RESPONSES + 2):
+                mgr.evaluate_after_turn("same parked text")
+        assert mgr.state.consecutive_identical_responses == 0
+        assert mgr.state.status == "active"
+
+        # Barrier expired: the same reply is now judged (continue) and starts a fresh streak.
+        time.sleep(0.05)
+        mgr.stop_waiting()
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "needs evidence", False, None, False)
+        ):
+            mgr.evaluate_after_turn("same parked text")
+        assert mgr.state.consecutive_identical_responses == 0  # first judged occurrence: no streak
+
+        with patch.object(
+            goals, "judge_goal", return_value=("continue", "needs evidence", False, None, False)
+        ):
+            mgr.evaluate_after_turn("same parked text")
+        assert mgr.state.consecutive_identical_responses == 1
+
     def test_legacy_state_row_without_the_new_fields_loads(self, hermes_home):
         """Rows serialized before this field existed must round-trip, not crash."""
         from hermes_cli.goals import GoalState

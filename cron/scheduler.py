@@ -3042,6 +3042,18 @@ def _wait_for_external_cron_worker(
                 pass
 
 
+def _worker_env_with_repo_path(worker_env: dict) -> dict:
+    """Ensure the repo root is importable by a restart-safe cron worker spawned with
+    cwd=HERMES_HOME. ``python -m cron.scheduler`` resolves from sys.path[0]=cwd only when
+    cwd happens to be the checkout; under a HERMES_HOME cwd it must find the package via
+    PYTHONPATH instead — the editable-install finder does not cover every top-level layout
+    for ``-m`` resolution, so prepend the repo root explicitly (idempotent)."""
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    existing = worker_env.get("PYTHONPATH") or ""
+    parts = [repo_root] + [p for p in existing.split(os.pathsep) if p and p != repo_root]
+    return {**worker_env, "PYTHONPATH": os.pathsep.join(parts)}
+
+
 def _launch_external_cron_worker(job: dict) -> bool:
     """Launch *job* outside a managed gateway cgroup when required.
 
@@ -3125,11 +3137,17 @@ def _launch_external_cron_worker(job: dict) -> bool:
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
+    # cwd must be the profile's HERMES_HOME, not the repo dir: the worker inherits this
+    # process's cwd for any terminal-tool call that finds no explicit TERMINAL_CWD/
+    # MESSAGING_CWD signal (tools/terminal_tool_config.py's _safe_getcwd() falls back to
+    # os.getcwd()) — a repo-dir cwd poisons that job's Docker /workspace mount for the
+    # container's whole persistent lifetime. `-m cron.scheduler` then resolves via
+    # PYTHONPATH instead (see _worker_env_with_repo_path).
     try:
         process = subprocess.Popen(
             scoped_command,
-            cwd=str(Path(__file__).resolve().parent.parent),
-            env=worker_env,
+            cwd=str(_get_hermes_home().resolve()),
+            env=_worker_env_with_repo_path(worker_env),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

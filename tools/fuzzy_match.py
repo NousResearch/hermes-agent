@@ -464,28 +464,84 @@ def _first_meaningful_line(text: str) -> Optional[str]:
 
 
 def _reindent_replacement(file_region: str, old_string: str, new_string: str) -> str:
-    """Re-anchor ``new_string``'s indentation onto the file's actual base indent after a
-    non-exact match: swap the LLM base prefix (first non-blank old_string line) for the
-    file's, preserving relative nesting; shallower lines anchor to the file base."""
+    """Re-anchor ``new_string`` onto the file's actual indentation after a non-exact match.
+
+    The old prefix-swap only swapped the outer base indent and left interior nesting
+    at the LLM's sent indent, silently corrupting multi-line replacements when the file
+    base differs from ``old_string``.  A blank-line guard also returned ``new_string``
+    unchanged even when every non-blank line needed reindent.  Both are fixed here.
+
+    Non-blank ``new_string`` lines are aligned to the corresponding file-region lines by
+    stripped content (via :class:`difflib.SequenceMatcher`), inheriting each file line's
+    actual whitespace.  Genuine insertions (present in ``new_string`` but absent from the
+    file) inherit the nearest file depth so nested lines sit at a sensible level rather
+    than column 0.  Blank lines keep whatever whitespace they had.
+
+    No-op cases that return ``new_string`` unchanged:
+        * ``new_string`` is empty
+        * ``old_first`` or ``file_first`` is ``None``
+        * the file region has no non-blank line to anchor against
+     """
     if not new_string:
         return new_string
+
     old_first = _first_meaningful_line(old_string)
     file_first = _first_meaningful_line(file_region)
     if old_first is None or file_first is None:
         return new_string
-    old_indent = _leading_whitespace(old_first)
-    file_indent = _leading_whitespace(file_first)
-    if old_indent == file_indent:
+
+    def _ws(line: str) -> str:
+        return line[:len(line) - len(line.lstrip(" \t"))]
+
+    new_nb = [      # (line_idx, whitespace_prefix, stripped_content)
+        (i, _ws(l), l.strip())
+        for i, l in enumerate(new_string.split("\n")) if l.strip()
+    ]
+    file_nb = [
+        (i, _ws(l), l.strip())
+        for i, l in enumerate(file_region.split("\n")) if l.strip()
+    ]
+    if not new_nb or not file_nb:
         return new_string
 
+    file_base_ws = min((ws for _, ws, _ in file_nb), key=len)
+    matcher = SequenceMatcher(
+        a=[st for _, _, st in new_nb],
+        b=[st for _, _, st in file_nb],
+        autojunk=False,
+    )
+
+    # file_ws[p] = target whitespace prefix for the p-th non-blank new_string line.
+    file_ws: list[str] = [""] * len(new_nb)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                file_ws[i1 + k] = file_nb[j1 + k][1]
+        elif tag == "replace":
+            ws = file_nb[j1][1] if j1 < len(file_nb) else file_base_ws
+            for k in range(i2 - i1):
+                file_ws[i1 + k] = ws
+        elif tag == "delete":
+            # 'delete' = present in new_nb but absent from file_nb: genuine
+            # insertions.  Anchor to the nearest existing file depth so nested
+            # lines nest sensibly rather than collapsing to column 0.
+            neighbor = file_base_ws
+            if j1 > 0:
+                neighbor = file_nb[j1 - 1][1]
+            elif j1 < len(file_nb):
+                neighbor = file_nb[j1][1]
+            for k in range(i2 - i1):
+                file_ws[i1 + k] = neighbor
+        # 'insert' = present in file but not in new: nothing to emit for them.
+
     out_lines: list[str] = []
-    for line in new_string.split("\n"):
-        if not line.strip():
-            out_lines.append(line)
-        elif _leading_whitespace(line).startswith(old_indent):
-            out_lines.append(file_indent + line[len(old_indent):])
+    nb_pos = 0
+    for l in new_string.split("\n"):
+        if l.strip():
+            out_lines.append(file_ws[nb_pos] + l.lstrip(" \t"))
+            nb_pos += 1
         else:
-            out_lines.append(file_indent + line.lstrip(" \t"))
+            out_lines.append(l)
     return "\n".join(out_lines)
 
 

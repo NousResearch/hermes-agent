@@ -652,12 +652,17 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
     #97281) drops the marker and resends once inside the same attempt; a streaming IAM
     denial hands off to ``on_stream_denied(client, kwargs, exc)``; a stale connection
     evicts the cached client so the outer retry builds a fresh pool. Streaming returns the
-    event stream; non-streaming an OpenAI-shaped SimpleNamespace."""
-    from agent.bedrock_adapter import (_get_bedrock_runtime_client, invalidate_runtime_client,
-        is_stale_connection_error, is_streaming_access_denied_error, normalize_converse_response,
-        recover_from_cache_point_rejection)
+    event stream; non-streaming an OpenAI-shaped SimpleNamespace.
+
+    ``ensure_converse_user_tail`` repairs a trailing-assistant-prefill tail on the wire
+    payload before either verb is called — Claude 4.6+/Fable hard-400 with a
+    non-retryable ValidationException otherwise, bricking the session (#101401)."""
+    from agent.bedrock_adapter import (_get_bedrock_runtime_client, ensure_converse_user_tail,
+        invalidate_runtime_client, is_stale_connection_error, is_streaming_access_denied_error,
+        normalize_converse_response, recover_from_cache_point_rejection)
     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
     api_kwargs.pop("__bedrock_converse__", None)
+    api_kwargs = ensure_converse_user_tail(api_kwargs)
     client = _get_bedrock_runtime_client(region)
     method = client.converse_stream if stream else client.converse
     finish = (lambda raw: raw.get("stream", [])) if stream else normalize_converse_response

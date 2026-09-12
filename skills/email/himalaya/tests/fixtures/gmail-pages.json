@@ -1,0 +1,8 @@
+{
+  "description": "Synthetic minimal Himalaya CLI v2.1.0 responses, not captured Gmail data",
+  "pages": [
+    {"ids": [{"id": "a"}, {"id": "b"}], "next_page": "cursor-one"},
+    {"ids": [], "next_page": "cursor-two"},
+    {"ids": [{"id": "b"}, {"id": "c"}]}
+  ]
+}

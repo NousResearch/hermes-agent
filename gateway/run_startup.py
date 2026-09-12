@@ -17,6 +17,10 @@ import time
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
+from gateway.log_redaction import (
+    log_safe_gateway_error, session_error_for_log,
+    log_safe_gateway_identity, session_key_for_log,
+)
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
@@ -67,7 +71,7 @@ class GatewayStartupMixin:
             logger.info(
                 "Queued inbound message during gateway startup restore: platform=%s chat=%s",
                 source.platform.value if source and source.platform else "unknown",
-                source.chat_id if source else "unknown",
+                log_safe_gateway_identity(source.platform, source.chat_id) if source else "unknown",
             )
 
     async def _drain_startup_restore_queue(self) -> int:
@@ -393,7 +397,7 @@ class GatewayStartupMixin:
             try:
                 result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
             except Exception as send_err:
-                logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], send_err)
+                logger.warning("obligation %s: redelivery send raised: %s", row["obligation_id"], log_safe_gateway_error(row["platform"], send_err))
                 result = None
             with _log_suppressed(logging.DEBUG, "delivery ledger update failed", exc_info=True):
                 if result is not None and getattr(result, "success", False):
@@ -401,7 +405,10 @@ class GatewayStartupMixin:
                     redelivered += 1
                     logger.info(
                         "Redelivered recovered final response to %s:%s (obligation %s, attempt %d)",
-                        row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
+                        row["platform"],
+                        log_safe_gateway_identity(row["platform"], row["chat_id"]),
+                        row["obligation_id"],
+                        row["attempts"],
                     )
                 else:
                     await asyncio.to_thread(
@@ -505,11 +512,15 @@ class GatewayStartupMixin:
             if self._is_user_authorized_for_source(source):
                 return True
             logger.warning(
-                "Skipping auto-resume for %s: session owner is no "
-                "longer authorized under the current allowlist", session_key,
+                "Skipping auto-resume for %s: session owner is no longer authorized under the current allowlist",
+                session_key_for_log(session_key),
             )
         except Exception as exc:
-            logger.warning("Skipping auto-resume for %s: authorization check failed: %s", session_key, exc)
+            logger.warning(
+                "Skipping auto-resume for %s: authorization check failed: %s",
+                session_key_for_log(session_key),
+                session_error_for_log(session_key, exc),
+            )
         return False
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
@@ -535,7 +546,8 @@ class GatewayStartupMixin:
             adapter = self._adapter_for_source(source)
             if adapter is None:
                 logger.debug(
-                    "Skipping auto-resume for %s: adapter not ready for %s", entry.session_key,
+                    "Skipping auto-resume for %s: adapter not ready for %s",
+                    session_key_for_log(entry.session_key),
                     getattr(source.platform, "value", source.platform),
                 )
                 continue
@@ -1544,9 +1556,12 @@ class GatewayStartupMixin:
             internal=True,
         )
         logger.info(
-            "Handoff: dispatching synthetic turn for CLI session %s → %s "
-            "(home=%s, thread=%s, session_key=%s)",
-            cli_session_id, dest.platform_name, dest.home.chat_id, dest.effective_thread_id, session_key,
+            "Handoff: dispatching synthetic turn for CLI session %s → %s (home=%s, thread=%s, session_key=%s)",
+            cli_session_id,
+            dest.platform_name,
+            log_safe_gateway_identity(dest.platform_name, dest.home.chat_id),
+            log_safe_gateway_identity(dest.platform_name, dest.effective_thread_id),
+            session_key_for_log(session_key),
         )
         # Inline _handle_message keeps success/failure observable (handle_message would detach it).
         response_text = await self._handle_message(synthetic_event)
@@ -1561,6 +1576,6 @@ class GatewayStartupMixin:
                 dest.platform, str(dest.home.chat_id), response_text, send_metadata,
             )
         except Exception as exc:
-            raise RuntimeError(f"adapter.send failed: {exc}") from exc
+            raise RuntimeError(f"adapter.send failed: {log_safe_gateway_error(dest.platform, exc)}") from exc
         if not getattr(result, "success", True):
-            raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
+            raise RuntimeError(f"adapter.send failed: {log_safe_gateway_error(dest.platform, _send_error(result))}")

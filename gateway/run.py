@@ -713,7 +713,7 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
-def _approval_send_outcome(future, timeout: float) -> str:
+def _approval_send_outcome(future, timeout: float, *, platform=None) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
     ``ambiguous`` = future timed out but the card may have posted: keep the registration, do NOT re-send.
@@ -726,7 +726,7 @@ def _approval_send_outcome(future, timeout: float) -> str:
     except concurrent.futures.TimeoutError:
         return "ambiguous"
     except Exception as exc:
-        logger.warning("Prompt send failed: %s", exc)
+        logger.warning("Prompt send failed: %s", log_safe_gateway_error(platform, exc))
         return "failed"
     if getattr(result, "success", False):
         return "sent"
@@ -754,26 +754,26 @@ def _approval_send_outcome(future, timeout: float) -> str:
         # decline classification because an ambiguous result is a transport
         # outcome, not an authorization one, and this lane has three verdicts
         # rather than the boolean the shared helper answers.
-        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", _raw.get("error"))
+        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", log_safe_gateway_error(platform, _raw.get("error")))
         return "ambiguous"
     if declined_send(result):
         # Both shapes, one classifier: a structured body, or the uniform
         # decline sentence from an older connector.
         logger.warning(
             "Prompt send DECLINED by connector egress guard: %s",
-            getattr(result, "error", None),
+            log_safe_gateway_error(platform, getattr(result, "error", None)),
         )
         return "declined"
-    logger.warning("Prompt send failed: %s", getattr(result, "error", None) or "unknown error")
+    logger.warning("Prompt send failed: %s", log_safe_gateway_error(platform, getattr(result, "error", None) or "unknown error"))
     return "failed"
 
 
-def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
+def _clarify_send_disposition(fut, *, session_key: str, clarify_mod, platform=None) -> "str | None":
     """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``.
 
     Only a DEFINITIVE failure tears down the registration; ``ambiguous`` (card may have posted) stays armed
     and proceeds to the bounded wait, whose response timeout covers a lost card."""
-    outcome = _approval_send_outcome(fut, timeout=15)
+    outcome = _approval_send_outcome(fut, timeout=15, platform=platform)
     if outcome == "declined":
         # P5(b): a connector DECLINE is MORE definitive than a failure — the
         # destination was authorized and refused, so the card cannot arrive and
@@ -798,9 +798,9 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
     return None
 
 
-def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> str:
+def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod, platform=None) -> str:
     """Resolve a clarify prompt: send disposition, then the bounded wait."""
-    abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod)
+    abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod, platform=platform)
     if abort is not None:
         return abort
     timeout = clarify_mod.get_clarify_timeout()
@@ -1398,6 +1398,10 @@ _TOOL_MEDIA_RE = re.compile(
 
 
 # Shared with cron delivery and gateway background tasks; canonical names live in gateway.media_repair.
+from gateway.log_redaction import (
+    log_safe_gateway_error, log_safe_gateway_exc_info, log_safe_gateway_identity,
+    session_exc_info_for_log, session_key_for_log,
+)
 from gateway.media_repair import tool_name_by_call_id as _tool_name_by_call_id  # noqa: E402
 
 
@@ -4035,7 +4039,11 @@ class GatewayRunner(
         try:
             cached_sources[session_key] = dataclasses.replace(source)
         except Exception:
-            logger.debug("Failed to cache live session source for %s", session_key, exc_info=True)
+            logger.debug(
+                "Failed to cache live session source for %s",
+                session_key_for_log(session_key),
+                exc_info=session_exc_info_for_log(session_key),
+            )
             return
         try:
             cached_sources.move_to_end(session_key)
@@ -4339,7 +4347,8 @@ class GatewayRunner(
         except Exception:
             logger.warning(
                 "Profile route matching failed for %s/%s, falling back to default",
-                source.platform, source.chat_id, exc_info=True)
+                source.platform, log_safe_gateway_identity(source.platform, source.chat_id),
+                exc_info=log_safe_gateway_exc_info(source.platform))
             return None
         if matched:
             try:
@@ -4357,8 +4366,11 @@ class GatewayRunner(
             return matched.profile
         logger.debug(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
-            source.platform.value, source.chat_id,
-            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None))
+            source.platform.value,
+            log_safe_gateway_identity(source.platform, source.chat_id),
+            log_safe_gateway_identity(source.platform, getattr(source, "thread_id", None)),
+            log_safe_gateway_identity(source.platform, getattr(source, "parent_chat_id", None)),
+        )
         return None
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -4376,20 +4388,25 @@ class GatewayRunner(
             profile_dir = get_profile_dir(name)
             if explicit_profile and not profile_exists(name):
                 logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
-                    explicit_profile, source.platform.value, source.chat_id,
-                    getattr(source, "guild_id", None))
+                    "Profile %r does not exist for source %s/%s (guild_id=%s), falling back to global HERMES_HOME",
+                    explicit_profile,
+                    source.platform.value,
+                    log_safe_gateway_identity(source.platform, source.chat_id),
+                    log_safe_gateway_identity(source.platform, getattr(source, "guild_id", None)),
+                )
                 return get_hermes_home()
             return profile_dir
         except ProfileRouteRejected:
             raise
         except Exception:
             logger.warning(
-                "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
-                "falling back to global HERMES_HOME: %s",
-                source.platform.value, source.chat_id, getattr(source, "guild_id", None),
-                explicit_profile or "(no profile)", exc_info=True)
+                "Failed to resolve profile directory for source %s/%s (guild_id=%s), falling back to global HERMES_HOME: %s",
+                source.platform.value,
+                log_safe_gateway_identity(source.platform, source.chat_id),
+                log_safe_gateway_identity(source.platform, getattr(source, "guild_id", None)),
+                explicit_profile or "(no profile)",
+                exc_info=log_safe_gateway_exc_info(source.platform),
+            )
             return get_hermes_home()
 
     @dataclasses.dataclass

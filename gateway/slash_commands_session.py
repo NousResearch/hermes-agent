@@ -16,6 +16,7 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
+from gateway.log_redaction import session_error_for_log, session_key_for_log
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -130,11 +131,11 @@ class GatewaySessionCommandsMixin:
             logger.warning(
                 "Agent resource cleanup for session %s exceeded %ss during /new reset; proceeding with "
                 "reset (the worker thread is left to finish on its own). (#35994)",
-                session_key, _RESET_CLEANUP_TIMEOUT_S)
+                session_key_for_log(session_key), _RESET_CLEANUP_TIMEOUT_S)
         except Exception as cleanup_exc:
             logger.warning(
                 "Agent resource cleanup for session %s failed during /new reset: %s (#35994)",
-                session_key, cleanup_exc)
+                session_key_for_log(session_key), session_error_for_log(session_key, cleanup_exc))
 
     async def _fire_session_reset_hooks(self, source: SessionSource, session_key: str, old_sid,
                                         new_sid) -> None:

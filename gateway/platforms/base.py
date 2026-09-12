@@ -440,6 +440,11 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource, build_session_key
+from gateway.log_redaction import (
+    log_safe_gateway_error, log_safe_gateway_exc_info, log_safe_gateway_identity,
+    log_safe_gateway_payload,
+    session_key_for_log,
+)
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -2087,7 +2092,7 @@ class BasePlatformAdapter(ABC):
             logged.add((self.platform.value, context))
             (logger.warning if first else logger.debug)(
                 "Failed to write runtime status (%s) for %s: %s" + (" (further failures at debug level)" if first else ""),
-                context, self.platform.value, exc)
+                context, self.platform.value, log_safe_gateway_error(self.platform, exc))
 
     async def _notify_fatal_error(self) -> None:
         handler = self._fatal_error_handler
@@ -2172,7 +2177,7 @@ class BasePlatformAdapter(ABC):
             factories = get_plugin_manager().get_platform_handler_factories(
                 getattr(self.platform, "value", str(self.platform)))
         except Exception as e:  # pragma: no cover - defensive
-            logger.warning("[%s] Could not load plugin handler factories: %s", self.name, e)
+            logger.warning("[%s] Could not load plugin handler factories: %s", self.name, log_safe_gateway_error(self.platform, e))
             return
         for factory, plugin_name in factories:
             try:
@@ -2180,7 +2185,7 @@ class BasePlatformAdapter(ABC):
                 logger.info("[%s] Wired native handlers from plugin '%s'", self.name, plugin_name)
             except Exception as exc:
                 logger.error("[%s] Plugin '%s' handler factory raised: %s", self.name, plugin_name,
-                             exc, exc_info=True)
+                             log_safe_gateway_error(self.platform, exc), exc_info=log_safe_gateway_exc_info(self.platform))
 
     @property
     def name(self) -> str:
@@ -2219,13 +2224,13 @@ class BasePlatformAdapter(ABC):
             recovered = recover(source)
             if recovered is None or str(recovered) == str(source.thread_id or ""):
                 return
-        except Exception:
-            logger.debug("topic recovery hook failed", exc_info=True)
+        except Exception as exc:
+            logger.debug("topic recovery hook failed (error_type=%s)", type(exc).__name__, exc_info=log_safe_gateway_exc_info(self.platform))
             return
         try:
             event.source = dataclasses.replace(source, thread_id=str(recovered))
-        except Exception:
-            logger.debug("topic recovery rewrite failed", exc_info=True)
+        except Exception as exc:
+            logger.debug("topic recovery rewrite failed (error_type=%s)", type(exc).__name__, exc_info=log_safe_gateway_exc_info(self.platform))
 
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
@@ -2260,14 +2265,14 @@ class BasePlatformAdapter(ABC):
             extra["thread_id"] = thread_id
         try:
             result = self._authorization_check(user_id, chat_type, chat_id, **extra)
-        except Exception:
-            logger.warning("[%s] Authorization check raised for user %s; treating as unknown",
-                           self.name, user_id, exc_info=True)
+        except Exception as exc:
+            logger.warning("[%s] Authorization check raised for user %s; treating as unknown (error_type=%s)",
+                           self.name, log_safe_gateway_identity(self.platform, user_id), type(exc).__name__, exc_info=log_safe_gateway_exc_info(self.platform))
             return None
         if result is True or result is False:
             return result
         logger.warning("[%s] Authorization check returned %s for user %s; treating as unknown",
-                       self.name, type(result).__name__, user_id)
+                       self.name, type(result).__name__, log_safe_gateway_identity(self.platform, user_id))
         return None
 
     def set_session_store(self, session_store: Any) -> None:
@@ -2348,7 +2353,7 @@ class BasePlatformAdapter(ABC):
         except TranscriptReadError:
             logger.warning(
                 "Transcript read failed for session %s; media dedup runs "
-                "with no history this turn (#100788)", session_key,
+                "with no history this turn (#100788)", session_key_for_log(session_key),
             )
             return None
         except Exception:
@@ -2377,7 +2382,7 @@ class BasePlatformAdapter(ABC):
         def _fail_open(reason: str, *, exc_info: bool = False) -> None:
             logger.warning(
                 "[%s] " + reason + " %s; delivering bare local file path(s) without history dedup",
-                self.name, session_key, exc_info=exc_info)
+                self.name, session_key_for_log(session_key), exc_info=log_safe_gateway_exc_info(self.platform, exc_info))
         admission = _HISTORY_MEDIA_LOOKUP_ADMISSION
         if not admission.acquire(blocking=False):
             _fail_open("Media-delivery history lookup capacity exhausted for")
@@ -2475,7 +2480,7 @@ class BasePlatformAdapter(ABC):
                 await asyncio.sleep(max(1, int(ttl_seconds)))
                 await self.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
-                logger.debug("[%s] Ephemeral delete failed for %s/%s: %s", self.name, chat_id, message_id, e)
+                logger.debug("[%s] Ephemeral delete failed for %s/%s: %s", self.name, log_safe_gateway_identity(self.platform, chat_id), log_safe_gateway_identity(self.platform, message_id), log_safe_gateway_error(self.platform, e))
         coro = _run_delete()
         try:
             asyncio.create_task(coro)
@@ -2613,7 +2618,7 @@ class BasePlatformAdapter(ABC):
                 await asyncio.sleep(human_delay)
             try:
                 logger.info("[%s] Sending image: %s (alt=%s)", self.name,
-                            safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
+                            log_safe_gateway_payload(self.platform, safe_url_for_log(image_url)), log_safe_gateway_payload(self.platform, alt_text[:30] if alt_text else ""))
                 if image_url.startswith("file://"):
                     sender, url_kw = self.send_image_file, {"image_path": _unquote(image_url[7:])}
                 elif self._is_animation_url(image_url):
@@ -2623,11 +2628,11 @@ class BasePlatformAdapter(ABC):
                 img_result = await sender(
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
-                    logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    logger.error("[%s] Failed to send image: %s", self.name, log_safe_gateway_error(self.platform, img_result.error))
                 else:
                     delivered = True
             except Exception as img_err:
-                logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                logger.error("[%s] Error sending image: %s", self.name, log_safe_gateway_error(self.platform, img_err), exc_info=log_safe_gateway_exc_info(self.platform))
         if not images:
             return SendResult(success=False, error="no images to send")
         return SendResult(
@@ -2696,7 +2701,7 @@ class BasePlatformAdapter(ABC):
         """Shared default for send_voice/send_video/send_document/send_image_file. The local path is
         logged but NEVER echoed into chat (host layout leak); only the caller's ``file_name`` is
         shown."""
-        logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
+        logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, log_safe_gateway_payload(self.platform, path))
         text = _media_failure_text(kind, file_name)
         text = f"{caption}\n{text}" if caption else text
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
@@ -2795,7 +2800,7 @@ class BasePlatformAdapter(ABC):
         except Exception as notify_err:
             problem = notify_err
         if problem is not None:
-            logger.debug("[%s] Could not send media-delivery-failure notice: %s", self.name, problem)
+            logger.debug("[%s] Could not send media-delivery-failure notice: %s", self.name, log_safe_gateway_error(self.platform, problem))
 
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None,
@@ -2966,7 +2971,7 @@ class BasePlatformAdapter(ABC):
                     except asyncio.TimeoutError:
                         pass  # Slow network — abandon this tick, stay on schedule.
                     except Exception as typing_err:
-                        logger.debug("[%s] send_typing error (non-fatal): %s", self.name, typing_err)
+                        logger.debug("[%s] send_typing error (non-fatal): %s", self.name, log_safe_gateway_error(self.platform, typing_err))
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
@@ -3041,12 +3046,12 @@ class BasePlatformAdapter(ABC):
             # Same-or-newer generation: chain so both fire in registration order.
             if callable(existing_cb) and (
                 existing_gen is None or generation is None or int(existing_gen) == int(generation)):
-                callback = self._chain_callbacks(existing_cb, callback)
+                callback = self._chain_callbacks(existing_cb, callback, platform=self.platform)
         self._post_delivery_callbacks[session_key] = (
             callback if generation is None else (int(generation), callback))
 
     @staticmethod
-    def _chain_callbacks(*callbacks: Callable) -> Callable[[], Awaitable[None]]:
+    def _chain_callbacks(*callbacks: Callable, platform=None) -> Callable[[], Awaitable[None]]:
         """Async wrapper running ``callbacks`` in order with per-callback exception isolation;
         async so coroutines returned by async hooks are awaited, not dropped."""
         async def _chained() -> None:
@@ -3055,8 +3060,9 @@ class BasePlatformAdapter(ABC):
                     _result = _cb()
                     if inspect.isawaitable(_result):
                         await _result
-                except Exception:
-                    logger.debug("Post-delivery callback failed", exc_info=True)
+                except Exception as exc:
+                    logger.debug("Post-delivery callback failed: %s", log_safe_gateway_error(platform, exc),
+                                 exc_info=log_safe_gateway_exc_info(platform))
         return _chained
 
     def pop_post_delivery_callback(
@@ -3110,7 +3116,7 @@ class BasePlatformAdapter(ABC):
         try:
             await hook(*args, **kwargs)
         except Exception as e:
-            logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+            logger.warning("[%s] %s hook failed: %s", self.name, hook_name, log_safe_gateway_error(self.platform, e))
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
@@ -3159,7 +3165,7 @@ class BasePlatformAdapter(ABC):
             return
         if log_cmd is not None:
             logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
-                        len(text), event.source.chat_id)
+                        len(text), log_safe_gateway_identity(self.platform, event.source.chat_id))
         result = await self._send_with_retry(
             chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
             metadata=_mark_notify_metadata(thread_meta))
@@ -3223,13 +3229,13 @@ class BasePlatformAdapter(ABC):
                     logger.error(
                         "[%s] Server asked to retry after %.0fs (> %.0fs inline cap); returning "
                         "typed failure for redelivery instead of sleeping: %s",
-                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
+                        self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, log_safe_gateway_error(self.platform, error_str),
                     )
                     return result
                 delay = backoff + random.uniform(0, 1)
                 server_retry_after = None
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
-                               attempt, max_retries, delay, error_str)
+                               attempt, max_retries, delay, log_safe_gateway_error(self.platform, error_str))
                 await asyncio.sleep(delay)
                 result = await _send(content)
                 if result.success:
@@ -3263,25 +3269,25 @@ class BasePlatformAdapter(ABC):
                     logger.error(
                         "[%s] Rate-limited send exhausted retries; returning typed failure "
                         "for redelivery (no notice sent inside active flood penalty): %s",
-                        self.name, error_str,
+                        self.name, log_safe_gateway_error(self.platform, error_str),
                     )
                     return result
-                logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, log_safe_gateway_error(self.platform, error_str))
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent.")
                 try:
                     await _send(notice)
                 except Exception as notify_err:
-                    logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
+                    logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, log_safe_gateway_error(self.platform, notify_err))
                 return result
         # Non-network / post-retry formatting failure: try plain text as fallback. A
         # rate-limited error never reaches here: it classifies as network above and the
         # loop only breaks on a non-transient, non-rate-limited error.
-        logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
+        logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, log_safe_gateway_error(self.platform, error_str))
         fallback_result = await _send(f"(Response formatting failed, plain text:)\n\n{content[:3500]}")
         if not fallback_result.success:
-            logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
+            logger.error("[%s] Fallback send also failed: %s", self.name, log_safe_gateway_error(self.platform, fallback_result.error))
         return fallback_result
 
     @staticmethod
@@ -3306,7 +3312,7 @@ class BasePlatformAdapter(ABC):
             and not event.is_command() and bool((event.text or "").strip()))
         if result:
             logger.debug("[%s] Queue-text debounce candidate accepted: session=%s text_len=%d",
-                         self.name, getattr(event, "session_key", "?"), len(event.text or ""))
+                         self.name, session_key_for_log(getattr(event, "session_key", "?")), len(event.text or ""))
         return result
 
     def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
@@ -3424,7 +3430,7 @@ class BasePlatformAdapter(ABC):
         if session_key not in self._active_sessions or not self._session_task_is_stale(session_key):
             return False
         logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
-                       self.name, session_key)
+                       self.name, session_key_for_log(session_key))
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
@@ -3466,7 +3472,7 @@ class BasePlatformAdapter(ABC):
         stall."""
         task = self._session_tasks.pop(session_key, None)
         if task is not None and not task.done():
-            logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key)
+            logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key_for_log(session_key))
             self._expected_cancelled_tasks.add(task)
             task.cancel()
             try:
@@ -3476,10 +3482,10 @@ class BasePlatformAdapter(ABC):
             except asyncio.TimeoutError:
                 logger.warning("[%s] Cancelled task for %s did not exit within 5s; "
                                "unblocking dispatch and letting the task unwind in the background",
-                               self.name, session_key)
-            except Exception:
-                logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
-                             session_key, exc_info=True)
+                               self.name, session_key_for_log(session_key))
+            except Exception as exc:
+                logger.debug("[%s] Session cancellation raised while unwinding %s (error_type=%s)", self.name,
+                             session_key_for_log(session_key), type(exc).__name__, exc_info=log_safe_gateway_exc_info(self.platform))
         if discard_pending:
             self._pending_messages.pop(session_key, None)
             self._discard_text_debounce(session_key)
@@ -3500,7 +3506,7 @@ class BasePlatformAdapter(ABC):
         """Dispatch a reset-like bypass command (/stop, /new, /reset): keep a guard installed while
         the runner handles it (follow-ups stay queued), cancel the old task AFTER the response,
         drain once."""
-        logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
+        logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key_for_log(session_key))
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
@@ -3536,7 +3542,7 @@ class BasePlatformAdapter(ABC):
         session_key = self._event_session_key(event)
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
-                           expected_session_key, session_key)
+                           session_key_for_log(expected_session_key), session_key_for_log(session_key))
             return
         # On-entry self-heal: clear a guard whose owner task already exited.
         if session_key in self._active_sessions:
@@ -3567,10 +3573,10 @@ class BasePlatformAdapter(ABC):
                     await self._dispatch_active_session_command(event, session_key, cmd)
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
-                                 self.name, cmd, session_key)
+                                 self.name, cmd, session_key_for_log(session_key))
                     await self._dispatch_inline_reply(event)
             except Exception as e:
-                logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
+                logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, log_safe_gateway_error(self.platform, e), exc_info=log_safe_gateway_exc_info(self.platform))
             return
         # Clarify bypass: while blocked on clarify_tool the next message must reach the
         # text-intercept so numeric/exact/"Other" answers resolve it and unblock the agent.
@@ -3586,36 +3592,36 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 _has_text_clarify = False
             if _has_text_clarify:
-                logger.debug("[%s] Routing message to clarify text-intercept for %s", self.name, session_key)
+                logger.debug("[%s] Routing message to clarify text-intercept for %s", self.name, session_key_for_log(session_key))
                 try:
                     await self._dispatch_inline_reply(event)
                 except Exception as e:
-                    logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)
+                    logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, log_safe_gateway_error(self.platform, e), exc_info=log_safe_gateway_exc_info(self.platform))
                 return
         if self._busy_session_handler is not None:
             try:
                 if await self._busy_session_handler(event, session_key):
                     return
             except Exception as e:
-                logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+                logger.error("[%s] Busy-session handler failed: %s", self.name, log_safe_gateway_error(self.platform, e), exc_info=log_safe_gateway_exc_info(self.platform))
         # Without a runner FIFO, do not merge a wake into an occupied human slot
         # (or collapse distinct wakes into one turn). Its caller can retry admission.
         if event.internal and session_key in self._pending_messages:
             return
         # Photo bursts/albums: queue without interrupting; they run after the current task.
         if event.message_type == MessageType.PHOTO:
-            logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
+            logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key_for_log(session_key))
             merge_pending_message_event(self._pending_messages, session_key, event)
             event._gateway_accepted = True
             return
         if self._is_queue_text_debounce_candidate(event):
             logger.debug("[%s] New text message while session %s is active — "
                          "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,
-                         session_key, self._busy_text_debounce_seconds)
+                         session_key_for_log(session_key), self._busy_text_debounce_seconds)
             await self._queue_text_debounce(session_key, event)
         else:
             logger.debug("[%s] New message while session %s is active — queuing follow-up "
-                         "(no interrupt, will cascade after current turn)", self.name, session_key)
+                         "(no interrupt, will cascade after current turn)", self.name, session_key_for_log(session_key))
             merge_pending_message_event(self._pending_messages, session_key, event,
                                         merge_text=event.message_type == MessageType.TEXT)
             event._gateway_accepted = True
@@ -3654,7 +3660,7 @@ class BasePlatformAdapter(ABC):
                     raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
                     paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
         except Exception as tts_err:
-            logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
+            logger.warning("[%s] Auto-TTS failed: %s", self.name, log_safe_gateway_error(self.platform, tts_err))
         return paths, requested_path
 
     def _wants_auto_tts(self, event: MessageEvent, session_key: str, interrupt_event: asyncio.Event,
@@ -3710,8 +3716,8 @@ class BasePlatformAdapter(ABC):
                 adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
             await asyncio.to_thread(mark_attempting, obligation_id)
             return obligation_id
-        except Exception:
-            logger.debug("delivery ledger record failed", exc_info=True)
+        except Exception as exc:
+            logger.debug("delivery ledger record failed (error_type=%s)", type(exc).__name__, exc_info=log_safe_gateway_exc_info(self.platform))
             return None
 
     async def _finalize_delivery_obligation(
@@ -3741,8 +3747,8 @@ class BasePlatformAdapter(ABC):
                 if callable(schedule):
                     schedule(event.source.platform,
                              profile=getattr(delivery_adapter, "_owner_profile", None))
-        except Exception:
-            logger.debug("delivery ledger update failed", exc_info=True)
+        except Exception as exc:
+            logger.debug("delivery ledger update failed (error_type=%s)", type(exc).__name__, exc_info=log_safe_gateway_exc_info(self.platform))
 
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
@@ -3772,13 +3778,13 @@ class BasePlatformAdapter(ABC):
                 result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
             elif ext in _VIDEO_EXTS:
                 if media_tag:
-                    logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
+                    logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, log_safe_gateway_identity(self.platform, chat_id))
                 result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
             else:
                 result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
-                               "media" if media_tag else "local file", ext, result.error)
+                               "media" if media_tag else "local file", ext, log_safe_gateway_error(self.platform, result.error))
                 await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
             return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
@@ -3793,9 +3799,9 @@ class BasePlatformAdapter(ABC):
             except Exception as err:
                 record_delivery(SendResult(success=False, error=str(err)))
                 if media_tag:
-                    logger.warning("[%s] Error sending media: %s", self.name, err)
+                    logger.warning("[%s] Error sending media: %s", self.name, log_safe_gateway_error(self.platform, err))
                 else:
-                    logger.error("[%s] Error sending local file %s: %s", self.name, path, err)
+                    logger.error("[%s] Error sending local file %s: %s", self.name, log_safe_gateway_payload(self.platform, path), log_safe_gateway_error(self.platform, err))
 
     async def _send_image_batch(
         self, event: MessageEvent, images: list, metadata: Dict[str, Any], human_delay: float,
@@ -3807,7 +3813,7 @@ class BasePlatformAdapter(ABC):
             result = await self.send_multiple_images(
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
-            logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+            logger.warning("[%s] Error batching images: %s", self.name, log_safe_gateway_error(self.platform, batch_err), exc_info=log_safe_gateway_exc_info(self.platform))
             record_delivery(SendResult(success=False, error=str(batch_err)))
             return
         record_delivery(result)
@@ -3825,7 +3831,7 @@ class BasePlatformAdapter(ABC):
         (an ephemeral delete must go to the same transport)."""
         delivery_adapter = self._final_delivery_adapter(event.source)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
-                    len(text_content), event.source.chat_id)
+                    len(text_content), log_safe_gateway_identity(self.platform, event.source.chat_id))
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         result = await delivery_adapter._send_with_retry(
@@ -3858,7 +3864,7 @@ class BasePlatformAdapter(ABC):
                 "Try again or use /reset to start a fresh session."), metadata=_thread_metadata)
         except Exception as notify_err:
             logger.error(
-                "[%s] Failed to send error notification to user: %s", self.name, notify_err, exc_info=True)
+                "[%s] Failed to send error notification to user: %s", self.name, log_safe_gateway_error(self.platform, notify_err), exc_info=log_safe_gateway_exc_info(self.platform))
         return _thread_metadata
 
     async def _deliver_attachments(self, event: MessageEvent, extracted: "_ExtractedResponse",
@@ -3880,7 +3886,7 @@ class BasePlatformAdapter(ABC):
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
                          "for %s (empty after extract, recovery yielded nothing).", self.name,
-                         len(extracted.pre_extract), event.source.chat_id)
+                         len(extracted.pre_extract), log_safe_gateway_identity(self.platform, event.source.chat_id))
 
     def _start_typing_refresh(self, event: MessageEvent, interrupt_event: asyncio.Event,
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
@@ -3935,7 +3941,7 @@ class BasePlatformAdapter(ABC):
                 logger.warning("[%s] response_delivery_recovered: extract pipeline "
                                "reduced a non-empty response (%d chars) to empty with "
                                "no attachment; delivering recovered original to %s", self.name,
-                               len(pre_extract), event.source.chat_id)
+                               len(pre_extract), log_safe_gateway_identity(self.platform, event.source.chat_id))
                 text_content = _recovered
         return _ExtractedResponse(
             text_content=text_content, images=images, media_files=media_files,
@@ -4000,10 +4006,10 @@ class BasePlatformAdapter(ABC):
             # None/empty is normal (streamed/queued). Suppress a stale response after an interrupt.
             if response and interrupt_event.is_set() and session_key in self._pending_messages:
                 logger.info("[%s] Suppressing stale response for interrupted session %s", self.name,
-                            session_key)
+                            session_key_for_log(session_key))
                 response = None
             if not response:
-                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                logger.debug("[%s] Handler returned empty/None response for %s", self.name, log_safe_gateway_identity(self.platform, event.source.chat_id))
             else:
                 extracted = await self._extract_response_content(
                     response, event, session_key, is_ephemeral_response=is_ephemeral_response)
@@ -4061,7 +4067,7 @@ class BasePlatformAdapter(ABC):
             raise
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
-            logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+            logger.error("[%s] Error handling message: %s", self.name, log_safe_gateway_error(self.platform, e), exc_info=log_safe_gateway_exc_info(self.platform))
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
@@ -4180,9 +4186,9 @@ class BasePlatformAdapter(ABC):
                     SessionSource(**fields), adapter_profile=owner_profile) or owner_profile
             except ProfileRouteRejected:
                 profile_route_rejected = True
-            except Exception:
-                logger.warning("Profile resolution failed for %s/%s, defaulting to active profile",
-                               self.platform, chat_id, exc_info=True)
+            except Exception as exc:
+                logger.warning("Profile resolution failed for %s/%s, defaulting to active profile (error_type=%s)",
+                               self.platform, log_safe_gateway_identity(self.platform, chat_id), type(exc).__name__, exc_info=log_safe_gateway_exc_info(self.platform))
         source = SessionSource(**fields, profile=profile, role_authorized=role_authorized,
                                auto_thread_created=auto_thread_created,
                                auto_thread_initial_name=auto_thread_initial_name)

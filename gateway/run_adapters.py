@@ -19,7 +19,12 @@ import weakref as _weakref
 from agent.async_utils import consume_detached_task_result
 from contextvars import Context
 from datetime import datetime, timedelta, timezone
-from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, Platform, platform_binds_port as _platform_binds_port
+from gateway.config import (
+    SHARED_LISTENER_MIRROR_PLATFORMS,
+    Platform,
+    platform_binds_port as _platform_binds_port,
+)
+from gateway.log_redaction import log_safe_gateway_error, log_safe_gateway_exc_info
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
@@ -476,9 +481,12 @@ class GatewayAdapterLifecycleMixin:
                 # Leave the row 'running' so the next start's reclaim marks it failed with a clear reason.
                 raise
             except Exception as exc:
-                logger.warning("Handoff for session %s failed: %s", session_id, exc, exc_info=True)
-                with _log_suppressed(logging.DEBUG, "Could not record handoff failure", exc_info=True):
-                    await session_db.fail_handoff(session_id, str(exc))
+                platform = row.get("handoff_platform") or row.get("platform")
+                safe_error = log_safe_gateway_error(platform, exc)
+                logger.warning("Handoff for session %s failed: %s", session_id, safe_error,
+                               exc_info=log_safe_gateway_exc_info(platform))
+                with _log_suppressed(logging.DEBUG, "Could not record handoff failure", exc_info=True, platform=platform):
+                    await session_db.fail_handoff(session_id, safe_error)
             finally:
                 inflight.pop(session_id, None)
 

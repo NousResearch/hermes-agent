@@ -17,6 +17,9 @@ from difflib import SequenceMatcher
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
+from gateway.log_redaction import (
+    log_safe_gateway_identity,
+)
 from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
@@ -298,7 +301,11 @@ class GatewayVoiceMixin:
                 or (voice_mode is None and adapter_auto_tts)):
             logger.debug(
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
-                voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)
+                voice_mode,
+                adapter_auto_tts,
+                log_safe_gateway_identity(event.source.platform, chat_id),
+                event.source.platform.value,
+            )
             return False
         # Dedup: agent already called the TTS tool in THIS turn (from the last user message on).
         start = next((i for i, m in reversed(list(enumerate(agent_messages)))

@@ -21,6 +21,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from gateway.log_redaction import (
+    log_safe_gateway_error,
+    log_safe_gateway_exc_info,
+    session_key_for_log,
+)
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -974,17 +979,16 @@ class TurnRunner:
             # a stale "dead" verdict must never be applied to a different (possibly live) agent.
             if sid_mismatch and dead and cached_sid == peek_sid:
                 logger.info(
-                    "Agent cache invalidated for session %s: "
-                    "cached agent's session_id %s is ended in "
-                    "state.db (stale self-heal artifact, "
-                    "#54878 x #54947) — discarding instead of "
-                    "reusing across the routing recovery", ctx.session_key, cached_sid,
+                    "Agent cache invalidated for session %s: cached agent's session_id %s is ended in state.db (stale self-heal artifact, #54878 x #54947) — discarding instead of reusing across the routing recovery",
+                    session_key_for_log(ctx.session_key),
+                    cached_sid,
                 )
             elif not sid_mismatch and cached_mc is not None and msg_count is not None and msg_count != cached_mc:
                 logger.info(
-                    "Agent cache invalidated for session %s: "
-                    "message_count changed (%s -> %s), "
-                    "possible cross-process write", ctx.session_key, cached_mc, msg_count,
+                    "Agent cache invalidated for session %s: message_count changed (%s -> %s), possible cross-process write",
+                    session_key_for_log(ctx.session_key),
+                    cached_mc,
+                    msg_count,
                 )
             else:
                 out.agent = cached[0]
@@ -995,7 +999,9 @@ class TurnRunner:
                 self._runner._init_cached_agent_for_turn(out.agent, ctx._interrupt_depth)
                 # Cached agent may have been created with old config.
                 out.agent.max_iterations = max_iterations
-                logger.debug("Reusing cached agent for session %s", ctx.session_key)
+                logger.debug(
+                    "Reusing cached agent for session %s", session_key_for_log(ctx.session_key)
+                )
                 out.reused = True
                 return out
             out.evicted = self._pop_cached_agent_for_eviction()
@@ -1074,7 +1080,11 @@ class TurnRunner:
                     # can skip the meaningless count comparison if the active session_id switches.
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
-            logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
+            logger.debug(
+                "Created new agent for session %s (sig=%s)",
+                session_key_for_log(ctx.session_key),
+                sig,
+            )
         return agent, found.reused
 
     # ── per-turn agent wiring ───────────────────────────────────────────────────────────────
@@ -1227,7 +1237,7 @@ class TurnRunner:
         except (TimeoutError, Exception) as err:
             if cancelled_flag is not None:
                 cancelled_flag["cancelled"] = True
-            logger.warning("%s boundary timed out or failed: %s", reason, err)
+            logger.warning("%s boundary timed out or failed: %s", reason, log_safe_gateway_error(getattr(self._ctx._status_adapter, "platform", None), err))
             return False
 
     def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False) -> str:
@@ -1262,7 +1272,7 @@ class TurnRunner:
             if callable(flush):
                 flush(timeout=3.0)
         except Exception:
-            logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
+            logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=log_safe_gateway_exc_info(getattr(ctx._status_adapter, "platform", None)))
         fut = self._schedule(
             ctx._status_adapter.send_clarify(
                 chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
@@ -1273,7 +1283,7 @@ class TurnRunner:
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves.
-        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod, platform=getattr(ctx._status_adapter, "platform", None))
         # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
         # timeout/cancellation strings start with '[' and must pass through untouched.
         if not (isinstance(response, str) and response.startswith("[")):
@@ -1285,11 +1295,11 @@ class TurnRunner:
                 try:
                     sc.request_reopen_seed()
                 except Exception:
-                    logger.debug("request_reopen_seed after clarify answer failed", exc_info=True)
+                    logger.debug("request_reopen_seed after clarify answer failed", exc_info=log_safe_gateway_exc_info(getattr(ctx._status_adapter, "platform", None)))
             try:
                 ctx._status_adapter.resume_typing_for_chat(ctx._status_chat_id)
             except Exception:
-                logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
+                logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=log_safe_gateway_exc_info(getattr(ctx._status_adapter, "platform", None)))
         return response
 
     def _approval_notify_sync(self, approval_data: dict) -> None:
@@ -1320,7 +1330,7 @@ class TurnRunner:
                 )
                 if fut is None:
                     raise RuntimeError("send_exec_approval: loop unavailable")
-                outcome = _approval_send_outcome(fut, timeout=15)
+                outcome = _approval_send_outcome(fut, timeout=15, platform=getattr(adapter, "platform", None))
                 if outcome == "sent":
                     return
                 if outcome == "ambiguous":
@@ -1365,7 +1375,7 @@ class TurnRunner:
                 # the destination the connector just refused.
                 raise
             except Exception as e:
-                logger.warning("Button-based approval failed, falling back to text: %s", e)
+                logger.warning("Button-based approval failed, falling back to text: %s", log_safe_gateway_error(getattr(adapter, "platform", None), e))
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
@@ -1378,7 +1388,7 @@ class TurnRunner:
             if fut is not None:
                 fut.result(timeout=15)
         except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+            logger.error("Failed to send approval request: %s", log_safe_gateway_error(getattr(adapter, "platform", None), e))
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 
@@ -1404,10 +1414,10 @@ class TurnRunner:
             selected = _select_cached_agent_history(agent_history, getattr(agent, "_session_messages", None))
             if selected is not agent_history:
                 logger.warning(
-                    "Persisted transcript lagged live cached history for "
-                    "session %s (disk=%d, memory=%d); preserving live "
-                    "conversation context (possible FTS write corruption)",
-                    ctx.session_key, len(agent_history), len(selected),
+                    "Persisted transcript lagged live cached history for session %s (disk=%d, memory=%d); preserving live conversation context (possible FTS write corruption)",
+                    session_key_for_log(ctx.session_key),
+                    len(agent_history),
+                    len(selected),
                 )
                 # The live history bypassed _build_gateway_agent_history's cleanup — re-apply the
                 # stale-confirmation expiry so a dangerous confirmation can't slip through.
@@ -1617,18 +1627,18 @@ class TurnRunner:
                 entry_session_id = getattr(entry, "session_id", None)
                 if not ctx._run_still_current():
                     logger.info(
-                        "Skipping session split sync for stale run %s — "
-                        "generation %s is no longer current",
-                        ctx.session_key or "?", ctx.run_generation,
+                        "Skipping session split sync for stale run %s — generation %s is no longer current",
+                        session_key_for_log(ctx.session_key or "?"),
+                        ctx.run_generation,
                     )
                 elif entry_session_id == agent_session_id:
                     persisted = True
                 elif entry_session_id != ctx.session_id:
                     logger.info(
-                        "Skipping session split sync for %s because the "
-                        "session binding moved from %s to %s before "
-                        "compression finished",
-                        ctx.session_key or "?", ctx.session_id, entry_session_id,
+                        "Skipping session split sync for %s because the session binding moved from %s to %s before compression finished",
+                        session_key_for_log(ctx.session_key or "?"),
+                        ctx.session_id,
+                        entry_session_id,
                     )
                 else:
                     entry.session_id = agent_session_id
@@ -1727,7 +1737,9 @@ class TurnRunner:
             )
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
-                model, runtime_kwargs.get("provider"), ctx.session_key or "",
+                model,
+                runtime_kwargs.get("provider"),
+                session_key_for_log(ctx.session_key or ""),
             )
         except Exception as exc:
             return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}

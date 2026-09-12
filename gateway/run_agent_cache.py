@@ -12,6 +12,9 @@ from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
+from gateway.log_redaction import (
+    session_key_for_log,
+)
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.run_shutdown import _log_suppressed
@@ -175,7 +178,9 @@ class GatewayAgentCacheMixin:
         self._session_state(session_key).conversation.model_override = override
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
+            session_key_for_log(session_key),
+            override.get("model"),
+            provider or "",
         )
 
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:
@@ -360,7 +365,9 @@ class GatewayAgentCacheMixin:
             if isinstance(store, dict):
                 store.pop(session_key, None)
         self._clear_session_boundary_security_state(session_key)
-        logger.debug("Cleared conversation scope for %s (%s)", session_key, reason)
+        logger.debug(
+            "Cleared conversation scope for %s (%s)", session_key_for_log(session_key), reason
+        )
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
         """Clear per-session control state that must not survive a boundary switch."""
@@ -403,7 +410,12 @@ class GatewayAgentCacheMixin:
         self._restore_pending_one_turn_model_override(session_key)
         generation = self._begin_session_run_generation(session_key)
         if reason:
-            logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)
+            logger.info(
+                "Invalidated run generation for %s → %d (%s)",
+                session_key_for_log(session_key),
+                generation,
+                reason,
+            )
         return generation
 
     def _is_session_run_current(self, session_key: str, generation: int) -> bool:

@@ -19,6 +19,8 @@ from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
 
+from gateway.log_redaction import session_error_for_log, session_key_for_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -826,7 +828,7 @@ class SessionStore(
         except Exception as exc:
             logger.warning(
                 "has_active_processes_fn raised during %s for %s; keeping session alive: %s",
-                context, session_key, exc,
+                context, session_key_for_log(session_key), session_error_for_log(session_key, exc),
             )
             return True
 
@@ -957,7 +959,7 @@ class SessionStore(
                     "gateway.session: routing key %r -> %s is ended in state.db but still live in "
                     "sessions.json; dropping stale entry and recovering/recreating the session "
                     "(#54878)",
-                    session_key, entry.session_id,
+                    session_key_for_log(session_key), entry.session_id,
                 )
             if stale_hit or reset_reason:
                 # Honour an explicit suspension/reset decision instead of silently reopening via recovery.
@@ -1128,7 +1130,7 @@ class SessionStore(
         if self._db_for_key(session_key) and old_entry.session_id:
             self._promote_session_reset(
                 session_key, old_entry.session_id, "session_switch",
-                log=lambda e: logger.debug("Session DB end_session failed: %s", e),
+                log=lambda e: logger.debug("Session DB end_session failed: %s", session_error_for_log(session_key, e)),
             )
         if self._db_for_key(session_key):
             self._reopen_session_row(

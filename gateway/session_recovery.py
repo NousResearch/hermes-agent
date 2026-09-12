@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 if TYPE_CHECKING:
     from gateway.session import SessionEntry, SessionSource
 
+from gateway.log_redaction import session_error_for_log, session_key_for_log
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.session")
 
@@ -173,7 +175,7 @@ class SessionRecoveryMixin:
                 chat_type=source.chat_type if allow_peer_fallback else None,
                 thread_id=source.thread_id)
         except Exception as exc:
-            logger.debug("Gateway session DB recovery failed for %s: %s", session_key, exc)
+            logger.debug("Gateway session DB recovery failed for %s: %s", session_key_for_log(session_key), session_error_for_log(session_key, exc))
             if raise_on_lookup_error:
                 raise
             return None
@@ -231,7 +233,7 @@ class SessionRecoveryMixin:
             requested_session_key=session_key, recovered=recovered):
             logger.warning(
                 "Gateway session DB recovery ignored %s for %s because the row belongs to a "
-                "different profile", recovered.get("session_key"), session_key)
+                "different profile", session_key_for_log(recovered.get("session_key")), session_key_for_log(session_key))
             return None, False
         entry = self._create_entry_from_recovered_row(
             row=recovered, session_key=session_key, source=source, now=now)
@@ -263,9 +265,9 @@ class SessionRecoveryMixin:
             self._db_for_key(session_key).reopen_session(session_id)
         except Exception as exc:
             if log_prefix:
-                logger.debug("%s: %s", log_prefix, exc)
+                logger.debug("%s: %s", log_prefix, session_error_for_log(session_key, exc))
             else:
-                logger.debug("Gateway session DB reopen failed for %s: %s", session_key, exc)
+                logger.debug("Gateway session DB reopen failed for %s: %s", session_key_for_log(session_key), session_error_for_log(session_key, exc))
 
     def _record_gateway_session_peer(
         self, session_id: str, session_key: str, source: Optional[SessionSource],
@@ -289,9 +291,9 @@ class SessionRecoveryMixin:
             try:  # older SessionDB without display_name/origin_json kwargs
                 recorder(session_id, **peer)
             except Exception as exc:
-                logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
+                logger.debug("Gateway session peer record failed for %s: %s", session_key_for_log(session_key), session_error_for_log(session_key, exc))
         except Exception as exc:
-            logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
+            logger.debug("Gateway session peer record failed for %s: %s", session_key_for_log(session_key), session_error_for_log(session_key, exc))
 
     def _adopt_legacy_slack_entry(self, source: SessionSource, session_key: str) -> None:
         """One-time migration of pre-workspace-scope Slack keys: MOVE (not copy) the legacy entry so
@@ -337,7 +339,7 @@ class SessionRecoveryMixin:
                 log=lambda e: logger.warning(
                     "Failed to end predecessor session row %s for %s%s: %s — the old row remains "
                     "open and may win restart recovery until the next successful peer refresh",
-                    end_session_id, session_key, during, e),
+                    end_session_id, session_key_for_log(session_key), during, session_error_for_log(session_key, e)),
             )
         if self._db_for_key(session_key) and create_kwargs:
             self._create_session_row(
@@ -345,7 +347,7 @@ class SessionRecoveryMixin:
                 log=lambda e: logger.warning(
                     "Failed to create session row %s for %s%s: %s — deferring to the "
                     "self-healing peer refresh on the next turn",
-                    create_kwargs.get("session_id"), session_key, during, e),
+                    create_kwargs.get("session_id"), session_key_for_log(session_key), during, session_error_for_log(session_key, e)),
             )
 
     @staticmethod

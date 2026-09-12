@@ -13,6 +13,9 @@ import time
 from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
+from gateway.log_redaction import (
+    log_safe_gateway_error, log_safe_gateway_exc_info, session_error_for_log, session_key_for_log,
+)
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -120,7 +123,7 @@ class GatewayGoalsMixin:
                 with self._profile_scope_for_source(source):
                     await self._heartbeat_poll_watch(watch, quick_key, source, session_id)
             except Exception as exc:
-                logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
+                logger.debug("heartbeat poll for %s failed: %s", session_key_for_log(quick_key), session_error_for_log(quick_key, exc))
 
     async def _heartbeat_poll_watch(self, watch, quick_key, source, session_id):
         await self._warm_goals_session_db("heartbeat poll")
@@ -212,7 +215,7 @@ class GatewayGoalsMixin:
         result = await adapter.send(source.chat_id, message, metadata=metadata)
         if result is not None and not getattr(result, "success", True):
             logger.warning(
-                "goal continuation: status send failed: %s", getattr(result, "error", "unknown error"),
+                "goal continuation: status send failed: %s", log_safe_gateway_error(source.platform, getattr(result, "error", "unknown error")),
             )
 
     async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
@@ -229,7 +232,7 @@ class GatewayGoalsMixin:
             try:
                 await self._send_goal_status_notice(source, message)
             except Exception as exc:
-                logger.warning("goal continuation: status send failed: %s", exc, exc_info=True)
+                logger.warning("goal continuation: status send failed: %s", log_safe_gateway_error(source.platform, exc), exc_info=log_safe_gateway_exc_info(source.platform))
 
         session_key = None
         with suppress(Exception):

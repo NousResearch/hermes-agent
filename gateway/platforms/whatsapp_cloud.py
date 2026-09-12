@@ -38,6 +38,7 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
 
+from gateway.log_redaction import session_key_for_log
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -47,6 +48,12 @@ from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _log_whatsapp_identifier(value: object) -> str:
+    """Correlator presence and length, without message IDs or media filenames."""
+    text = str(value or "")
+    return f"present(len={len(text)})" if text else "absent"
 
 
 DEFAULT_API_VERSION = "v20.0"
@@ -298,8 +305,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 continue
             try:
                 await getattr(obj, close)()
-            except Exception:
-                logger.exception("[whatsapp_cloud] %s failed", what)
+            except Exception as exc:
+                logger.warning("[whatsapp_cloud] %s failed (error_type=%s)", what, type(exc).__name__)
             setattr(self, attr, None)
         self._mark_disconnected()
 
@@ -322,11 +329,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             resp = await self._http_client.post(self._graph_url("messages"), headers=self._auth_headers(), json=payload)
         except Exception as exc:
-            logger.exception(fail_log)
+            logger.warning(fail_log + " (error_type=%s)", type(exc).__name__)
             return [], str(exc) or type(exc).__name__
         if resp.status_code != 200:
             error_msg = self._response_error(resp)
-            logger.warning(reject_log, resp.status_code, *reject_args, error_msg)
+            logger.warning(reject_log, resp.status_code, *reject_args, "GraphAPIError")
             return [], error_msg
         try:
             return resp.json().get("messages") or [], None
@@ -397,7 +404,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # 131009 = "Parameter value is not valid" (typically wamid > 30 days old) — common
         # after a long-quiet conversation, so log at info.
         if code == 131009:
-            logger.info("[whatsapp_cloud] typing/read indicator rejected: wamid %s likely older than 30 days", wamid)
+            logger.info("[whatsapp_cloud] typing/read indicator rejected: wamid %s likely older than 30 days", _log_whatsapp_identifier(wamid))
         else:
             logger.debug("[whatsapp_cloud] typing/read indicator returned %d (%s)", resp.status_code, code)
 
@@ -515,7 +522,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 files = {"file": (os.path.basename(file_path), fh, mime_type), "messaging_product": (None, "whatsapp"), "type": (None, mime_type)}
                 resp = await self._http_client.post(self._graph_url("media"), headers=self._auth_headers(json_body=False), files=files)
         except Exception as exc:
-            logger.exception("[whatsapp_cloud] media upload failed")
+            logger.warning("[whatsapp_cloud] media upload failed (error_type=%s)", type(exc).__name__)
             return None, str(exc)
         if resp.status_code != 200:
             return None, self._response_error(resp)
@@ -624,14 +631,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 out_path, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await proc.communicate()
-        except Exception:
-            logger.exception("[whatsapp_cloud] ffmpeg subprocess raised")
+        except Exception as exc:
+            logger.warning("[whatsapp_cloud] ffmpeg subprocess raised (error_type=%s)", type(exc).__name__)
             return None
         if proc.returncode == 0 and Path(out_path).exists():
             return out_path
         logger.error(
-            "[whatsapp_cloud] ffmpeg opus conversion failed (returncode=%s): %s",
-            proc.returncode, (stderr or b"").decode("utf-8", errors="replace")[:500],
+            "[whatsapp_cloud] ffmpeg opus conversion failed (returncode=%s, stderr_present=%s)",
+            proc.returncode, bool(stderr),
         )
         return None
 
@@ -640,11 +647,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """GET with the download path's uniform failure logging; None on exception or non-200."""
         try:
             resp = await self._http_client.get(url, headers=headers)
-        except Exception:
-            logger.exception("[whatsapp_cloud] media %s fetch raised (id=%s)", what, media_id)
+        except Exception as exc:
+            logger.warning("[whatsapp_cloud] media %s fetch raised (id=%s) (error_type=%s)", what, _log_whatsapp_identifier(media_id), type(exc).__name__)
             return None
         if resp.status_code != 200:
-            logger.warning("[whatsapp_cloud] media %s fetch failed (id=%s, status=%d)", what, media_id, resp.status_code)
+            logger.warning("[whatsapp_cloud] media %s fetch failed (id=%s, status=%d)", what, _log_whatsapp_identifier(media_id), resp.status_code)
             return None
         return resp
 
@@ -657,7 +664,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # anything that isn't a plain Meta-style id so a hostile payload can't traverse.
         media_id = str(media_id).strip()
         if not re.fullmatch(r"[A-Za-z0-9._-]+", media_id):
-            logger.warning("[whatsapp_cloud] refusing malformed media id %r", media_id[:64])
+            logger.warning("[whatsapp_cloud] refusing malformed media id %r", _log_whatsapp_identifier(media_id[:64]))
             return None, None
         headers = self._auth_headers(json_body=False)
         meta_resp = await self._graph_get(f"{GRAPH_API_BASE}/{self._api_version}/{media_id}", headers, "metadata", media_id)
@@ -678,8 +685,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         out_path = _INBOUND_MEDIA_CACHE / f"{media_id}{ext_hint or _ext_for_mime(mime) or '.bin'}"
         try:
             out_path.write_bytes(blob_resp.content)
-        except OSError:
-            logger.exception("[whatsapp_cloud] failed to write cached media (id=%s)", media_id)
+        except OSError as exc:
+            logger.warning("[whatsapp_cloud] failed to write cached media (id=%s) (error_type=%s)", _log_whatsapp_identifier(media_id), type(exc).__name__)
             return None, None
         return str(out_path), mime or None
 
@@ -728,7 +735,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         signature_header = request.headers.get("X-Hub-Signature-256", "")
         if not self._verify_signature(raw, signature_header):
             self._rejected_signature_count += 1
-            logger.warning("[whatsapp_cloud] rejected webhook: invalid X-Hub-Signature-256 (header=%r, body_len=%d)", signature_header, len(raw))
+            logger.warning("[whatsapp_cloud] rejected webhook: invalid X-Hub-Signature-256 (header_present=%s, body_len=%d)", bool(signature_header), len(raw))
             return web.Response(status=401)
         try:
             payload = json.loads(raw)
@@ -762,7 +769,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Walk ``entry[].changes[].value.{messages, contacts, statuses}`` and dispatch each message.
         ``statuses`` (sent/delivered/read/failed) are only logged — the agent doesn't consume receipts."""
         if payload.get("object") != "whatsapp_business_account":
-            logger.debug("[whatsapp_cloud] ignoring non-WABA payload (object=%r)", payload.get("object"))
+            logger.debug("[whatsapp_cloud] ignoring non-WABA payload (object_present=%s)", bool(payload.get("object")))
             return
         for entry in payload.get("entry") or []:
             for change in (entry.get("changes") or []) if isinstance(entry, dict) else []:
@@ -779,7 +786,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         await self._ingest_message(raw_message, contacts_by_waid, value.get("metadata") or {})
                 for status in value.get("statuses") or []:
                     if isinstance(status, dict):
-                        logger.debug("[whatsapp_cloud] status %s for %s", status.get("status"), status.get("id"))
+                        logger.debug("[whatsapp_cloud] status %s for %s", status.get("status"), _log_whatsapp_identifier(status.get("id")))
 
     async def _ingest_message(self, raw_message: Dict[str, Any], contacts_by_waid: Dict[str, str], metadata: Dict[str, Any]) -> None:
         """Dedup → build event → handle_message. Neither build nor dispatch errors may
@@ -787,20 +794,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         the batch and every message in it would then be dropped as a duplicate."""
         wamid = str(raw_message.get("id") or "").strip()
         if not self._dedup_wamid(wamid):
-            logger.debug("[whatsapp_cloud] duplicate wamid %s, skipping", wamid)
+            logger.debug("[whatsapp_cloud] duplicate wamid %s, skipping", _log_whatsapp_identifier(wamid))
             return
         try:
             event = await self._build_message_event_from_cloud(raw_message, contacts_by_waid, metadata)
-        except Exception:
-            logger.exception("[whatsapp_cloud] failed to build event for wamid %s", wamid)
+        except Exception as exc:
+            logger.warning("[whatsapp_cloud] failed to build event for wamid %s (error_type=%s)", _log_whatsapp_identifier(wamid), type(exc).__name__)
             return
         if event is None:
             return
         self._accepted_count += 1
         try:
             await self.handle_message(event)
-        except Exception:
-            logger.exception("[whatsapp_cloud] handle_message raised for wamid %s", wamid)
+        except Exception as exc:
+            logger.warning("[whatsapp_cloud] handle_message raised for wamid %s (error_type=%s)", _log_whatsapp_identifier(wamid), type(exc).__name__)
 
     async def _dispatch_interactive_reply(self, raw_message: Dict[str, Any], contacts_by_waid: Dict[str, str]) -> bool:
         """Route an inbound button tap to its resolver (see ``_INTERACTIVE_HANDLERS``). True = claimed.
@@ -814,7 +821,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Taps bypass ``_should_process_message``; re-check the strict DM gate so a stale
         # prompt can't be answered after the sender leaves the allowlist.
         if not (sender_id and self._is_dm_allowed(sender_id)):
-            logger.warning("[whatsapp_cloud] Rejected unauthorized interactive tap from %s (button_id=%r)", sender_id or "<unknown>", button_id)
+            logger.warning("[whatsapp_cloud] Rejected unauthorized interactive tap (sender_present=%s, button_present=%s)", bool(sender_id), bool(button_id))
             return True  # claim so the tap isn't re-dispatched as plain text
         parts = button_id.split(":", 2)
         handler = next((h for prefix, h in self._INTERACTIVE_HANDLERS.items() if button_id.startswith(prefix)), None)
@@ -826,8 +833,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _reply_best_effort(self, to: str, text: str, fail_log: str) -> None:
         try:
             await self.send(to, text)
-        except Exception:
-            logger.exception(fail_log)
+        except Exception as exc:
+            logger.warning(fail_log + " (error_type=%s)", type(exc).__name__)
 
     @staticmethod
     def _pop_tap_state(
@@ -837,7 +844,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         a stale tap; an unrecognised ``choice`` keeps the prompt live and also yields None."""
         session_key = state.pop(key, None)
         if not session_key:
-            logger.info(stale_log, key)
+            logger.info(stale_log, _log_whatsapp_identifier(key))
         elif valid and choice not in valid:
             state[key] = session_key
             return None
@@ -862,12 +869,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # it's still blocked in clarify ("Interrupting current task" loop).
             try:
                 flipped = clarify_gateway.mark_awaiting_text(clarify_id)
-            except Exception:
-                logger.exception("[whatsapp_cloud] mark_awaiting_text failed for %s", clarify_id)
+            except Exception as exc:
+                logger.warning("[whatsapp_cloud] mark_awaiting_text failed for %s (error_type=%s)", _log_whatsapp_identifier(clarify_id), type(exc).__name__)
                 flipped = False
             if not flipped:
                 # Entry vanished (timeout, /new, restart) — fall through to text.
-                logger.info("[whatsapp_cloud] clarify 'Other' tap but entry missing (clarify_id=%s); falling back to text", clarify_id)
+                logger.info("[whatsapp_cloud] clarify 'Other' tap but entry missing (clarify_id=%s); falling back to text", _log_whatsapp_identifier(clarify_id))
                 return False
             # Keep the mapping live for further taps on the same prompt.
             self._clarify_state[clarify_id] = session_key
@@ -876,12 +883,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             idx = int(choice)
         except ValueError:
-            logger.warning("[whatsapp_cloud] clarify tap had non-int choice: %r", choice)
+            logger.warning("[whatsapp_cloud] clarify tap had non-int choice: %r", _log_whatsapp_identifier(choice))
             self._clarify_state[clarify_id] = session_key  # a follow-up text can still resolve
             return False
         # Title is the numeric label; the agent has the prompt in context to interpret it.
         if not clarify_gateway.resolve_gateway_clarify(clarify_id, str(inner.get("title") or str(idx + 1))):
-            logger.info("[whatsapp_cloud] clarify resolver reported no waiter (clarify_id=%s) — falling back to text", clarify_id)
+            logger.info("[whatsapp_cloud] clarify resolver reported no waiter (clarify_id=%s) — falling back to text", _log_whatsapp_identifier(clarify_id))
             return False
         return True
 
@@ -903,7 +910,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if count:
             confirm_text = "✅ Approved." if choice == "approve" else "❌ Denied."
         else:
-            logger.info("[whatsapp_cloud] approval resolver reported no waiter (session_key=%s) — likely already resolved", session_key)
+            logger.info("[whatsapp_cloud] approval resolver reported no waiter (session_key=%s) — likely already resolved", session_key_for_log(session_key))
             confirm_text = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
         await self._reply_best_effort(to, confirm_text, "[whatsapp_cloud] approval confirm failed")
         return True
@@ -922,8 +929,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
         try:
             result_text = await slash_confirm.resolve(session_key, confirm_id, choice)
-        except Exception:
-            logger.exception("[whatsapp_cloud] slash_confirm.resolve failed")
+        except Exception as exc:
+            logger.warning("[whatsapp_cloud] slash_confirm.resolve failed (error_type=%s)", type(exc).__name__)
             return True  # still claim the tap; surfacing it as text wouldn't help
         if result_text:
             await self._reply_best_effort(to, result_text, "[whatsapp_cloud] slash_confirm reply failed")
@@ -939,11 +946,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return [], [], body
         local_path, dl_mime = await self._download_media_to_cache(media_id, ext_hint=_ext_for_mime(inbound_mime))
         if local_path:
-            logger.info("[whatsapp_cloud] cached inbound %s media: %s", msg_type_str, local_path)
+            logger.info("[whatsapp_cloud] cached inbound %s media (path_present=%s)", msg_type_str, bool(local_path))
         else:
             logger.warning(
                 "[whatsapp_cloud] failed to download inbound %s (id=%s) — agent will see message metadata but not the binary",
-                msg_type_str, media_id,
+                msg_type_str, _log_whatsapp_identifier(media_id),
             )
         fname = str(inner.get("filename") or "").strip() if msg_type_str == "document" else ""
         body = body or (f"[Document: {fname}]" if fname else body)
@@ -960,12 +967,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 file_size = doc.stat().st_size
                 if file_size > _MAX_TEXT_INJECT_BYTES:
-                    logger.info("[whatsapp_cloud] skipping text injection for %s (%d bytes > %d)", doc, file_size, _MAX_TEXT_INJECT_BYTES)
+                    logger.info("[whatsapp_cloud] skipping text injection (extension=%s, %d bytes > %d)", doc.suffix.lower(), file_size, _MAX_TEXT_INJECT_BYTES)
                     continue
                 injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8', errors='replace')}"
                 body = f"{injection}\n\n{body}" if body else injection
-            except OSError:
-                logger.exception("[whatsapp_cloud] failed to read document text: %s", doc)
+            except OSError as exc:
+                logger.warning("[whatsapp_cloud] failed to read document text: %s (error_type=%s)", _log_whatsapp_identifier(doc), type(exc).__name__)
         return body
 
     async def _build_message_event_from_cloud(
@@ -985,9 +992,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # payload (capability-gated by Meta) — refuse rather than treat as a DM.
         if raw_message.get("chat"):
             logger.warning(
-                "[whatsapp_cloud] received group-shaped message (chat=%s, wamid=%s) — group support is not yet "
+                "[whatsapp_cloud] received group-shaped message (chat_present=%s, wamid_present=%s) — group support is not yet "
                 "implemented; dropping. Use the Baileys whatsapp adapter for group chats.",
-                raw_message.get("chat"), raw_message.get("id"),
+                bool(raw_message.get("chat")), bool(raw_message.get("id")),
             )
             return None
         if not self._should_process_message({"chatId": chat_id, "senderId": sender_id, "isGroup": False, "body": body}):

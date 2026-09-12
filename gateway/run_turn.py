@@ -19,6 +19,10 @@ from agent.i18n import t
 from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
+from gateway.log_redaction import (
+    log_safe_gateway_error, log_safe_gateway_identity, session_error_for_log,
+    session_exc_info_for_log, session_key_for_log,
+)
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -102,20 +106,20 @@ class GatewayTurnMixin:
                     override_runtime["credential_pool"] = _credential_pool_for_provider(override.get("provider"))
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
-                    skey or "", model, override_model, override_runtime.get("provider"),
+                    session_key_for_log(skey or ''), model, override_model, override_runtime.get("provider"),
                 )
                 return override_model, override_runtime
             # No api_key on the override: env-based resolution below, override model/provider on top.
             logger.debug(
                 "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
-                skey or "", model, override_model,
+                session_key_for_log(skey or ''), model, override_model,
             )
         else:
             logger.debug(
                 "No session model override: session=%s config_model=%s override_keys=%s",
-                skey or "", model,
+                session_key_for_log(skey or ''), model,
                 [
-                    _key for _key, _st in list(self._sessions_map().items())
+                    session_key_for_log(_key) for _key, _st in list(self._sessions_map().items())
                     if _st.conversation.model_override is not None
                 ][:5] or "[]",
             )
@@ -170,7 +174,7 @@ class GatewayTurnMixin:
                 logger.warning(
                     "Empty model resolved for session=%s — recovering "
                     "last-known-good model %s (config read likely returned "
-                    "empty; see #35314)", skey or "", _recovered,
+                    "empty; see #35314)", session_key_for_log(skey or ''), _recovered,
                 )
                 model = _recovered
         else:
@@ -289,7 +293,10 @@ class GatewayTurnMixin:
         if recovered is not None:
             logger.info(
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
-                source.chat_id, source.user_id, source.thread_id, recovered,
+                log_safe_gateway_identity(source.platform, source.chat_id),
+                log_safe_gateway_identity(source.platform, source.user_id),
+                source.thread_id,
+                recovered,
             )
             source = dataclasses.replace(source, thread_id=recovered)
             with suppress(Exception):
@@ -472,7 +479,11 @@ class GatewayTurnMixin:
             if _combined_parts:
                 _combined_parts.append(event.text)  # user's original text after the payloads
                 event.text = "\n\n".join(_combined_parts)
-                logger.info("[Gateway] Auto-loaded skill(s) %s for session %s", _loaded_names, session_key)
+                logger.info(
+                    "[Gateway] Auto-loaded skill(s) %s for session %s",
+                    _loaded_names,
+                    session_key_for_log(session_key),
+                )
         except Exception as e:
             logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
@@ -1387,7 +1398,7 @@ class GatewayTurnMixin:
         agent_messages = agent_result.get("messages", [])
         logger.info(
             "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-            _platform_name, source.chat_id or "unknown",
+            _platform_name, log_safe_gateway_identity(source.platform, source.chat_id) or "unknown",
             time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
         )
 
@@ -1398,7 +1409,9 @@ class GatewayTurnMixin:
             try:
                 await self.async_session_store.clear_resume_pending(session_key)
             except Exception as _e:
-                logger.debug("clear_resume_pending failed for %s: %s", session_key, _e)
+                logger.debug(
+                    "clear_resume_pending failed for %s: %s", session_key_for_log(session_key), session_error_for_log(session_key, _e)
+                )
 
         # Normalize empty responses: surface errors, partial failures, and work-without-text.
         # Fix for #18765.
@@ -1422,9 +1435,10 @@ class GatewayTurnMixin:
                 )
             else:
                 logger.info(
-                    "Skipping agent-result session split sync for %s because the session binding "
-                    "moved from %s to %s before compression finished",
-                    session_key or "?", _run_start_session_id, session_entry.session_id,
+                    "Skipping agent-result session split sync for %s because the session binding moved from %s to %s before compression finished",
+                    session_key_for_log(session_key or "?"),
+                    _run_start_session_id,
+                    session_entry.session_id,
                 )
         return response, _intentional_silence, agent_messages
 
@@ -1808,8 +1822,12 @@ class GatewayTurnMixin:
         turn once and close it, and build the sanitized user-facing error reply."""
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
-        logger.exception("Agent error in session %s", session_key)
         status_code = getattr(e, "status_code", None)
+        logger.error(
+            "Agent error in session %s: %s", session_key_for_log(session_key),
+            session_error_for_log(session_key, e),
+            exc_info=session_exc_info_for_log(session_key),
+        )
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
@@ -1860,7 +1878,8 @@ class GatewayTurnMixin:
         """A newer run generation superseded this turn: drop its deferred post-delivery callback."""
         logger.info(
             "Discarding stale agent result for %s — generation %d is no longer current",
-            _quick_key or "?", run_generation,
+            session_key_for_log(_quick_key or "?"),
+            run_generation,
         )
         self._pop_post_delivery_callback(self._adapter_for_source(source), _quick_key, run_generation)
 
@@ -2204,9 +2223,9 @@ class GatewayTurnMixin:
             ]
             if image_paths:
                 try:
-                    enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths)
+                    enriched_prompt = await self._enrich_message_with_vision(prompt, image_paths, platform=source.platform)
                 except Exception as e:
-                    logger.warning("Background task vision enrichment failed: %s", e)
+                    logger.warning("Background task vision enrichment failed: %s", log_safe_gateway_error(source.platform, e))
 
             def run_sync():
                 agent = AIAgent(
@@ -3008,7 +3027,8 @@ class GatewayTurnMixin:
         if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
             logger.info(
                 "Skipping stale agent promotion for %s — generation %s is no longer current",
-                session_key or "", run_generation,
+                session_key_for_log(session_key or ""),
+                run_generation,
             )
             return
         self._session_state(session_key).turn.agent = agent_holder[0]
@@ -3100,9 +3120,10 @@ class GatewayTurnMixin:
                 turn_ctx.streaming_tts_consumer_holder,
                 log_context="Voice-backup-interrupt",
                 log=lambda: logger.info(
-                    "Backup interrupt detected for session %s (monitor task state: %s)",
-                    session_key, "done" if interrupt_monitor.done() else "running",
-                ),
+                                "Backup interrupt detected for session %s (monitor task state: %s)",
+                                session_key_for_log(session_key),
+                                "done" if interrupt_monitor.done() else "running",
+                            ),
             )
 
     @staticmethod
@@ -3242,9 +3263,13 @@ class GatewayTurnMixin:
         _iter_max = _activity.get("max_iterations", 0)
         # Operator-facing log keeps the raw resolved value; only the user-facing lines hide the sentinel.
         logger.error(
-            "Agent idle for %.0fs (timeout %.0fs) in session %s "
-            "| last_activity=%s | iteration=%s/%s | tool=%s",
-            _secs_ago, worker.agent_timeout, session_key, _last_desc, _iter_n, _iter_max,
+            "Agent idle for %.0fs (timeout %.0fs) in session %s | last_activity=%s | iteration=%s/%s | tool=%s",
+            _secs_ago,
+            worker.agent_timeout,
+            session_key_for_log(session_key),
+            _last_desc,
+            _iter_n,
+            _iter_max,
             _cur_tool or "none",
         )
         if _timed_out_agent:
@@ -3343,7 +3368,7 @@ class GatewayTurnMixin:
         try:
             await _stts.wait_complete(timeout=10.0)
         except Exception as _stts_done_err:
-            logger.debug("streaming TTS wait_complete error: %s", _stts_done_err)
+            logger.debug("streaming TTS wait_complete error: %s", log_safe_gateway_error(getattr(source, "platform", None), _stts_done_err))
         if not _stts.done:
             _stts.abort("streaming TTS finalisation timeout")
             await _stts.wait_complete(timeout=2.0)
@@ -3373,7 +3398,8 @@ class GatewayTurnMixin:
                 if _is_control_interrupt_message(interrupt_message):
                     logger.info(
                         "Ignoring control interrupt message for session %s: %s",
-                        session_key or "?", interrupt_message,
+                        session_key_for_log(session_key or "?"),
+                        interrupt_message,
                     )
                 else:
                     pending = interrupt_message
@@ -3413,7 +3439,8 @@ class GatewayTurnMixin:
         if self._draining and (pending_event or pending):
             logger.info(
                 "Discarding pending follow-up for session %s during gateway %s",
-                session_key or "?", self._status_action_label(),
+                session_key_for_log(session_key or "?"),
+                self._status_action_label(),
             )
             pending_event = None
             pending = None
@@ -3440,7 +3467,7 @@ class GatewayTurnMixin:
         if self._is_intentional_silence(_delivery_result, first_response):
             logger.info(
                 "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
-                session_key or "?",
+                session_key_for_log(session_key or "?"),
             )
         elif first_response:
             logger.info(
@@ -3460,7 +3487,7 @@ class GatewayTurnMixin:
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                 )
             except Exception as e:
-                logger.warning("Failed to send first response before queued message: %s", e)
+                logger.warning("Failed to send first response before queued message: %s", log_safe_gateway_error(getattr(adapter, "platform", None), e))
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):
@@ -3493,8 +3520,9 @@ class GatewayTurnMixin:
         # (#816)
         if _interrupt_depth >= self._MAX_INTERRUPT_DEPTH:
             logger.warning(
-                "Interrupt recursion depth %d reached for session %s — "
-                "queueing message instead of recursing.", _interrupt_depth, session_key,
+                "Interrupt recursion depth %d reached for session %s — queueing message instead of recursing.",
+                _interrupt_depth,
+                session_key_for_log(session_key),
             )
             adapter = self._adapter_for_source(source)
             if adapter and pending_event:
@@ -3521,7 +3549,7 @@ class GatewayTurnMixin:
             if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
                 logger.info(
                     "Discarding stale goal continuation for session %s — goal is no longer active",
-                    session_key or "?",
+                    session_key_for_log(session_key or "?"),
                 )
                 return result
             # Resolve the follow-up's session key BEFORE preparing the inbound text: native image
@@ -3531,7 +3559,8 @@ class GatewayTurnMixin:
             except Exception:
                 logger.debug(
                     "Queued follow-up session-key resolution failed; reusing %s",
-                    session_key or "?", exc_info=True,
+                    session_key_for_log(session_key or "?"),
+                    exc_info=session_exc_info_for_log(session_key or "?"),
                 )
             next_message = await self._prepare_profile_scoped_inbound_message_text(
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
@@ -3645,10 +3674,10 @@ class GatewayTurnMixin:
                 chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
             )
         except Exception as _edit_err:
-            logger.warning(fail_exc, _sk, _edit_err)
+            logger.warning(fail_exc, session_key_for_log(_sk), log_safe_gateway_error(source.platform, _edit_err))
             return
         if fail_result is not None and not getattr(_res, "success", True):
-            logger.warning(fail_result, _sk, getattr(_res, "error", None))
+            logger.warning(fail_result, session_key_for_log(_sk), log_safe_gateway_error(source.platform, getattr(_res, "error", None)))
             return
         response["already_sent"] = True
         logger.info(*ok)
@@ -3695,7 +3724,7 @@ class GatewayTurnMixin:
         if not _transformed and (_streamed or _content_delivered):
             logger.info(
                 "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
-                _sk, _streamed, _previewed, _content_delivered,
+                session_key_for_log(_sk), _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
         elif not _transformed and _stale_finalized and _sc is not None:
@@ -3705,26 +3734,26 @@ class GatewayTurnMixin:
             if getattr(_sc, "_turn_split_delivery", False):
                 logger.info(
                     "Stale streamed finalize detected for session %s on a multi-message split; skipping the in-place reconciliation edit and delivering the complete response via normal final send (#78541).",
-                    _sk,
+                    session_key_for_log(_sk),
                 )
             elif _sc_msg_id and _sc_msg_id != "__no_edit__" and getattr(_sc, "adapter", None) is not None:
                 await self._run_agent_edit_streamed_message(
                     _sc, source, response, _final, _sk=_sk,
-                    ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
+                    ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", session_key_for_log(_sk), _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
                 )
             else:
                 logger.info(
                     "Stale streamed finalize detected for session %s with no editable message; delivering complete response via normal final send (#71643).",
-                    _sk,
+                    session_key_for_log(_sk),
                 )
         elif _transformed and _sc is not None:
             # Transformed after streaming: edit the streamed message instead of sending a duplicate.
             if _sc.message_id:
                 await self._run_agent_edit_streamed_message(
                     _sc, source, response, response["final_response"], _sk=_sk,
-                    ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
+                    ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, session_key_for_log(_sk)),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )
         elif _sc is not None:
@@ -3734,7 +3763,7 @@ class GatewayTurnMixin:
                 "Normal final-send NOT suppressed despite active stream consumer for session %s: "
                 "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "
                 "possible duplicate send (see wecom ack-timeout RCA).",
-                _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
+                session_key_for_log(_sk), _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:

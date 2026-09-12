@@ -16,6 +16,10 @@ import os
 import time
 from agent.i18n import t
 from agent.session_activity import format_iteration_progress
+from gateway.log_redaction import (
+    log_safe_gateway_error, log_safe_gateway_exc_info, log_safe_gateway_identity,
+    session_error_for_log, session_exc_info_for_log, session_key_for_log,
+)
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -105,16 +109,16 @@ class GatewayBusySessionMixin:
             logger.warning(
                 "Rescued orphaned FIFO overflow event for idle session "
                 "%s — it was queued during a busy window but the post-turn "
-                "drain never promoted it (#99882)", session_key,
+                "drain never promoted it (#99882)", session_key_for_log(session_key),
             )
             if overflow:
                 logger.warning(
                     "%d overflow event(s) still queued for session %s after "
-                    "rescue staging (will drain via normal promotion)", len(overflow), session_key,
+                    "rescue staging (will drain via normal promotion)", len(overflow), session_key_for_log(session_key),
                 )
             return head
         except Exception:
-            logger.debug("FIFO overflow rescue failed for %s", session_key, exc_info=True)
+            logger.debug("FIFO overflow rescue failed for %s", session_key_for_log(session_key), exc_info=session_exc_info_for_log(session_key))
             return None
 
     @staticmethod
@@ -236,7 +240,7 @@ class GatewayBusySessionMixin:
         def _assume_active(what: str, ident) -> bool:
             logger.warning(
                 "Compression in-flight check failed while reading %s %s; treating compression as "
-                "active to avoid interrupting a possible parent-session rotation", what, ident, exc_info=True,
+                "active to avoid interrupting a possible parent-session rotation", what, session_key_for_log(ident), exc_info=session_exc_info_for_log(session_key),
             )
             return True
 
@@ -317,7 +321,8 @@ class GatewayBusySessionMixin:
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
-                session_key, self._BUSY_QUEUE_MAX_PENDING,
+                session_key_for_log(session_key),
+                self._BUSY_QUEUE_MAX_PENDING,
             )
             return
 
@@ -457,7 +462,9 @@ class GatewayBusySessionMixin:
                     _reply = await _approval_handler(event)
                     logger.info(
                         "Approval response via plain text: session=%s verb=%s args=%r",
-                        session_key, _verb, _normalized_args,
+                        session_key_for_log(session_key),
+                        _verb,
+                        _normalized_args,
                     )
                     _adapter = self._adapter_for_source(event.source)
                     if _adapter and _reply:
@@ -468,7 +475,7 @@ class GatewayBusySessionMixin:
         except Exception:
             logger.warning(
                 "Plain-text approval routing failed for session %s; "
-                "falling through to busy handling", session_key, exc_info=True,
+                "falling through to busy handling", session_key_for_log(session_key), exc_info=session_exc_info_for_log(session_key),
             )
         return False
 
@@ -526,7 +533,7 @@ class GatewayBusySessionMixin:
 
     @staticmethod
     def _demote_interrupt(session_key: str, why: str) -> str:
-        logger.info("Demoting busy_input_mode 'interrupt' to 'queue' for session %s because %s", session_key, why)
+        logger.info("Demoting busy_input_mode 'interrupt' to 'queue' for session %s because %s", session_key_for_log(session_key), why)
         return "queue"
 
     def _try_agent_verb(
@@ -537,7 +544,7 @@ class GatewayBusySessionMixin:
             call_text = self._steer_text_with_origin(text, event) if event else text
             return bool(getattr(running_agent, verb)(call_text))
         except Exception as exc:
-            logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
+            logger.warning("Gateway %s failed for session %s: %s", verb, session_key_for_log(session_key), session_error_for_log(session_key, exc))
             return False
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
@@ -571,7 +578,9 @@ class GatewayBusySessionMixin:
                 )
             )
         if not steer_ack_enabled:
-            logger.debug("Busy steer ack suppressed for session %s", session_key)
+            logger.debug(
+                "Busy steer ack suppressed for session %s", session_key_for_log(session_key)
+            )
         return steer_ack_enabled
 
     _BUSY_DEMOTED_TAIL = (
@@ -650,7 +659,7 @@ class GatewayBusySessionMixin:
         try:
             await self._send_busy_reply(event, adapter, message)
         except Exception as e:
-            logger.debug("Failed to send busy-ack: %s", e)
+            logger.debug("Failed to send busy-ack: %s", log_safe_gateway_error(event.source.platform, e))
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
@@ -669,9 +678,11 @@ class GatewayBusySessionMixin:
         # profile, so authorize in the stamped transport scope.
         if not self._is_user_authorized_for_source(event.source):
             logger.warning(
-                "Dropping message from unauthorized user in active session: "
-                "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
-                event.source.platform.value if event.source.platform else "unknown", session_key,
+                "Dropping message from unauthorized user in active session: user=%s (%s), platform=%s, session=%s",
+                log_safe_gateway_identity(event.source.platform, event.source.user_id),
+                log_safe_gateway_identity(event.source.platform, event.source.user_name),
+                event.source.platform.value if event.source.platform else "unknown",
+                session_key_for_log(session_key),
             )
             return True  # handled (silently dropped); do not fall through
         # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
@@ -730,7 +741,7 @@ class GatewayBusySessionMixin:
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.
         if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
-            logger.debug("Busy ack suppressed for session %s", session_key)
+            logger.debug("Busy ack suppressed for session %s", session_key_for_log(session_key))
             return True  # input still processed, just no ack sent
 
         # Debounce (30s) before the config-heavy display lookup.
@@ -790,7 +801,7 @@ class GatewayBusySessionMixin:
                     str(source.chat_id), text, metadata=self._thread_metadata_for_source(source)
                 )
         except Exception:
-            logger.debug("%s ack send failed", label, exc_info=True)
+            logger.debug("%s ack send failed", label, exc_info=log_safe_gateway_exc_info(source.platform))
 
     def _gateway_idle_command_handlers(self):
         """Slash handlers dispatched only on the idle path (busy dispatch has its own allowlist)."""
@@ -861,7 +872,10 @@ class GatewayBusySessionMixin:
 
     async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
         # Telegram's /start is a platform ping (bot launch/deep-link), not a user command.
-        logger.info("Ignoring /start platform ping for active session %s", quick_key)
+        logger.info(
+            "Ignoring /start platform ping for active session %s",
+            session_key_for_log(quick_key),
+        )
         return ""
 
     async def _busy_egress_command(self, event: MessageEvent, quick_key: str, source):
@@ -874,7 +888,10 @@ class GatewayBusySessionMixin:
         await self._interrupt_and_clear_session(
             quick_key, source, interrupt_reason=_INTERRUPT_REASON_STOP, invalidation_reason="stop_command",
         )
-        logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
+        logger.info(
+            "STOP for session %s — agent interrupted, session lock released",
+            session_key_for_log(quick_key),
+        )
         return EphemeralReply(t("gateway.stop.stopped"))
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
@@ -941,8 +958,9 @@ class GatewayBusySessionMixin:
         try:
             accepted = running_agent.steer(self._steer_text_with_origin(steer_text, event))
         except Exception as exc:
-            logger.warning("Steer failed for session %s: %s", quick_key, exc)
-            return f"⚠️ Steer failed: {exc}"
+            safe_error = log_safe_gateway_error(source.platform, exc)
+            logger.warning("Steer failed for session %s: %s", session_key_for_log(quick_key), safe_error)
+            return f"⚠️ Steer failed: {safe_error}"
         if not accepted:
             return "Steer rejected (empty payload)."
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
@@ -975,7 +993,9 @@ class GatewayBusySessionMixin:
             return None
         logger.info(
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
-            canonical_cmd, source.platform.value if source.platform else "?", source.user_id,
+            canonical_cmd,
+            source.platform.value if source.platform else "?",
+            log_safe_gateway_identity(source.platform, source.user_id),
         )
         allowed_preview = sorted(policy.user_allowed_commands)
         if allowed_preview:
@@ -1172,11 +1192,14 @@ class GatewayBusySessionMixin:
                 # value, so the try block alone says nothing about whether the write landed.
                 persisted = bool(save_config_value("approvals.destructive_slash_confirm", False))
                 if persisted:
-                    logger.info("User opted out of destructive slash confirm (session=%s)", session_key)
+                    logger.info(
+                        "User opted out of destructive slash confirm (session=%s)",
+                        session_key_for_log(session_key),
+                    )
                 else:
                     logger.warning(
-                        "Could not persist destructive_slash_confirm=false "
-                        "(session=%s); config.yaml is not writable", session_key,
+                        "Could not persist destructive_slash_confirm=false (session=%s); config.yaml is not writable",
+                        session_key_for_log(session_key),
                     )
             except Exception as exc:
                 logger.warning("Failed to persist destructive_slash_confirm=false: %s", exc)

@@ -170,6 +170,7 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from gateway.log_redaction import log_safe_gateway_identity
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import to_whatsapp_jid
@@ -336,9 +337,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if _pkg_hash:
                         _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                 return True
-            print(f"[{self.name}] npm install failed: {install_result.stderr}")
+            print(f"[{self.name}] npm install failed (returncode={install_result.returncode})")
         except Exception as e:
-            print(f"[{self.name}] Failed to install dependencies: {e}")
+            print(f"[{self.name}] Failed to install dependencies (error_type={type(e).__name__})")
             detail = f" ({e})"
         self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. Run `cd {bridge_dir} && {_npm_bin} install` "
                               "manually, then restart `hermes gateway`.", retryable=False)
@@ -465,7 +466,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False
             lock_acquired = True
         except Exception as e:
-            logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
+            logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, type(e).__name__)
         try:
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
@@ -490,7 +491,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(None)
             return True
         except Exception as e:
-            logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
+            logger.error("[%s] Failed to start bridge: %s", self.name, type(e).__name__)
             return False
         finally:
             if not self._running:
@@ -538,7 +539,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if self._bridge_process.poll() is None:
                     self._terminate_bridge(force=True)
             except Exception as e:
-                print(f"[{self.name}] Error stopping bridge: {e}")
+                print(f"[{self.name}] Error stopping bridge (error_type={type(e).__name__})")
         _unlink_quietly(self._session_path / "bridge.pid")
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
@@ -631,7 +632,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             result = await self.send_poll(chat_id, str(question or "").strip(), clean_choices, selectable_count=1)
             if result.success:
                 return result
-            logger.warning("[%s] Native WhatsApp clarify poll failed; falling back to text: %s", self.name, result.error)
+            logger.warning("[%s] Native WhatsApp clarify poll failed; falling back to text (error_detail_present=%s)", self.name, bool(result.error))
         return await super().send_clarify(chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id, session_key=session_key, metadata=metadata)
 
     @_needs_bridge
@@ -685,7 +686,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         data = await resp.json()
                         return {"name": data.get("name", chat_id), "type": "group" if data.get("isGroup") else "dm", "participants": data.get("participants", [])}
             except Exception as e:
-                logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
+                logger.debug("Could not get WhatsApp chat info for %s: %s", log_safe_gateway_identity("whatsapp", chat_id), type(e).__name__)
         return {"name": chat_id, "type": "dm"}
 
     async def _report_bridge_exit(self) -> bool:
@@ -715,7 +716,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception as e:
                 if await self._report_bridge_exit():
                     break
-                print(f"[{self.name}] Poll error: {e}")
+                print(f"[{self.name}] Poll error (error_type={type(e).__name__})")
                 await asyncio.sleep(5)
             await asyncio.sleep(1)  # Poll interval
 
@@ -728,7 +729,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if resp.status != 200:
                     logger.warning("[%s] WhatsApp read receipt failed with HTTP %s", self.name, resp.status)
         except Exception as exc:
-            logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, exc)
+            logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, type(exc).__name__)
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
@@ -765,16 +766,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 cacher, ext = (cache_image_from_url, ".jpg") if msg_type == MessageType.PHOTO else (cache_audio_from_url, ".ogg")
                 try:
                     url = await cacher(url, ext=ext)
-                    print(f"[{self.name}] Cached user {label}: {url}", flush=True)
+                    print(f"[{self.name}] Cached user {label} (path_present={bool(url)})", flush=True)
                 except Exception as e:
-                    print(f"[{self.name}] Failed to cache {label}: {e}", flush=True)
+                    print(f"[{self.name}] Failed to cache {label} (error_type={type(e).__name__})", flush=True)
                 accepted.append((url, mime))
             elif label is not None and os.path.isabs(url):
                 if _is_allowed_bridge_path(url):
                     accepted.append((url, mime))
-                    print(f"[{self.name}] Using bridge-cached {label}: {url}", flush=True)
+                    print(f"[{self.name}] Using bridge-cached {label} (path_present={bool(url)})", flush=True)
                 else:
-                    print(f"[{self.name}] Rejected bridge {label} path outside cache dir: {url}", flush=True)
+                    print(f"[{self.name}] Rejected bridge {label} path outside cache dir", flush=True)
             else:
                 accepted.append((url, "unknown"))
         return [u for u, _ in accepted], [m for _, m in accepted]
@@ -788,15 +789,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 file_size = p.stat().st_size
                 if file_size > _MAX_TEXT_INJECT_BYTES:
-                    print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {_MAX_TEXT_INJECT_BYTES})", flush=True)
+                    print(f"[{self.name}] Skipping text injection (extension={p.suffix.lower()}, bytes={file_size}, cap={_MAX_TEXT_INJECT_BYTES})", flush=True)
                     continue
                 content = p.read_text(encoding="utf-8", errors="replace")
                 parts = p.name.split("_", 2)  # strip the doc_<hex>_ prefix for display
                 injection = f"[Content of {parts[2] if len(parts) >= 3 else p.name}]:\n{content}"
                 body = f"{injection}\n\n{body}" if body else injection
-                print(f"[{self.name}] Injected text content from: {doc_path}", flush=True)
+                print(f"[{self.name}] Injected text content (extension={p.suffix.lower()}, bytes={file_size})", flush=True)
             except Exception as e:
-                print(f"[{self.name}] Failed to read document text: {e}", flush=True)
+                print(f"[{self.name}] Failed to read document text (error_type={type(e).__name__})", flush=True)
         return body
 
     def _quoted_media(self, data: Dict[str, Any], raw_reply_id: Any) -> list[tuple[str, str]]:
@@ -863,7 +864,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
             )
         except Exception as e:
-            print(f"[{self.name}] Error building event: {e}")
+            print(f"[{self.name}] Error building event (error_type={type(e).__name__})")
             return None
 
 

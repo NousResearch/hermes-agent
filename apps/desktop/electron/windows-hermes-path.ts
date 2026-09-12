@@ -112,6 +112,11 @@ export function getVenvSitePackagesEntries(
   }
 
   const isWindows = opts.isWindows ?? process.platform === 'win32'
+  // Join with the path flavour of the platform being MODELLED, not the one we
+  // happen to run on: `isWindows` is injectable precisely so the POSIX branch
+  // can be exercised from Windows, where `path.join` would otherwise build
+  // `\venv\lib\...` and never match the caller's POSIX expectations.
+  const pathApi = isWindows ? path.win32 : path.posix
 
   const directoryExists =
     opts.directoryExists ??
@@ -134,7 +139,7 @@ export function getVenvSitePackagesEntries(
     })
 
   if (isWindows) {
-    const sitePackages = path.join(venvRoot, 'Lib', 'site-packages')
+    const sitePackages = pathApi.join(venvRoot, 'Lib', 'site-packages')
 
     if (directoryExists(sitePackages)) {
       entries.push(sitePackages)
@@ -143,7 +148,7 @@ export function getVenvSitePackagesEntries(
     return entries
   }
 
-  const cfg = readFile(path.join(venvRoot, 'pyvenv.cfg'))
+  const cfg = readFile(pathApi.join(venvRoot, 'pyvenv.cfg'))
 
   const version = (() => {
     if (!cfg) {
@@ -156,7 +161,7 @@ export function getVenvSitePackagesEntries(
   })()
 
   if (version) {
-    const sitePackages = path.join(venvRoot, 'lib', `python${version}`, 'site-packages')
+    const sitePackages = pathApi.join(venvRoot, 'lib', `python${version}`, 'site-packages')
 
     if (directoryExists(sitePackages)) {
       entries.push(sitePackages)

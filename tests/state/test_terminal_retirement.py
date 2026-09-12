@@ -1,5 +1,7 @@
 """Deletion removes history but retains exact, scoped terminal evidence."""
 import sqlite3
+from types import SimpleNamespace
+
 import pytest
 from hermes_state import SessionDB
 import hermes_state_runtime as rt
@@ -88,3 +90,34 @@ def test_nonterminal_obligations_prevent_any_retirement(tmp_path):
             assert db.get_session(status) is not None
             with db._read_ctx() as c:
                 assert not c.execute("SELECT 1 FROM state_meta WHERE key LIKE 'gateway.retired_session.v1.%'").fetchall()
+
+
+def test_late_accounting_backfill_cannot_resurrect_a_retired_session(tmp_path):
+    """A delayed background-review usage callback lands after delete committed: the
+    retirement fence must refuse the missing-row backfill instead of recreating the
+    session beside its durable tombstone."""
+    with SessionDB(tmp_path / 'state.db') as db:
+        db.create_session('retired', source='cli')
+        db.append_message('retired', 'user', 'history')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        snap = db.get_session('retired')
+        delete = dict(principal_id='human', session_id='retired', request_id='delete', operation='delete',
+                      payload={}, expected_revision=snap['runtime_revision'],
+                      expected_generation=snap['runtime_generation'])
+        receipt = rt.mutate_runtime_session(db, epoch=epoch, **delete)
+        # The real delayed callback: a background-review fork reporting into its parent.
+        from agent.background_review import _record_review_usage_to_parent
+        parent = SimpleNamespace(_session_db=db, session_id='retired')
+        _record_review_usage_to_parent(parent, {'model': 'm', 'provider': 'p', 'base_url': None,
+                                                'api_calls': 1, 'input_tokens': 3, 'output_tokens': 1})
+        for late in (lambda: db.update_token_counts('retired', input_tokens=5, output_tokens=2, model='m'),
+                     lambda: db.ensure_session('retired', source='unknown')):
+            with pytest.raises(rt.RuntimeStoreError, match='not_found'):
+                late()
+        assert db.get_session('retired') is None, 'late accounting resurrected a deleted session'
+        with db._read_ctx() as c:
+            assert c.execute("SELECT COUNT(*) FROM session_model_usage WHERE session_id='retired'").fetchone()[0] == 0
+        assert rt.mutate_runtime_session(db, epoch=epoch, **delete) == receipt
+        # Live sessions keep the legacy missing-row backfill.
+        db.update_token_counts('fresh', input_tokens=1, output_tokens=1, model='m')
+        assert db.get_session('fresh')['source'] == 'unknown'

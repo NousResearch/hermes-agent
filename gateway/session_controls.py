@@ -321,8 +321,12 @@ class AuthorityConnection:
             params["prompt_id"], {"answer": params["answer"]}, kind="clarify")
 
     async def close(self):
-        for subscription in self.subscriptions.values():
-            await self.authority.detach(self.actor, subscription)
+        # Deletion may already have evicted a subscribed session; its membership died
+        # with it, and one retired ID must not leave the others (or the transport) attached.
+        for session_id, subscription in list(self.subscriptions.items()):
+            live = self.authority.sessions.get(session_id)
+            if live is not None and subscription in live.subscribers:
+                await self.authority.detach(self.actor, subscription)
         from gateway.session_local_migration import unbind_native_transport
         unbind_native_transport(self.authority, self.actor)
         self.subscriptions.clear()

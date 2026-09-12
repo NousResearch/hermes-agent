@@ -1,23 +1,15 @@
 import { type PromptSubmitResult, randomUuid } from '@hermes/shared'
 import { type MutableRefObject, useCallback } from 'react'
 
-import { getSession, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { getSession } from '@/hermes'
 import { translateNow, type Translations } from '@/i18n'
 import { type ChatMessage, finalizeInterruptedMessages, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
-import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
-import {
-  isVoicePlaybackActive,
-  markVoicePlaybackInterrupted,
-  stopVoicePlayback,
-  takeVoicePlaybackInterrupted
-} from '@/lib/voice-playback'
 import {
   $composerAttachments,
   type ComposerAttachment,
   type ComposerAttachmentPatch,
-  freezeComposerTransportPayload,
   mainComposerScope,
   patchMainComposerAttachmentOccurrence,
   revokeDiscardedAttachmentPreviews
@@ -26,7 +18,7 @@ import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
-import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
+import { requestDesktopOnboarding } from '@/store/onboarding'
 import { trackPendingSubmission } from '@/store/pending-submissions'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
@@ -59,11 +51,12 @@ import {
 } from './prepared-submissions'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import { captureSubmissionDestination, destinationAfterCreate, sameAuthorityPublishedOwner } from './submission-destination'
+import { prepareSubmitContext, prepareSubmitInput, resolveQueuedSubmitRuntime } from './submit-input'
+import { assertConfirmedSubmitReceipt, submitPromptTransport } from './submit-transport'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
-  isAdmittedSubmissionConflict,
   isForwardedReceipt,
   isProviderSetupError,
   isSessionBusyError,
@@ -73,9 +66,7 @@ import {
   refusalDroppedImages,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
-  type SubmitTextOptions,
-  withSessionBusyRetry,
-  withSessionNotFoundResume
+  type SubmitTextOptions
 } from './utils'
 
 interface SubmitPromptDeps {
@@ -202,16 +193,6 @@ type SubmitReceipt = Pick<PromptSubmitResult, 'forwarded' | 'user_row_id'> & {
   voice_stopped?: boolean
 }
 
-/** A refusal the backend issued before admitting anything, so an identityless retry cannot duplicate a turn. */
-function isPreAdmissionRefusal(error: unknown): boolean {
-  if (!error || typeof error !== 'object' || !('code' in error)) {
-    return false
-  }
-
-  const { code, message } = error as { code?: unknown; message?: unknown }
-
-  return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
-}
 
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
   const {
@@ -249,34 +230,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         a => typeof a.titlePreview === 'string' && a.titlePreview.trim()
       )?.titlePreview
 
-      // Freeze `@terminal:` chips into transport text before send. Queue drains
-      // already carry frozen transport (tokens stripped at enqueue) — never
-      // re-resolve against the live selection map, or a later Cmd+L that reused
-      // the same shell:row label silently injects unrelated output (#77078).
-      let transportRaw = rawText
-      let bubbleOverride = options?.displayText
+      const prepared = prepareSubmitInput(rawText, options)
 
-      if (!options?.fromQueue) {
-        const frozen = freezeComposerTransportPayload(rawText)
-
-        if (frozen.missingLabels.length > 0) {
-          notify({
-            kind: 'warning',
-            title: translateNow('composer.terminalSelectionMissingTitle'),
-            message: translateNow('composer.terminalSelectionMissingBody')
-          })
-
-          return false
-        }
-
-        transportRaw = frozen.transportText
-
-        if (!bubbleOverride && frozen.displayText !== frozen.transportText) {
-          bubbleOverride = frozen.displayText
-        }
+      if (!prepared) {
+        return false
       }
 
-      const visibleText = sanitizeComposerInput(transportRaw).trim()
+      const { visibleText, bubbleOverride } = prepared
       const hasImage = attachments.some(a => a.kind === 'image')
 
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
@@ -330,32 +290,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return false
       }
 
-      // Typing barge-in: a new send silences any in-flight spoken reply.
-      if (isVoicePlaybackActive()) {
-        markVoicePlaybackInterrupted()
-        stopVoicePlayback()
+      const context = prepareSubmitContext(options)
+
+      if (!context) {
+        return false
       }
 
-      // The gateway already told us this profile has no usable provider (a
-      // credential warning arrived with the session's runtime info, deferred
-      // instead of popping onboarding on the mere profile switch). The user
-      // is now actually trying to chat — THIS is the moment to open
-      // onboarding, before a send the gateway said will fail. The draft
-      // stays in the composer; once a provider is configured they just hit
-      // Enter again.
-      if (!options?.fromQueue) {
-        const deferredCredentialWarning = consumePendingCredentialWarning()
-
-        if (deferredCredentialWarning) {
-          requestDesktopOnboarding(deferredCredentialWarning)
-
-          return false
-        }
-      }
-
-      // Barged mid-speech (here or via the voice loop's VAD)? Flag the submit
-      // so the backend notes the interruption to the model.
-      const interrupted = takeVoicePlaybackInterrupted()
+      const { interrupted } = context
 
       // Queue drains carry their source session explicitly. A background drain
       // must never inherit the currently selected session after the user moves
@@ -427,17 +368,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // The identity pair (storedSessionId === sessionId) is the fresh-chat
       // fallback — an unpersisted conversation's queue key IS its runtime id,
       // so it has no central binding to check against and is left untouched.
-      if (
-        options?.fromQueue &&
-        options.sessionId &&
-        options.storedSessionId &&
-        options.storedSessionId !== options.sessionId
-      ) {
-        const boundRuntimeId = getRuntimeIdForStoredSession(options.storedSessionId)
+      sessionId = resolveQueuedSubmitRuntime(sessionId, options, getRuntimeIdForStoredSession)
 
-        if (boundRuntimeId !== options.sessionId) {
-          sessionId = boundRuntimeId
-        }
+      // Confirmed plugin sends require an already hydrated target. A stale or
+      // missing queue binding is a pre-transmission refusal, never a resume or
+      // new-chat handoff through the ambient foreground session.
+      if (options?.confirmedExternal && (!options.sessionId || !sessionId)) {
+        return false
       }
 
       // Pin the foreground session context for the whole async submit pipeline.
@@ -1038,7 +975,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // first and submit's own recovery never runs — that asymmetry is why
         // plain text survived sleep/wake but images reported "session not
         // found". The attach path recovers and reports the live id back here.
-        const attachResult = retained
+        const attachResult = options?.confirmedExternal
+          ? { sessionId, attachments: [] }
+          : retained
           ? { sessionId, attachments: retained.attachments }
           : await syncAttachmentsForSubmit(sessionId, attachments, {
               updateComposerAttachments: usingComposerAttachments,
@@ -1104,7 +1043,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // the next turn untouched — without it, losing the settle race
           // (client saw idle, server still unwinding) redirects or interrupts
           // the live turn with text the user explicitly queued.
-          ...((options?.fromQueue || queueAdmission) && { queued: true }),
+          ...((options?.fromQueue || queueAdmission || options?.confirmedExternal) && { queued: true }),
           ...(titlePreview && { title_preview: titlePreview })
         })
 
@@ -1143,63 +1082,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // A bot's chat is a tile scoped to the `bots` workspace; the primary chat is Sessions mode.
           noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === sessionId)?.workspaceMode ?? 'sessions')
 
-          const { result, sessionId: receiptSessionId } = await withSessionNotFoundResume<SubmitReceipt>(
+          const { result, sessionId: receiptSessionId } = await submitPromptTransport<SubmitReceipt>({
+            options,
+            prepared,
+            persistLegacyAttempt: () => writePreparedSubmission(retryKey, prepared),
+            onLegacyAccepted: () => { legacyAccepted = true },
+            requestGateway,
             sessionId,
-            recoverStoredSessionId,
-            liveId =>
-              withSessionBusyRetry(async () => {
-                // Recovery can re-enter this callback within the same submit.
-                // An identityless write cannot be deduplicated after a lost ACK.
-                if (prepared.legacyAttempted) {
-                  throw new Error('Legacy submission acknowledgement is unknown; automatic retry is unsafe')
-                }
-
-                const params: Record<string, unknown> = { ...prepared.params, session_id: liveId }
-
-                try {
-                  return await requestGateway<SubmitReceipt>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-                } catch (error) {
-                  // A retry whose payload no longer matches its admitted original (an attachment send
-                  // offered back as text) is that original: settled as the dedupe it is, no new turn.
-                  if (isAdmittedSubmissionConflict(error)) {
-                    return { status: 'terminal', submission_id: submissionId }
-                  }
-
-                  // 4094 is an explicit PRE-admission capability refusal; 4000 is the
-                  // legacy `hermes serve` contract refusing `submission_id` as an unknown
-                  // key (version skew) before any handler ran. Both are pre-admission and
-                  // safe to retry identityless. Never downgrade on a timeout, malformed
-                  // ACK or an ambiguous retry.
-                  if (!isPreAdmissionRefusal(error) || prepared.legacyAttempted) {
-                    throw error
-                  }
-
-                  prepared.legacyAttempted = true
-                  await writePreparedSubmission(retryKey, prepared)
-                  const { submission_id: _id, ...legacyParams } = params
-
-                  const result = await requestGateway<SubmitReceipt>(
-                    'prompt.submit',
-                    legacyParams,
-                    PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-                  )
-
-                  legacyAccepted = true
-
-                  return result
-                }
-              }),
-            {
+            storedSessionId: recoverStoredSessionId,
+            recovery: {
               requestGateway,
               driftReason: sessionDriftReason,
               onRecovered: recoveredId => {
                 if (onRuntimeRecovered) {
                   onRuntimeRecovered(recoveredId)
                 } else {
-                  // Publish stored-to-runtime ownership before retrying the
-                  // session-scoped request. The window router needs this
-                  // binding to keep a recovered remote runtime on the gateway
-                  // that owns its durable session.
+                  // Publish ownership before retrying; background recovery must
+                  // not retarget the foreground view.
                   if (recoverStoredSessionId) {
                     updateSessionState(recoveredId, state => state, recoverStoredSessionId)
                   }
@@ -1210,12 +1109,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   }
                 }
               }
-            },
-            // A starved backend loop (#55578 symptom d) rejects the submit even
-            // though the stored session is fine — recover it like a dead id
-            // instead of erroring out and losing the session binding.
-            { alsoTimeout: true }
-          )
+            }
+          })
+
+          assertConfirmedSubmitReceipt(options, result, prepared.id, receiptSessionId)
 
           // Validate the admission receipt and bind it to the optimistic bubble.
           // Returns false when the receipt is not this send's admission.
@@ -1317,6 +1214,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           }
 
           acceptedRuntimeSessionId = receiptSessionId
+          options?.onExternalAccepted?.(result.status === 'queued')
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {
             console.warn('[submit-drift-abort]', firstErr.reason, { phase: 'post-resume-retry' })
@@ -1360,6 +1258,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         return true
       } catch (err) {
+        if (options?.confirmedExternal) {
+          // A lost acknowledgement cannot prove rejection. Do not recover,
+          // replay, restore a draft or release the live turn's busy state.
+          releaseSubmitLock()
+          throw err
+        }
+
         releaseBusy()
 
         unstageRefusedImages(err, usingComposerAttachments, scope, attachments)

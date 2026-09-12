@@ -130,16 +130,75 @@ def test_core_rejects_expired_request_during_notification(monkeypatch, by_id):
 
 
 @pytest.mark.asyncio
-async def test_visible_failure_notice_allows_cleanup(monkeypatch):
+async def test_visible_failure_notice_retains_card_until_terminal_replacement(monkeypatch):
     adapter = adapter_for_test(monkeypatch)
     prompt = _MatrixApprovalPrompt("notice", "!room:example.org", "$card", command="echo test", resolved=True)
     adapter._approval_prompts_by_event["$card"] = prompt
     adapter._approval_prompt_by_session["notice"] = {"$card"}
     adapter.edit_message = AsyncMock(return_value=SendResult(success=False, error="offline"))
     await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="expired", max_attempts=1)
+    assert not prompt.terminal_visible
+    assert adapter._approval_prompts_by_event["$card"] is prompt
+    assert adapter._approval_prompt_by_session["notice"] == {"$card"}
+    assert "expired" in adapter.send.call_args.args[1]
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$edit"))
+    await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="expired", max_attempts=1)
     assert prompt.terminal_visible
     assert "$card" not in adapter._approval_prompts_by_event
-    assert "expired" in adapter.send.call_args.args[1]
+    assert "notice" not in adapter._approval_prompt_by_session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("background", [False, True])
+async def test_connector_decline_ends_approval_without_text_fallback(monkeypatch, background):
+    from gateway.approval_bridge import _make_gateway_approval_notifier
+
+    class Adapter:
+        async def send_exec_approval(self, **kwargs):
+            return SendResult(success=False, raw_response={"code": "egress_declined"})
+
+        def pause_typing_for_chat(self, chat_id):
+            pass
+
+    adapter = Adapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$unexpected"))
+    loop = asyncio.get_running_loop()
+    notify = (_make_gateway_approval_notifier(
+        adapter=adapter, chat_id="!room:example.org", session_key="declined",
+        metadata={}, requester_user_id="@owner:example.org", loop=loop, pause_typing=False)
+        if background else foreground(adapter, loop)._approval_notify_sync)
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 0.1)
+    result = await asyncio.to_thread(
+        _await_gateway_decision, "declined", notify, {"command": "echo private"})
+    assert result.get("notify_failed") is True
+    assert not approval.has_blocking_approval("declined")
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_late_reaction_preserves_prior_core_resolution(monkeypatch):
+    import time
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    adapter = adapter_for_test(monkeypatch)
+    entry = _ApprovalEntry({"command": "echo approved"})
+    approval._gateway_queues["late-reaction"] = [entry]
+    prompt = _MatrixApprovalPrompt(
+        "late-reaction", "!room:example.org", "$card", command=entry.data["command"],
+        approval_id=entry.approval_id, expires_at=time.monotonic() - 1,
+    )
+    adapter._approval_prompts_by_event["$card"] = prompt
+    adapter._approval_prompt_by_session["late-reaction"] = {"$card"}
+    adapter._redact_bot_approval_reactions = AsyncMock()
+    adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$edit"))
+    try:
+        assert approval.resolve_gateway_approval("late-reaction", "once", approval_id=entry.approval_id) == 1
+        await adapter._handle_approval_reaction(prompt.chat_id, "$card", "❌", "@owner:example.org")
+        assert prompt.terminal_choice == "once"
+        assert "Approved once" in adapter.edit_message.call_args.args[2]
+        adapter.send.assert_not_awaited()
+    finally:
+        approval.unregister_gateway_notify("late-reaction")
 
 
 @pytest.mark.asyncio

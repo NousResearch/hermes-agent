@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
-import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
-import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { allPaneIds, findGroup, findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
+import {
+  $activeTreeGroup,
+  $hiddenTreePanes,
+  $layoutTree,
+  noteActiveTreeGroup
+} from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
   forgetActivePane,
@@ -22,6 +27,7 @@ import {
   blankDraftTile,
   clearAllSessionStates,
   closeAllOpenSessionTiles,
+  coalesceSessionTilesForStoredIdRotation,
   focusedSessionNeedsRoute,
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
@@ -341,11 +347,11 @@ describe('SessionTile workspace scope', () => {
     $layoutTree.set(group(['workspace', tilePane('seg-2')], { active: 'workspace', id: 'main' }))
 
     expect(focusOpenSession('seg-3')).toBe('tile')
-    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-2'])
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-1'])
 
     // The open path dedupes through the same lineage test.
     openSessionTile('seg-3')
-    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-2'])
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-1'])
     setSessions([])
   })
 
@@ -441,6 +447,159 @@ describe('SessionTile workspace scope', () => {
       workspaceMode: 'bots',
       workspaceOwnerKey: 'connection-a::default'
     })
+  })
+})
+
+describe('SessionTile compression-lineage identity', () => {
+  afterEach(() => {
+    $activeTreeGroup.set(null)
+    $hiddenTreePanes.set(new Set())
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessionTiles.set([])
+    setSessions([])
+  })
+
+  it('focuses the lineage-root tab instead of opening the rotated tip again', () => {
+    const root = 'lineage-root'
+    const nextTip = 'lineage-tip-after-compression'
+    const unrelated = 'other-lineage-root'
+    const rootPane = tilePane(root)
+    const unrelatedPane = tilePane(unrelated)
+
+    setSessions([
+      { _lineage_root_id: root, id: nextTip } as never,
+      { _lineage_root_id: unrelated, id: 'other-lineage-tip' } as never
+    ])
+    $sessionTiles.set([
+      { anchor: 'workspace', dir: 'center', storedSessionId: root },
+      { anchor: 'workspace', dir: 'center', storedSessionId: unrelated }
+    ])
+    $layoutTree.set(
+      group(['workspace', unrelatedPane, rootPane], {
+        active: rootPane,
+        id: 'grp-main',
+        minimized: true,
+        tabStrip: 'always'
+      })
+    )
+    noteActiveTreeGroup('grp-main')
+
+    expect(focusOpenSession(nextTip)).toBe('tile')
+
+    expect($sessionTiles.get().map(tile => tile.storedSessionId)).toEqual([root, unrelated])
+    expect(findGroup($layoutTree.get()!, 'grp-main')).toEqual(
+      expect.objectContaining({
+        active: rootPane,
+        minimized: false,
+        panes: ['workspace', unrelatedPane, rootPane],
+        tabStrip: 'always'
+      })
+    )
+    expect($activeTreeGroup.get()).toBe('grp-main')
+    expect($hiddenTreePanes.get()).toEqual(new Set())
+  })
+
+  it('keeps Bot workspace scope when a rotated alias is moved without an explicit scope', () => {
+    const root = 'lineage-root'
+    const previousTip = 'lineage-tip-before-compression'
+    const nextTip = 'lineage-tip-after-compression'
+
+    const scope = {
+      ownerRoute: {
+        connectionId: 'connection-a',
+        mode: 'remote' as const,
+        profile: 'writer',
+        targetProfile: 'writer'
+      },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:connection-a::writer',
+      workspaceTabTitle: 'Writer'
+    }
+
+    setSessions([{ _lineage_ids: [root, previousTip, nextTip], _lineage_root_id: root, id: nextTip } as never])
+    openSessionTile(previousTip, 'right', undefined, undefined, scope)
+    $layoutTree.set(group(['workspace', tilePane(root)], { id: 'workspace-group' }))
+
+    openSessionTile(nextTip, 'left', 'workspace')
+
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        dir: 'left',
+        ownerRoute: scope.ownerRoute,
+        storedSessionId: root,
+        workspaceMode: 'bots',
+        workspaceOwnerKey: scope.workspaceOwnerKey,
+        workspaceTabTitle: 'Writer'
+      })
+    ])
+  })
+
+  it('coalesces already-present previous and next tips at the focused occurrence', () => {
+    const root = 'lineage-root'
+    const previousTip = 'lineage-tip-before-compression'
+    const nextTip = 'lineage-tip-after-compression'
+    const unrelated = 'other-lineage-root'
+    const previousPane = tilePane(previousTip)
+    const nextPane = tilePane(nextTip)
+    const rootPane = tilePane(root)
+    const unrelatedPane = tilePane(unrelated)
+
+    setSessions([
+      { _lineage_root_id: root, id: nextTip } as never,
+      { _lineage_root_id: unrelated, id: 'other-lineage-tip' } as never
+    ])
+    $sessionTiles.set([
+      { anchor: 'workspace', dir: 'center', runtimeId: 'runtime-lineage', storedSessionId: previousTip },
+      { anchor: 'workspace', dir: 'right', storedSessionId: nextTip },
+      { anchor: 'workspace', dir: 'center', storedSessionId: unrelated }
+    ])
+    $layoutTree.set(
+      split(
+        'row',
+        [
+          group(['workspace', unrelatedPane, previousPane], {
+            active: previousPane,
+            id: 'grp-main',
+            minimized: true,
+            tabStrip: 'always'
+          }),
+          group([nextPane, 'files'], { active: nextPane, id: 'grp-duplicate' })
+        ],
+        [3, 1],
+        'split-root'
+      )
+    )
+    $hiddenTreePanes.set(new Set([previousPane]))
+    noteActiveTreeGroup('grp-main')
+
+    coalesceSessionTilesForStoredIdRotation(previousTip, nextTip)
+
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        anchor: 'workspace',
+        dir: 'center',
+        runtimeId: 'runtime-lineage',
+        storedSessionId: root
+      }),
+      expect.objectContaining({ storedSessionId: unrelated })
+    ])
+    expect(findGroup($layoutTree.get()!, 'grp-main')).toEqual(
+      expect.objectContaining({
+        active: rootPane,
+        minimized: true,
+        panes: ['workspace', unrelatedPane, rootPane],
+        tabStrip: 'always'
+      })
+    )
+    expect(findGroup($layoutTree.get()!, 'grp-duplicate')).toEqual(
+      expect.objectContaining({ active: 'files', panes: ['files'] })
+    )
+    expect($activeTreeGroup.get()).toBe('grp-main')
+    expect($hiddenTreePanes.get()).toEqual(new Set([rootPane]))
+    expect(allPaneIds($layoutTree.get()!)).not.toContain(previousPane)
+    expect(allPaneIds($layoutTree.get()!)).not.toContain(nextPane)
+    expect(allPaneIds($layoutTree.get()!).filter(paneId => paneId === rootPane)).toHaveLength(1)
   })
 })
 

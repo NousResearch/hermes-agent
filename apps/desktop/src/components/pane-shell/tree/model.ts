@@ -240,6 +240,52 @@ export function removePane(node: LayoutNode, paneId: string): LayoutNode | null 
   return normalize(walk(node))
 }
 
+/** Collapse several ids for one logical pane onto a canonical id while
+ * keeping the preferred occurrence in its exact group and tab slot. The
+ * other occurrences are removed with normal close-neighbor semantics first,
+ * then the survivor is renamed in place, so zone ids, weights, active state,
+ * minimization, and tab-strip preference all survive. */
+export function coalescePaneIds(
+  root: LayoutNode,
+  paneIds: ReadonlySet<string>,
+  canonicalPaneId: string,
+  preferredPaneId: string
+): LayoutNode {
+  if (!paneIds.has(preferredPaneId) || !allPaneIds(root).includes(preferredPaneId)) {
+    return root
+  }
+
+  let next = root
+
+  for (const paneId of paneIds) {
+    if (paneId !== preferredPaneId && allPaneIds(next).includes(paneId)) {
+      next = removePane(next, paneId) ?? next
+    }
+  }
+
+  if (preferredPaneId === canonicalPaneId) {
+    return next
+  }
+
+  const rename = (node: LayoutNode): LayoutNode => {
+    if (node.type === 'split') {
+      return { ...node, children: node.children.map(rename) }
+    }
+
+    if (!node.panes.includes(preferredPaneId)) {
+      return node
+    }
+
+    return {
+      ...node,
+      active: node.active === preferredPaneId ? canonicalPaneId : node.active,
+      panes: node.panes.map(paneId => (paneId === preferredPaneId ? canonicalPaneId : paneId))
+    }
+  }
+
+  return rename(next)
+}
+
 /**
  * Insert `paneId` at `target` group: `center` joins the stack (as a tab);
  * an edge splits the group in that direction. If the neighboring split

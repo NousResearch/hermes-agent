@@ -196,7 +196,8 @@ def _existing_tool_names() -> List[str]:
 
 def _make_tool_filter(name: str, config: dict) -> Callable[[str], bool]:
     """Include/exclude predicate for a server's tool names: ``tools.include`` is a whitelist (``[]`` = register
-    nothing), ``tools.exclude`` a blacklist; entries are exact names or fnmatch globs; include wins over exclude."""
+    nothing), top-level ``allowed_tools`` is the same whitelist when include is absent, ``tools.exclude`` a
+    blacklist; entries are exact names or fnmatch globs; include wins over allowed_tools and exclude."""
     tools_filter = config.get("tools") or {}
     # Selective tool loading: honour include/exclude lists from config. Rules (matching issue #690 spec,
     # extended with glob support): tools.include — whitelist: only matching tool names are registered
@@ -204,11 +205,26 @@ def _make_tool_filter(name: str, config: dict) -> Callable[[str], bool]:
     # fnmatch globs (e.g. "*_radar_*") include takes precedence over exclude include: [] → register nothing
     # (an explicit empty whitelist, as written by the install checklist's "uncheck everything" path) Neither
     # set → register all tools (backward-compatible default)
+    # Top-level allowed_tools is a whitelist alias for configs that never nested under tools.include
+    # (#106983). Precedence: tools.include (if present as str/list/tuple/set, including []) wins;
+    # else allowed_tools of those types (including []) is the whitelist; else exclude / register-all.
+    # A present-but-invalid allowed_tools (null, dict, number) fail-closes: register nothing.
+    # Absent key keeps backward-compatible include/exclude/all.
     include_raw = tools_filter.get("include")
     include_set = _normalize_name_filter(include_raw, f"mcp_servers.{name}.tools.include")
     exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
     if isinstance(include_raw, (str, list, tuple, set)):
         return lambda tool_name: matches_name_filter(tool_name, include_set)
+    allowed_raw = config.get("allowed_tools")
+    if isinstance(allowed_raw, (str, list, tuple, set)):
+        allowed_set = _normalize_name_filter(allowed_raw, f"mcp_servers.{name}.allowed_tools")
+        return lambda tool_name: matches_name_filter(tool_name, allowed_set)
+    if "allowed_tools" in config:
+        logger.warning(
+            "MCP config mcp_servers.%s.allowed_tools must be a string or list of strings; "
+            "refusing all tools for this server (got %r)",
+            name, allowed_raw)
+        return lambda _tool_name: False
     return lambda tool_name: not (exclude_set and matches_name_filter(tool_name, exclude_set))
 
 

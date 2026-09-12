@@ -253,6 +253,26 @@ _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhi
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
 
+_SESSION_MODEL_SCOPES = ("session", "turn")
+
+
+def _session_model_scope(body: Any) -> str:
+    """Body ``model_scope`` for the session chat endpoints: ``session`` (default) keeps the
+    model persisted on the session row as a standing selection, ``turn`` scopes this request's
+    ``model`` / ``provider`` / ``model_options`` to the current turn only. An unrecognized
+    value raises instead of falling back: a client that misspelled the scope would otherwise
+    silently run on the persisted model and never learn its pick was dropped."""
+    if not isinstance(body, dict):
+        return "session"
+    raw = body.get("model_scope")
+    if raw is None:
+        return "session"
+    scope = str(raw).strip().lower()
+    if scope not in _SESSION_MODEL_SCOPES:
+        raise ValueError(
+            f"model_scope must be one of {', '.join(_SESSION_MODEL_SCOPES)}; got {str(raw)[:32]!r}")
+    return scope
+
 
 def _clean_request_string(value: Any) -> Optional[str]:
     """Return a stripped request string, or None for absent/non-string values."""
@@ -2994,7 +3014,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Shared prelude for /api/sessions/{id}/chat[/stream]: header/body validation, then
         runtime selection — a Browser model lock (body ``require_model_lock`` or a confirmed
         persisted lock) wins; else the session-persisted model routes via model_routes when an
-        alias or threads through as ``session_model`` when raw, then body values.
+        alias or threads through as ``session_model`` when raw, then body values. Body
+        ``model_scope: "turn"`` skips that persisted tier so the body's model owns this turn
+        only; it is refused alongside a model lock.
         Returns ``(ctx, None)`` or ``(None, error)``; ``ctx["run_kwargs"]`` feeds ``_run_agent``."""
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
@@ -3016,7 +3038,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return None, _error_response("system_message must be a string", 400, code="invalid_system_message")
+        try:
+            model_scope = _session_model_scope(body)
+        except ValueError as exc:
+            return None, _error_response(str(exc), 400, code="invalid_model_scope")
         runtime_request = self._effective_session_runtime_request(session=session, body=body)
+        if model_scope == "turn" and runtime_request.get("require_model_lock"):
+            # A lock pins this session's model on purpose, so a one-turn pick contradicts it.
+            # Rejected before `_persist_session_runtime_lock` so the refusal writes nothing.
+            return None, _error_response(
+                "model_scope=turn cannot be combined with require_model_lock: the lock pins this "
+                "session's model. Drop the lock to select a model for a single turn.",
+                400, code="invalid_model_scope")
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return None, lock_error
@@ -3035,7 +3068,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if runtime_request.get("model_options"):
                 agent_overrides["model_options"] = runtime_request["model_options"]
         else:
-            stored_model = self._stored_session_model(session)
+            # #108145: a turn-scoped pick does not thread the row's persisted model as a standing
+            # selection, so the body's `model`/`provider` reaches the per-request branch of
+            # _select_agent_runtime. Nothing is written back to the row either way.
+            stored_model = None if model_scope == "turn" else self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
             route = stored_route or self._resolve_route(body.get("model"))
             session_model = stored_model if (stored_model and stored_route is None) else None

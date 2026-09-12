@@ -459,6 +459,96 @@ async def test_session_chat_stream_treats_pre_existing_poisoned_row_as_no_model(
     assert kwargs["session_model"] is None
 
 
+@pytest.mark.asyncio
+async def test_session_chat_model_scope_turn_outranks_the_persisted_model_for_one_turn(session_db):
+    """``model_scope: "turn"`` is the supported per-message model pick (#108145): the row's
+    persisted model stays the standing selection, a turn-scoped body model wins for exactly
+    that turn on both session chat surfaces, and the row is never rewritten."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session("turn-scoped-session", "api_server", model="pinned/model")
+
+    async def fake_run(**kwargs):
+        return {"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            # Unscoped: a body model does not displace the session's standing selection.
+            persistent_turn = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi", "model": "once/model"},
+            )
+            assert persistent_turn.status == 200, await persistent_turn.text()
+            # Turn-scoped: the body model is this turn's model.
+            turn_scoped = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi", "model": "once/model", "model_scope": "turn"},
+            )
+            assert turn_scoped.status == 200, await turn_scoped.text()
+            # The next unscoped turn is back on the persisted model.
+            resumed = await cli.post(f"/api/sessions/{session_id}/chat", json={"message": "hi"})
+            assert resumed.status == 200, await resumed.text()
+            # Same contract on the SSE surface (shared prelude).
+            streamed = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "hi", "model": "once/model", "model_scope": "turn"},
+            )
+            assert streamed.status == 200, await streamed.text()
+            await streamed.text()
+
+    persistent_kwargs, turn_kwargs, resumed_kwargs, streamed_kwargs = (
+        call.kwargs for call in mock_run.call_args_list)
+
+    assert persistent_kwargs["session_model"] == "pinned/model"
+    assert turn_kwargs["session_model"] is None
+    assert turn_kwargs["requested_model"] == "once/model"
+    assert resumed_kwargs["session_model"] == "pinned/model"
+    assert streamed_kwargs["session_model"] is None
+    assert streamed_kwargs["requested_model"] == "once/model"
+    assert session_db.get_session(session_id)["model"] == "pinned/model"
+
+
+@pytest.mark.asyncio
+async def test_session_chat_model_scope_rejects_an_unknown_scope_or_a_model_lock(session_db):
+    """A mistyped scope must 400 (silently ignoring it is the bug this fixes), and a
+    turn-scoped pick cannot be combined with a lock that pins the session's model."""
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    adapter._session_db = session_db
+    session_id = session_db.create_session("turn-scope-guards", "api_server", model="pinned/model")
+
+    mock_run = AsyncMock(return_value=(
+        {"final_response": "ok", "session_id": session_id}, {"total_tokens": 1}))
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            unknown_scope = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "hi", "model": "once/model", "model_scope": "per-turn"},
+            )
+            assert unknown_scope.status == 400, await unknown_scope.text()
+            assert (await unknown_scope.json())["error"]["code"] == "invalid_model_scope"
+
+            locked = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={
+                    "message": "hi",
+                    "model": "once/model",
+                    "model_scope": "turn",
+                    "require_model_lock": True,
+                },
+            )
+            assert locked.status == 400, await locked.text()
+            assert (await locked.json())["error"]["code"] == "invalid_model_scope"
+
+    assert mock_run.call_count == 0
+    import json as _json
+    model_config = session_db.get_session(session_id).get("model_config")
+    if isinstance(model_config, str):
+        model_config = _json.loads(model_config)
+    assert "browser_model_lock" not in (model_config or {})
+
+
 def _register_session_model_route(app, adapter):
     app.router.add_post("/api/sessions/{session_id}/model", adapter._handle_session_model_lock)
 

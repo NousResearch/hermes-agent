@@ -109,7 +109,7 @@ def _add_prompt_cache_key(
         api_kwargs["prompt_cache_key"] = cache_key
 
 
-def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
+def _reasoning_config_for_model(model: str, reasoning_config: dict | None, provider: str | None = None) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
     Hermes' internal effort set extends the wire vocabulary with ``ultra`` (the /reasoning command documents
@@ -121,8 +121,14 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     if not isinstance(reasoning_config, dict):
         return reasoning_config
     effort = str(reasoning_config.get("effort") or "").strip().lower()
-    clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS) if effort else effort
-    return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
+    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, is_astra_model
+    astra = is_astra_model(model, provider)
+    supported = CODEX_ASTRA_EFFORTS if astra else OPENAI_COMPAT_WIRE_EFFORTS
+    clamped = clamp_effort(effort, supported) if effort else effort
+    result = {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
+    if astra and result.get("enabled") is False:
+        return {**result, "enabled": True, "effort": "low"}
+    return result
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -377,7 +383,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_kimi = params.get("is_kimi", False)
         is_lmstudio = params.get("is_lmstudio", False)
         supports_reasoning = params.get("supports_reasoning", False)
-        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"), params.get("provider"))
         _apply_max_tokens(api_kwargs, model, reasoning_config, params)
 
         # Kimi / TokenHub / LM Studio: top-level reasoning_effort (unless thinking disabled).

@@ -51,6 +51,14 @@ class ReasoningParamsMixin:
         """True when reasoning extra_body is safe to send: OpenRouter forwards unknown extra_body upstream and
         some routes 400 on ``reasoning``, so gate to known reasoning-capable families and direct Nous Portal."""
         url = self._base_url_lower
+        # Config opt-in for custom routers: model_overrides.<provider>.<alias>.supports_reasoning: true.
+        # Absent → unchanged behaviour (no reasoning fields sent to arbitrary custom endpoints).
+        try:
+            from agent.models_dev import _explicit_model_override
+            if (_explicit_model_override(self.provider, self.model) or {}).get("supports_reasoning") is True:
+                return True
+        except Exception:
+            pass
         if base_url_host_matches(url, "nousresearch.com") or base_url_host_matches(url, "ai-gateway.vercel.sh"):
             return True
         if base_url_host_matches(url, "models.github.ai") or base_url_host_matches(url, "githubcopilot.com"):

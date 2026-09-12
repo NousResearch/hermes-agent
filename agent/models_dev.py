@@ -557,7 +557,7 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 
 # Per-model overrides (config.yaml → model_overrides). Canonical schema (the ONLY key space consumers
 # accept): context_window, supports_tools, supports_vision, supports_reasoning,
-# model_family. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
+# model_family, canonical_model. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
 # catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP defaults: they apply ONLY to
 # models the catalog does not know and never displace catalog data. Provider keys accept the Hermes
 # or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).

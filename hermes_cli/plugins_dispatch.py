@@ -205,7 +205,11 @@ class PluginDispatchMixin:
         suppressed, still running, timed out (worker abandoned, never joined), or the worker
         could not be started. Exceptions propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
-        callback_key = (hook_name, id(cb))
+        # Scope the gate by tool: a slow shell hook firing for tool A must not reject an
+        # unrelated tool B whose own matcher never ran. Tool-less events keep the old key.
+        # ponytail: one worker per (hook, tool); revisit if a hook ever spans hundreds of tools.
+        _tool_scope = kwargs.get("tool_name")
+        callback_key = (hook_name, id(cb), _tool_scope if isinstance(_tool_scope, str) else None)
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
@@ -252,6 +256,14 @@ class PluginDispatchMixin:
                 # See #6622.
                 self._hook_timeout_suppressed_until[callback_key] = (
                     time.monotonic() + self._hook_timeout_suppression_seconds)
+                # The abandoned worker never reaches _release_token, so free the slot here.
+                # Without this one stalled callback latches "still running" for the life of the
+                # process and every later call of this hook on this tool fails closed forever,
+                # which makes the enforcement layer itself the outage.
+                # ponytail: one abandoned worker may remain alive per suppression window;
+                # revisit with a hard breaker only if stalls become frequent rather than rare.
+                if self._hook_running_callbacks.get(callback_key) is token:
+                    self._hook_running_callbacks.pop(callback_key, None)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
             return _HOOK_SKIPPED

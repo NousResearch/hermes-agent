@@ -1144,6 +1144,47 @@ class TestForceReloadSymmetry:
         assert elapsed < 5.0
         hold.set()
 
+    def test_slow_hook_for_one_tool_does_not_block_an_unrelated_tool(self, monkeypatch):
+        """A hung callback for tool A must not reject tool B whose matcher never ran.
+
+        Red on base: the running-gate keyed on (hook, callback) returned the fail-closed
+        block for every tool until the slow callback finished. Shaped like a shell hook:
+        the callback short-circuits (no worker) for tools its matcher rejects.
+        """
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.2
+        )
+
+        entered = threading.Event()
+        hold = threading.Event()
+        started = []
+
+        def scoped_hook(**kwargs):
+            if kwargs.get("tool_name") != "write_file":
+                return None
+            started.append(1)
+            entered.set()
+            hold.wait(timeout=10.0)
+            return "late"
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [scoped_hook]
+
+        worker = threading.Thread(
+            target=lambda: mgr.invoke_hook("pre_tool_call", tool_name="write_file")
+        )
+        worker.start()
+        assert entered.wait(timeout=5.0)
+
+        assert mgr.invoke_hook("pre_tool_call", tool_name="read_file") == []
+        blocked = mgr.invoke_hook("pre_tool_call", tool_name="write_file")
+        assert [row.get("action") for row in blocked] == ["block"]
+        assert "still running" in str(blocked[0].get("message", ""))
+        assert len(started) == 1
+
+        hold.set()
+        worker.join(timeout=5.0)
+
     def test_pre_tool_call_timeout_fail_closed(self, monkeypatch):
         """Timed-out pre_tool_call must return a block directive, not allow."""
         import time

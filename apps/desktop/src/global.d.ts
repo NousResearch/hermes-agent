@@ -711,6 +711,8 @@ export type RuntimeSource =
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
 
 export interface DesktopUninstallSummary {
+  /** Local package ownership, resolved by Electron before offering removal. */
+  code_removal_allowed: boolean
   hermes_home: string
   agent_installed: boolean
   gui_installed: boolean

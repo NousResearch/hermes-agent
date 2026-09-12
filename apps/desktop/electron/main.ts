@@ -170,11 +170,14 @@ import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remot
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
+  type DesktopUninstallResult,
   modeRemovesAgent,
   modeRemovesUserData,
+  registerDesktopUninstallIpc,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
-  uninstallArgsForMode
+  uninstallArgsForMode,
+  type UninstallSummaryDetails
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
@@ -17346,24 +17349,17 @@ function resolveHermesRuntime() {
 // registry / service / node-symlink cleanup all lives in one place
 // (hermes_cli/uninstall.py + hermes_cli/gui_uninstall.py).
 //
-// getUninstallSummary() shells out to `--gui-summary` (a fast, no-side-effect
-// JSON probe) so the UI can gate options on what's actually installed — and
-// detect a missing agent (a future "lite client" that ships without the
-// bundled agent), hiding the agent/full options when there's nothing to remove.
+// The IPC boundary applies the baked install policy before either callback.
+// Only self-managed installs use the Python summary or the cleanup script.
 
-function uninstallVenvPython() {
+function uninstallVenvPython(): string {
   return getVenvPython(VENV_ROOT)
 }
 
-async function getUninstallSummary() {
-  const py = uninstallVenvPython()
-  const agentRoot = ACTIVE_HERMES_ROOT
-
-  // Fast JS-side fallback used when the agent venv is gone (lite client) or the
-  // probe fails — the renderer still needs *something* to render options from.
-  const fallback = () => ({
+function fallbackUninstallSummary(): UninstallSummaryDetails {
+  return {
     hermes_home: HERMES_HOME,
-    agent_installed: isHermesSourceRoot(agentRoot) && fileExists(py),
+    agent_installed: isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(uninstallVenvPython()),
     gui_installed: true,
     source_built_artifacts: [],
     packaged_app_paths: [],
@@ -17371,17 +17367,22 @@ async function getUninstallSummary() {
     userdata_exists: true,
     platform: process.platform,
     probe: 'fallback'
-  })
+  }
+}
+
+async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
+  const py: string = uninstallVenvPython()
+  const agentRoot: string = ACTIVE_HERMES_ROOT
 
   if (!fileExists(py)) {
-    return fallback()
+    return fallbackUninstallSummary()
   }
 
-  return new Promise(resolve => {
-    let stdout = ''
-    let settled = false
+  return new Promise<UninstallSummaryDetails>((resolve: (value: UninstallSummaryDetails) => void): void => {
+    let stdout: string = ''
+    let settled: boolean = false
 
-    const done = value => {
+    const done = (value: UninstallSummaryDetails): void => {
       if (settled) {
         return
       }
@@ -17391,7 +17392,7 @@ async function getUninstallSummary() {
     }
 
     try {
-      const child = spawn(
+      const child: ChildProcess = spawn(
         py,
         ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'],
         hiddenWindowsChildOptions({
@@ -17401,36 +17402,36 @@ async function getUninstallSummary() {
         })
       )
 
-      child.stdout.on('data', chunk => {
+      child.stdout.on('data', (chunk: Buffer): void => {
         stdout += chunk.toString()
       })
-      child.on('error', () => done(fallback()))
-      child.on('exit', code => {
+      child.on('error', (): void => done(fallbackUninstallSummary()))
+      child.on('exit', (code: number | null): void => {
         if (code !== 0) {
-          return done(fallback())
+          return done(fallbackUninstallSummary())
         }
 
         try {
-          const line = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
-          const parsed = JSON.parse(line)
+          const line: string = stdout.trim().split('\n').filter(Boolean).pop() || '{}'
+          const parsed: UninstallSummaryDetails = JSON.parse(line)
           // The app bundle the renderer would be removing on *this* machine,
           // resolved from the running exe (the Python probe only knows the
           // standard locations, not where THIS build actually runs from).
           parsed.running_app_path = resolveRemovableAppPath(process.execPath, process.platform, process.env)
           done(parsed)
         } catch {
-          done(fallback())
+          done(fallbackUninstallSummary())
         }
       })
-      setTimeout(() => done(fallback()), 8000)
+      setTimeout((): void => done(fallbackUninstallSummary()), 8000)
     } catch {
-      done(fallback())
+      done(fallbackUninstallSummary())
     }
   })
 }
 
-async function runDesktopUninstall(mode) {
-  let uninstallArgs
+async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult> {
+  let uninstallArgs: string[]
 
   try {
     uninstallArgs = uninstallArgsForMode(mode)
@@ -17544,11 +17545,12 @@ async function runDesktopUninstall(mode) {
   return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
 }
 
-ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
-ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
-  const mode = payload && typeof payload === 'object' ? payload.mode : payload
-
-  return runDesktopUninstall(String(mode || ''))
+registerDesktopUninstallIpc({
+  ipcMain,
+  stamp: INSTALL_STAMP,
+  fallbackSummary: fallbackUninstallSummary,
+  probeSummary: probeUninstallSummary,
+  runUninstall: runDesktopUninstall
 })
 
 // Download a VS Code Marketplace extension and return the raw color-theme JSON

@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { type ReactElement, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import type { DesktopUninstallMode, DesktopUninstallSummary } from '@/global'
+import type { DesktopUninstallMode, DesktopUninstallResult, DesktopUninstallSummary } from '@/global'
 import { AlertTriangle, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -45,56 +45,50 @@ const OPTIONS: ModeOption[] = [
   }
 ]
 
-export function UninstallSection() {
+export function UninstallSection(): ReactElement | null {
   const [summary, setSummary] = useState<DesktopUninstallSummary | null>(null)
-  const [loading, setLoading] = useState(true)
   const [pending, setPending] = useState<DesktopUninstallMode | null>(null)
-  const [running, setRunning] = useState(false)
+  const [running, setRunning] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let alive = true
-    const bridge = window.hermesDesktop?.uninstall
+  useEffect((): (() => void) | undefined => {
+    let alive: boolean = true
+    const bridge: Window['hermesDesktop']['uninstall'] | undefined = window.hermesDesktop?.uninstall
 
     if (!bridge) {
-      setLoading(false)
-
       return
     }
 
     void bridge
       .summary()
-      .then(result => {
+      .then((result: DesktopUninstallSummary): void => {
         if (alive) {
           setSummary(result)
         }
       })
-      .catch(() => {
-        // Non-fatal — we degrade to offering the GUI-only option.
-      })
-      .finally(() => {
+      .catch((): void => {
+        // A failed ownership probe must not offer a destructive fallback.
         if (alive) {
-          setLoading(false)
+          setSummary(null)
         }
       })
 
-    return () => {
+    return (): void => {
       alive = false
     }
   }, [])
 
-  const bridge = window.hermesDesktop?.uninstall
+  const bridge: Window['hermesDesktop']['uninstall'] | undefined = window.hermesDesktop?.uninstall
 
-  if (!bridge) {
+  if (!bridge || summary?.code_removal_allowed !== true) {
     return null
   }
 
-  // Gate the agent-removing options on whether an agent is actually present.
-  // A future lite client that ships without the bundled agent shows GUI-only.
-  const agentInstalled = summary?.agent_installed ?? false
-  const visibleOptions = OPTIONS.filter(opt => agentInstalled || !opt.needsAgent)
+  // An owned GUI can remain after its local agent has been removed.
+  const agentInstalled: boolean = summary.agent_installed
+  const visibleOptions: ModeOption[] = OPTIONS.filter((opt: ModeOption): boolean => agentInstalled || !opt.needsAgent)
 
-  const handleConfirm = async () => {
+  const handleConfirm = async (): Promise<void> => {
     if (!pending) {
       return
     }
@@ -103,7 +97,7 @@ export function UninstallSection() {
     setError(null)
 
     try {
-      const result = await bridge.run(pending)
+      const result: DesktopUninstallResult = await bridge.run(pending)
 
       if (!result.ok) {
         setError(result.message || result.error || 'Uninstall could not start.')
@@ -118,19 +112,14 @@ export function UninstallSection() {
     }
   }
 
-  const pendingOption = OPTIONS.find(opt => opt.mode === pending) ?? null
+  const pendingOption: ModeOption | null = OPTIONS.find((opt: ModeOption): boolean => opt.mode === pending) ?? null
 
   return (
     <div className="mx-auto mt-8 w-full max-w-2xl">
       <SectionHeading icon={AlertTriangle} title="Danger zone" />
 
       <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3">
-        {loading ? (
-          <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" />
-            Checking what&apos;s installed…
-          </div>
-        ) : pendingOption ? (
+        {pendingOption ? (
           <div>
             <p className="text-sm font-medium text-destructive">Confirm uninstall</p>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -141,11 +130,11 @@ export function UninstallSection() {
             )}
             {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              <Button disabled={running} onClick={() => void handleConfirm()} size="sm" variant="destructive">
+              <Button disabled={running} onClick={(): void => void handleConfirm()} size="sm" variant="destructive">
                 {running && <Loader2 className="size-3 animate-spin" />}
                 {running ? 'Uninstalling…' : 'Yes, uninstall'}
               </Button>
-              <Button disabled={running} onClick={() => setPending(null)} size="sm" variant="text">
+              <Button disabled={running} onClick={(): void => setPending(null)} size="sm" variant="text">
                 Cancel
               </Button>
             </div>
@@ -157,14 +146,14 @@ export function UninstallSection() {
               Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.
             </p>
             <div className="mt-1 flex flex-col gap-2">
-              {visibleOptions.map(opt => (
+              {visibleOptions.map((opt: ModeOption): ReactElement => (
                 <button
                   className={cn(
                     'flex items-start gap-3 rounded-lg border border-border/60 bg-background/40 px-3 py-2.5 text-left transition',
                     'hover:border-destructive/40 hover:bg-destructive/5'
                   )}
                   key={opt.mode}
-                  onClick={() => {
+                  onClick={(): void => {
                     setError(null)
                     setPending(opt.mode)
                   }}

@@ -28,7 +28,7 @@ import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -313,7 +313,9 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent) {
+  const showReasoning = useStore($showReasoning)
+
+  if (!hasContent || !showReasoning) {
     return null
   }
 

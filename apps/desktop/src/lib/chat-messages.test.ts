@@ -10,6 +10,7 @@ import {
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
   mergeFinalAssistantText,
+  stripReplayedAssistantHistory,
   preserveLocalAssistantErrors,
   reasoningPart,
   renderMediaTags,
@@ -1461,5 +1462,20 @@ describe('sealOpenToolParts', () => {
     const messages = [assistantWithParts([done])]
 
     expect(sealOpenToolParts(messages)).toBe(messages)
+  })
+})
+
+describe('stripReplayedAssistantHistory', () => {
+  it('drops stacked prior answers from the next Grok final (#99416)', () => {
+    expect(
+      stripReplayedAssistantHistory('Answer one.\n\nAnswer two.\n\nAnswer three.', [
+        'Answer one.',
+        'Answer two.'
+      ])
+    ).toBe('Answer three.')
+  })
+
+  it('leaves a final that does not replay history', () => {
+    expect(stripReplayedAssistantHistory('Brand new.', ['Answer one.'])).toBe('Brand new.')
   })
 })
